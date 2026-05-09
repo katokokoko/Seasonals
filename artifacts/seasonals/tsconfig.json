@@ -1,0 +1,17 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "jsx": "react-native",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "noEmit": true,
+    "types": ["jest", "node"],
+    "baseUrl": "../..",
+    "paths": {
+      "@workspace/lib": ["./lib/index.ts"],
+      "@workspace/lib/*": ["./lib/*"]
+    }
+  },
+  "include": ["**/*.ts", "**/*.tsx"],
+  "exclude": ["node_modules", "dist", "build", ".expo"]
+}

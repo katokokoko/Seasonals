@@ -1,0 +1,44 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "esModuleInterop": true,
+    "isolatedModules": true,
+    "resolveJsonModule": true,
+    "allowSyntheticDefaultImports": true,
+    "forceConsistentCasingInFileNames": true,
+
+    // ── strict family (CLAUDE.md §5「TypeScript (strict mode)」を担保) ──
+    "strict": true,
+    "noImplicitAny": true,
+    "strictNullChecks": true,
+    "strictFunctionTypes": true,
+    "strictBindCallApply": true,
+    "strictPropertyInitialization": true,
+    "noImplicitThis": true,
+    "alwaysStrict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+
+    // ── 一般的な品質ルール ──
+    "noUnusedLocals": false,
+    "noUnusedParameters": false,
+    "noFallthroughCasesInSwitch": true,
+    "noPropertyAccessFromIndexSignature": false,
+
+    // ── 型チェック性能 ──
+    "skipLibCheck": true,
+    "incremental": true,
+
+    // ── path alias: lib/ 共通型を `@workspace/lib/*` で参照 ──
+    "baseUrl": ".",
+    "paths": {
+      "@workspace/lib": ["./lib"],
+      "@workspace/lib/*": ["./lib/*"]
+    }
+  },
+  "exclude": ["**/node_modules", "**/dist", "**/build", "**/.expo", "**/.next"]
+}

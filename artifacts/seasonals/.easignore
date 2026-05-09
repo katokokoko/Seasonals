@@ -1,0 +1,22 @@
+# EAS Build にアップロード不要なファイルを除外。
+# Mobile bundle に必要な lib/__fixtures__ は除外しない。
+
+# Tests (build には不要)
+**/*.test.ts
+**/*.test.tsx
+**/__tests__/
+
+# Local build 成果物 — EAS は clean build するため不要
+.expo/
+android/build/
+android/.gradle/
+android/app/build/
+
+# Logs / cache
+*.log
+.cache/
+.jest-cache/
+
+# Local environment (secret は EAS Secrets で管理)
+.env.local
+.env.*.local

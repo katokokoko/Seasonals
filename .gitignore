@@ -1,0 +1,35 @@
+node_modules/
+**/node_modules/
+
+# Local environment
+.env
+.env.*
+!.env.example
+.idea/
+
+# Claude local state; keep shared project commands tracked
+.claude/*
+!.claude/commands/
+!.claude/commands/**
+
+# Build and framework output
+.expo/
+.next/
+dist/
+build/
+coverage/
+*.tsbuildinfo
+local.properties
+**/local.properties
+
+# Tool caches and logs
+.cache/
+.jest-cache/
+.turbo/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+.DS_Store

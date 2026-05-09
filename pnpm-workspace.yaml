@@ -1,0 +1,6 @@
+packages:
+  # 共通型 / utilities (Mobile / BFF / MCP Server から import)
+  - "lib"
+
+  # 各 artifact (現在は seasonals のみ、今後 BFF / MCP Server 等を追加)
+  - "artifacts/*"
