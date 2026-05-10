@@ -37,7 +37,6 @@ import {
 } from "date-fns";
 
 import {
-  COLOR,
   FONT,
   FONT_SIZE,
   RADIUS,
@@ -51,6 +50,10 @@ import type {
 } from "@workspace/lib/types";
 
 import { DropletMarker } from "./DropletMarker";
+import {
+  useThemedStyles,
+  type ThemeColors,
+} from "../../stores/theme";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers
@@ -58,11 +61,18 @@ import { DropletMarker } from "./DropletMarker";
 
 const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
+function localDayKey(day: Date): string {
+  return `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, "0")}-${String(day.getDate()).padStart(2, "0")}`;
+}
+
+function eventDayKey(triggerAt: UnifiedTimeEvent["triggerAt"]): string {
+  const ts = triggerAt instanceof Date ? triggerAt : new Date(triggerAt);
+  return `${ts.getUTCFullYear()}-${String(ts.getUTCMonth() + 1).padStart(2, "0")}-${String(ts.getUTCDate()).padStart(2, "0")}`;
+}
+
 function eventsOnDay(events: UnifiedTimeEvent[], day: Date): UnifiedTimeEvent[] {
-  return events.filter((e) => {
-    const ts = e.triggerAt instanceof Date ? e.triggerAt : new Date(e.triggerAt);
-    return isSameDay(ts, day);
-  });
+  const key = localDayKey(day);
+  return events.filter((e) => eventDayKey(e.triggerAt) === key);
 }
 
 function customEventsOnDay(
@@ -111,6 +121,9 @@ export function MonthGrid({
   today = new Date(),
   testID,
 }: MonthGridProps) {
+  // Phase 8.0: theme 連動 styles
+  const styles = useThemedStyles(makeStyles);
+
   const days = useMemo(() => {
     // Monday start, fill until end of last week of month
     const start = startOfWeek(startOfMonth(month), { weekStartsOn: 1 });
@@ -238,99 +251,98 @@ export function MonthGrid({
 // Styles
 // ─────────────────────────────────────────────────────────────────────────────
 
-const styles = StyleSheet.create({
-  container: {
-    paddingHorizontal: SPACE.md,
-    gap: SPACE.sm,
-  },
-  // C1: "April" large bold + "2026" small thin、left-aligned
-  monthLabelRow: {
-    flexDirection: "row",
-    alignItems: "baseline",
-    paddingHorizontal: SPACE.sm,
-    gap: 8,
-  },
-  monthLabelMonth: {
-    fontSize: FONT_SIZE.displayMD,
-    fontFamily: FONT.heading,
-    fontWeight: WEIGHT.bold,
-    color: COLOR.textPrimary,
-  },
-  monthLabelYear: {
-    fontSize: FONT_SIZE.bodyLG,
-    fontFamily: FONT.heading,
-    fontWeight: WEIGHT.regular,
-    color: COLOR.textMuted,
-  },
-  weekdayRow: {
-    flexDirection: "row",
-  },
-  weekday: {
-    flex: 1,
-    fontSize: FONT_SIZE.caption,
-    fontFamily: FONT.body,
-    fontWeight: WEIGHT.semibold,
-    color: COLOR.textMuted,
-    textAlign: "center",
-    paddingVertical: SPACE.xs,
-  },
-  // C3: weekend color removed (中性のまま)
-  grid: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-  },
-  cell: {
-    width: `${100 / 7}%`,
-    aspectRatio: 1,
-    paddingHorizontal: 2,
-    paddingVertical: 4,
-    borderRadius: RADIUS.sm,
-    alignItems: "center",
-    justifyContent: "flex-start",
-    gap: 2,
-  },
-  cellOutMonth: {
-    opacity: 0.32,
-  },
-  cellToday: {
-    backgroundColor: withAlpha(COLOR.sodaDeep, 0.18),
-    borderRadius: 100,
-  },
-  // C4: rounded square → soft circle with sodaLight bg
-  cellSelected: {
-    backgroundColor: COLOR.sodaLight,
-    borderRadius: 100,
-  },
-  dayNum: {
-    fontSize: FONT_SIZE.bodyMD,
-    fontFamily: FONT.heading,
-    fontWeight: WEIGHT.semibold,
-    color: COLOR.textPrimary,
-  },
-  dayNumOutMonth: {
-    color: COLOR.textMuted,
-  },
-  // C3: weekend dayNum color removed
-  dayNumToday: {
-    color: COLOR.sodaText,
-    fontWeight: WEIGHT.bold,
-  },
-  markerRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 1,
-    flexWrap: "wrap",
-    justifyContent: "center",
-    maxWidth: "100%",
-  },
-  moreCount: {
-    fontSize: 8,
-    color: COLOR.textMuted,
-    fontFamily: FONT.heading,
-    fontWeight: WEIGHT.bold,
-  },
-  customMarker: {
-    fontSize: 10,
-    lineHeight: 11,
-  },
-});
+// Phase 8.0: theme 連動 styles factory (sodaDeep は palette 外 → sodaText を流用)
+function makeStyles(c: ThemeColors) {
+  return StyleSheet.create({
+    container: {
+      paddingHorizontal: SPACE.md,
+      gap: SPACE.sm,
+    },
+    monthLabelRow: {
+      flexDirection: "row",
+      alignItems: "baseline",
+      paddingHorizontal: SPACE.sm,
+      gap: 8,
+    },
+    monthLabelMonth: {
+      fontSize: FONT_SIZE.displayMD,
+      fontFamily: FONT.heading,
+      fontWeight: WEIGHT.bold,
+      color: c.textPrimary,
+    },
+    monthLabelYear: {
+      fontSize: FONT_SIZE.bodyLG,
+      fontFamily: FONT.heading,
+      fontWeight: WEIGHT.regular,
+      color: c.textMuted,
+    },
+    weekdayRow: {
+      flexDirection: "row",
+    },
+    weekday: {
+      flex: 1,
+      fontSize: FONT_SIZE.caption,
+      fontFamily: FONT.body,
+      fontWeight: WEIGHT.semibold,
+      color: c.textMuted,
+      textAlign: "center",
+      paddingVertical: SPACE.xs,
+    },
+    grid: {
+      flexDirection: "row",
+      flexWrap: "wrap",
+    },
+    cell: {
+      width: `${100 / 7}%`,
+      aspectRatio: 1,
+      paddingHorizontal: 2,
+      paddingVertical: 4,
+      borderRadius: RADIUS.sm,
+      alignItems: "center",
+      justifyContent: "flex-start",
+      gap: 2,
+    },
+    cellOutMonth: {
+      opacity: 0.32,
+    },
+    cellToday: {
+      backgroundColor: withAlpha(c.sodaText, 0.18),
+      borderRadius: 100,
+    },
+    cellSelected: {
+      backgroundColor: c.sodaLight,
+      borderRadius: 100,
+    },
+    dayNum: {
+      fontSize: FONT_SIZE.bodyMD,
+      fontFamily: FONT.heading,
+      fontWeight: WEIGHT.semibold,
+      color: c.textPrimary,
+    },
+    dayNumOutMonth: {
+      color: c.textMuted,
+    },
+    dayNumToday: {
+      color: c.sodaText,
+      fontWeight: WEIGHT.bold,
+    },
+    markerRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 1,
+      flexWrap: "wrap",
+      justifyContent: "center",
+      maxWidth: "100%",
+    },
+    moreCount: {
+      fontSize: 8,
+      color: c.textMuted,
+      fontFamily: FONT.heading,
+      fontWeight: WEIGHT.bold,
+    },
+    customMarker: {
+      fontSize: 10,
+      lineHeight: 11,
+    },
+  });
+}

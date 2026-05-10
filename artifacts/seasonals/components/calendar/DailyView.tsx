@@ -54,7 +54,7 @@ import Animated, {
   withSpring,
   type SharedValue,
 } from "react-native-reanimated";
-import { addDays, format, isSameDay } from "date-fns";
+import { addDays, format } from "date-fns";
 
 import {
   COLOR,
@@ -75,6 +75,11 @@ import {
   isoToDate,
   useCalendarDayStore,
 } from "../../stores/calendarDay";
+import {
+  useThemeColors,
+  useThemedStyles,
+  type ThemeColors,
+} from "../../stores/theme";
 
 // 5-card strip
 const OFFSETS = [-2, -1, 0, 1, 2] as const;
@@ -102,28 +107,38 @@ const CATEGORY_HEADLINE: Record<TimeEventCategory, string> = {
   [TimeEventCategory.ForecastMarker]: "Forecast",
 };
 
-/** Phase 5A.6.1 verb color: maturity/lockup_end → caramel, health → cherryDark, others → melonText */
-function verbColorOf(category: TimeEventCategory): string {
+/**
+ * Phase 5A.6.1 verb color: maturity/lockup_end → caramel, health → cherryDark, others → melonText
+ * Phase 8.0: theme から派生する 3 色を直接渡して色解決。
+ */
+function verbColorOf(category: TimeEventCategory, c: ThemeColors): string {
   switch (category) {
     case TimeEventCategory.Maturity:
     case TimeEventCategory.LockupEnd:
-      return COLOR.caramel;
+      return c.caramel;
     case TimeEventCategory.Health:
-      return COLOR.cherryDark;
+      return c.cherryDark;
     case TimeEventCategory.Claim:
     case TimeEventCategory.VestingCliff:
     case TimeEventCategory.VoteDeadline:
     case TimeEventCategory.Epoch:
     case TimeEventCategory.ForecastMarker:
-      return COLOR.melonText;
+      return c.melonText;
   }
 }
 
+function localDayKey(day: Date): string {
+  return `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, "0")}-${String(day.getDate()).padStart(2, "0")}`;
+}
+
+function eventDayKey(triggerAt: UnifiedTimeEvent["triggerAt"]): string {
+  const ts = triggerAt instanceof Date ? triggerAt : new Date(triggerAt);
+  return `${ts.getUTCFullYear()}-${String(ts.getUTCMonth() + 1).padStart(2, "0")}-${String(ts.getUTCDate()).padStart(2, "0")}`;
+}
+
 function eventsOnDay(events: UnifiedTimeEvent[], day: Date): UnifiedTimeEvent[] {
-  return events.filter((e) => {
-    const ts = e.triggerAt instanceof Date ? e.triggerAt : new Date(e.triggerAt);
-    return isSameDay(ts, day);
-  });
+  const key = localDayKey(day);
+  return events.filter((e) => eventDayKey(e.triggerAt) === key);
 }
 
 function dayOrdinalSuffix(d: number): string {
@@ -171,6 +186,9 @@ export function DailyView({
   onOpenDay,
   testID,
 }: DailyViewProps) {
+  // Phase 8.0: theme 連動 styles
+  const styles = useThemedStyles(makeStyles);
+
   const selectedIso = useCalendarDayStore((s) => s.selectedDate);
   const setSelectedDate = useCalendarDayStore((s) => s.setSelectedDate);
 
@@ -312,6 +330,9 @@ function DayCard({
   onPress,
   testID,
 }: DayCardProps) {
+  // Phase 8.0: sub-component が parent の styles を参照していたので自身で取得
+  const styles = useThemedStyles(makeStyles);
+
   const zIndex = isCenter ? 10 : 5 - Math.abs(offsetIndex);
 
   const animStyle = useAnimatedStyle(() => {
@@ -368,6 +389,9 @@ interface DayCardContentProps {
 }
 
 function DayCardContent({ date, dayEvents, compact }: DayCardContentProps) {
+  // Phase 8.0: sub-component が parent の styles を参照していたので自身で取得
+  const styles = useThemedStyles(makeStyles);
+  const themeColors = useThemeColors();
   const dayNum = date.getDate();
   const ordinalLabel = `${dayNum}${dayOrdinalSuffix(dayNum)}`;
   const subtitle = `${format(date, "EEEE")} · ${format(date, "MMM yyyy")}`;
@@ -417,7 +441,7 @@ function DayCardContent({ date, dayEvents, compact }: DayCardContentProps) {
                   {capitalize(e.protocol)}
                 </Text>
                 <Text
-                  style={[styles.eventVerb, { color: verbColorOf(e.category) }]}
+                  style={[styles.eventVerb, { color: verbColorOf(e.category, themeColors) }]}
                   numberOfLines={1}
                 >
                   {VERB_BY_CATEGORY[e.category]} ·{" "}
@@ -444,131 +468,133 @@ function capitalize(s: string): string {
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
-const styles = StyleSheet.create({
-  wrap: {
-    flex: 1,
-    paddingTop: SPACE.md,
-    alignItems: "center",
-  },
-  viewport: {
-    width: "100%",
-    position: "relative",
-  },
-  // 5A.6.1: 1px melonDeep @ 38% opacity border + subtle shadow + bgPrimary bg + 16px radius
-  card: {
-    flex: 1,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: withAlpha(COLOR.melonDeep, 0.38),
-    backgroundColor: COLOR.bgPrimary,
-    shadowColor: COLOR.shadow,
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.04,
-    shadowRadius: 8,
-    elevation: 2,
-    overflow: "hidden",
-  },
-  cardPressed: {
-    opacity: 0.85,
-  },
-  cardInner: {
-    flex: 1,
-    paddingHorizontal: 24,
-    paddingTop: 24,
-    paddingBottom: 24,
-  },
-  cardHeader: {
-    gap: 2,
-  },
-  dayNum: {
-    fontSize: 40,
-    fontFamily: FONT.heading,
-    fontWeight: WEIGHT.bold,
-    color: COLOR.textPrimary,
-    lineHeight: 44,
-    includeFontPadding: false,
-  },
-  dateSubtitle: {
-    marginTop: 2,
-    fontSize: FONT_SIZE.bodyMD,
-    fontFamily: FONT.heading,
-    fontWeight: WEIGHT.medium,
-    color: COLOR.textSubtitle,
-  },
-  eventsScroll: {
-    flex: 1,
-    marginTop: SPACE.md,
-  },
-  eventsScrollContent: {
-    paddingBottom: 32,
-  },
-  eventRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: SPACE.sm,
-    paddingVertical: SPACE.sm,
-  },
-  eventRowDivider: {
-    borderTopWidth: 1,
-    borderTopColor: COLOR.divider,
-  },
-  protocolIcon: {
-    width: 40,
-    height: 40,
-    borderRadius: RADIUS.md,
-    backgroundColor: COLOR.melonDeep,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  protocolLetter: {
-    fontSize: FONT_SIZE.headingMD,
-    fontFamily: FONT.heading,
-    fontWeight: WEIGHT.bold,
-    color: COLOR.textOnColor,
-  },
-  eventMain: {
-    flex: 1,
-    gap: 2,
-  },
-  eventName: {
-    fontSize: FONT_SIZE.bodyMD,
-    fontFamily: FONT.heading,
-    fontWeight: WEIGHT.bold,
-    color: COLOR.textPrimary,
-  },
-  eventVerb: {
-    fontSize: FONT_SIZE.bodySM,
-    fontFamily: FONT.heading,
-    fontWeight: WEIGHT.semibold,
-  },
-  emptyWrap: {
-    flex: 1,
-    alignItems: "center",
-    justifyContent: "center",
-    paddingVertical: SPACE.xl,
-  },
-  emptyText: {
-    fontSize: FONT_SIZE.bodyMD,
-    fontFamily: FONT.heading,
-    fontWeight: WEIGHT.semibold,
-    color: COLOR.textMuted,
-  },
-  tapToOpenAbsolute: {
-    position: "absolute",
-    right: 24,
-    bottom: 24,
-  },
-  tapToOpen: {
-    fontSize: FONT_SIZE.bodyMD,
-    fontFamily: FONT.heading,
-    fontWeight: WEIGHT.semibold,
-    color: COLOR.sodaText,
-  },
-  hint: {
-    marginTop: SPACE.md,
-    fontSize: FONT_SIZE.caption,
-    fontFamily: FONT.body,
-    color: COLOR.textMuted,
-    textAlign: "center",
-  },
-});
+// Phase 8.0: theme 連動 styles factory。melonDeep / shadow は palette 外なので static。
+function makeStyles(c: ThemeColors) {
+  return StyleSheet.create({
+    wrap: {
+      flex: 1,
+      paddingTop: SPACE.md,
+      alignItems: "center",
+    },
+    viewport: {
+      width: "100%",
+      position: "relative",
+    },
+    card: {
+      flex: 1,
+      borderRadius: 16,
+      borderWidth: 1,
+      borderColor: withAlpha(COLOR.melonDeep, 0.38),
+      backgroundColor: c.bgPrimary,
+      shadowColor: COLOR.shadow,
+      shadowOffset: { width: 0, height: 2 },
+      shadowOpacity: 0.04,
+      shadowRadius: 8,
+      elevation: 2,
+      overflow: "hidden",
+    },
+    cardPressed: {
+      opacity: 0.85,
+    },
+    cardInner: {
+      flex: 1,
+      paddingHorizontal: 24,
+      paddingTop: 24,
+      paddingBottom: 24,
+    },
+    cardHeader: {
+      gap: 2,
+    },
+    dayNum: {
+      fontSize: 40,
+      fontFamily: FONT.heading,
+      fontWeight: WEIGHT.bold,
+      color: c.textPrimary,
+      lineHeight: 44,
+      includeFontPadding: false,
+    },
+    dateSubtitle: {
+      marginTop: 2,
+      fontSize: FONT_SIZE.bodyMD,
+      fontFamily: FONT.heading,
+      fontWeight: WEIGHT.medium,
+      color: c.textSubtitle,
+    },
+    eventsScroll: {
+      flex: 1,
+      marginTop: SPACE.md,
+    },
+    eventsScrollContent: {
+      paddingBottom: 32,
+    },
+    eventRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: SPACE.sm,
+      paddingVertical: SPACE.sm,
+    },
+    eventRowDivider: {
+      borderTopWidth: 1,
+      borderTopColor: c.divider,
+    },
+    protocolIcon: {
+      width: 40,
+      height: 40,
+      borderRadius: RADIUS.md,
+      backgroundColor: c.melonText,
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    protocolLetter: {
+      fontSize: FONT_SIZE.headingMD,
+      fontFamily: FONT.heading,
+      fontWeight: WEIGHT.bold,
+      color: c.textOnColor,
+    },
+    eventMain: {
+      flex: 1,
+      gap: 2,
+    },
+    eventName: {
+      fontSize: FONT_SIZE.bodyMD,
+      fontFamily: FONT.heading,
+      fontWeight: WEIGHT.bold,
+      color: c.textPrimary,
+    },
+    eventVerb: {
+      fontSize: FONT_SIZE.bodySM,
+      fontFamily: FONT.heading,
+      fontWeight: WEIGHT.semibold,
+    },
+    emptyWrap: {
+      flex: 1,
+      alignItems: "center",
+      justifyContent: "center",
+      paddingVertical: SPACE.xl,
+    },
+    emptyText: {
+      fontSize: FONT_SIZE.bodyMD,
+      fontFamily: FONT.heading,
+      fontWeight: WEIGHT.semibold,
+      color: c.textMuted,
+    },
+    tapToOpenAbsolute: {
+      position: "absolute",
+      right: 24,
+      bottom: 24,
+    },
+    tapToOpen: {
+      fontSize: FONT_SIZE.bodyMD,
+      fontFamily: FONT.heading,
+      fontWeight: WEIGHT.semibold,
+      color: c.sodaText,
+    },
+    hint: {
+      marginTop: SPACE.md,
+      fontSize: FONT_SIZE.caption,
+      fontFamily: FONT.body,
+      color: c.textMuted,
+      textAlign: "center",
+    },
+  });
+}

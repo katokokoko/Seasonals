@@ -34,7 +34,6 @@ import { BlurView } from "expo-blur";
 import { Transaction } from "@solana/web3.js";
 
 import {
-  COLOR,
   FONT,
   FONT_SIZE,
   RADIUS,
@@ -60,6 +59,11 @@ import {
   JUPITER_MINTS,
   JUPITER_TOKEN_DECIMALS,
 } from "@workspace/lib/adapters";
+import {
+  useThemeColors,
+  useThemedStyles,
+  type ThemeColors,
+} from "../../stores/theme";
 
 type Phase = "review" | "approving" | "signing" | "success" | "error";
 
@@ -95,6 +99,9 @@ export function ActionModal({
   onSettled,
   testID,
 }: ActionModalProps) {
+  // Phase 8.0: theme 連動 styles
+  const styles = useThemedStyles(makeStyles);
+
   const [phase, setPhase] = useState<Phase>("review");
   const [signature, setSignature] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
@@ -286,6 +293,7 @@ function ReviewBody({
   isConnected: boolean;
   testID?: string;
 }) {
+  const styles = useThemedStyles(makeStyles);
   const action = plan.selected_action;
   const sim = plan.simulation_result;
   const decimals = resolveDecimals(action?.asset);
@@ -402,6 +410,7 @@ function JupiterQuoteCard({
   inputAsset: string;
   testID?: string;
 }) {
+  const styles = useThemedStyles(makeStyles);
   const inDecimals = JUPITER_TOKEN_DECIMALS[inputAsset] ?? 6;
   // output mint から symbol 解決
   const outputSym = Object.keys(JUPITER_MINTS).find(
@@ -438,9 +447,11 @@ function JupiterQuoteCard({
 // ─── Busy (approving / signing) ──────────────────────────────────────────────
 
 function BusyBody({ label }: { label: string }) {
+  const styles = useThemedStyles(makeStyles);
+  const themeColors = useThemeColors();
   return (
     <View style={styles.busyBody}>
-      <ActivityIndicator color={COLOR.sodaText} size="large" />
+      <ActivityIndicator color={themeColors.sodaText} size="large" />
       <Text style={styles.busyLabel}>{label}</Text>
     </View>
   );
@@ -457,6 +468,7 @@ function SuccessBody({
   onClose: () => void;
   testID?: string;
 }) {
+  const styles = useThemedStyles(makeStyles);
   const explorerUrl = signature
     ? `https://explorer.solana.com/tx/${signature}?cluster=devnet`
     : null;
@@ -516,6 +528,7 @@ function ErrorBody({
   onClose: () => void;
   testID?: string;
 }) {
+  const styles = useThemedStyles(makeStyles);
   return (
     <View style={styles.body}>
       <View style={styles.errorIconWrap}>
@@ -549,312 +562,303 @@ function ErrorBody({
 
 // ─── Styles ──────────────────────────────────────────────────────────────────
 
-const styles = StyleSheet.create({
-  // Phase 6.4: backdrop は位置固定 fullscreen で fade-in (BlurView + dim 重ね)
-  dimOverlay: {
-    backgroundColor: withAlpha(COLOR.textPrimary, 0.4),
-  },
-  // Sheet 領域以外の touch を backdrop の Pressable に通すための wrap
-  sheetWrap: {
-    flex: 1,
-    justifyContent: "flex-end",
-  },
-  sheet: {
-    backgroundColor: COLOR.bgPrimary,
-    borderTopLeftRadius: RADIUS.xl,
-    borderTopRightRadius: RADIUS.xl,
-    paddingHorizontal: SPACE.md,
-    paddingTop: SPACE.md,
-    paddingBottom: SPACE.xl,
-    minHeight: 280,
-  },
-  header: {
-    flexDirection: "row",
-    alignItems: "flex-start",
-    justifyContent: "space-between",
-    paddingBottom: SPACE.md,
-    marginBottom: SPACE.sm,
-    borderBottomWidth: 1,
-    borderBottomColor: COLOR.divider,
-  },
-  headerLabel: {
-    fontSize: FONT_SIZE.caption,
-    fontFamily: FONT.body,
-    fontWeight: WEIGHT.medium,
-    color: COLOR.textMuted,
-    textTransform: "uppercase",
-    letterSpacing: 1,
-  },
-  headerTitle: {
-    fontSize: FONT_SIZE.headingMD,
-    fontFamily: FONT.heading,
-    fontWeight: WEIGHT.bold,
-    color: COLOR.textPrimary,
-  },
-  closeBtn: {
-    width: 32,
-    height: 32,
-    borderRadius: RADIUS.pill,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: withAlpha(COLOR.textMuted, 0.12),
-  },
-  closeIcon: {
-    fontSize: 16,
-    color: COLOR.textSubtitle,
-    fontWeight: WEIGHT.bold,
-  },
-  body: {
-    gap: SPACE.md,
-    paddingTop: SPACE.sm,
-  },
-
-  // Review
-  summaryCard: {
-    paddingHorizontal: SPACE.md,
-    paddingVertical: SPACE.md,
-    borderRadius: RADIUS.lg,
-    backgroundColor: withAlpha(COLOR.sodaLight, 0.4),
-    borderWidth: 1,
-    borderColor: COLOR.border,
-    gap: SPACE.sm,
-  },
-  summaryRow: {
-    flexDirection: "row",
-    alignItems: "baseline",
-    justifyContent: "space-between",
-  },
-  summaryProtocol: {
-    fontSize: FONT_SIZE.headingMD,
-    fontFamily: FONT.heading,
-    fontWeight: WEIGHT.bold,
-    color: COLOR.textPrimary,
-    textTransform: "capitalize",
-  },
-  summaryAction: {
-    fontSize: FONT_SIZE.caption,
-    fontFamily: FONT.body,
-    fontWeight: WEIGHT.medium,
-    color: COLOR.textMuted,
-    textTransform: "uppercase",
-    letterSpacing: 0.5,
-  },
-  summaryAmount: {
-    fontSize: FONT_SIZE.displaySM,
-    fontFamily: FONT.heading,
-    fontWeight: WEIGHT.bold,
-    color: COLOR.textPrimary,
-  },
-  metaRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-  },
-  metaLabel: {
-    fontSize: FONT_SIZE.bodySM,
-    fontFamily: FONT.body,
-    color: COLOR.textMuted,
-  },
-  metaValue: {
-    fontSize: FONT_SIZE.bodyMD,
-    fontFamily: FONT.heading,
-    fontWeight: WEIGHT.semibold,
-    color: COLOR.melonText,
-  },
-  warningCard: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: SPACE.sm,
-    paddingHorizontal: SPACE.md,
-    paddingVertical: SPACE.sm,
-    borderRadius: RADIUS.md,
-    backgroundColor: withAlpha(COLOR.cherry, 0.12),
-    borderWidth: 1.5,
-    borderColor: COLOR.cherry,
-  },
-  warningIcon: {
-    fontSize: 18,
-  },
-  warningText: {
-    flex: 1,
-    fontSize: FONT_SIZE.bodySM,
-    fontFamily: FONT.body,
-    fontWeight: WEIGHT.medium,
-    color: COLOR.textPrimary,
-    lineHeight: 18,
-  },
-  notice: {
-    paddingHorizontal: SPACE.md,
-    paddingVertical: SPACE.sm,
-    borderRadius: RADIUS.md,
-    backgroundColor: withAlpha(COLOR.caramel, 0.1),
-    borderWidth: 1,
-    borderColor: withAlpha(COLOR.caramel, 0.3),
-  },
-  adapterCard: {
-    paddingHorizontal: SPACE.md,
-    paddingVertical: SPACE.sm,
-    borderRadius: RADIUS.md,
-    backgroundColor: withAlpha(COLOR.melonLight, 0.25),
-    borderWidth: 1,
-    borderColor: withAlpha(COLOR.melonText, 0.25),
-    gap: SPACE.xs,
-  },
-  adapterLabel: {
-    fontSize: FONT_SIZE.overline,
-    fontFamily: FONT.body,
-    fontWeight: WEIGHT.bold,
-    color: COLOR.melonText,
-    textTransform: "uppercase",
-    letterSpacing: 0.5,
-  },
-  adapterRow: {
-    flexDirection: "row",
-    alignItems: "baseline",
-    gap: SPACE.sm,
-  },
-  adapterAmount: {
-    fontSize: FONT_SIZE.bodyMD,
-    fontFamily: FONT.heading,
-    fontWeight: WEIGHT.bold,
-    color: COLOR.textPrimary,
-  },
-  adapterArrow: {
-    fontSize: FONT_SIZE.bodyMD,
-    color: COLOR.textMuted,
-  },
-  adapterMeta: {
-    fontSize: FONT_SIZE.caption,
-    fontFamily: FONT.body,
-    color: COLOR.textSubtitle,
-  },
-  noticeText: {
-    fontSize: FONT_SIZE.bodySM,
-    fontFamily: FONT.body,
-    color: COLOR.caramelDark,
-    lineHeight: 18,
-  },
-
-  // Busy
-  busyBody: {
-    paddingVertical: SPACE.xxl,
-    alignItems: "center",
-    gap: SPACE.md,
-  },
-  busyLabel: {
-    fontSize: FONT_SIZE.bodyMD,
-    fontFamily: FONT.heading,
-    fontWeight: WEIGHT.semibold,
-    color: COLOR.textSubtitle,
-  },
-
-  // Success
-  successIconWrap: {
-    alignSelf: "center",
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    backgroundColor: withAlpha(COLOR.melonText, 0.18),
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  successIcon: {
-    fontSize: 28,
-    color: COLOR.melonText,
-    fontWeight: WEIGHT.bold,
-  },
-  successTitle: {
-    fontSize: FONT_SIZE.headingLG,
-    fontFamily: FONT.heading,
-    fontWeight: WEIGHT.bold,
-    color: COLOR.textPrimary,
-    textAlign: "center",
-  },
-  signatureCard: {
-    paddingHorizontal: SPACE.md,
-    paddingVertical: SPACE.sm,
-    borderRadius: RADIUS.md,
-    backgroundColor: withAlpha(COLOR.sodaLight, 0.5),
-    gap: 2,
-  },
-  signatureLabel: {
-    fontSize: FONT_SIZE.overline,
-    fontFamily: FONT.body,
-    fontWeight: WEIGHT.bold,
-    color: COLOR.textMuted,
-    textTransform: "uppercase",
-    letterSpacing: 1,
-  },
-  signatureValue: {
-    fontSize: FONT_SIZE.bodyMD,
-    fontFamily: FONT.mono,
-    color: COLOR.sodaText,
-  },
-  successHint: {
-    fontSize: FONT_SIZE.bodySM,
-    fontFamily: FONT.body,
-    color: COLOR.textSubtitle,
-    textAlign: "center",
-  },
-
-  // Error
-  errorIconWrap: {
-    alignSelf: "center",
-    width: 56,
-    height: 56,
-    borderRadius: 28,
-    backgroundColor: withAlpha(COLOR.cherry, 0.18),
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  errorIcon: {
-    fontSize: 32,
-    color: COLOR.cherryDark,
-    fontWeight: WEIGHT.bold,
-  },
-  errorTitle: {
-    fontSize: FONT_SIZE.headingMD,
-    fontFamily: FONT.heading,
-    fontWeight: WEIGHT.bold,
-    color: COLOR.cherryDark,
-    textAlign: "center",
-  },
-  errorMessage: {
-    fontSize: FONT_SIZE.bodySM,
-    fontFamily: FONT.mono,
-    color: COLOR.textSubtitle,
-    textAlign: "center",
-    lineHeight: 18,
-  },
-
-  // CTAs
-  ctaPrimary: {
-    paddingVertical: SPACE.md,
-    borderRadius: RADIUS.md,
-    backgroundColor: COLOR.sodaText,
-    alignItems: "center",
-    justifyContent: "center",
-    minHeight: 48,
-  },
-  ctaPrimaryText: {
-    fontSize: FONT_SIZE.bodyLG,
-    fontFamily: FONT.heading,
-    fontWeight: WEIGHT.bold,
-    color: COLOR.textOnColor,
-  },
-  ctaSecondary: {
-    paddingVertical: SPACE.md,
-    borderRadius: RADIUS.md,
-    borderWidth: 1,
-    borderColor: COLOR.borderStrong,
-    alignItems: "center",
-    justifyContent: "center",
-    minHeight: 44,
-  },
-  ctaSecondaryText: {
-    fontSize: FONT_SIZE.bodyMD,
-    fontFamily: FONT.heading,
-    fontWeight: WEIGHT.semibold,
-    color: COLOR.textSubtitle,
-  },
-});
+// Phase 8.0: theme 連動 styles factory。cherry / caramelDark は palette 外なので静的。
+function makeStyles(c: ThemeColors) {
+  return StyleSheet.create({
+    dimOverlay: {
+      backgroundColor: withAlpha(c.textPrimary, 0.4),
+    },
+    sheetWrap: {
+      flex: 1,
+      justifyContent: "flex-end",
+    },
+    sheet: {
+      backgroundColor: c.bgPrimary,
+      borderTopLeftRadius: RADIUS.xl,
+      borderTopRightRadius: RADIUS.xl,
+      paddingHorizontal: SPACE.md,
+      paddingTop: SPACE.md,
+      paddingBottom: SPACE.xl,
+      minHeight: 280,
+    },
+    header: {
+      flexDirection: "row",
+      alignItems: "flex-start",
+      justifyContent: "space-between",
+      paddingBottom: SPACE.md,
+      marginBottom: SPACE.sm,
+      borderBottomWidth: 1,
+      borderBottomColor: c.divider,
+    },
+    headerLabel: {
+      fontSize: FONT_SIZE.caption,
+      fontFamily: FONT.body,
+      fontWeight: WEIGHT.medium,
+      color: c.textMuted,
+      textTransform: "uppercase",
+      letterSpacing: 1,
+    },
+    headerTitle: {
+      fontSize: FONT_SIZE.headingMD,
+      fontFamily: FONT.heading,
+      fontWeight: WEIGHT.bold,
+      color: c.textPrimary,
+    },
+    closeBtn: {
+      width: 32,
+      height: 32,
+      borderRadius: RADIUS.pill,
+      alignItems: "center",
+      justifyContent: "center",
+      backgroundColor: withAlpha(c.textMuted, 0.12),
+    },
+    closeIcon: {
+      fontSize: 16,
+      color: c.textSubtitle,
+      fontWeight: WEIGHT.bold,
+    },
+    body: {
+      gap: SPACE.md,
+      paddingTop: SPACE.sm,
+    },
+    summaryCard: {
+      paddingHorizontal: SPACE.md,
+      paddingVertical: SPACE.md,
+      borderRadius: RADIUS.lg,
+      backgroundColor: withAlpha(c.sodaLight, 0.4),
+      borderWidth: 1,
+      borderColor: c.border,
+      gap: SPACE.sm,
+    },
+    summaryRow: {
+      flexDirection: "row",
+      alignItems: "baseline",
+      justifyContent: "space-between",
+    },
+    summaryProtocol: {
+      fontSize: FONT_SIZE.headingMD,
+      fontFamily: FONT.heading,
+      fontWeight: WEIGHT.bold,
+      color: c.textPrimary,
+      textTransform: "capitalize",
+    },
+    summaryAction: {
+      fontSize: FONT_SIZE.caption,
+      fontFamily: FONT.body,
+      fontWeight: WEIGHT.medium,
+      color: c.textMuted,
+      textTransform: "uppercase",
+      letterSpacing: 0.5,
+    },
+    summaryAmount: {
+      fontSize: FONT_SIZE.displaySM,
+      fontFamily: FONT.heading,
+      fontWeight: WEIGHT.bold,
+      color: c.textPrimary,
+    },
+    metaRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+    },
+    metaLabel: {
+      fontSize: FONT_SIZE.bodySM,
+      fontFamily: FONT.body,
+      color: c.textMuted,
+    },
+    metaValue: {
+      fontSize: FONT_SIZE.bodyMD,
+      fontFamily: FONT.heading,
+      fontWeight: WEIGHT.semibold,
+      color: c.melonText,
+    },
+    warningCard: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: SPACE.sm,
+      paddingHorizontal: SPACE.md,
+      paddingVertical: SPACE.sm,
+      borderRadius: RADIUS.md,
+      backgroundColor: withAlpha(c.cherryDark, 0.12),
+      borderWidth: 1.5,
+      borderColor: c.cherryDark,
+    },
+    warningIcon: {
+      fontSize: 18,
+    },
+    warningText: {
+      flex: 1,
+      fontSize: FONT_SIZE.bodySM,
+      fontFamily: FONT.body,
+      fontWeight: WEIGHT.medium,
+      color: c.textPrimary,
+      lineHeight: 18,
+    },
+    notice: {
+      paddingHorizontal: SPACE.md,
+      paddingVertical: SPACE.sm,
+      borderRadius: RADIUS.md,
+      backgroundColor: withAlpha(c.caramel, 0.1),
+      borderWidth: 1,
+      borderColor: withAlpha(c.caramel, 0.3),
+    },
+    adapterCard: {
+      paddingHorizontal: SPACE.md,
+      paddingVertical: SPACE.sm,
+      borderRadius: RADIUS.md,
+      backgroundColor: withAlpha(c.melonLight, 0.25),
+      borderWidth: 1,
+      borderColor: withAlpha(c.melonText, 0.25),
+      gap: SPACE.xs,
+    },
+    adapterLabel: {
+      fontSize: FONT_SIZE.overline,
+      fontFamily: FONT.body,
+      fontWeight: WEIGHT.bold,
+      color: c.melonText,
+      textTransform: "uppercase",
+      letterSpacing: 0.5,
+    },
+    adapterRow: {
+      flexDirection: "row",
+      alignItems: "baseline",
+      gap: SPACE.sm,
+    },
+    adapterAmount: {
+      fontSize: FONT_SIZE.bodyMD,
+      fontFamily: FONT.heading,
+      fontWeight: WEIGHT.bold,
+      color: c.textPrimary,
+    },
+    adapterArrow: {
+      fontSize: FONT_SIZE.bodyMD,
+      color: c.textMuted,
+    },
+    adapterMeta: {
+      fontSize: FONT_SIZE.caption,
+      fontFamily: FONT.body,
+      color: c.textSubtitle,
+    },
+    noticeText: {
+      fontSize: FONT_SIZE.bodySM,
+      fontFamily: FONT.body,
+      color: c.caramel,
+      lineHeight: 18,
+    },
+    busyBody: {
+      paddingVertical: SPACE.xxl,
+      alignItems: "center",
+      gap: SPACE.md,
+    },
+    busyLabel: {
+      fontSize: FONT_SIZE.bodyMD,
+      fontFamily: FONT.heading,
+      fontWeight: WEIGHT.semibold,
+      color: c.textSubtitle,
+    },
+    successIconWrap: {
+      alignSelf: "center",
+      width: 56,
+      height: 56,
+      borderRadius: 28,
+      backgroundColor: withAlpha(c.melonText, 0.18),
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    successIcon: {
+      fontSize: 28,
+      color: c.melonText,
+      fontWeight: WEIGHT.bold,
+    },
+    successTitle: {
+      fontSize: FONT_SIZE.headingLG,
+      fontFamily: FONT.heading,
+      fontWeight: WEIGHT.bold,
+      color: c.textPrimary,
+      textAlign: "center",
+    },
+    signatureCard: {
+      paddingHorizontal: SPACE.md,
+      paddingVertical: SPACE.sm,
+      borderRadius: RADIUS.md,
+      backgroundColor: withAlpha(c.sodaLight, 0.5),
+      gap: 2,
+    },
+    signatureLabel: {
+      fontSize: FONT_SIZE.overline,
+      fontFamily: FONT.body,
+      fontWeight: WEIGHT.bold,
+      color: c.textMuted,
+      textTransform: "uppercase",
+      letterSpacing: 1,
+    },
+    signatureValue: {
+      fontSize: FONT_SIZE.bodyMD,
+      fontFamily: FONT.mono,
+      color: c.sodaText,
+    },
+    successHint: {
+      fontSize: FONT_SIZE.bodySM,
+      fontFamily: FONT.body,
+      color: c.textSubtitle,
+      textAlign: "center",
+    },
+    errorIconWrap: {
+      alignSelf: "center",
+      width: 56,
+      height: 56,
+      borderRadius: 28,
+      backgroundColor: withAlpha(c.cherryDark, 0.18),
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    errorIcon: {
+      fontSize: 32,
+      color: c.cherryDark,
+      fontWeight: WEIGHT.bold,
+    },
+    errorTitle: {
+      fontSize: FONT_SIZE.headingMD,
+      fontFamily: FONT.heading,
+      fontWeight: WEIGHT.bold,
+      color: c.cherryDark,
+      textAlign: "center",
+    },
+    errorMessage: {
+      fontSize: FONT_SIZE.bodySM,
+      fontFamily: FONT.mono,
+      color: c.textSubtitle,
+      textAlign: "center",
+      lineHeight: 18,
+    },
+    ctaPrimary: {
+      paddingVertical: SPACE.md,
+      borderRadius: RADIUS.md,
+      backgroundColor: c.sodaText,
+      alignItems: "center",
+      justifyContent: "center",
+      minHeight: 48,
+    },
+    ctaPrimaryText: {
+      fontSize: FONT_SIZE.bodyLG,
+      fontFamily: FONT.heading,
+      fontWeight: WEIGHT.bold,
+      color: c.textOnColor,
+    },
+    ctaSecondary: {
+      paddingVertical: SPACE.md,
+      borderRadius: RADIUS.md,
+      borderWidth: 1,
+      borderColor: c.borderStrong,
+      alignItems: "center",
+      justifyContent: "center",
+      minHeight: 44,
+    },
+    ctaSecondaryText: {
+      fontSize: FONT_SIZE.bodyMD,
+      fontFamily: FONT.heading,
+      fontWeight: WEIGHT.semibold,
+      color: c.textSubtitle,
+    },
+  });
+}

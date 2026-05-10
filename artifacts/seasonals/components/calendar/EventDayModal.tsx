@@ -43,6 +43,11 @@ import {
   useCustomEventsForDay,
   useCustomEventsStore,
 } from "../../services/customEventsStore";
+import {
+  useThemeColors,
+  useThemedStyles,
+  type ThemeColors,
+} from "../../stores/theme";
 
 const CATEGORY_LABELS: Record<TimeEventCategory, string> = {
   [TimeEventCategory.Maturity]: "満期",
@@ -55,17 +60,28 @@ const CATEGORY_LABELS: Record<TimeEventCategory, string> = {
   [TimeEventCategory.ForecastMarker]: "予測",
 };
 
-const URGENCY_BG: Record<Urgency, string> = {
-  [Urgency.Info]: withAlpha(COLOR.sodaDeep, 0.18),
-  [Urgency.Watch]: withAlpha(COLOR.caramel, 0.18),
-  [Urgency.Critical]: withAlpha(COLOR.cherry, 0.2),
-};
+// Phase 8.0: urgency 配色は active theme と連動。caller が themeColors を渡す。
+function urgencyBg(c: ThemeColors, u: Urgency): string {
+  switch (u) {
+    case Urgency.Info:
+      return withAlpha(c.sodaText, 0.18);
+    case Urgency.Watch:
+      return withAlpha(c.caramel, 0.18);
+    case Urgency.Critical:
+      return withAlpha(c.cherryDark, 0.2);
+  }
+}
 
-const URGENCY_FG: Record<Urgency, string> = {
-  [Urgency.Info]: COLOR.sodaText,
-  [Urgency.Watch]: COLOR.caramelDark,
-  [Urgency.Critical]: COLOR.cherryDark,
-};
+function urgencyFg(c: ThemeColors, u: Urgency): string {
+  switch (u) {
+    case Urgency.Info:
+      return c.sodaText;
+    case Urgency.Watch:
+      return c.caramel;
+    case Urgency.Critical:
+      return c.cherryDark;
+  }
+}
 
 export interface EventDayModalProps {
   visible: boolean;
@@ -95,6 +111,9 @@ export function EventDayModal({
   onActionPress,
   testID,
 }: EventDayModalProps) {
+  // Phase 8.0: theme 連動 styles
+  const styles = useThemedStyles(makeStyles);
+
   const ref = useRef<BottomSheetModalMethods>(null);
   const snapPoints = useMemo(() => ["55%", "90%"], []);
 
@@ -172,6 +191,10 @@ function CustomEventsSection({
   day: Date | null;
   testID?: string;
 }) {
+  // Phase 8.0: sub-component で theme 連動 styles
+  const styles = useThemedStyles(makeStyles);
+  const themeColors = useThemeColors();
+
   const customs = useCustomEventsForDay(day);
   const add = useCustomEventsStore((s) => s.add);
   const remove = useCustomEventsStore((s) => s.remove);
@@ -247,7 +270,7 @@ function CustomEventsSection({
               value={title}
               onChangeText={setTitle}
               placeholder="タイトル (e.g., 税務メモ)"
-              placeholderTextColor={COLOR.textMuted}
+              placeholderTextColor={themeColors.textMuted}
               style={[styles.customInput, styles.customInputTitle]}
               testID={testID ? `${testID}-custom-title` : undefined}
             />
@@ -257,7 +280,7 @@ function CustomEventsSection({
             value={amount}
             onChangeText={setAmount}
             placeholder="USD 金額 (任意)"
-            placeholderTextColor={COLOR.textMuted}
+            placeholderTextColor={themeColors.textMuted}
             keyboardType="decimal-pad"
             style={styles.customInput}
             testID={testID ? `${testID}-custom-amount` : undefined}
@@ -299,6 +322,8 @@ function CustomRow({
   onRemove: () => void;
   testID?: string;
 }) {
+  // Phase 8.0: sub-component で theme 連動 styles
+  const styles = useThemedStyles(makeStyles);
   return (
     <View style={styles.customRow} testID={testID}>
       <Text style={styles.customRowEmoji}>
@@ -335,6 +360,9 @@ function EventCard({
   onActionPress: (action: ActionDescriptor) => void;
   testID?: string;
 }) {
+  // Phase 8.0: sub-component で theme 連動 styles + urgency 配色
+  const styles = useThemedStyles(makeStyles);
+  const themeColors = useThemeColors();
   return (
     <View style={styles.eventCard} testID={testID}>
       <View style={styles.eventHeader}>
@@ -352,13 +380,13 @@ function EventCard({
         <View
           style={[
             styles.urgencyBadge,
-            { backgroundColor: URGENCY_BG[event.urgency] },
+            { backgroundColor: urgencyBg(themeColors, event.urgency) },
           ]}
         >
           <Text
             style={[
               styles.urgencyBadgeText,
-              { color: URGENCY_FG[event.urgency] },
+              { color: urgencyFg(themeColors, event.urgency) },
             ]}
           >
             {event.urgency}
@@ -397,281 +425,282 @@ function EventCard({
   );
 }
 
-const styles = StyleSheet.create({
-  bg: {
-    backgroundColor: COLOR.bgPrimary,
-    borderTopLeftRadius: RADIUS.xl,
-    borderTopRightRadius: RADIUS.xl,
-  },
-  grabber: {
-    width: 44,
-    height: 4,
-    borderRadius: 2,
-    backgroundColor: COLOR.borderStrong,
-  },
-  header: {
-    flexDirection: "row",
-    alignItems: "flex-start",
-    justifyContent: "space-between",
-    paddingHorizontal: SPACE.md,
-    paddingTop: SPACE.sm,
-    paddingBottom: SPACE.sm,
-    marginBottom: SPACE.sm,
-    borderBottomWidth: 1,
-    borderBottomColor: COLOR.divider,
-  },
-  headerLabel: {
-    fontSize: FONT_SIZE.caption,
-    fontFamily: FONT.body,
-    fontWeight: WEIGHT.medium,
-    color: COLOR.textMuted,
-    textTransform: "uppercase",
-    letterSpacing: 1,
-  },
-  headerDate: {
-    fontSize: FONT_SIZE.headingMD,
-    fontFamily: FONT.heading,
-    fontWeight: WEIGHT.bold,
-    color: COLOR.textPrimary,
-  },
-  closeBtn: {
-    width: 32,
-    height: 32,
-    borderRadius: RADIUS.pill,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: withAlpha(COLOR.textMuted, 0.12),
-  },
-  closeIcon: {
-    fontSize: 16,
-    color: COLOR.textSubtitle,
-    fontWeight: WEIGHT.bold,
-  },
-  bodyInner: {
-    paddingHorizontal: SPACE.md,
-    paddingBottom: SPACE.xl,
-    gap: SPACE.sm,
-  },
-  emptyText: {
-    fontSize: FONT_SIZE.bodyMD,
-    color: COLOR.textMuted,
-    textAlign: "center",
-    paddingVertical: SPACE.xl,
-  },
-  eventCard: {
-    paddingHorizontal: SPACE.md,
-    paddingVertical: SPACE.md,
-    borderRadius: RADIUS.lg,
-    backgroundColor: COLOR.bgCard,
-    borderWidth: 1,
-    borderColor: COLOR.border,
-    gap: SPACE.sm,
-  },
-  eventHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: SPACE.sm,
-  },
-  eventTitle: {
-    flex: 1,
-    gap: 2,
-  },
-  eventProtocol: {
-    fontSize: FONT_SIZE.bodyLG,
-    fontFamily: FONT.heading,
-    fontWeight: WEIGHT.bold,
-    color: COLOR.textPrimary,
-    textTransform: "capitalize",
-  },
-  eventCategory: {
-    fontSize: FONT_SIZE.bodySM,
-    fontFamily: FONT.body,
-    color: COLOR.textSubtitle,
-  },
-  urgencyBadge: {
-    paddingHorizontal: SPACE.sm,
-    paddingVertical: 2,
-    borderRadius: RADIUS.sm,
-  },
-  urgencyBadgeText: {
-    fontSize: FONT_SIZE.overline,
-    fontFamily: FONT.body,
-    fontWeight: WEIGHT.bold,
-    textTransform: "uppercase",
-    letterSpacing: 0.5,
-  },
-  actionRow: {
-    flexDirection: "row",
-    flexWrap: "wrap",
-    gap: SPACE.xs,
-    marginTop: SPACE.xs,
-  },
-  actionBtn: {
-    paddingHorizontal: SPACE.md,
-    paddingVertical: SPACE.sm,
-    borderRadius: RADIUS.md,
-    backgroundColor: COLOR.sodaText,
-  },
-  actionBtnText: {
-    fontSize: FONT_SIZE.bodyMD,
-    fontFamily: FONT.heading,
-    fontWeight: WEIGHT.semibold,
-    color: COLOR.textOnColor,
-  },
-  actionBtnRisky: {
-    backgroundColor: COLOR.cherryDark,
-  },
-  actionBtnRiskyText: {
-    color: COLOR.textOnColor,
-  },
-
-  // Custom events
-  customSection: {
-    marginTop: SPACE.md,
-    paddingTop: SPACE.md,
-    borderTopWidth: 1,
-    borderTopColor: COLOR.divider,
-    gap: SPACE.sm,
-  },
-  customHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-  },
-  customSectionLabel: {
-    fontSize: FONT_SIZE.overline,
-    fontFamily: FONT.body,
-    fontWeight: WEIGHT.bold,
-    color: COLOR.textMuted,
-    textTransform: "uppercase",
-    letterSpacing: 1,
-  },
-  customAddBtn: {
-    paddingHorizontal: SPACE.sm,
-    paddingVertical: 4,
-    borderRadius: RADIUS.pill,
-    backgroundColor: withAlpha(COLOR.sodaText, 0.1),
-    borderWidth: 1,
-    borderColor: withAlpha(COLOR.sodaText, 0.3),
-  },
-  customAddBtnText: {
-    fontSize: FONT_SIZE.caption,
-    fontFamily: FONT.heading,
-    fontWeight: WEIGHT.bold,
-    color: COLOR.sodaText,
-  },
-  customEmpty: {
-    fontSize: FONT_SIZE.bodySM,
-    fontFamily: FONT.body,
-    color: COLOR.textMuted,
-    textAlign: "center",
-    paddingVertical: SPACE.sm,
-  },
-  customRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    paddingHorizontal: SPACE.sm,
-    paddingVertical: SPACE.sm,
-    borderRadius: RADIUS.md,
-    backgroundColor: withAlpha(COLOR.straw, 0.15),
-    borderWidth: 1,
-    borderColor: withAlpha(COLOR.strawDark, 0.4),
-    gap: SPACE.sm,
-  },
-  customRowEmoji: {
-    fontSize: 22,
-  },
-  customRowMain: {
-    flex: 1,
-  },
-  customRowTitle: {
-    fontSize: FONT_SIZE.bodyMD,
-    fontFamily: FONT.heading,
-    fontWeight: WEIGHT.semibold,
-    color: COLOR.textPrimary,
-  },
-  customRowAmount: {
-    fontSize: FONT_SIZE.caption,
-    fontFamily: FONT.body,
-    color: COLOR.textSubtitle,
-  },
-  customRowDelete: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: withAlpha(COLOR.cherry, 0.15),
-  },
-  customRowDeleteText: {
-    fontSize: 14,
-    color: COLOR.cherryDark,
-    fontWeight: WEIGHT.bold,
-  },
-  customForm: {
-    paddingHorizontal: SPACE.sm,
-    paddingVertical: SPACE.sm,
-    borderRadius: RADIUS.md,
-    backgroundColor: withAlpha(COLOR.sodaLight, 0.4),
-    borderWidth: 1,
-    borderColor: COLOR.border,
-    gap: SPACE.sm,
-  },
-  customFormRow: {
-    flexDirection: "row",
-    gap: SPACE.sm,
-  },
-  customInput: {
-    paddingHorizontal: SPACE.sm,
-    paddingVertical: SPACE.xs,
-    borderRadius: RADIUS.sm,
-    backgroundColor: COLOR.bgPrimary,
-    borderWidth: 1,
-    borderColor: COLOR.border,
-    fontSize: FONT_SIZE.bodyMD,
-    fontFamily: FONT.body,
-    color: COLOR.textPrimary,
-  },
-  customInputEmoji: {
-    width: 56,
-    textAlign: "center",
-    fontSize: 20,
-  },
-  customInputTitle: {
-    flex: 1,
-  },
-  customFormCtaRow: {
-    flexDirection: "row",
-    gap: SPACE.sm,
-  },
-  customFormBtn: {
-    flex: 1,
-    paddingVertical: SPACE.sm,
-    borderRadius: RADIUS.md,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  customFormBtnPrimary: {
-    backgroundColor: COLOR.sodaText,
-  },
-  customFormBtnPrimaryText: {
-    fontSize: FONT_SIZE.bodyMD,
-    fontFamily: FONT.heading,
-    fontWeight: WEIGHT.bold,
-    color: COLOR.textOnColor,
-  },
-  customFormBtnSecondary: {
-    backgroundColor: "transparent",
-    borderWidth: 1,
-    borderColor: COLOR.borderStrong,
-  },
-  customFormBtnSecondaryText: {
-    fontSize: FONT_SIZE.bodyMD,
-    fontFamily: FONT.heading,
-    fontWeight: WEIGHT.semibold,
-    color: COLOR.textSubtitle,
-  },
-  customFormBtnDisabled: {
-    opacity: 0.5,
-  },
-});
+// Phase 8.0: theme 連動 styles factory。straw/strawDark/cherry は palette 外 → 静的。
+function makeStyles(c: ThemeColors) {
+  return StyleSheet.create({
+    bg: {
+      backgroundColor: c.bgPrimary,
+      borderTopLeftRadius: RADIUS.xl,
+      borderTopRightRadius: RADIUS.xl,
+    },
+    grabber: {
+      width: 44,
+      height: 4,
+      borderRadius: 2,
+      backgroundColor: c.borderStrong,
+    },
+    header: {
+      flexDirection: "row",
+      alignItems: "flex-start",
+      justifyContent: "space-between",
+      paddingHorizontal: SPACE.md,
+      paddingTop: SPACE.sm,
+      paddingBottom: SPACE.sm,
+      marginBottom: SPACE.sm,
+      borderBottomWidth: 1,
+      borderBottomColor: c.divider,
+    },
+    headerLabel: {
+      fontSize: FONT_SIZE.caption,
+      fontFamily: FONT.body,
+      fontWeight: WEIGHT.medium,
+      color: c.textMuted,
+      textTransform: "uppercase",
+      letterSpacing: 1,
+    },
+    headerDate: {
+      fontSize: FONT_SIZE.headingMD,
+      fontFamily: FONT.heading,
+      fontWeight: WEIGHT.bold,
+      color: c.textPrimary,
+    },
+    closeBtn: {
+      width: 32,
+      height: 32,
+      borderRadius: RADIUS.pill,
+      alignItems: "center",
+      justifyContent: "center",
+      backgroundColor: withAlpha(c.textMuted, 0.12),
+    },
+    closeIcon: {
+      fontSize: 16,
+      color: c.textSubtitle,
+      fontWeight: WEIGHT.bold,
+    },
+    bodyInner: {
+      paddingHorizontal: SPACE.md,
+      paddingBottom: SPACE.xl,
+      gap: SPACE.sm,
+    },
+    emptyText: {
+      fontSize: FONT_SIZE.bodyMD,
+      color: c.textMuted,
+      textAlign: "center",
+      paddingVertical: SPACE.xl,
+    },
+    eventCard: {
+      paddingHorizontal: SPACE.md,
+      paddingVertical: SPACE.md,
+      borderRadius: RADIUS.lg,
+      backgroundColor: c.bgCard,
+      borderWidth: 1,
+      borderColor: c.border,
+      gap: SPACE.sm,
+    },
+    eventHeader: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: SPACE.sm,
+    },
+    eventTitle: {
+      flex: 1,
+      gap: 2,
+    },
+    eventProtocol: {
+      fontSize: FONT_SIZE.bodyLG,
+      fontFamily: FONT.heading,
+      fontWeight: WEIGHT.bold,
+      color: c.textPrimary,
+      textTransform: "capitalize",
+    },
+    eventCategory: {
+      fontSize: FONT_SIZE.bodySM,
+      fontFamily: FONT.body,
+      color: c.textSubtitle,
+    },
+    urgencyBadge: {
+      paddingHorizontal: SPACE.sm,
+      paddingVertical: 2,
+      borderRadius: RADIUS.sm,
+    },
+    urgencyBadgeText: {
+      fontSize: FONT_SIZE.overline,
+      fontFamily: FONT.body,
+      fontWeight: WEIGHT.bold,
+      textTransform: "uppercase",
+      letterSpacing: 0.5,
+    },
+    actionRow: {
+      flexDirection: "row",
+      flexWrap: "wrap",
+      gap: SPACE.xs,
+      marginTop: SPACE.xs,
+    },
+    actionBtn: {
+      paddingHorizontal: SPACE.md,
+      paddingVertical: SPACE.sm,
+      borderRadius: RADIUS.md,
+      backgroundColor: c.sodaText,
+    },
+    actionBtnText: {
+      fontSize: FONT_SIZE.bodyMD,
+      fontFamily: FONT.heading,
+      fontWeight: WEIGHT.semibold,
+      color: c.textOnColor,
+    },
+    actionBtnRisky: {
+      backgroundColor: c.cherryDark,
+    },
+    actionBtnRiskyText: {
+      color: c.textOnColor,
+    },
+    customSection: {
+      marginTop: SPACE.md,
+      paddingTop: SPACE.md,
+      borderTopWidth: 1,
+      borderTopColor: c.divider,
+      gap: SPACE.sm,
+    },
+    customHeader: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+    },
+    customSectionLabel: {
+      fontSize: FONT_SIZE.overline,
+      fontFamily: FONT.body,
+      fontWeight: WEIGHT.bold,
+      color: c.textMuted,
+      textTransform: "uppercase",
+      letterSpacing: 1,
+    },
+    customAddBtn: {
+      paddingHorizontal: SPACE.sm,
+      paddingVertical: 4,
+      borderRadius: RADIUS.pill,
+      backgroundColor: withAlpha(c.sodaText, 0.1),
+      borderWidth: 1,
+      borderColor: withAlpha(c.sodaText, 0.3),
+    },
+    customAddBtnText: {
+      fontSize: FONT_SIZE.caption,
+      fontFamily: FONT.heading,
+      fontWeight: WEIGHT.bold,
+      color: c.sodaText,
+    },
+    customEmpty: {
+      fontSize: FONT_SIZE.bodySM,
+      fontFamily: FONT.body,
+      color: c.textMuted,
+      textAlign: "center",
+      paddingVertical: SPACE.sm,
+    },
+    customRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      paddingHorizontal: SPACE.sm,
+      paddingVertical: SPACE.sm,
+      borderRadius: RADIUS.md,
+      backgroundColor: withAlpha(COLOR.straw, 0.15),
+      borderWidth: 1,
+      borderColor: withAlpha(COLOR.strawDark, 0.4),
+      gap: SPACE.sm,
+    },
+    customRowEmoji: {
+      fontSize: 22,
+    },
+    customRowMain: {
+      flex: 1,
+    },
+    customRowTitle: {
+      fontSize: FONT_SIZE.bodyMD,
+      fontFamily: FONT.heading,
+      fontWeight: WEIGHT.semibold,
+      color: c.textPrimary,
+    },
+    customRowAmount: {
+      fontSize: FONT_SIZE.caption,
+      fontFamily: FONT.body,
+      color: c.textSubtitle,
+    },
+    customRowDelete: {
+      width: 28,
+      height: 28,
+      borderRadius: 14,
+      alignItems: "center",
+      justifyContent: "center",
+      backgroundColor: withAlpha(c.cherryDark, 0.15),
+    },
+    customRowDeleteText: {
+      fontSize: 14,
+      color: c.cherryDark,
+      fontWeight: WEIGHT.bold,
+    },
+    customForm: {
+      paddingHorizontal: SPACE.sm,
+      paddingVertical: SPACE.sm,
+      borderRadius: RADIUS.md,
+      backgroundColor: withAlpha(c.sodaLight, 0.4),
+      borderWidth: 1,
+      borderColor: c.border,
+      gap: SPACE.sm,
+    },
+    customFormRow: {
+      flexDirection: "row",
+      gap: SPACE.sm,
+    },
+    customInput: {
+      paddingHorizontal: SPACE.sm,
+      paddingVertical: SPACE.xs,
+      borderRadius: RADIUS.sm,
+      backgroundColor: c.bgPrimary,
+      borderWidth: 1,
+      borderColor: c.border,
+      fontSize: FONT_SIZE.bodyMD,
+      fontFamily: FONT.body,
+      color: c.textPrimary,
+    },
+    customInputEmoji: {
+      width: 56,
+      textAlign: "center",
+      fontSize: 20,
+    },
+    customInputTitle: {
+      flex: 1,
+    },
+    customFormCtaRow: {
+      flexDirection: "row",
+      gap: SPACE.sm,
+    },
+    customFormBtn: {
+      flex: 1,
+      paddingVertical: SPACE.sm,
+      borderRadius: RADIUS.md,
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    customFormBtnPrimary: {
+      backgroundColor: c.sodaText,
+    },
+    customFormBtnPrimaryText: {
+      fontSize: FONT_SIZE.bodyMD,
+      fontFamily: FONT.heading,
+      fontWeight: WEIGHT.bold,
+      color: c.textOnColor,
+    },
+    customFormBtnSecondary: {
+      backgroundColor: "transparent",
+      borderWidth: 1,
+      borderColor: c.borderStrong,
+    },
+    customFormBtnSecondaryText: {
+      fontSize: FONT_SIZE.bodyMD,
+      fontFamily: FONT.heading,
+      fontWeight: WEIGHT.semibold,
+      color: c.textSubtitle,
+    },
+    customFormBtnDisabled: {
+      opacity: 0.5,
+    },
+  });
+}
