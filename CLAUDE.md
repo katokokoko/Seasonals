@@ -46,6 +46,7 @@ project-root/
 ├── docs/
 │   ├── spec.md                     # 仕様書 v0.2.15 (フル参照用)
 │   ├── design-system.md            # Cream Soda Edition、token reference
+│   ├── backend-core-pipeline.md     # wallet tx → Position → Calendar → Action execution の本番化設計
 │   └── design-system.jsx           # 原典 (DS object source of truth)
 └── replit.md                       # 旧 Replit Agent 用 context (historical)
 ```
@@ -84,6 +85,10 @@ import {
 `artifacts/seasonals/` は **UX リファレンス** として機能する (画面遷移・配置・droplet marker の visual)。
 本番化では仕様書 §27.1 の構成を canonical として、規約に合わない部分は遠慮なく書き換える。
 プロトタイプの実装をそのまま継承することは目的ではない。
+
+### Backend core pipeline
+wallet transaction / account indexing から `Position`、`UnifiedTimeEvent`、Menu / Calendar action execution へ接続する本番化設計は `docs/backend-core-pipeline.md` を参照する。
+この文書は、認証 wallet の tx 追跡、trusted protocol parser、deposit / withdraw / maturity / lockup derivation、`deposit` / `withdraw` / `re_deposit` / `rotate` 実行フローの canonical plan である。
 
 ---
 
