@@ -22,7 +22,6 @@ import {
 } from "react-native";
 import { useRouter } from "expo-router";
 import { BlurView } from "expo-blur";
-import { useQueryClient } from "@tanstack/react-query";
 
 import {
   COLOR,
@@ -33,20 +32,16 @@ import {
   WEIGHT,
   withAlpha,
 } from "@workspace/lib/design-system";
-import type { Wallet } from "@workspace/lib/types";
 
-import { useWallets } from "../../services/queries";
 import { useWallet } from "../../services/useWallet";
-import { useWalletSelectionStore } from "../../stores/wallet";
-import { queryKeys } from "../../services/queries";
 
 function shortenAddress(addr: string): string {
   if (addr.length <= 10) return addr;
   return `…${addr.slice(-6)}`;
 }
 
-function initialOf(label: string): string {
-  if (!label) return "?";
+function initialOf(label: string | null | undefined): string {
+  if (!label) return "S"; // Seeker default
   return label.charAt(0).toUpperCase();
 }
 
@@ -65,22 +60,8 @@ export function WalletPopover({
   testID,
 }: WalletPopoverProps) {
   const router = useRouter();
-  const { data: wallets = [] } = useWallets();
-  const { connect } = useWallet();
-  const queryClient = useQueryClient();
-
-  const activeWalletId = useWalletSelectionStore((s) => s.activeWalletId);
-  const setActiveWalletId = useWalletSelectionStore((s) => s.setActiveWalletId);
-
-  const handleSelectWallet = (w: Wallet) => {
-    if (w.wallet_id !== activeWalletId) {
-      setActiveWalletId(w.wallet_id);
-      // active wallet 切替 → portfolio query を invalidate (5A.8.4)
-      queryClient.invalidateQueries({ queryKey: queryKeys.positions() });
-      queryClient.invalidateQueries({ queryKey: queryKeys.timeEvents() });
-    }
-    onClose();
-  };
+  // Phase 7.4: fixture wallets を撤去、MWA authorization のみを表示
+  const { authorization, connect } = useWallet();
 
   const handleAddWallet = async () => {
     onClose();
@@ -118,39 +99,31 @@ export function WalletPopover({
 
         <Text style={styles.heading}>Wallets</Text>
 
-        {/* Wallets section (empty state は省略 5A.8.5) */}
-        {wallets.length > 0 && (
+        {/* Phase 7.4: 接続済 MWA wallet 1 行のみ。未接続なら section 全省略 (5A.8.5) */}
+        {authorization && (
           <View style={styles.walletsSection}>
-            {wallets.map((w) => {
-              const isActive = w.wallet_id === activeWalletId;
-              return (
-                <Pressable
-                  key={w.wallet_id}
-                  accessibilityRole="button"
-                  onPress={() => handleSelectWallet(w)}
-                  style={styles.walletRow}
-                  testID={
-                    testID ? `${testID}-wallet-${w.wallet_id}` : undefined
-                  }
-                >
-                  <View style={styles.iconDark}>
-                    <Text style={styles.iconLetter}>{initialOf(w.label)}</Text>
-                  </View>
-                  <View style={styles.walletMain}>
-                    {isActive && (
-                      <Text style={styles.walletLabel}>Connected wallet</Text>
-                    )}
-                    <Text style={styles.walletProvider} numberOfLines={1}>
-                      {w.label}
-                    </Text>
-                    <Text style={styles.walletAddress} numberOfLines={1}>
-                      {shortenAddress(w.address)}
-                    </Text>
-                  </View>
-                  {isActive && <View style={styles.statusDot} />}
-                </Pressable>
-              );
-            })}
+            <Pressable
+              accessibilityRole="button"
+              onPress={onClose}
+              style={styles.walletRow}
+              testID={testID ? `${testID}-wallet-current` : undefined}
+            >
+              <View style={styles.iconDark}>
+                <Text style={styles.iconLetter}>
+                  {initialOf(authorization.label)}
+                </Text>
+              </View>
+              <View style={styles.walletMain}>
+                <Text style={styles.walletLabel}>Connected wallet</Text>
+                <Text style={styles.walletProvider} numberOfLines={1}>
+                  {authorization.label ?? "Seeker wallet"}
+                </Text>
+                <Text style={styles.walletAddress} numberOfLines={1}>
+                  {shortenAddress(authorization.address)}
+                </Text>
+              </View>
+              <View style={styles.statusDot} />
+            </Pressable>
           </View>
         )}
 

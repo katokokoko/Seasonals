@@ -19,9 +19,9 @@ interface WalletSelectionState {
   reset: () => void;
 }
 
-// MVP デフォルト: fixture の wal_001 (Main wallet) を active にしておくことで
-// drink button の status dot が初期表示される (Phase 5A.4 spec)。
-const DEFAULT_ACTIVE_WALLET_ID = "wal_001";
+// Phase 7.4: fixture wallets を popover から撤去したため default は null。
+// 将来 multi-wallet 実装時に再利用する余地は残置。
+const DEFAULT_ACTIVE_WALLET_ID: string | null = null;
 
 export const useWalletSelectionStore = create<WalletSelectionState>()((set) => ({
   activeWalletId: DEFAULT_ACTIVE_WALLET_ID,
