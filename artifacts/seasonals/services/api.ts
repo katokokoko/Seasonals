@@ -28,8 +28,8 @@ import {
   fixtureWallets,
   fixtureProtocols,
   fixtureMenuListings,
-  type MenuListing,
 } from "@workspace/lib/__fixtures__";
+import type { ProtocolMenuEntry } from "@workspace/lib/types";
 import {
   AgentPlanStatus,
   type AgentPlan,
@@ -53,7 +53,9 @@ function nextTick(): Promise<void> {
 }
 
 function cloned<T>(value: T): T {
-  return structuredClone(value);
+  // Hermes (RN の JS engine) には structuredClone が無いため JSON 経由で deep clone。
+  // fixture は plain JSON 互換 (Date / Map / Set 等の特殊オブジェクト無し) なので問題なし。
+  return JSON.parse(JSON.stringify(value)) as T;
 }
 
 /** BFF からの error response shape (`{ error: string, ... }`) を Error に変換 */
@@ -164,7 +166,7 @@ async function fxGetProtocols(): Promise<Protocol[]> {
   return cloned(fixtureProtocols);
 }
 
-async function fxGetMenuListings(): Promise<MenuListing[]> {
+async function fxGetMenuListings(): Promise<ProtocolMenuEntry[]> {
   await nextTick();
   return cloned(fixtureMenuListings);
 }
@@ -348,9 +350,9 @@ export async function getProtocols(): Promise<Protocol[]> {
   );
 }
 
-export async function getMenuListings(): Promise<MenuListing[]> {
+export async function getMenuListings(): Promise<ProtocolMenuEntry[]> {
   return tryHttpThenFixture(
-    () => httpGetJson<MenuListing[]>("/menu-listings"),
+    () => httpGetJson<ProtocolMenuEntry[]>("/menu-listings"),
     () => fxGetMenuListings(),
     "/menu-listings"
   );

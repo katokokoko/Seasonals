@@ -13,9 +13,10 @@
  * を持たせない、CLAUDE.md §32.2 fail-closed safety 準拠)。
  */
 
-import React, { useCallback, useState } from "react";
+import React, { useCallback, useEffect, useState } from "react";
 import {
   ActivityIndicator,
+  Dimensions,
   Linking,
   Modal,
   Pressable,
@@ -23,6 +24,13 @@ import {
   Text,
   View,
 } from "react-native";
+import Animated, {
+  runOnJS,
+  useAnimatedStyle,
+  useSharedValue,
+  withTiming,
+} from "react-native-reanimated";
+import { BlurView } from "expo-blur";
 import { Transaction } from "@solana/web3.js";
 
 import {
@@ -54,6 +62,11 @@ import {
 } from "@workspace/lib/adapters";
 
 type Phase = "review" | "approving" | "signing" | "success" | "error";
+
+// Phase 6.4: backdrop fade-in + blur、sheet slide-up、別々アニメ
+const SCREEN_H = Dimensions.get("window").height;
+const ENTER_MS = 240;
+const EXIT_MS = 200;
 
 function resolveDecimals(asset?: string): number {
   if (asset && asset in TOKEN_DECIMALS) {
@@ -140,19 +153,63 @@ export function ActionModal({
 
   const visible = plan !== null;
 
+  // Phase 6.4: backdrop fade-in、sheet slide-up を分離
+  const [renderModal, setRenderModal] = useState(false);
+  const backdropOpacity = useSharedValue(0);
+  const sheetTy = useSharedValue(SCREEN_H);
+
+  useEffect(() => {
+    if (visible) {
+      // ENTER: 同時に backdrop fade-in (位置固定) + sheet slide-up
+      setRenderModal(true);
+      backdropOpacity.value = withTiming(1, { duration: ENTER_MS });
+      sheetTy.value = withTiming(0, { duration: ENTER_MS });
+    } else if (renderModal) {
+      // EXIT: backdrop fade-out + sheet slide-down → 完了で Modal を unmount
+      backdropOpacity.value = withTiming(0, { duration: EXIT_MS });
+      sheetTy.value = withTiming(
+        SCREEN_H,
+        { duration: EXIT_MS },
+        (finished) => {
+          "worklet";
+          if (finished) runOnJS(setRenderModal)(false);
+        }
+      );
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [visible]);
+
+  const backdropAnimStyle = useAnimatedStyle(() => ({
+    opacity: backdropOpacity.value,
+  }));
+  const sheetAnimStyle = useAnimatedStyle(() => ({
+    transform: [{ translateY: sheetTy.value }],
+  }));
+
   return (
     <Modal
-      visible={visible}
-      animationType="slide"
+      visible={renderModal}
+      animationType="none"
       transparent
+      statusBarTranslucent
       onRequestClose={handleClose}
     >
-      <Pressable
-        accessibilityLabel="Close"
-        onPress={handleClose}
-        style={styles.backdrop}
-      />
-      <View style={styles.sheet} testID={testID}>
+      {/* Backdrop layer: 位置固定で fade-in、blur + dim を同時表現 */}
+      <Animated.View
+        pointerEvents={visible ? "auto" : "none"}
+        style={[StyleSheet.absoluteFill, backdropAnimStyle]}
+      >
+        <BlurView intensity={28} tint="dark" style={StyleSheet.absoluteFill} />
+        <Pressable
+          accessibilityLabel="Close"
+          onPress={handleClose}
+          style={[StyleSheet.absoluteFill, styles.dimOverlay]}
+        />
+      </Animated.View>
+
+      {/* Sheet wrap: 画面下端に固定、sheet 自体だけ translateY で下から上昇 */}
+      <View style={styles.sheetWrap} pointerEvents="box-none">
+        <Animated.View style={[styles.sheet, sheetAnimStyle]} testID={testID}>
         <View style={styles.header}>
           <View>
             <Text style={styles.headerLabel}>Approve & Execute</Text>
@@ -200,6 +257,7 @@ export function ActionModal({
             testID={testID ? `${testID}-error` : undefined}
           />
         )}
+        </Animated.View>
       </View>
     </Modal>
   );
@@ -492,9 +550,14 @@ function ErrorBody({
 // ─── Styles ──────────────────────────────────────────────────────────────────
 
 const styles = StyleSheet.create({
-  backdrop: {
+  // Phase 6.4: backdrop は位置固定 fullscreen で fade-in (BlurView + dim 重ね)
+  dimOverlay: {
+    backgroundColor: withAlpha(COLOR.textPrimary, 0.4),
+  },
+  // Sheet 領域以外の touch を backdrop の Pressable に通すための wrap
+  sheetWrap: {
     flex: 1,
-    backgroundColor: withAlpha(COLOR.textPrimary, 0.5),
+    justifyContent: "flex-end",
   },
   sheet: {
     backgroundColor: COLOR.bgPrimary,

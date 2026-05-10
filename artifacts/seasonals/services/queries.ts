@@ -27,7 +27,7 @@ import type {
   UserPolicy,
   Wallet,
 } from "@workspace/lib/types";
-import type { MenuListing } from "@workspace/lib/__fixtures__";
+import type { ProtocolMenuEntry } from "@workspace/lib/types";
 
 import * as api from "./api";
 
@@ -142,7 +142,7 @@ export function useProtocols(): UseQueryResult<Protocol[], Error> {
 }
 
 /** Menu drawer の display catalog (TVL / APY / asset / icon_color を含む) */
-export function useMenuListings(): UseQueryResult<MenuListing[], Error> {
+export function useMenuListings(): UseQueryResult<ProtocolMenuEntry[], Error> {
   return useQuery({
     queryKey: queryKeys.menuListings(),
     queryFn: api.getMenuListings,

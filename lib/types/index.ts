@@ -5,3 +5,4 @@ export * from "./agent-plan";
 export * from "./approval-token";
 export * from "./user-policy";
 export * from "./custom-event";
+export * from "./protocol-pool";

@@ -1,151 +1,405 @@
 /**
- * Menu listings — Menu drawer の protocol catalog 表示専用 fixture
+ * Menu protocol entries (Phase 6.1) — 11 主要 Solana DeFi protocols × 階層 pools
  *
- * これは display 用 catalog で、Position / Protocol 型 (§11.2) とは別軸。
- * - APY / TVL / asset / icon_color はカードの右上 / 下に表示するメタ
- * - deposited 状態は positions 集計から runtime で算出 (本 fixture に持たない)
+ * 数値は 2025 末ごろの DefiLlama-baseline 実データ似 mock。
+ * Mobile の Menu drawer で render される。pools[] 内の pool は `protocol_id`
+ * (deposited 判定 in MenuDrawer) と独立に持ち、各 pool 単位で APY / TVL / borrowed
+ * を表示する。
  *
- * 実 production では Adapter SDK (§13) が同等情報を返す前提で、
- * 本 fixture は MVP の "Menu に並ぶ protocol が prototype 通り" を担保する。
+ * 実 production では BFF /menu-listings endpoint が DefiLlama / 各 protocol の SDK
+ * を経由して同 shape を返す予定 (現状 fixture を BFF と Mobile の両側で共有)。
+ *
+ * @see lib/types/protocol-pool.ts (型定義)
+ * @see CLAUDE.md §3 数値表現規約 (display-only carve-out)
  */
 
 import { PositionCategory } from "../types/enums";
 import { COLOR } from "../design-system";
+import type { ProtocolMenuEntry } from "../types/protocol-pool";
 
-/**
- * 外部 protocol の brand color (Seasonals palette には属さない).
- * §6 「色は DS.color.* token 経由」は Seasonals UI 用 token への規約で、
- * 本値は third-party protocol icon の placeholder 色として menu-listings 内に閉じ込める。
- * 実 production ではプロトコル公式 logo asset に置換予定。
- */
-const PROTOCOL_DARK_ICON_BG = "#0E1F3A";
+// 外部 protocol icon の placeholder bg (DS palette 外、§6 規約 carve-out)
+const ICON_BG_DARK = "#0E1F3A";
 
-export interface MenuListing {
-  /** Position.protocol_id と一致する場合は deposited 判定に使う */
-  protocol_id: string;
-  display_name: string;
-  category: PositionCategory;
-  /** 表示用 asset symbol ("USDC" / "SOL" / "JitoSOL" 等) */
-  asset: string;
-  /** 0..1 (例: 0.071 = 7.10%) */
-  apy: number;
-  /** M SOL 単位 (例: 4.4 = 4.4M SOL TVL) */
-  tvl_msol: number;
-  /** icon の正方形背景色 token (brand palette から選ぶ) */
-  icon_color: string;
-}
+export const fixtureMenuListings: ProtocolMenuEntry[] = [
+  // ─── 1. Jupiter ────────────────────────────────────────────
+  {
+    protocol_id: "jupiter",
+    display_name: "Jupiter",
+    primary_category: PositionCategory.Lending,
+    supported_assets: ["USDC", "SOL"],
+    icon_id: "jupiter",
+    icon_bg: ICON_BG_DARK,
+    pools: [
+      {
+        pool_id: "jupiter_jlp_lending",
+        name: "JLP Lending",
+        category: PositionCategory.Lending,
+        asset: "JLP",
+        apy: 0.105,
+        tvl_usd: 450_000_000,
+      },
+      {
+        pool_id: "jupiter_usdc_main",
+        name: "USDC Main",
+        category: PositionCategory.Lending,
+        asset: "USDC",
+        apy: 0.0407,
+        tvl_usd: 320_000_000,
+        borrowed_usd: 180_000_000,
+      },
+      {
+        pool_id: "jupiter_jupsol",
+        name: "JupSOL",
+        category: PositionCategory.Lending,
+        asset: "SOL",
+        apy: 0.072,
+        tvl_usd: 80_000_000,
+      },
+    ],
+  },
 
-export const fixtureMenuListings: MenuListing[] = [
-  // ─── LENDING ──────────────────────────────────────────────
+  // ─── 2. Kamino ─────────────────────────────────────────────
   {
     protocol_id: "kamino",
-    display_name: "Kamino Lend",
-    category: PositionCategory.Lending,
-    asset: "USDC",
-    apy: 0.071,
-    tvl_msol: 4.4,
-    icon_color: PROTOCOL_DARK_ICON_BG,
-  },
-  {
-    protocol_id: "marginfi",
-    display_name: "MarginFi",
-    category: PositionCategory.Lending,
-    asset: "USDC",
-    apy: 0.083,
-    tvl_msol: 3.1,
-    icon_color: PROTOCOL_DARK_ICON_BG,
-  },
-  {
-    protocol_id: "jupiter_lend",
-    display_name: "Jupiter Lend",
-    category: PositionCategory.Lending,
-    asset: "USDC",
-    apy: 0.089,
-    tvl_msol: 5.7,
-    icon_color: PROTOCOL_DARK_ICON_BG,
+    display_name: "Kamino",
+    primary_category: PositionCategory.Lending,
+    supported_assets: ["USDC", "SOL", "JLP"],
+    icon_id: "kamino",
+    icon_bg: ICON_BG_DARK,
+    pools: [
+      {
+        pool_id: "kamino_usdc_main",
+        name: "USDC Main Market",
+        category: PositionCategory.Lending,
+        asset: "USDC",
+        apy: 0.0551,
+        tvl_usd: 1_200_000_000,
+        borrowed_usd: 700_000_000,
+      },
+      {
+        pool_id: "kamino_sol_main",
+        name: "SOL Main Market",
+        category: PositionCategory.Lending,
+        asset: "SOL",
+        apy: 0.0480,
+        tvl_usd: 850_000_000,
+        borrowed_usd: 300_000_000,
+      },
+      {
+        pool_id: "kamino_jlp_market",
+        name: "JLP Market",
+        category: PositionCategory.Lending,
+        asset: "JLP",
+        apy: 0.0920,
+        tvl_usd: 400_000_000,
+      },
+      {
+        pool_id: "kamino_steakhouse_usdc",
+        name: "Steakhouse USDC High Yield",
+        category: PositionCategory.Vault,
+        asset: "USDC",
+        apy: 0.0870,
+        tvl_usd: 220_000_000,
+        borrowed_usd: 199_000_000,
+      },
+      {
+        pool_id: "kamino_jitosol_vault",
+        name: "JitoSOL Vault",
+        category: PositionCategory.Vault,
+        asset: "JitoSOL",
+        apy: 0.0750,
+        tvl_usd: 180_000_000,
+        deposit_asset: "SOL",
+      },
+    ],
   },
 
-  // ─── STAKING ──────────────────────────────────────────────
+  // ─── 3. Solstice ───────────────────────────────────────────
   {
-    protocol_id: "marinade",
-    display_name: "Marinade",
-    category: PositionCategory.Staking,
-    asset: "SOL",
-    apy: 0.068,
-    tvl_msol: 12.0,
-    icon_color: COLOR.caramel,
+    protocol_id: "solstice",
+    display_name: "Solstice",
+    primary_category: PositionCategory.Stable,
+    supported_assets: ["USDC"],
+    icon_id: "solstice",
+    icon_bg: COLOR.melonDeep,
+    pools: [
+      {
+        pool_id: "solstice_susd",
+        name: "sUSD Stable",
+        category: PositionCategory.Stable,
+        asset: "USDC",
+        apy: 0.0620,
+        tvl_usd: 42_000_000,
+      },
+    ],
   },
+
+  // ─── 4. Sanctum ────────────────────────────────────────────
   {
     protocol_id: "sanctum",
     display_name: "Sanctum",
-    category: PositionCategory.Staking,
-    asset: "SOL",
-    apy: 0.072,
-    tvl_msol: 5.8,
-    icon_color: COLOR.sodaDeep,
+    primary_category: PositionCategory.Staking,
+    supported_assets: ["SOL"],
+    icon_id: "sanctum",
+    icon_bg: COLOR.sodaDeep,
+    pools: [
+      {
+        pool_id: "sanctum_inf",
+        name: "INF Pool",
+        category: PositionCategory.Staking,
+        asset: "SOL",
+        apy: 0.0780,
+        tvl_usd: 580_000_000,
+      },
+      {
+        pool_id: "sanctum_jitosol",
+        name: "JitoSOL",
+        category: PositionCategory.Staking,
+        asset: "SOL",
+        apy: 0.0720,
+        tvl_usd: 1_100_000_000,
+      },
+      {
+        pool_id: "sanctum_bsol",
+        name: "bSOL",
+        category: PositionCategory.Staking,
+        asset: "SOL",
+        apy: 0.0690,
+        tvl_usd: 180_000_000,
+      },
+    ],
   },
 
-  // ─── RESTAKING ────────────────────────────────────────────
+  // ─── 5. DRIFT ──────────────────────────────────────────────
   {
-    protocol_id: "jito",
-    display_name: "Jito",
-    category: PositionCategory.Restaking,
-    asset: "JitoSOL",
-    apy: 0.082,
-    tvl_msol: 10.5,
-    icon_color: COLOR.melonDeep,
-  },
-  {
-    protocol_id: "symbiotic",
-    display_name: "Symbiotic Universal Staking Framework",
-    category: PositionCategory.Restaking,
-    asset: "SOL",
-    apy: 0.105,
-    tvl_msol: 7.7,
-    icon_color: PROTOCOL_DARK_ICON_BG,
+    protocol_id: "drift",
+    display_name: "Drift",
+    primary_category: PositionCategory.Lending,
+    supported_assets: ["USDC", "SOL"],
+    icon_id: "drift",
+    icon_bg: ICON_BG_DARK,
+    pools: [
+      {
+        pool_id: "drift_usdc_spot",
+        name: "USDC Spot Lending",
+        category: PositionCategory.Lending,
+        asset: "USDC",
+        apy: 0.0540,
+        tvl_usd: 320_000_000,
+        borrowed_usd: 190_000_000,
+      },
+      {
+        pool_id: "drift_sol_spot",
+        name: "SOL Spot Lending",
+        category: PositionCategory.Lending,
+        asset: "SOL",
+        apy: 0.0410,
+        tvl_usd: 260_000_000,
+        borrowed_usd: 80_000_000,
+      },
+      {
+        pool_id: "drift_insurance_fund",
+        name: "Insurance Fund",
+        category: PositionCategory.Vault,
+        asset: "USDC",
+        apy: 0.1250,
+        tvl_usd: 48_000_000,
+      },
+    ],
   },
 
-  // ─── VAULT ─────────────────────────────────────────────────
+  // ─── 6. Perena ─────────────────────────────────────────────
   {
-    protocol_id: "kamino_vault",
-    display_name: "Kamino Vault",
-    category: PositionCategory.Vault,
-    asset: "USDC",
-    apy: 0.0815,
-    tvl_msol: 6.2,
-    icon_color: PROTOCOL_DARK_ICON_BG,
+    protocol_id: "perena",
+    display_name: "Perena",
+    primary_category: PositionCategory.Stable,
+    supported_assets: ["USDC"],
+    icon_id: "perena",
+    icon_bg: COLOR.melonText,
+    pools: [
+      {
+        pool_id: "perena_usd_star",
+        name: "USD* Stable",
+        category: PositionCategory.Stable,
+        asset: "USDC",
+        apy: 0.0580,
+        tvl_usd: 120_000_000,
+      },
+      {
+        pool_id: "perena_tri_stable",
+        name: "Tri-Stable Pool",
+        category: PositionCategory.LP,
+        asset: "USDC-USDT-PYUSD",
+        apy: 0.0630,
+        tvl_usd: 90_000_000,
+        deposit_asset: "USDC",
+      },
+    ],
   },
 
-  // ─── LP ────────────────────────────────────────────────────
+  // ─── 7. SaveFi (Save Finance) ──────────────────────────────
+  {
+    protocol_id: "savefi",
+    display_name: "Save",
+    primary_category: PositionCategory.Lending,
+    supported_assets: ["USDC", "SOL"],
+    icon_id: "savefi",
+    icon_bg: COLOR.cherry,
+    pools: [
+      {
+        pool_id: "savefi_usdc_main",
+        name: "USDC Main",
+        category: PositionCategory.Lending,
+        asset: "USDC",
+        apy: 0.0490,
+        tvl_usd: 180_000_000,
+        borrowed_usd: 110_000_000,
+      },
+      {
+        pool_id: "savefi_sol_main",
+        name: "SOL Main",
+        category: PositionCategory.Lending,
+        asset: "SOL",
+        apy: 0.0420,
+        tvl_usd: 140_000_000,
+        borrowed_usd: 50_000_000,
+      },
+      {
+        pool_id: "savefi_turbo_sol",
+        name: "Turbo SOL",
+        category: PositionCategory.Lending,
+        asset: "SOL",
+        apy: 0.0680,
+        tvl_usd: 35_000_000,
+        borrowed_usd: 20_000_000,
+      },
+    ],
+  },
+
+  // ─── 8. Marinade ───────────────────────────────────────────
+  {
+    protocol_id: "marinade",
+    display_name: "Marinade",
+    primary_category: PositionCategory.Staking,
+    supported_assets: ["SOL"],
+    icon_id: "marinade",
+    icon_bg: COLOR.caramel,
+    pools: [
+      {
+        pool_id: "marinade_msol",
+        name: "mSOL Liquid Staking",
+        category: PositionCategory.Staking,
+        asset: "SOL",
+        apy: 0.0680,
+        tvl_usd: 1_200_000_000,
+      },
+    ],
+  },
+
+  // ─── 9. Meteora ────────────────────────────────────────────
   {
     protocol_id: "meteora",
     display_name: "Meteora",
-    category: PositionCategory.LP,
-    asset: "USDC-USDT",
-    apy: 0.092,
-    tvl_msol: 8.9,
-    icon_color: COLOR.straw,
+    primary_category: PositionCategory.LP,
+    supported_assets: ["USDC", "SOL"],
+    icon_id: "meteora",
+    icon_bg: COLOR.straw,
+    pools: [
+      {
+        pool_id: "meteora_usdc_usdt_dlmm",
+        name: "USDC-USDT DLMM",
+        category: PositionCategory.LP,
+        asset: "USDC-USDT",
+        apy: 0.0920,
+        tvl_usd: 85_000_000,
+        deposit_asset: "USDC",
+      },
+      {
+        pool_id: "meteora_sol_usdc_dlmm",
+        name: "SOL-USDC DLMM",
+        category: PositionCategory.LP,
+        asset: "SOL-USDC",
+        apy: 0.2850,
+        tvl_usd: 180_000_000,
+        deposit_asset: "USDC",
+      },
+      {
+        pool_id: "meteora_jitosol_sol_dlmm",
+        name: "JitoSOL-SOL DLMM",
+        category: PositionCategory.LP,
+        asset: "JitoSOL-SOL",
+        apy: 0.0580,
+        tvl_usd: 120_000_000,
+        deposit_asset: "SOL",
+      },
+    ],
   },
 
-  // ─── PT-YT ────────────────────────────────────────────────
+  // ─── 10. Jito ──────────────────────────────────────────────
   {
-    protocol_id: "ratex",
-    display_name: "RateX",
-    category: PositionCategory.PTYT,
-    asset: "PT-jupSOL",
-    apy: 0.123,
-    tvl_msol: 2.4,
-    icon_color: COLOR.cherry,
+    protocol_id: "jito",
+    display_name: "Jito",
+    primary_category: PositionCategory.Restaking,
+    supported_assets: ["SOL"],
+    icon_id: "jito",
+    icon_bg: COLOR.melonDeep,
+    pools: [
+      {
+        pool_id: "jito_jitosol",
+        name: "JitoSOL",
+        category: PositionCategory.Staking,
+        asset: "SOL",
+        apy: 0.0740,
+        tvl_usd: 2_800_000_000,
+      },
+      {
+        pool_id: "jito_restaking_vault",
+        name: "Jito Restaking Vault",
+        category: PositionCategory.Restaking,
+        asset: "JitoSOL",
+        apy: 0.0890,
+        tvl_usd: 420_000_000,
+        deposit_asset: "SOL",
+      },
+    ],
   },
 
-  // ─── STABLE (yield-bearing stablecoins) ──────────────────
+  // ─── 11. Orca ──────────────────────────────────────────────
   {
-    protocol_id: "ondo",
-    display_name: "Ondo USDY",
-    category: PositionCategory.Stable,
-    asset: "USDY",
-    apy: 0.0530,
-    tvl_msol: 3.6,
-    icon_color: COLOR.melonText,
+    protocol_id: "orca",
+    display_name: "Orca",
+    primary_category: PositionCategory.LP,
+    supported_assets: ["USDC", "SOL"],
+    icon_id: "orca",
+    icon_bg: COLOR.sodaText,
+    pools: [
+      {
+        pool_id: "orca_usdc_usdt_whirlpool",
+        name: "USDC-USDT Whirlpool",
+        category: PositionCategory.LP,
+        asset: "USDC-USDT",
+        apy: 0.0750,
+        tvl_usd: 75_000_000,
+        deposit_asset: "USDC",
+      },
+      {
+        pool_id: "orca_sol_usdc_whirlpool",
+        name: "SOL-USDC Whirlpool",
+        category: PositionCategory.LP,
+        asset: "SOL-USDC",
+        apy: 0.2430,
+        tvl_usd: 220_000_000,
+        deposit_asset: "USDC",
+      },
+      {
+        pool_id: "orca_jitosol_sol_whirlpool",
+        name: "jitoSOL-SOL Whirlpool",
+        category: PositionCategory.LP,
+        asset: "JitoSOL-SOL",
+        apy: 0.0620,
+        tvl_usd: 98_000_000,
+        deposit_asset: "SOL",
+      },
+    ],
   },
 ];

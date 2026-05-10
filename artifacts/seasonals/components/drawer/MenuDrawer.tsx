@@ -1,28 +1,34 @@
 /**
- * MenuDrawer — 右 slide-in panel (prototype `menu.png` 準拠、ServicesDrawer の置換)
+ * MenuDrawer — protocol → pools 階層 (Phase 6.2: 2-pane drill-down に再設計)
  *
- * 構成 (per-screen brand color = sodaText):
- *   Header: Pacifico "Menu" (sodaText) + close
- *   Search bar: "Search protocols..."
- *   Filter chips: All / Lending / Staking / Restaking / Vault / LP / PT-YT / Stable
- *   Toggle: "Currently deposited only" (off default)
- *   Flat list grouped by category (LENDING / STAKING / RESTAKING / VAULT / LP / PT-YT / STABLE)
- *   各カード: icon (40px square + first letter) / 名前 + deposited badge / Category · TVL · Asset / APY / status dot
+ * 旧 accordion (LayoutAnimation で下方向展開) を廃止し、iOS Settings 風の drill-down
+ * に置換。protocol tap → 右から pool detail pane が 220ms slide-in、戻る時は逆向き。
  *
- * Kamino-as-section / LEND-BORROW-UTIL 三列メトリクスは prototype 不在のため除去 (§4.5 / 4.6)。
+ * 構成:
+ *   Drawer 内に 2 pane の horizontal strip (width = DRAWER_WIDTH × 2):
+ *     pane 0 = Protocol list (Menu header + search + chips + toggle + list)
+ *     pane 1 = Pool detail   ("‹ Menu" back row + protocol header + scrollable pool list)
+ *   selectedProtocolId 状態に応じて strip を translateX で切替 (0 / -DRAWER_WIDTH)
  *
- * @see CLAUDE.md §32.2 整合性チェック (8 categories of time とは別軸の PositionCategory)
+ * Gesture / 戻る:
+ *   - Detail pane 中の "‹ Menu" tap → list に戻る
+ *   - Android hardware back: detail なら list へ / list なら drawer 閉
+ *   - Drawer close 時に detail state を auto reset
+ *   - 既存の swipe-to-close は detail 表示中は無効化 (誤発火防止)
  */
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  BackHandler,
   Dimensions,
+  Image,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
   TextInput,
   View,
+  type ImageRequireSource,
 } from "react-native";
 import {
   Gesture,
@@ -47,8 +53,9 @@ import {
 import {
   PositionCategory,
   type Position,
+  type ProtocolMenuEntry,
+  type ProtocolPool,
 } from "@workspace/lib/types";
-import type { MenuListing } from "@workspace/lib/__fixtures__";
 
 import { useMenuListings, usePositions } from "../../services/queries";
 
@@ -56,10 +63,35 @@ const SCREEN_WIDTH = Dimensions.get("window").width;
 const DRAWER_WIDTH = Math.min(360, SCREEN_WIDTH * 0.86);
 const ANIM_DURATION = 220;
 
-/** Filter chip の値: "all" + 7 categories */
+const ICON_BY_ID: Record<string, ImageRequireSource> = {
+  jupiter: require("../../assets/brands/jupiter.png"),
+  kamino: require("../../assets/brands/kamino.png"),
+  solstice: require("../../assets/brands/solstice.png"),
+  sanctum: require("../../assets/brands/sanctum.png"),
+  drift: require("../../assets/brands/drift.png"),
+  perena: require("../../assets/brands/perena.png"),
+  savefi: require("../../assets/brands/savefi.png"),
+  marinade: require("../../assets/brands/marinade.png"),
+  meteora: require("../../assets/brands/meteora.png"),
+  jito: require("../../assets/brands/jito.png"),
+  orca: require("../../assets/brands/orca.png"),
+};
+
+// Phase 6.3: per-protocol icon visual balance 微調整。
+// 元 PNG の内側 padding / aspect 比のバラつきを吸収するため transform scale を適用。
+// 他 protocol は default 1.0。
+const ICON_SCALE_BY_ID: Record<string, number> = {
+  jupiter: 1.5,
+  drift: 0.9,
+  sanctum: 1.2,
+};
+
+function scaleOf(id: string): number {
+  return ICON_SCALE_BY_ID[id] ?? 1.0;
+}
+
 type FilterKey = "all" | PositionCategory;
 
-/** prototype の category → 表示ラベル */
 const CATEGORY_LABEL_FILTER: Record<FilterKey, string> = {
   all: "All",
   lending: "Lending",
@@ -74,7 +106,6 @@ const CATEGORY_LABEL_FILTER: Record<FilterKey, string> = {
   other: "Other",
 };
 
-/** カテゴリ section のヘッダ表記 (uppercase) */
 const SECTION_HEADER: Record<PositionCategory, string> = {
   lending: "LENDING",
   staking: "STAKING",
@@ -88,7 +119,6 @@ const SECTION_HEADER: Record<PositionCategory, string> = {
   other: "OTHER",
 };
 
-/** カード row 内の小さな category 表示 (Pascal-ish) */
 const CATEGORY_INLINE_LABEL: Record<PositionCategory, string> = {
   lending: "Lending",
   staking: "Staking",
@@ -102,7 +132,6 @@ const CATEGORY_INLINE_LABEL: Record<PositionCategory, string> = {
   other: "Other",
 };
 
-/** prototype の chip 順序 (PositionCategory enum 順序と一致させる、Vesting/Governance/Other は除外) */
 const FILTER_ORDER: readonly FilterKey[] = [
   "all",
   PositionCategory.Lending,
@@ -124,7 +153,6 @@ const SECTION_ORDER: readonly PositionCategory[] = [
   PositionCategory.Stable,
 ] as const;
 
-/** APY > 9% を high yield として melonText で強調 */
 function apyAccent(apy: number): string {
   return apy > 0.09 ? COLOR.melonText : COLOR.sodaText;
 }
@@ -133,22 +161,27 @@ function formatApy(apy: number): string {
   return `${(apy * 100).toFixed(2)}%`;
 }
 
-function formatTvl(msol: number): string {
-  return `TVL ${msol.toFixed(1)}M SOL`;
+function formatTvlUsd(usd: number): string {
+  if (usd >= 1_000_000_000) {
+    return `$${(usd / 1_000_000_000).toFixed(2)}B`;
+  }
+  if (usd >= 1_000_000) {
+    return `$${(usd / 1_000_000).toFixed(2)}M`;
+  }
+  if (usd >= 1_000) {
+    return `$${(usd / 1_000).toFixed(0)}K`;
+  }
+  return `$${usd.toFixed(0)}`;
 }
 
-/** status dot: green = deposited, yellow = available, gray = inactive (本層は inactive を出さない) */
-function statusDotColor(deposited: boolean): string {
-  return deposited ? COLOR.melonText : COLOR.straw;
+function formatBorrowedUsd(usd: number): string {
+  return formatTvlUsd(usd);
 }
 
 export interface MenuDrawerProps {
   visible: boolean;
   onClose: () => void;
-  /**
-   * Card tap 時の callback (任意)。protocol_id / asset / "deposit" を渡す。
-   * 既存 home の handleStartActionFromServices 互換 signature を維持。
-   */
+  /** pool tap 時 (protocol_id / asset / "deposit") */
   onStartAction?: (
     protocol: string,
     asset: string,
@@ -173,12 +206,16 @@ export function MenuDrawer({
   const [filter, setFilter] = useState<FilterKey>("all");
   const [depositedOnly, setDepositedOnly] = useState(false);
 
-  // 現 wallet で持っている protocol_id を Set にしておき、deposited 判定を O(1) に
+  // Phase 6.2: 2-pane drill-down state
+  const [selectedProtocolId, setSelectedProtocolId] = useState<string | null>(
+    null
+  );
+  const paneTx = useSharedValue(0); // 0 = list pane, -DRAWER_WIDTH = detail pane
+
+  // protocol_id Set (deposited 判定 O(1))
   const depositedProtocolIds = useMemo(() => {
     const set = new Set<string>();
-    for (const p of positions as Position[]) {
-      set.add(p.protocol_id);
-    }
+    for (const p of positions as Position[]) set.add(p.protocol_id);
     return set;
   }, [positions]);
 
@@ -191,10 +228,54 @@ export function MenuDrawer({
     });
   }, [visible, translateX, backdropOpacity]);
 
-  // 右 swipe で close する gesture
+  // Drawer close 時に detail state を auto reset
+  useEffect(() => {
+    if (!visible) {
+      paneTx.value = 0;
+      setSelectedProtocolId(null);
+    }
+  }, [visible, paneTx]);
+
+  // Drill-down: protocol → pool detail pane
+  const showDetail = useCallback(
+    (id: string) => {
+      setSelectedProtocolId(id);
+      paneTx.value = withTiming(-DRAWER_WIDTH, { duration: ANIM_DURATION });
+    },
+    [paneTx]
+  );
+
+  const goBackToList = useCallback(() => {
+    paneTx.value = withTiming(
+      0,
+      { duration: ANIM_DURATION },
+      (finished) => {
+        "worklet";
+        if (finished) runOnJS(setSelectedProtocolId)(null);
+      }
+    );
+  }, [paneTx]);
+
+  // Android hardware back: detail なら list へ / list なら drawer 閉
+  useEffect(() => {
+    if (!visible) return;
+    const sub = BackHandler.addEventListener("hardwareBackPress", () => {
+      if (selectedProtocolId !== null) {
+        goBackToList();
+      } else {
+        onClose();
+      }
+      return true;
+    });
+    return () => sub.remove();
+  }, [visible, selectedProtocolId, goBackToList, onClose]);
+
+  // Swipe-to-close gesture (detail 表示中は無効化)
   const swipeGesture = Gesture.Pan()
     .activeOffsetX([-10, 10])
     .onEnd((e) => {
+      "worklet";
+      if (selectedProtocolId !== null) return;
       if (e.translationX > 50) runOnJS(onClose)();
     });
 
@@ -204,24 +285,32 @@ export function MenuDrawer({
   const backdropStyle = useAnimatedStyle(() => ({
     opacity: backdropOpacity.value,
   }));
+  const paneStripStyle = useAnimatedStyle(() => ({
+    transform: [{ translateX: paneTx.value }],
+  }));
 
-  // search / filter / depositedOnly を組み合わせて絞り込み
+  // ─── Filter / search ─────────────────────────────────────
   const filtered = useMemo(() => {
     const term = search.trim().toLowerCase();
     return listings.filter((l) => {
-      if (filter !== "all" && l.category !== filter) return false;
+      if (filter !== "all" && l.primary_category !== filter) return false;
       if (depositedOnly && !depositedProtocolIds.has(l.protocol_id)) return false;
-      if (term && !l.display_name.toLowerCase().includes(term)) return false;
+      if (term) {
+        const nameMatch = l.display_name.toLowerCase().includes(term);
+        const poolMatch = l.pools.some((p) =>
+          p.name.toLowerCase().includes(term)
+        );
+        if (!nameMatch && !poolMatch) return false;
+      }
       return true;
     });
   }, [listings, search, filter, depositedOnly, depositedProtocolIds]);
 
-  // category 単位に group 化
   const grouped = useMemo(() => {
-    const map = new Map<PositionCategory, MenuListing[]>();
+    const map = new Map<PositionCategory, ProtocolMenuEntry[]>();
     for (const l of filtered) {
-      if (!map.has(l.category)) map.set(l.category, []);
-      map.get(l.category)!.push(l);
+      if (!map.has(l.primary_category)) map.set(l.primary_category, []);
+      map.get(l.primary_category)!.push(l);
     }
     return SECTION_ORDER.map((cat) => ({
       category: cat,
@@ -229,9 +318,22 @@ export function MenuDrawer({
     })).filter((g) => g.items.length > 0);
   }, [filtered]);
 
-  if (!visible && translateX.value >= DRAWER_WIDTH - 1) {
-    return null;
-  }
+  // 現在 detail pane で表示中の protocol entry
+  const selectedEntry = useMemo(
+    () => listings.find((l) => l.protocol_id === selectedProtocolId) ?? null,
+    [listings, selectedProtocolId]
+  );
+
+  const handlePoolTap = useCallback(
+    (entry: ProtocolMenuEntry, pool: ProtocolPool) => {
+      onClose();
+      const asset = pool.deposit_asset ?? pool.asset;
+      onStartAction?.(entry.protocol_id, asset, "deposit");
+    },
+    [onClose, onStartAction]
+  );
+
+  if (!visible && translateX.value >= DRAWER_WIDTH - 1) return null;
 
   return (
     <View
@@ -249,179 +351,325 @@ export function MenuDrawer({
 
       <GestureDetector gesture={swipeGesture}>
         <Animated.View style={[styles.drawer, drawerStyle]}>
-          {/* Header — Pacifico sodaText */}
-          <View style={styles.header}>
-            <Text style={styles.title}>Menu</Text>
-            <Pressable
-              accessibilityRole="button"
-              onPress={onClose}
-              hitSlop={12}
-              style={styles.closeBtn}
-              testID={testID ? `${testID}-close` : undefined}
-            >
-              <Text style={styles.closeIcon}>✕</Text>
-            </Pressable>
-          </View>
-
-          {/* Search */}
-          <View style={styles.searchWrap}>
-            <Text style={styles.searchIcon}>🔍</Text>
-            <TextInput
-              placeholder="Search protocols..."
-              placeholderTextColor={COLOR.textMuted}
-              value={search}
-              onChangeText={setSearch}
-              style={styles.searchInput}
-              testID={testID ? `${testID}-search` : undefined}
-            />
-          </View>
-
-          {/* Filter chips — Phase 5B.2: 行高さを 44px に固定し chip の vertical 伸縮を抑制 */}
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            style={styles.chipsScroll}
-            contentContainerStyle={styles.chipsRow}
-          >
-            {FILTER_ORDER.map((k) => {
-              const active = filter === k;
-              return (
+          {/* 2-pane horizontal strip (Phase 6.2) */}
+          <Animated.View style={[styles.pageStrip, paneStripStyle]}>
+            {/* ─── Pane 0: Protocol list ─────────────────────────── */}
+            <View style={styles.pane}>
+              {/* Header */}
+              <View style={styles.header}>
+                <Text style={styles.title}>Menu</Text>
                 <Pressable
-                  key={k}
                   accessibilityRole="button"
-                  accessibilityState={{ selected: active }}
-                  onPress={() => setFilter(k)}
-                  style={[styles.chip, active && styles.chipActive]}
-                  testID={testID ? `${testID}-chip-${k}` : undefined}
+                  onPress={onClose}
+                  hitSlop={12}
+                  style={styles.closeBtn}
+                  testID={testID ? `${testID}-close` : undefined}
                 >
-                  <Text
-                    style={[
-                      styles.chipText,
-                      active && styles.chipTextActive,
-                    ]}
-                  >
-                    {CATEGORY_LABEL_FILTER[k]}
-                  </Text>
+                  <Text style={styles.closeIcon}>✕</Text>
                 </Pressable>
-              );
-            })}
-          </ScrollView>
+              </View>
 
-          {/* Deposited-only toggle */}
-          <Pressable
-            accessibilityRole="switch"
-            accessibilityState={{ checked: depositedOnly }}
-            onPress={() => setDepositedOnly((v) => !v)}
-            style={styles.depositToggleRow}
-            testID={testID ? `${testID}-deposited-toggle` : undefined}
-          >
-            <Text style={styles.depositToggleLabel}>
-              Currently deposited only
-            </Text>
-            <View
-              style={[
-                styles.switchTrack,
-                depositedOnly && styles.switchTrackOn,
-              ]}
-            >
-              <View
-                style={[
-                  styles.switchThumb,
-                  depositedOnly && styles.switchThumbOn,
-                ]}
-              />
-            </View>
-          </Pressable>
+              {/* Search */}
+              <View style={styles.searchWrap}>
+                <Text style={styles.searchIcon}>🔍</Text>
+                <TextInput
+                  placeholder="Search protocols..."
+                  placeholderTextColor={COLOR.textMuted}
+                  value={search}
+                  onChangeText={setSearch}
+                  style={styles.searchInput}
+                  testID={testID ? `${testID}-search` : undefined}
+                />
+              </View>
 
-          {/* Grouped list */}
-          <ScrollView
-            style={styles.list}
-            contentContainerStyle={styles.listInner}
-            showsVerticalScrollIndicator={false}
-          >
-            {grouped.map((group) => (
-              <View key={group.category} style={styles.section}>
-                <Text style={styles.sectionHeader}>
-                  {SECTION_HEADER[group.category]}
-                </Text>
-                {group.items.map((item) => {
-                  const deposited = depositedProtocolIds.has(item.protocol_id);
+              {/* Filter chips */}
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                style={styles.chipsScroll}
+                contentContainerStyle={styles.chipsRow}
+              >
+                {FILTER_ORDER.map((k) => {
+                  const active = filter === k;
                   return (
                     <Pressable
-                      key={item.protocol_id}
+                      key={k}
                       accessibilityRole="button"
-                      onPress={() => {
-                        onClose();
-                        onStartAction?.(item.protocol_id, item.asset, "deposit");
-                      }}
-                      style={styles.card}
-                      testID={
-                        testID
-                          ? `${testID}-card-${item.protocol_id}`
-                          : undefined
-                      }
+                      accessibilityState={{ selected: active }}
+                      onPress={() => setFilter(k)}
+                      style={[styles.chip, active && styles.chipActive]}
+                      testID={testID ? `${testID}-chip-${k}` : undefined}
                     >
-                      {/* Icon */}
-                      <View
+                      <Text
                         style={[
-                          styles.iconBox,
-                          { backgroundColor: item.icon_color },
+                          styles.chipText,
+                          active && styles.chipTextActive,
                         ]}
                       >
-                        <Text style={styles.iconLetter}>
-                          {item.display_name.charAt(0).toUpperCase()}
-                        </Text>
-                      </View>
-
-                      {/* Center: name + meta */}
-                      <View style={styles.center}>
-                        <View style={styles.nameRow}>
-                          <Text style={styles.name} numberOfLines={1}>
-                            {item.display_name}
-                          </Text>
-                          {deposited && (
-                            <Text style={styles.depositedBadge}>
-                              · deposited
-                            </Text>
-                          )}
-                        </View>
-                        <Text style={styles.meta} numberOfLines={1}>
-                          <Text style={styles.metaCategory}>
-                            {CATEGORY_INLINE_LABEL[item.category]}
-                          </Text>
-                          {`  ·  ${formatTvl(item.tvl_msol)}  ·  ${item.asset}`}
-                        </Text>
-                      </View>
-
-                      {/* Right: APY + status dot */}
-                      <View style={styles.right}>
-                        <Text
-                          style={[
-                            styles.apy,
-                            { color: apyAccent(item.apy) },
-                          ]}
-                        >
-                          {formatApy(item.apy)}
-                        </Text>
-                        <View
-                          style={[
-                            styles.statusDot,
-                            { backgroundColor: statusDotColor(deposited) },
-                          ]}
-                        />
-                      </View>
+                        {CATEGORY_LABEL_FILTER[k]}
+                      </Text>
                     </Pressable>
                   );
                 })}
-              </View>
-            ))}
+              </ScrollView>
 
-            {grouped.length === 0 && (
-              <Text style={styles.empty}>No protocols match.</Text>
-            )}
-          </ScrollView>
+              {/* Deposited toggle */}
+              <Pressable
+                accessibilityRole="switch"
+                accessibilityState={{ checked: depositedOnly }}
+                onPress={() => setDepositedOnly((v) => !v)}
+                style={styles.depositToggleRow}
+                testID={testID ? `${testID}-deposited-toggle` : undefined}
+              >
+                <Text style={styles.depositToggleLabel}>
+                  Currently deposited only
+                </Text>
+                <View
+                  style={[
+                    styles.switchTrack,
+                    depositedOnly && styles.switchTrackOn,
+                  ]}
+                >
+                  <View
+                    style={[
+                      styles.switchThumb,
+                      depositedOnly && styles.switchThumbOn,
+                    ]}
+                  />
+                </View>
+              </Pressable>
+
+              {/* List */}
+              <ScrollView
+                style={styles.list}
+                contentContainerStyle={styles.listInner}
+                showsVerticalScrollIndicator={false}
+              >
+                {grouped.map((group) => (
+                  <View key={group.category} style={styles.section}>
+                    <Text style={styles.sectionHeader}>
+                      {SECTION_HEADER[group.category]}
+                    </Text>
+                    {group.items.map((entry) => (
+                      <ProtocolCard
+                        key={entry.protocol_id}
+                        entry={entry}
+                        onPress={() => showDetail(entry.protocol_id)}
+                        deposited={depositedProtocolIds.has(entry.protocol_id)}
+                        testID={
+                          testID
+                            ? `${testID}-card-${entry.protocol_id}`
+                            : undefined
+                        }
+                      />
+                    ))}
+                  </View>
+                ))}
+
+                {grouped.length === 0 && (
+                  <Text style={styles.empty}>No protocols match.</Text>
+                )}
+              </ScrollView>
+            </View>
+
+            {/* ─── Pane 1: Pool detail ──────────────────────────── */}
+            <View style={styles.pane}>
+              {selectedEntry && (
+                <PoolDetailPane
+                  entry={selectedEntry}
+                  onBack={goBackToList}
+                  onPoolTap={(pool) => handlePoolTap(selectedEntry, pool)}
+                  testID={testID ? `${testID}-detail` : undefined}
+                />
+              )}
+            </View>
+          </Animated.View>
         </Animated.View>
       </GestureDetector>
+    </View>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ProtocolCard (collapsed only — drill-down trigger)
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface ProtocolCardProps {
+  entry: ProtocolMenuEntry;
+  deposited: boolean;
+  onPress: () => void;
+  testID?: string;
+}
+
+function ProtocolCard({
+  entry,
+  deposited,
+  onPress,
+  testID,
+}: ProtocolCardProps) {
+  const iconSrc = ICON_BY_ID[entry.icon_id];
+
+  return (
+    <Pressable
+      accessibilityRole="button"
+      onPress={onPress}
+      style={styles.card}
+      testID={testID}
+    >
+      <View style={styles.cardHeader}>
+        {iconSrc ? (
+          <View style={[styles.iconBox, { backgroundColor: entry.icon_bg }]}>
+            <Image
+              source={iconSrc}
+              resizeMode="contain"
+              style={[
+                styles.iconImg,
+                { transform: [{ scale: scaleOf(entry.icon_id) }] },
+              ]}
+            />
+          </View>
+        ) : (
+          <View style={[styles.iconBox, { backgroundColor: entry.icon_bg }]}>
+            <Text style={styles.iconLetter}>
+              {entry.display_name.charAt(0).toUpperCase()}
+            </Text>
+          </View>
+        )}
+
+        <View style={styles.headerMain}>
+          <View style={styles.nameRow}>
+            <Text style={styles.name} numberOfLines={1}>
+              {entry.display_name}
+            </Text>
+            {deposited && (
+              <Text style={styles.depositedBadge}>· deposited</Text>
+            )}
+          </View>
+          <Text style={styles.meta} numberOfLines={1}>
+            <Text style={styles.metaCategory}>
+              {CATEGORY_INLINE_LABEL[entry.primary_category]}
+            </Text>
+            {`  ·  ${entry.supported_assets.join(", ")}`}
+          </Text>
+        </View>
+
+        {/* drill-down chevron (右向き) */}
+        <Text style={styles.chevron}>›</Text>
+      </View>
+    </Pressable>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PoolDetailPane (右 pane: back row + protocol header + pool list)
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface PoolDetailPaneProps {
+  entry: ProtocolMenuEntry;
+  onBack: () => void;
+  onPoolTap: (pool: ProtocolPool) => void;
+  testID?: string;
+}
+
+function PoolDetailPane({
+  entry,
+  onBack,
+  onPoolTap,
+  testID,
+}: PoolDetailPaneProps) {
+  const iconSrc = ICON_BY_ID[entry.icon_id];
+
+  return (
+    <View style={styles.detailPane}>
+      {/* Back row (iOS-style "‹ Menu") */}
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel="Back to menu"
+        onPress={onBack}
+        style={styles.backRow}
+        hitSlop={8}
+        testID={testID ? `${testID}-back` : undefined}
+      >
+        <Text style={styles.backChevron}>‹</Text>
+        <Text style={styles.backLabel}>Menu</Text>
+      </Pressable>
+
+      {/* Protocol header */}
+      <View style={styles.detailHeader}>
+        {iconSrc ? (
+          <View style={[styles.iconBoxLg, { backgroundColor: entry.icon_bg }]}>
+            <Image
+              source={iconSrc}
+              resizeMode="contain"
+              style={[
+                styles.iconImgLg,
+                { transform: [{ scale: scaleOf(entry.icon_id) }] },
+              ]}
+            />
+          </View>
+        ) : (
+          <View style={[styles.iconBoxLg, { backgroundColor: entry.icon_bg }]}>
+            <Text style={styles.iconLetterLg}>
+              {entry.display_name.charAt(0).toUpperCase()}
+            </Text>
+          </View>
+        )}
+        <View style={styles.detailHeaderMain}>
+          <Text style={styles.detailName}>{entry.display_name}</Text>
+          <Text style={styles.detailMeta}>
+            <Text style={styles.metaCategory}>
+              {CATEGORY_INLINE_LABEL[entry.primary_category]}
+            </Text>
+            {`  ·  ${entry.supported_assets.join(", ")}`}
+          </Text>
+        </View>
+      </View>
+
+      {/* Pool list */}
+      <ScrollView
+        style={styles.list}
+        contentContainerStyle={styles.detailListInner}
+        showsVerticalScrollIndicator={false}
+      >
+        {entry.pools.map((pool, idx) => (
+          <Pressable
+            key={pool.pool_id}
+            accessibilityRole="button"
+            onPress={() => onPoolTap(pool)}
+            style={[
+              styles.detailPoolRow,
+              idx > 0 && styles.detailPoolRowDivider,
+            ]}
+            testID={
+              testID ? `${testID}-pool-${pool.pool_id}` : undefined
+            }
+          >
+            <View style={styles.poolMain}>
+              <View style={styles.poolNameRow}>
+                <Text style={styles.detailPoolName} numberOfLines={2}>
+                  {pool.name}
+                </Text>
+                <Text style={styles.poolAsset}>·  {pool.asset}</Text>
+              </View>
+              <View style={styles.poolMetricsRow}>
+                <Text
+                  style={[styles.detailPoolApy, { color: apyAccent(pool.apy) }]}
+                >
+                  APY {formatApy(pool.apy)}
+                </Text>
+                <Text style={styles.poolMeta}>
+                  {`TVL ${formatTvlUsd(pool.tvl_usd)}`}
+                </Text>
+                {pool.borrowed_usd != null && (
+                  <Text style={styles.poolMeta}>
+                    {`borrowed ${formatBorrowedUsd(pool.borrowed_usd)}`}
+                  </Text>
+                )}
+              </View>
+            </View>
+          </Pressable>
+        ))}
+      </ScrollView>
     </View>
   );
 }
@@ -446,6 +694,17 @@ const styles = StyleSheet.create({
     shadowOpacity: 1,
     shadowRadius: 16,
     elevation: 12,
+    overflow: "hidden",
+  },
+  // 2-pane horizontal strip
+  pageStrip: {
+    flex: 1,
+    flexDirection: "row",
+    width: DRAWER_WIDTH * 2,
+  },
+  pane: {
+    width: DRAWER_WIDTH,
+    flexShrink: 0,
   },
   header: {
     flexDirection: "row",
@@ -454,7 +713,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: SPACE.md,
     paddingBottom: SPACE.sm,
   },
-  // Pacifico sodaText (per-screen brand color)
   title: {
     fontSize: FONT_SIZE.displayMD,
     fontFamily: FONT.script,
@@ -475,7 +733,7 @@ const styles = StyleSheet.create({
     color: COLOR.textSubtitle,
     fontWeight: WEIGHT.bold,
   },
-  // Search bar
+  // Search
   searchWrap: {
     marginHorizontal: SPACE.md,
     marginTop: SPACE.sm,
@@ -489,9 +747,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: COLOR.border,
   },
-  searchIcon: {
-    fontSize: 14,
-  },
+  searchIcon: { fontSize: 14 },
   searchInput: {
     flex: 1,
     fontSize: FONT_SIZE.bodyMD,
@@ -499,7 +755,7 @@ const styles = StyleSheet.create({
     color: COLOR.textPrimary,
     padding: 0,
   },
-  // Filter chips (Phase 5B.2 spec: 行 44 / chip 36)
+  // Filter chips
   chipsScroll: {
     height: 44,
     flexGrow: 0,
@@ -533,10 +789,8 @@ const styles = StyleSheet.create({
     fontWeight: WEIGHT.semibold,
     color: COLOR.textSubtitle,
   },
-  chipTextActive: {
-    color: COLOR.textOnColor,
-  },
-  // Deposited toggle row
+  chipTextActive: { color: COLOR.textOnColor },
+  // Deposited toggle
   depositToggleRow: {
     flexDirection: "row",
     alignItems: "center",
@@ -558,9 +812,7 @@ const styles = StyleSheet.create({
     backgroundColor: withAlpha(COLOR.textMuted, 0.25),
     justifyContent: "center",
   },
-  switchTrackOn: {
-    backgroundColor: COLOR.sodaText,
-  },
+  switchTrackOn: { backgroundColor: COLOR.sodaText },
   switchThumb: {
     width: 20,
     height: 20,
@@ -568,13 +820,9 @@ const styles = StyleSheet.create({
     backgroundColor: COLOR.textOnColor,
     alignSelf: "flex-start",
   },
-  switchThumbOn: {
-    alignSelf: "flex-end",
-  },
+  switchThumbOn: { alignSelf: "flex-end" },
   // List
-  list: {
-    flex: 1,
-  },
+  list: { flex: 1 },
   listInner: {
     paddingHorizontal: SPACE.md,
     paddingTop: SPACE.sm,
@@ -592,16 +840,20 @@ const styles = StyleSheet.create({
     letterSpacing: 1.2,
     marginBottom: SPACE.xs,
   },
+  // Card (1 protocol、collapsed only)
   card: {
+    borderRadius: RADIUS.lg,
+    backgroundColor: withAlpha(COLOR.textOnColor, 0.7),
+    borderWidth: 1,
+    borderColor: COLOR.border,
+    overflow: "hidden",
+  },
+  cardHeader: {
     flexDirection: "row",
     alignItems: "center",
     gap: SPACE.md,
     paddingHorizontal: SPACE.md,
     paddingVertical: SPACE.md - 2,
-    borderRadius: RADIUS.lg,
-    backgroundColor: withAlpha(COLOR.textOnColor, 0.7),
-    borderWidth: 1,
-    borderColor: COLOR.border,
   },
   iconBox: {
     width: 40,
@@ -609,6 +861,11 @@ const styles = StyleSheet.create({
     borderRadius: RADIUS.md,
     alignItems: "center",
     justifyContent: "center",
+    overflow: "hidden",
+  },
+  iconImg: {
+    width: 40,
+    height: 40,
   },
   iconLetter: {
     fontSize: FONT_SIZE.headingMD,
@@ -616,7 +873,7 @@ const styles = StyleSheet.create({
     fontWeight: WEIGHT.bold,
     color: COLOR.textOnColor,
   },
-  center: {
+  headerMain: {
     flex: 1,
     gap: 2,
   },
@@ -626,7 +883,7 @@ const styles = StyleSheet.create({
     gap: SPACE.xs,
   },
   name: {
-    fontSize: FONT_SIZE.bodyMD,
+    fontSize: FONT_SIZE.bodyLG,
     fontFamily: FONT.heading,
     fontWeight: WEIGHT.bold,
     color: COLOR.textPrimary,
@@ -647,19 +904,14 @@ const styles = StyleSheet.create({
     color: COLOR.melonText,
     fontWeight: WEIGHT.semibold,
   },
-  right: {
-    alignItems: "flex-end",
-    gap: 6,
-  },
-  apy: {
-    fontSize: FONT_SIZE.bodyLG,
+  chevron: {
+    fontSize: 22,
+    color: COLOR.textMuted,
     fontFamily: FONT.heading,
     fontWeight: WEIGHT.bold,
-  },
-  statusDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
+    width: 16,
+    textAlign: "center",
+    lineHeight: 22,
   },
   empty: {
     fontSize: FONT_SIZE.bodyMD,
@@ -667,5 +919,125 @@ const styles = StyleSheet.create({
     color: COLOR.textMuted,
     textAlign: "center",
     paddingVertical: SPACE.xl,
+  },
+  // ─── Detail pane (Phase 6.2) ─────────────────────────────────
+  detailPane: {
+    flex: 1,
+  },
+  backRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: SPACE.md,
+    paddingVertical: SPACE.sm,
+    height: 44,
+    gap: 4,
+  },
+  backChevron: {
+    fontSize: 28,
+    fontFamily: FONT.heading,
+    fontWeight: WEIGHT.bold,
+    color: COLOR.sodaText,
+    lineHeight: 28,
+    includeFontPadding: false,
+  },
+  backLabel: {
+    fontSize: FONT_SIZE.bodyLG,
+    fontFamily: FONT.heading,
+    fontWeight: WEIGHT.semibold,
+    color: COLOR.sodaText,
+  },
+  detailHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: SPACE.md,
+    paddingHorizontal: SPACE.md,
+    paddingTop: SPACE.sm,
+    paddingBottom: SPACE.md,
+    borderBottomWidth: 1,
+    borderBottomColor: COLOR.divider,
+  },
+  iconBoxLg: {
+    width: 56,
+    height: 56,
+    borderRadius: RADIUS.md,
+    alignItems: "center",
+    justifyContent: "center",
+    overflow: "hidden",
+  },
+  iconImgLg: {
+    width: 56,
+    height: 56,
+  },
+  iconLetterLg: {
+    fontSize: FONT_SIZE.displaySM,
+    fontFamily: FONT.heading,
+    fontWeight: WEIGHT.bold,
+    color: COLOR.textOnColor,
+  },
+  detailHeaderMain: {
+    flex: 1,
+    gap: 4,
+  },
+  detailName: {
+    fontSize: FONT_SIZE.headingLG,
+    fontFamily: FONT.heading,
+    fontWeight: WEIGHT.bold,
+    color: COLOR.textPrimary,
+  },
+  detailMeta: {
+    fontSize: FONT_SIZE.bodyMD,
+    fontFamily: FONT.body,
+    color: COLOR.textMuted,
+  },
+  detailListInner: {
+    paddingHorizontal: SPACE.md,
+    paddingTop: SPACE.sm,
+    paddingBottom: SPACE.xl,
+  },
+  detailPoolRow: {
+    paddingVertical: SPACE.md,
+  },
+  detailPoolRowDivider: {
+    borderTopWidth: 1,
+    borderTopColor: COLOR.divider,
+  },
+  detailPoolName: {
+    fontSize: FONT_SIZE.bodyLG,
+    fontFamily: FONT.heading,
+    fontWeight: WEIGHT.bold,
+    color: COLOR.textPrimary,
+  },
+  detailPoolApy: {
+    fontSize: FONT_SIZE.bodyLG,
+    fontFamily: FONT.heading,
+    fontWeight: WEIGHT.bold,
+  },
+  // ─── Pool row shared ─────────────────────────────────────────
+  poolMain: {
+    gap: 4,
+  },
+  poolNameRow: {
+    flexDirection: "row",
+    alignItems: "baseline",
+    gap: SPACE.xs,
+    flexWrap: "wrap",
+  },
+  poolAsset: {
+    fontSize: FONT_SIZE.bodySM,
+    fontFamily: FONT.heading,
+    fontWeight: WEIGHT.regular,
+    color: COLOR.textSubtitle,
+  },
+  poolMetricsRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: SPACE.md,
+    flexWrap: "wrap",
+    marginTop: 2,
+  },
+  poolMeta: {
+    fontSize: FONT_SIZE.bodySM,
+    fontFamily: FONT.body,
+    color: COLOR.textMuted,
   },
 });
