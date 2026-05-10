@@ -37,6 +37,7 @@ import {
   setupNotificationHandler,
   type ApprovalPushPayload,
 } from "../services/push";
+import { ComingSoonToast } from "../components/feedback/ComingSoonToast";
 
 // SplashScreen が消えるタイミングを font load 完了後にする
 SplashScreen.preventAutoHideAsync().catch(() => {
@@ -102,6 +103,8 @@ export default function RootLayout() {
         <BottomSheetModalProvider>
           <View style={{ flex: 1 }} onLayout={onLayoutReady}>
             <Stack screenOptions={{ headerShown: false }} />
+            {/* Phase 7.8: global "Coming soon" toast (bottom-center, pointerEvents none) */}
+            <ComingSoonToast />
           </View>
         </BottomSheetModalProvider>
       </QueryClientProvider>

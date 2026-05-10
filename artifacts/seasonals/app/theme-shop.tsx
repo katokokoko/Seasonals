@@ -26,7 +26,6 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { useRouter } from "expo-router";
 
 import {
-  COLOR,
   FONT,
   FONT_SIZE,
   RADIUS,
@@ -39,6 +38,8 @@ import {
   DEFAULT_THEME_ID,
   THEME_CATALOG,
   useThemeStore,
+  useThemedStyles,
+  type ThemeColors,
   type ThemeMeta,
 } from "../stores/theme";
 
@@ -50,20 +51,28 @@ export default function ThemeShopScreen() {
   const purchase = useThemeStore((s) => s.purchase);
   const hydrate = useThemeStore((s) => s.hydrate);
 
+  // Phase 7.9: theme 連動 styles (theme shop 内で Purchase/Apply 直後に即時切替を視認)
+  const styles = useThemedStyles(makeStyles);
+
   // 起動時に AsyncStorage から復元
   useEffect(() => {
     hydrate();
   }, [hydrate]);
 
   const handlePurchase = (theme: ThemeMeta) => {
+    // Phase 7.8: demo purchase は即 apply (確認後すぐ画面色が切替わる "instant
+    // gratification")。実 payment は走らず AsyncStorage に owned 追加のみ。
     Alert.alert(
-      "Purchase",
-      `Purchase ${theme.name} for ${theme.price}?`,
+      "Purchase & Apply",
+      `Purchase ${theme.name} for ${theme.price}?\n\nThis is a prototype — no real payment will be charged.`,
       [
         { text: "Cancel", style: "cancel" },
         {
           text: "Confirm",
-          onPress: () => purchase(theme.id),
+          onPress: () => {
+            purchase(theme.id);
+            setActive(theme.id);
+          },
         },
       ]
     );
@@ -189,10 +198,12 @@ export default function ThemeShopScreen() {
 // ヘッダの空 spacer 用 (空 export 警告を抑制するため未使用 const は出さない)
 void DEFAULT_THEME_ID;
 
-const styles = StyleSheet.create({
+// Phase 7.9: theme 連動 styles factory
+function makeStyles(c: ThemeColors) {
+  return StyleSheet.create({
   safe: {
     flex: 1,
-    backgroundColor: COLOR.bgPrimary,
+    backgroundColor: c.bgPrimary,
   },
   header: {
     flexDirection: "row",
@@ -206,18 +217,18 @@ const styles = StyleSheet.create({
     paddingHorizontal: SPACE.md,
     paddingVertical: SPACE.xs + 2,
     borderRadius: RADIUS.pill,
-    backgroundColor: withAlpha(COLOR.textMuted, 0.1),
+    backgroundColor: withAlpha(c.textMuted, 0.1),
   },
   backText: {
     fontSize: FONT_SIZE.bodyMD,
     fontFamily: FONT.heading,
     fontWeight: WEIGHT.semibold,
-    color: COLOR.textPrimary,
+    color: c.textPrimary,
   },
   title: {
     fontFamily: FONT.script,
     fontSize: 32,
-    color: COLOR.melonText,
+    color: c.melonText,
     lineHeight: 44,
     includeFontPadding: false,
   },
@@ -231,15 +242,15 @@ const styles = StyleSheet.create({
   subtitle: {
     fontSize: FONT_SIZE.bodyMD,
     fontFamily: FONT.body,
-    color: COLOR.textSubtitle,
+    color: c.textSubtitle,
     marginTop: SPACE.sm,
     marginBottom: SPACE.md,
     lineHeight: 20,
   },
   promoCard: {
-    backgroundColor: withAlpha(COLOR.melonLight, 0.4),
+    backgroundColor: withAlpha(c.melonLight, 0.4),
     borderWidth: 1,
-    borderColor: withAlpha(COLOR.melonText, 0.3),
+    borderColor: withAlpha(c.melonText, 0.3),
     borderRadius: RADIUS.lg,
     padding: SPACE.md,
     gap: SPACE.xs,
@@ -249,28 +260,28 @@ const styles = StyleSheet.create({
     fontSize: FONT_SIZE.bodyMD,
     fontFamily: FONT.heading,
     fontWeight: WEIGHT.bold,
-    color: COLOR.melonText,
+    color: c.melonText,
   },
   promoBody: {
     fontSize: FONT_SIZE.bodySM,
     fontFamily: FONT.body,
-    color: COLOR.textSubtitle,
+    color: c.textSubtitle,
     lineHeight: 18,
   },
   // Theme card
   card: {
     flexDirection: "row",
     gap: SPACE.md,
-    backgroundColor: withAlpha(COLOR.textOnColor, 0.6),
+    backgroundColor: withAlpha(c.textOnColor, 0.6),
     borderRadius: RADIUS.lg,
     borderWidth: 1,
-    borderColor: COLOR.border,
+    borderColor: c.border,
     padding: SPACE.md,
     marginBottom: SPACE.md,
   },
   cardActive: {
-    borderColor: withAlpha(COLOR.sodaText, 0.5),
-    backgroundColor: withAlpha(COLOR.sodaLight, 0.18),
+    borderColor: withAlpha(c.sodaText, 0.5),
+    backgroundColor: withAlpha(c.sodaLight, 0.18),
   },
   swatchCol: {
     width: 50,
@@ -294,24 +305,24 @@ const styles = StyleSheet.create({
     fontSize: FONT_SIZE.headingMD,
     fontFamily: FONT.heading,
     fontWeight: WEIGHT.bold,
-    color: COLOR.textPrimary,
+    color: c.textPrimary,
   },
   activePill: {
     paddingHorizontal: SPACE.sm,
     paddingVertical: 2,
     borderRadius: RADIUS.pill,
-    backgroundColor: withAlpha(COLOR.sodaText, 0.18),
+    backgroundColor: withAlpha(c.sodaText, 0.18),
   },
   activePillText: {
     fontSize: FONT_SIZE.bodySM,
     fontFamily: FONT.heading,
     fontWeight: WEIGHT.bold,
-    color: COLOR.sodaText,
+    color: c.sodaText,
   },
   themeDesc: {
     fontSize: FONT_SIZE.bodySM,
     fontFamily: FONT.body,
-    color: COLOR.textSubtitle,
+    color: c.textSubtitle,
     lineHeight: 18,
   },
   actionRow: {
@@ -325,13 +336,13 @@ const styles = StyleSheet.create({
     paddingHorizontal: SPACE.lg,
     paddingVertical: SPACE.xs + 2,
     borderRadius: RADIUS.pill,
-    backgroundColor: COLOR.sodaText,
+    backgroundColor: c.sodaText,
   },
   applyText: {
     fontSize: FONT_SIZE.bodyMD,
     fontFamily: FONT.heading,
     fontWeight: WEIGHT.bold,
-    color: COLOR.textOnColor,
+    color: c.textOnColor,
   },
   // In use (active) — outlined
   inUseBtn: {
@@ -339,38 +350,39 @@ const styles = StyleSheet.create({
     paddingVertical: SPACE.xs + 2,
     borderRadius: RADIUS.pill,
     borderWidth: 1,
-    borderColor: COLOR.borderStrong,
+    borderColor: c.borderStrong,
   },
   inUseText: {
     fontSize: FONT_SIZE.bodyMD,
     fontFamily: FONT.heading,
     fontWeight: WEIGHT.semibold,
-    color: COLOR.textPrimary,
+    color: c.textPrimary,
   },
   // Purchase (not owned) — sodaText filled + price
   purchaseBtn: {
     paddingHorizontal: SPACE.lg,
     paddingVertical: SPACE.xs + 2,
     borderRadius: RADIUS.pill,
-    backgroundColor: COLOR.sodaText,
+    backgroundColor: c.sodaText,
   },
   purchaseText: {
     fontSize: FONT_SIZE.bodyMD,
     fontFamily: FONT.heading,
     fontWeight: WEIGHT.bold,
-    color: COLOR.textOnColor,
+    color: c.textOnColor,
   },
   priceText: {
     fontSize: FONT_SIZE.bodyMD,
     fontFamily: FONT.heading,
     fontWeight: WEIGHT.semibold,
-    color: COLOR.textSubtitle,
+    color: c.textSubtitle,
   },
   footerNote: {
     fontSize: FONT_SIZE.caption,
     fontFamily: FONT.body,
-    color: COLOR.textMuted,
+    color: c.textMuted,
     textAlign: "center",
     marginTop: SPACE.lg,
   },
-});
+  });
+}

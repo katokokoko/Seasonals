@@ -36,7 +36,6 @@ import Animated, {
 import { format } from "date-fns";
 
 import {
-  COLOR,
   FONT,
   FONT_SIZE,
   RADIUS,
@@ -80,9 +79,23 @@ import {
   isoToDate,
   dateToIso,
 } from "../stores/calendarDay";
+import {
+  useActiveTheme,
+  useThemedStyles,
+  type ThemeColors,
+} from "../stores/theme";
 
 // MVP fixed reference date (CLAUDE.md auto-memory currentDate と整合)。
 const MOCK_TODAY = new Date("2026-05-09T00:00:00.000Z");
+
+function localDayKey(day: Date): string {
+  return `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, "0")}-${String(day.getDate()).padStart(2, "0")}`;
+}
+
+function eventDayKey(triggerAt: UnifiedTimeEvent["triggerAt"]): string {
+  const ts = triggerAt instanceof Date ? triggerAt : new Date(triggerAt);
+  return `${ts.getUTCFullYear()}-${String(ts.getUTCMonth() + 1).padStart(2, "0")}-${String(ts.getUTCDate()).padStart(2, "0")}`;
+}
 
 export default function HomeScreen() {
   const [selectedDay, setSelectedDay] = useState<Date | null>(null);
@@ -163,16 +176,7 @@ export default function HomeScreen() {
   };
 
   const dayEvents = selectedDay
-    ? events.filter((e) => {
-        const ts = e.triggerAt instanceof Date
-          ? e.triggerAt
-          : new Date(e.triggerAt);
-        return (
-          ts.getFullYear() === selectedDay.getFullYear() &&
-          ts.getMonth() === selectedDay.getMonth() &&
-          ts.getDate() === selectedDay.getDate()
-        );
-      })
+    ? events.filter((e) => eventDayKey(e.triggerAt) === localDayKey(selectedDay))
     : [];
 
   const handleDayPress = (day: Date) => {
@@ -214,6 +218,12 @@ export default function HomeScreen() {
   // WalletPopover anchor: drink button (Row 1) のすぐ下
   const walletAnchorTop = topPad + 48;
 
+  // Phase 7.8: active theme の logo color (Seasonals wordmark)
+  const logoColor = useActiveTheme().accent.logo;
+
+  // Phase 7.9: theme 連動 styles
+  const styles = useThemedStyles(makeStyles);
+
   return (
     <SafeAreaView style={styles.safe} edges={["bottom"]}>
       {/* Phase 7.1: melon-soda gravity-aware ambient bg (touch 透過、最背面) */}
@@ -227,7 +237,7 @@ export default function HomeScreen() {
           hitSlop={8}
           testID="home-brand"
         >
-          <Text style={styles.brand}>Seasonals</Text>
+          <Text style={[styles.brand, { color: logoColor }]}>Seasonals</Text>
         </Pressable>
         <View style={styles.row1Right}>
           <ViewModeTogglePill testID="home-view-toggle" />
@@ -360,85 +370,88 @@ export default function HomeScreen() {
   );
 }
 
-const styles = StyleSheet.create({
-  safe: {
-    flex: 1,
-    backgroundColor: COLOR.bgPrimary,
-  },
-  // Row 1: Seasonals | toggle pill | wallet drink
-  row1: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    paddingHorizontal: SPACE.lg,
-    paddingBottom: SPACE.xs,
-  },
-  row1Right: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: SPACE.sm,
-  },
-  brand: {
-    // Pacifico — per-screen brand wordmark (CLAUDE.md §6 brand-only) sodaText for Home
-    fontFamily: FONT.script,
-    fontSize: 32,
-    color: COLOR.sodaText,
-    lineHeight: 44,
-    includeFontPadding: false,
-  },
-  // Row 2: Month label | Open Menu →
-  row2: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    paddingHorizontal: SPACE.lg,
-    paddingTop: SPACE.sm,
-    paddingBottom: SPACE.sm,
-  },
-  monthLabelRow: {
-    flexDirection: "row",
-    alignItems: "baseline",
-    gap: 8,
-  },
-  monthLabelMonth: {
-    fontSize: FONT_SIZE.displayMD,
-    fontFamily: FONT.heading,
-    fontWeight: WEIGHT.bold,
-    color: COLOR.textPrimary,
-  },
-  monthLabelYear: {
-    fontSize: FONT_SIZE.bodyLG,
-    fontFamily: FONT.heading,
-    fontWeight: WEIGHT.regular,
-    color: COLOR.textMuted,
-  },
-  menuBtn: {
-    paddingHorizontal: SPACE.md,
-    paddingVertical: SPACE.xs + 2,
-    borderRadius: RADIUS.pill,
-    backgroundColor: withAlpha(COLOR.sodaLight, 0.7),
-  },
-  menuBtnText: {
-    fontSize: FONT_SIZE.bodyMD,
-    fontFamily: FONT.heading,
-    fontWeight: WEIGHT.semibold,
-    color: COLOR.sodaText,
-  },
-  bodyWrap: {
-    flex: 1,
-    paddingTop: SPACE.xs,
-  },
-  // Phase 5B.1: mascot は collapsed sheet (25%) のすぐ上に配置、展開時は sheet が overlap
-  mascotWrap: {
-    position: "absolute",
-    left: 0,
-    right: 0,
-    bottom: Dimensions.get("window").height * 0.25 + 8,
-    alignItems: "center",
-  },
-  mascotImage: {
-    width: Math.min(280, Dimensions.get("window").width * 0.7),
-    height: 180,
-    opacity: 0.92,
-  },
-});
+// Phase 7.9: theme 連動 styles factory (useThemedStyles から呼ばれる)
+function makeStyles(c: ThemeColors) {
+  return StyleSheet.create({
+    safe: {
+      flex: 1,
+      backgroundColor: c.bgPrimary,
+    },
+    // Row 1: Seasonals | toggle pill | wallet drink
+    row1: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+      paddingHorizontal: SPACE.lg,
+      paddingBottom: SPACE.xs,
+    },
+    row1Right: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: SPACE.sm,
+    },
+    brand: {
+      // Pacifico — per-screen brand wordmark。color は inline で active theme logo を上書き
+      fontFamily: FONT.script,
+      fontSize: 32,
+      color: c.sodaText,
+      lineHeight: 44,
+      includeFontPadding: false,
+    },
+    // Row 2: Month label | Open Menu →
+    row2: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+      paddingHorizontal: SPACE.lg,
+      paddingTop: SPACE.sm,
+      paddingBottom: SPACE.sm,
+    },
+    monthLabelRow: {
+      flexDirection: "row",
+      alignItems: "baseline",
+      gap: 8,
+    },
+    monthLabelMonth: {
+      fontSize: FONT_SIZE.displayMD,
+      fontFamily: FONT.heading,
+      fontWeight: WEIGHT.bold,
+      color: c.textPrimary,
+    },
+    monthLabelYear: {
+      fontSize: FONT_SIZE.bodyLG,
+      fontFamily: FONT.heading,
+      fontWeight: WEIGHT.regular,
+      color: c.textMuted,
+    },
+    menuBtn: {
+      paddingHorizontal: SPACE.md,
+      paddingVertical: SPACE.xs + 2,
+      borderRadius: RADIUS.pill,
+      backgroundColor: withAlpha(c.sodaLight, 0.7),
+    },
+    menuBtnText: {
+      fontSize: FONT_SIZE.bodyMD,
+      fontFamily: FONT.heading,
+      fontWeight: WEIGHT.semibold,
+      color: c.sodaText,
+    },
+    bodyWrap: {
+      flex: 1,
+      paddingTop: SPACE.xs,
+    },
+    // Phase 5B.1: mascot は collapsed sheet (25%) のすぐ上に配置、展開時は sheet が overlap
+    mascotWrap: {
+      position: "absolute",
+      left: 0,
+      right: 0,
+      bottom: Dimensions.get("window").height * 0.25 + 8,
+      alignItems: "center",
+    },
+    mascotImage: {
+      width: Math.min(280, Dimensions.get("window").width * 0.7),
+      height: 180,
+      opacity: 0.92,
+    },
+  });
+}

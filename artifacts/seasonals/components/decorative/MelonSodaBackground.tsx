@@ -33,6 +33,8 @@ import Animated, {
 // withTiming は bubble の上昇 / shake では使うが、sensor 入力には使わない
 //   (sensor 20Hz + withTiming 100ms は animation queue thrash の原因、Phase 7.3)
 
+import { useActiveTheme } from "../../stores/theme";
+
 const SCREEN_W = Dimensions.get("window").width;
 const SCREEN_H = Dimensions.get("window").height;
 
@@ -47,13 +49,10 @@ const BURST_COUNT = 10;
 const BASELINE_BUBBLES = 6;
 const MAX_BUBBLES = 20;
 
-// Soda palette (Kotlin 参考実装由来、CLAUDE.md §6 例外:
-// 飲料の質感を表現する soda-only literal、本ファイル内に閉じ込める)
-const SODA_TOP = "#B4F0C8"; // 0%   alpha 0.50
-const SODA_MID = "#7DE1AF"; // 10%  alpha 0.62
-const SODA_DEEP = "#3CC382"; // 45%  alpha 0.78
-const SODA_BOTTOM = "#0F6E4B"; // 100% alpha 0.93
-const POOL_SHADOW = "#084632"; // bottom radial pool
+// Phase 7.8: Soda palette は active theme の bgPalette から動的取得 (useActiveTheme)。
+// 過去版の SODA_* / POOL_SHADOW literal は stores/theme.ts の THEME_CATALOG
+// (Cream Soda エントリ) に同値で移管済 (Midnight Orchard / Berry Fizz / Lemon Grove
+// は別 palette)。
 
 interface BubbleEntry {
   id: number;
@@ -73,6 +72,9 @@ function spawnBubble(): BubbleEntry {
 }
 
 export function MelonSodaBackground() {
+  // Phase 7.8: active theme の bgPalette を読み取る (theme 切替で即時 re-render)
+  const { bgPalette: palette } = useActiveTheme();
+
   // gravity x in [-1, 1] (左右傾き)
   const gravityX = useSharedValue(0);
 
@@ -132,11 +134,11 @@ export function MelonSodaBackground() {
       <Animated.View style={[styles.liquidWrap, liquidAnimStyle]}>
         <LinearGradient
           colors={[
-            // Phase 7.3: alpha を Phase 7.1 並みに下げて全体を薄く
-            `${SODA_TOP}4D`, // alpha 0.30
-            `${SODA_MID}66`, // alpha 0.40
-            `${SODA_DEEP}80`, // alpha 0.50
-            `${SODA_BOTTOM}8C`, // alpha 0.55
+            // Phase 7.3 alpha (0.30/0.40/0.50/0.55) を Phase 7.8 で theme palette と合成
+            `${palette.top}4D`,
+            `${palette.mid}66`,
+            `${palette.deep}80`,
+            `${palette.bottom}8C`,
           ]}
           locations={[0, 0.1, 0.45, 1.0]}
           style={StyleSheet.absoluteFill}
@@ -156,8 +158,8 @@ export function MelonSodaBackground() {
               fx="50%"
               fy="100%"
             >
-              <Stop offset="0%" stopColor={POOL_SHADOW} stopOpacity={0.35} />
-              <Stop offset="100%" stopColor={POOL_SHADOW} stopOpacity={0} />
+              <Stop offset="0%" stopColor={palette.pool} stopOpacity={0.35} />
+              <Stop offset="100%" stopColor={palette.pool} stopOpacity={0} />
             </RadialGradient>
           </Defs>
           <Rect x="0" y="0" width="100%" height="100%" fill="url(#poolShadow)" />

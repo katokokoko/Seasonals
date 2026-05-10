@@ -34,7 +34,6 @@ import Animated, {
 } from "react-native-reanimated";
 
 import {
-  COLOR,
   FONT,
   FONT_SIZE,
   RADIUS,
@@ -44,6 +43,11 @@ import {
 } from "@workspace/lib/design-system";
 
 import { useWallet } from "../../services/useWallet";
+import { useComingSoon } from "../../stores/comingSoon";
+import {
+  useThemedStyles,
+  type ThemeColors,
+} from "../../stores/theme";
 
 function shortenAddress(addr: string): string {
   if (addr.length <= 10) return addr;
@@ -72,6 +76,8 @@ export function WalletPopover({
   const router = useRouter();
   // Phase 7.4: fixture wallets を撤去、MWA authorization のみを表示
   const { authorization, connect } = useWallet();
+  // Phase 7.9: theme 連動 styles
+  const styles = useThemedStyles(makeStyles);
 
   // Phase 7.6 motion: ActionModal と同型の renderModal lifecycle で
   // close 完了後に Modal を unmount する (中断時は finished===false で安全)。
@@ -107,6 +113,16 @@ export function WalletPopover({
   }));
 
   const handleAddWallet = async () => {
+    // Phase 7.8: 接続済 wallet がある状態での "+ Add Wallet" は multi-wallet
+    // 機能 (未実装) の入口として扱い、Coming Soon を表示。未接続なら初回
+    // connect の動線として既存通り MWA connect を起動。
+    if (authorization) {
+      onClose();
+      useComingSoon
+        .getState()
+        .show("Multi-wallet support is coming soon");
+      return;
+    }
     onClose();
     try {
       await connect();
@@ -208,149 +224,153 @@ export function WalletPopover({
   );
 }
 
-const styles = StyleSheet.create({
-  // Phase 7.6: backdrop は alpha を Animated で駆動するため不透明色 + opacity 分離
-  backdropBase: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: "#000",
-  },
-  card: {
-    position: "absolute",
-    right: 14,
-    width: 280,
-    backgroundColor: COLOR.bgCard,
-    borderRadius: RADIUS.lg,
-    padding: 14,
-    borderWidth: 1,
-    borderColor: COLOR.border,
-    overflow: "hidden",
-    // Phase 7.6: drink button (右上) を支点に scale させる
-    transformOrigin: "top right",
-    shadowColor: "rgba(0,0,0,0.18)",
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 1,
-    shadowRadius: 18,
-    elevation: 12,
-  },
-  cardBlur: {
-    ...StyleSheet.absoluteFillObject,
-    borderRadius: RADIUS.lg,
-  },
-  cardTint: {
-    ...StyleSheet.absoluteFillObject,
-    backgroundColor: COLOR.bgCard,
-    borderRadius: RADIUS.lg,
-  },
-  cardHighlight: {
-    position: "absolute",
-    top: 0,
-    left: 0,
-    right: 0,
-    height: 1,
-    backgroundColor: "rgba(255,255,255,0.65)",
-  },
-  heading: {
-    color: COLOR.textMuted,
-    fontFamily: FONT.heading,
-    fontSize: FONT_SIZE.overline,
-    fontWeight: WEIGHT.bold,
-    textTransform: "uppercase",
-    letterSpacing: 0.8,
-    marginBottom: SPACE.sm,
-    marginLeft: 2,
-  },
-  walletsSection: {
-    gap: SPACE.xs,
-    marginBottom: SPACE.xs,
-  },
-  walletRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    backgroundColor: withAlpha(COLOR.textOnColor, 0.6),
-    borderRadius: RADIUS.md,
-    padding: 10,
-    borderWidth: 1,
-    borderColor: COLOR.border,
-  },
-  iconDark: {
-    width: 36,
-    height: 36,
-    borderRadius: RADIUS.md,
-    backgroundColor: COLOR.textPrimary,
-    alignItems: "center",
-    justifyContent: "center",
-    marginRight: 12,
-  },
-  iconLetter: {
-    fontSize: FONT_SIZE.bodyLG,
-    fontFamily: FONT.heading,
-    fontWeight: WEIGHT.bold,
-    color: COLOR.textOnColor,
-  },
-  walletMain: {
-    flex: 1,
-    gap: 1,
-  },
-  walletLabel: {
-    color: COLOR.textMuted,
-    fontFamily: FONT.body,
-    fontSize: 11,
-  },
-  walletProvider: {
-    color: COLOR.textPrimary,
-    fontFamily: FONT.heading,
-    fontWeight: WEIGHT.bold,
-    fontSize: FONT_SIZE.bodyMD,
-  },
-  walletAddress: {
-    color: COLOR.textMuted,
-    fontFamily: FONT.mono,
-    fontSize: FONT_SIZE.bodySM,
-  },
-  statusDot: {
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    backgroundColor: COLOR.melonText,
-    marginLeft: SPACE.xs,
-  },
-  addRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    padding: 10,
-    marginTop: SPACE.xs,
-    borderRadius: RADIUS.md,
-    borderWidth: 1,
-    borderColor: COLOR.border,
-    backgroundColor: withAlpha(COLOR.textOnColor, 0.4),
-  },
-  addBadge: {
-    width: 36,
-    height: 36,
-    borderRadius: RADIUS.md,
-    backgroundColor: COLOR.sodaLight,
-    alignItems: "center",
-    justifyContent: "center",
-    marginRight: 12,
-  },
-  addBadgePlus: {
-    fontSize: 22,
-    fontFamily: FONT.heading,
-    fontWeight: WEIGHT.bold,
-    color: COLOR.sodaText,
-    lineHeight: 24,
-  },
-  subBtn: {
-    marginTop: SPACE.sm,
-    paddingVertical: 10,
-    borderRadius: RADIUS.pill,
-    backgroundColor: COLOR.melonDeep,
-    alignItems: "center",
-  },
-  subBtnText: {
-    fontSize: FONT_SIZE.bodyMD,
-    fontFamily: FONT.heading,
-    fontWeight: WEIGHT.bold,
-    color: COLOR.textOnColor,
-  },
-});
+// Phase 7.9: theme 連動 styles factory
+function makeStyles(c: ThemeColors) {
+  return StyleSheet.create({
+    // Phase 7.6: backdrop は alpha を Animated で駆動するため不透明色 + opacity 分離
+    backdropBase: {
+      ...StyleSheet.absoluteFillObject,
+      backgroundColor: "#000",
+    },
+    card: {
+      position: "absolute",
+      right: 14,
+      width: 280,
+      backgroundColor: c.bgCard,
+      borderRadius: RADIUS.lg,
+      padding: 14,
+      borderWidth: 1,
+      borderColor: c.border,
+      overflow: "hidden",
+      // Phase 7.6: drink button (右上) を支点に scale させる
+      transformOrigin: "top right",
+      shadowColor: "rgba(0,0,0,0.18)",
+      shadowOffset: { width: 0, height: 8 },
+      shadowOpacity: 1,
+      shadowRadius: 18,
+      elevation: 12,
+    },
+    cardBlur: {
+      ...StyleSheet.absoluteFillObject,
+      borderRadius: RADIUS.lg,
+    },
+    cardTint: {
+      ...StyleSheet.absoluteFillObject,
+      backgroundColor: c.bgCard,
+      borderRadius: RADIUS.lg,
+    },
+    cardHighlight: {
+      position: "absolute",
+      top: 0,
+      left: 0,
+      right: 0,
+      height: 1,
+      backgroundColor: "rgba(255,255,255,0.65)",
+    },
+    heading: {
+      color: c.textMuted,
+      fontFamily: FONT.heading,
+      fontSize: FONT_SIZE.overline,
+      fontWeight: WEIGHT.bold,
+      textTransform: "uppercase",
+      letterSpacing: 0.8,
+      marginBottom: SPACE.sm,
+      marginLeft: 2,
+    },
+    walletsSection: {
+      gap: SPACE.xs,
+      marginBottom: SPACE.xs,
+    },
+    walletRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      backgroundColor: withAlpha(c.textOnColor, 0.6),
+      borderRadius: RADIUS.md,
+      padding: 10,
+      borderWidth: 1,
+      borderColor: c.border,
+    },
+    iconDark: {
+      width: 36,
+      height: 36,
+      borderRadius: RADIUS.md,
+      backgroundColor: c.textPrimary,
+      alignItems: "center",
+      justifyContent: "center",
+      marginRight: 12,
+    },
+    iconLetter: {
+      fontSize: FONT_SIZE.bodyLG,
+      fontFamily: FONT.heading,
+      fontWeight: WEIGHT.bold,
+      color: c.textOnColor,
+    },
+    walletMain: {
+      flex: 1,
+      gap: 1,
+    },
+    walletLabel: {
+      color: c.textMuted,
+      fontFamily: FONT.body,
+      fontSize: 11,
+    },
+    walletProvider: {
+      color: c.textPrimary,
+      fontFamily: FONT.heading,
+      fontWeight: WEIGHT.bold,
+      fontSize: FONT_SIZE.bodyMD,
+    },
+    walletAddress: {
+      color: c.textMuted,
+      fontFamily: FONT.mono,
+      fontSize: FONT_SIZE.bodySM,
+    },
+    statusDot: {
+      width: 8,
+      height: 8,
+      borderRadius: 4,
+      backgroundColor: c.melonText,
+      marginLeft: SPACE.xs,
+    },
+    addRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      padding: 10,
+      marginTop: SPACE.xs,
+      borderRadius: RADIUS.md,
+      borderWidth: 1,
+      borderColor: c.border,
+      backgroundColor: withAlpha(c.textOnColor, 0.4),
+    },
+    addBadge: {
+      width: 36,
+      height: 36,
+      borderRadius: RADIUS.md,
+      backgroundColor: c.sodaLight,
+      alignItems: "center",
+      justifyContent: "center",
+      marginRight: 12,
+    },
+    addBadgePlus: {
+      fontSize: 22,
+      fontFamily: FONT.heading,
+      fontWeight: WEIGHT.bold,
+      color: c.sodaText,
+      lineHeight: 24,
+    },
+    subBtn: {
+      marginTop: SPACE.sm,
+      paddingVertical: 10,
+      borderRadius: RADIUS.pill,
+      // Phase 7.9: melonDeep は theme palette 外なので melonText (CTA primary) にマップ
+      backgroundColor: c.melonText,
+      alignItems: "center",
+    },
+    subBtnText: {
+      fontSize: FONT_SIZE.bodyMD,
+      fontFamily: FONT.heading,
+      fontWeight: WEIGHT.bold,
+      color: c.textOnColor,
+    },
+  });
+}

@@ -28,7 +28,6 @@ import BottomSheet, {
 import type { SharedValue } from "react-native-reanimated";
 
 import {
-  COLOR,
   FONT,
   FONT_SIZE,
   GLASS_RN,
@@ -39,6 +38,11 @@ import {
 } from "@workspace/lib/design-system";
 import type { Position, Protocol } from "@workspace/lib/types";
 
+import {
+  useThemeColors,
+  useThemedStyles,
+  type ThemeColors,
+} from "../../stores/theme";
 import { AllocationDonut } from "./AllocationDonut";
 import { Charts } from "./Charts";
 import { SponsoredCard } from "./SponsoredCard";
@@ -83,6 +87,9 @@ export function PortfolioSummary({
   animatedPosition,
   testID,
 }: PortfolioSummaryProps) {
+  // Phase 7.9: theme 連動 styles
+  const styles = useThemedStyles(makeStyles);
+
   const sheetRef = useRef<BottomSheetMethods>(null);
   // Phase 5B.1: 3 snap points
   //   25% = collapsed (PORTFOLIO + total + yield + USDC/SOL toggle のみ、上に mascot 露出)
@@ -309,6 +316,8 @@ function GlassBackground({
   style,
   pointerEvents,
 }: BottomSheetBackgroundProps) {
+  // Phase 7.9: sheet 拡張時の opaque bg を theme 連動に
+  const themeColors = useThemeColors();
   return (
     <View
       pointerEvents={pointerEvents}
@@ -328,11 +337,11 @@ function GlassBackground({
         },
       ]}
     >
-      {/* Opaque cream bg — sheet 拡張時に home の header / weekday が透けないよう不透明化 */}
+      {/* Opaque themed bg — sheet 拡張時に home の header / weekday が透けないよう不透明化 */}
       <View
         style={[
           StyleSheet.absoluteFill,
-          { backgroundColor: COLOR.bgPrimary },
+          { backgroundColor: themeColors.bgPrimary },
         ]}
       />
       {/* Phase 5B.1: mascot は sheet 内ではなく home 階層に配置し、collapsed 時に上に露出 */}
@@ -340,181 +349,182 @@ function GlassBackground({
   );
 }
 
-const styles = StyleSheet.create({
-  handle: {
-    paddingTop: SPACE.sm,
-    paddingBottom: SPACE.xs,
-    alignItems: "center",
-  },
-  grabber: {
-    width: 44,
-    height: 4,
-    borderRadius: 2,
-    backgroundColor: COLOR.borderStrong,
-  },
-  body: {
-    paddingHorizontal: SPACE.md,
-    paddingBottom: SPACE.xxl,
-    gap: SPACE.sm,
-  },
-  section: {
-    paddingTop: SPACE.lg,
-    gap: SPACE.sm,
-  },
-  sectionLabel: {
-    fontSize: FONT_SIZE.caption,
-    fontFamily: FONT.body,
-    fontWeight: WEIGHT.bold,
-    color: COLOR.textMuted,
-    textTransform: "uppercase",
-    letterSpacing: 1.2,
-  },
-  allocRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: SPACE.md,
-  },
-  legend: {
-    flex: 1,
-    gap: 6,
-  },
-  legendRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    gap: SPACE.sm,
-  },
-  legendLeft: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: SPACE.xs + 2,
-    flex: 1,
-  },
-  swatch: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-  },
-  legendLabel: {
-    fontSize: FONT_SIZE.bodyMD,
-    fontFamily: FONT.heading,
-    fontWeight: WEIGHT.semibold,
-    color: COLOR.textPrimary,
-    flexShrink: 1,
-  },
-  legendValue: {
-    fontSize: FONT_SIZE.bodySM,
-    fontFamily: FONT.heading,
-    fontWeight: WEIGHT.regular,
-    color: COLOR.textSubtitle,
-  },
-  topRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-  },
-  portfolioLabel: {
-    fontSize: FONT_SIZE.caption,
-    fontFamily: FONT.body,
-    fontWeight: WEIGHT.bold,
-    color: COLOR.textMuted,
-    textTransform: "uppercase",
-    letterSpacing: 1.2,
-  },
-  total: {
-    fontSize: FONT_SIZE.displayMD,
-    fontFamily: FONT.heading,
-    fontWeight: WEIGHT.bold,
-    color: COLOR.textPrimary,
-  },
-  yieldRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: SPACE.sm,
-  },
-  yieldText: {
-    fontSize: FONT_SIZE.bodyMD,
-    fontFamily: FONT.heading,
-    fontWeight: WEIGHT.semibold,
-    color: COLOR.melonText,
-  },
-  avgYieldPill: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 4,
-    paddingHorizontal: SPACE.sm,
-    paddingVertical: 2,
-    borderRadius: RADIUS.pill,
-    backgroundColor: withAlpha(COLOR.sodaLight, 0.7),
-  },
-  avgYieldLabel: {
-    fontSize: FONT_SIZE.overline,
-    fontFamily: FONT.body,
-    fontWeight: WEIGHT.bold,
-    color: COLOR.textMuted,
-    letterSpacing: 0.5,
-  },
-  avgYieldValue: {
-    fontSize: FONT_SIZE.bodySM,
-    fontFamily: FONT.heading,
-    fontWeight: WEIGHT.bold,
-    color: COLOR.sodaText,
-  },
-  // USDC ↔ SOL toggle
-  toggle: {
-    flexDirection: "row",
-    backgroundColor: withAlpha(COLOR.textMuted, 0.08),
-    borderRadius: RADIUS.pill,
-    padding: 2,
-  },
-  toggleBtn: {
-    paddingHorizontal: SPACE.md,
-    paddingVertical: 4,
-    borderRadius: RADIUS.pill,
-    minWidth: 56,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  toggleBtnActive: {
-    backgroundColor: COLOR.sodaText,
-  },
-  toggleText: {
-    fontSize: FONT_SIZE.bodySM,
-    fontFamily: FONT.heading,
-    fontWeight: WEIGHT.bold,
-    color: COLOR.textMuted,
-  },
-  toggleTextActive: {
-    color: COLOR.textOnColor,
-  },
-  // Range selector
-  rangeRow: {
-    flexDirection: "row",
-    gap: 4,
-    paddingTop: SPACE.xs,
-  },
-  rangeBtn: {
-    paddingHorizontal: SPACE.sm,
-    paddingVertical: 4,
-    borderRadius: RADIUS.pill,
-  },
-  rangeBtnActive: {
-    backgroundColor: withAlpha(COLOR.sodaLight, 0.85),
-  },
-  rangeText: {
-    fontSize: FONT_SIZE.bodySM,
-    fontFamily: FONT.heading,
-    fontWeight: WEIGHT.regular,
-    color: COLOR.textMuted,
-  },
-  rangeTextActive: {
-    fontWeight: WEIGHT.bold,
-    color: COLOR.textPrimary,
-  },
-  empty: {
-    fontSize: FONT_SIZE.bodyMD,
-    color: COLOR.textMuted,
-    textAlign: "center",
-    paddingVertical: SPACE.lg,
-  },
-});
+// Phase 7.9: theme 連動 styles factory
+function makeStyles(c: ThemeColors) {
+  return StyleSheet.create({
+    handle: {
+      paddingTop: SPACE.sm,
+      paddingBottom: SPACE.xs,
+      alignItems: "center",
+    },
+    grabber: {
+      width: 44,
+      height: 4,
+      borderRadius: 2,
+      backgroundColor: c.borderStrong,
+    },
+    body: {
+      paddingHorizontal: SPACE.md,
+      paddingBottom: SPACE.xxl,
+      gap: SPACE.sm,
+    },
+    section: {
+      paddingTop: SPACE.lg,
+      gap: SPACE.sm,
+    },
+    sectionLabel: {
+      fontSize: FONT_SIZE.caption,
+      fontFamily: FONT.body,
+      fontWeight: WEIGHT.bold,
+      color: c.textMuted,
+      textTransform: "uppercase",
+      letterSpacing: 1.2,
+    },
+    allocRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: SPACE.md,
+    },
+    legend: {
+      flex: 1,
+      gap: 6,
+    },
+    legendRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+      gap: SPACE.sm,
+    },
+    legendLeft: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: SPACE.xs + 2,
+      flex: 1,
+    },
+    swatch: {
+      width: 10,
+      height: 10,
+      borderRadius: 5,
+    },
+    legendLabel: {
+      fontSize: FONT_SIZE.bodyMD,
+      fontFamily: FONT.heading,
+      fontWeight: WEIGHT.semibold,
+      color: c.textPrimary,
+      flexShrink: 1,
+    },
+    legendValue: {
+      fontSize: FONT_SIZE.bodySM,
+      fontFamily: FONT.heading,
+      fontWeight: WEIGHT.regular,
+      color: c.textSubtitle,
+    },
+    topRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+    },
+    portfolioLabel: {
+      fontSize: FONT_SIZE.caption,
+      fontFamily: FONT.body,
+      fontWeight: WEIGHT.bold,
+      color: c.textMuted,
+      textTransform: "uppercase",
+      letterSpacing: 1.2,
+    },
+    total: {
+      fontSize: FONT_SIZE.displayMD,
+      fontFamily: FONT.heading,
+      fontWeight: WEIGHT.bold,
+      color: c.textPrimary,
+    },
+    yieldRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: SPACE.sm,
+    },
+    yieldText: {
+      fontSize: FONT_SIZE.bodyMD,
+      fontFamily: FONT.heading,
+      fontWeight: WEIGHT.semibold,
+      color: c.melonText,
+    },
+    avgYieldPill: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 4,
+      paddingHorizontal: SPACE.sm,
+      paddingVertical: 2,
+      borderRadius: RADIUS.pill,
+      backgroundColor: withAlpha(c.sodaLight, 0.7),
+    },
+    avgYieldLabel: {
+      fontSize: FONT_SIZE.overline,
+      fontFamily: FONT.body,
+      fontWeight: WEIGHT.bold,
+      color: c.textMuted,
+      letterSpacing: 0.5,
+    },
+    avgYieldValue: {
+      fontSize: FONT_SIZE.bodySM,
+      fontFamily: FONT.heading,
+      fontWeight: WEIGHT.bold,
+      color: c.sodaText,
+    },
+    toggle: {
+      flexDirection: "row",
+      backgroundColor: withAlpha(c.textMuted, 0.08),
+      borderRadius: RADIUS.pill,
+      padding: 2,
+    },
+    toggleBtn: {
+      paddingHorizontal: SPACE.md,
+      paddingVertical: 4,
+      borderRadius: RADIUS.pill,
+      minWidth: 56,
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    toggleBtnActive: {
+      backgroundColor: c.sodaText,
+    },
+    toggleText: {
+      fontSize: FONT_SIZE.bodySM,
+      fontFamily: FONT.heading,
+      fontWeight: WEIGHT.bold,
+      color: c.textMuted,
+    },
+    toggleTextActive: {
+      color: c.textOnColor,
+    },
+    rangeRow: {
+      flexDirection: "row",
+      gap: 4,
+      paddingTop: SPACE.xs,
+    },
+    rangeBtn: {
+      paddingHorizontal: SPACE.sm,
+      paddingVertical: 4,
+      borderRadius: RADIUS.pill,
+    },
+    rangeBtnActive: {
+      backgroundColor: withAlpha(c.sodaLight, 0.85),
+    },
+    rangeText: {
+      fontSize: FONT_SIZE.bodySM,
+      fontFamily: FONT.heading,
+      fontWeight: WEIGHT.regular,
+      color: c.textMuted,
+    },
+    rangeTextActive: {
+      fontWeight: WEIGHT.bold,
+      color: c.textPrimary,
+    },
+    empty: {
+      fontSize: FONT_SIZE.bodyMD,
+      color: c.textMuted,
+      textAlign: "center",
+      paddingVertical: SPACE.lg,
+    },
+  });
+}

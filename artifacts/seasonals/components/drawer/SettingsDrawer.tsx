@@ -57,7 +57,13 @@ import {
   formatTimeOfDay,
   useDevFallbackLog,
 } from "../../stores/devFallbackLog";
-import { THEME_CATALOG, useThemeStore } from "../../stores/theme";
+import {
+  THEME_CATALOG,
+  useThemeStore,
+  useThemedStyles,
+  type ThemeColors,
+} from "../../stores/theme";
+import { useComingSoon } from "../../stores/comingSoon";
 
 const SCREEN_WIDTH = Dimensions.get("window").width;
 const DRAWER_WIDTH = Math.min(360, SCREEN_WIDTH * 0.85);
@@ -74,6 +80,9 @@ export function SettingsDrawer({
   onClose,
   testID,
 }: SettingsDrawerProps) {
+  // Phase 7.9: theme 連動 styles
+  const styles = useThemedStyles(makeStyles);
+
   const translateX = useSharedValue(-DRAWER_WIDTH);
   const backdropOpacity = useSharedValue(0);
 
@@ -262,6 +271,11 @@ export function SettingsDrawer({
               <Pressable
                 accessibilityRole="button"
                 style={styles.subUpgradeBtn}
+                onPress={() =>
+                  useComingSoon
+                    .getState()
+                    .show("Subscription upgrade is coming soon")
+                }
                 testID={testID ? `${testID}-upgrade` : undefined}
               >
                 <Text style={styles.subUpgradeText}>Upgrade</Text>
@@ -278,6 +292,9 @@ export function SettingsDrawer({
               <Pressable
                 accessibilityRole="button"
                 style={styles.primaryCta}
+                onPress={() =>
+                  useComingSoon.getState().show("Staking is coming soon")
+                }
                 testID={testID ? `${testID}-stake` : undefined}
               >
                 <Text style={styles.primaryCtaText}>Stake now</Text>
@@ -441,270 +458,269 @@ export function SettingsDrawer({
 }
 
 function SectionLabel({ children }: { children: React.ReactNode }) {
+  // Phase 7.9: parent の styles は component scope に移動したので自分で hook 経由で取得
+  const styles = useThemedStyles(makeStyles);
   return <Text style={styles.sectionLabel}>{children}</Text>;
 }
 
-const styles = StyleSheet.create({
-  backdrop: {
-    flex: 1,
-    backgroundColor: COLOR.textPrimary,
-  },
-  drawer: {
-    position: "absolute",
-    left: 0,
-    top: 0,
-    bottom: 0,
-    width: DRAWER_WIDTH,
-    backgroundColor: COLOR.bgPrimary,
-    paddingTop: SPACE.xl + SPACE.lg,
-    borderRightWidth: 1,
-    borderRightColor: COLOR.borderStrong,
-    shadowColor: COLOR.shadowStrong,
-    shadowOffset: { width: 4, height: 0 },
-    shadowOpacity: 1,
-    shadowRadius: 16,
-    elevation: 12,
-  },
-  header: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    paddingHorizontal: SPACE.md,
-    paddingBottom: SPACE.md,
-  },
-  // Pacifico melonText (per-screen brand color)
-  title: {
-    fontSize: FONT_SIZE.displayMD,
-    fontFamily: FONT.script,
-    color: COLOR.melonText,
-    lineHeight: 44,
-    includeFontPadding: false,
-  },
-  closeBtn: {
-    width: 32,
-    height: 32,
-    borderRadius: RADIUS.pill,
-    alignItems: "center",
-    justifyContent: "center",
-    backgroundColor: withAlpha(COLOR.textMuted, 0.12),
-  },
-  closeIcon: {
-    fontSize: 14,
-    color: COLOR.textSubtitle,
-    fontWeight: WEIGHT.bold,
-  },
-  scrollContent: {
-    paddingHorizontal: SPACE.md,
-    paddingBottom: SPACE.xl,
-  },
-  sectionLabel: {
-    fontSize: FONT_SIZE.overline,
-    fontFamily: FONT.body,
-    fontWeight: WEIGHT.bold,
-    color: COLOR.textMuted,
-    textTransform: "uppercase",
-    letterSpacing: 1.2,
-    marginTop: SPACE.lg,
-    marginBottom: SPACE.sm,
-  },
-  card: {
-    backgroundColor: withAlpha(COLOR.textOnColor, 0.6),
-    borderRadius: RADIUS.lg,
-    paddingVertical: SPACE.xs,
-    borderWidth: 1,
-    borderColor: COLOR.border,
-  },
-  row: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    paddingHorizontal: SPACE.md,
-    paddingVertical: SPACE.md - 2,
-  },
-  rowLabel: {
-    fontSize: FONT_SIZE.bodyMD,
-    fontFamily: FONT.heading,
-    fontWeight: WEIGHT.semibold,
-    color: COLOR.textPrimary,
-  },
-  rowValue: {
-    fontSize: FONT_SIZE.bodyMD,
-    fontFamily: FONT.heading,
-    fontWeight: WEIGHT.semibold,
-    color: COLOR.textSubtitle,
-  },
-  rowValueMono: {
-    fontSize: FONT_SIZE.bodyMD,
-    fontFamily: FONT.mono,
-    color: COLOR.textSubtitle,
-  },
-  rowValueAccent: {
-    fontSize: FONT_SIZE.bodyMD,
-    fontFamily: FONT.heading,
-    fontWeight: WEIGHT.semibold,
-    color: COLOR.sodaText,
-  },
-  rowRight: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: SPACE.xs,
-  },
-  chevron: {
-    fontSize: 16,
-    color: COLOR.textMuted,
-    fontFamily: FONT.heading,
-  },
-  divider: {
-    height: 1,
-    backgroundColor: COLOR.divider,
-    marginHorizontal: SPACE.md,
-  },
-  // USDC ↔ SOL toggle (Portfolio と同 spec)
-  toggle: {
-    flexDirection: "row",
-    backgroundColor: withAlpha(COLOR.textMuted, 0.08),
-    borderRadius: RADIUS.pill,
-    padding: 2,
-  },
-  toggleBtn: {
-    paddingHorizontal: SPACE.md,
-    paddingVertical: 4,
-    borderRadius: RADIUS.pill,
-    minWidth: 52,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  toggleBtnActive: {
-    backgroundColor: COLOR.sodaText,
-  },
-  toggleText: {
-    fontSize: FONT_SIZE.bodySM,
-    fontFamily: FONT.heading,
-    fontWeight: WEIGHT.bold,
-    color: COLOR.textMuted,
-  },
-  toggleTextActive: {
-    color: COLOR.textOnColor,
-  },
-  // SUBSCRIPTION melonLight card
-  subCard: {
-    backgroundColor: COLOR.melonLight,
-    borderRadius: RADIUS.lg,
-    padding: SPACE.lg,
-    gap: SPACE.sm,
-  },
-  subHeadline: {
-    fontSize: FONT_SIZE.headingMD,
-    fontFamily: FONT.heading,
-    fontWeight: WEIGHT.bold,
-    color: COLOR.textPrimary,
-  },
-  subBody: {
-    fontSize: FONT_SIZE.bodyMD,
-    fontFamily: FONT.body,
-    color: COLOR.textSubtitle,
-    lineHeight: 20,
-  },
-  subUpgradeBtn: {
-    alignSelf: "flex-start",
-    marginTop: SPACE.xs,
-    paddingHorizontal: SPACE.lg,
-    paddingVertical: SPACE.xs + 2,
-    borderRadius: RADIUS.pill,
-    backgroundColor: COLOR.melonText,
-  },
-  subUpgradeText: {
-    fontSize: FONT_SIZE.bodyMD,
-    fontFamily: FONT.heading,
-    fontWeight: WEIGHT.bold,
-    color: COLOR.textOnColor,
-  },
-  // SEASONAL STAKING primary CTA (sodaText fill)
-  primaryCta: {
-    marginHorizontal: SPACE.md,
-    marginVertical: SPACE.sm,
-    paddingVertical: SPACE.md - 2,
-    borderRadius: RADIUS.pill,
-    backgroundColor: COLOR.sodaText,
-    alignItems: "center",
-  },
-  primaryCtaText: {
-    fontSize: FONT_SIZE.bodyLG,
-    fontFamily: FONT.heading,
-    fontWeight: WEIGHT.bold,
-    color: COLOR.textOnColor,
-  },
-  // AGENT "Ask Agent (coming soon)" disabled button
-  askAgentBtn: {
-    marginHorizontal: SPACE.md,
-    marginBottom: SPACE.sm,
-    paddingVertical: SPACE.md - 2,
-    borderRadius: RADIUS.pill,
-    backgroundColor: COLOR.melonLight,
-    alignItems: "center",
-    opacity: 0.85,
-  },
-  askAgentText: {
-    fontSize: FONT_SIZE.bodyMD,
-    fontFamily: FONT.heading,
-    fontWeight: WEIGHT.bold,
-    color: COLOR.melonText,
-  },
-  // WALLET 2 ボタン横並び + sign out
-  walletBtnRow: {
-    flexDirection: "row",
-    gap: SPACE.sm,
-    paddingHorizontal: SPACE.md,
-    paddingTop: SPACE.xs,
-    paddingBottom: SPACE.sm,
-  },
-  walletBtn: {
-    flex: 1,
-    paddingVertical: SPACE.sm + 2,
-    borderRadius: RADIUS.pill,
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  walletBtnFilled: {
-    backgroundColor: COLOR.melonText,
-  },
-  walletBtnFilledText: {
-    fontSize: FONT_SIZE.bodySM,
-    fontFamily: FONT.heading,
-    fontWeight: WEIGHT.bold,
-    color: COLOR.textOnColor,
-  },
-  walletBtnOutlined: {
-    borderWidth: 1,
-    borderColor: COLOR.borderStrong,
-    backgroundColor: "transparent",
-  },
-  walletBtnOutlinedText: {
-    fontSize: FONT_SIZE.bodySM,
-    fontFamily: FONT.heading,
-    fontWeight: WEIGHT.bold,
-    color: COLOR.textPrimary,
-  },
-  signOutRow: {
-    paddingHorizontal: SPACE.md,
-    paddingTop: SPACE.xs,
-    paddingBottom: SPACE.md,
-  },
-  signOutText: {
-    fontSize: FONT_SIZE.bodyMD,
-    fontFamily: FONT.heading,
-    fontWeight: WEIGHT.semibold,
-    color: COLOR.cherryDark,
-  },
-  footer: {
-    marginTop: SPACE.xxl,
-    paddingTop: SPACE.md,
-    paddingBottom: SPACE.lg,
-  },
-  footerText: {
-    fontSize: FONT_SIZE.caption,
-    fontFamily: FONT.body,
-    color: COLOR.textMuted,
-    textAlign: "center",
-  },
-});
+// Phase 7.9: theme 連動 styles factory (useThemedStyles から呼ばれる)
+function makeStyles(c: ThemeColors) {
+  return StyleSheet.create({
+    backdrop: {
+      flex: 1,
+      backgroundColor: c.textPrimary,
+    },
+    drawer: {
+      position: "absolute",
+      left: 0,
+      top: 0,
+      bottom: 0,
+      width: DRAWER_WIDTH,
+      backgroundColor: c.bgPrimary,
+      paddingTop: SPACE.xl + SPACE.lg,
+      borderRightWidth: 1,
+      borderRightColor: c.borderStrong,
+      shadowColor: COLOR.shadowStrong,
+      shadowOffset: { width: 4, height: 0 },
+      shadowOpacity: 1,
+      shadowRadius: 16,
+      elevation: 12,
+    },
+    header: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+      paddingHorizontal: SPACE.md,
+      paddingBottom: SPACE.md,
+    },
+    title: {
+      fontSize: FONT_SIZE.displayMD,
+      fontFamily: FONT.script,
+      color: c.melonText,
+      lineHeight: 44,
+      includeFontPadding: false,
+    },
+    closeBtn: {
+      width: 32,
+      height: 32,
+      borderRadius: RADIUS.pill,
+      alignItems: "center",
+      justifyContent: "center",
+      backgroundColor: withAlpha(c.textMuted, 0.12),
+    },
+    closeIcon: {
+      fontSize: 14,
+      color: c.textSubtitle,
+      fontWeight: WEIGHT.bold,
+    },
+    scrollContent: {
+      paddingHorizontal: SPACE.md,
+      paddingBottom: SPACE.xl,
+    },
+    sectionLabel: {
+      fontSize: FONT_SIZE.overline,
+      fontFamily: FONT.body,
+      fontWeight: WEIGHT.bold,
+      color: c.textMuted,
+      textTransform: "uppercase",
+      letterSpacing: 1.2,
+      marginTop: SPACE.lg,
+      marginBottom: SPACE.sm,
+    },
+    card: {
+      backgroundColor: withAlpha(c.textOnColor, 0.6),
+      borderRadius: RADIUS.lg,
+      paddingVertical: SPACE.xs,
+      borderWidth: 1,
+      borderColor: c.border,
+    },
+    row: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+      paddingHorizontal: SPACE.md,
+      paddingVertical: SPACE.md - 2,
+    },
+    rowLabel: {
+      fontSize: FONT_SIZE.bodyMD,
+      fontFamily: FONT.heading,
+      fontWeight: WEIGHT.semibold,
+      color: c.textPrimary,
+    },
+    rowValue: {
+      fontSize: FONT_SIZE.bodyMD,
+      fontFamily: FONT.heading,
+      fontWeight: WEIGHT.semibold,
+      color: c.textSubtitle,
+    },
+    rowValueMono: {
+      fontSize: FONT_SIZE.bodyMD,
+      fontFamily: FONT.mono,
+      color: c.textSubtitle,
+    },
+    rowValueAccent: {
+      fontSize: FONT_SIZE.bodyMD,
+      fontFamily: FONT.heading,
+      fontWeight: WEIGHT.semibold,
+      color: c.sodaText,
+    },
+    rowRight: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: SPACE.xs,
+    },
+    chevron: {
+      fontSize: 16,
+      color: c.textMuted,
+      fontFamily: FONT.heading,
+    },
+    divider: {
+      height: 1,
+      backgroundColor: c.divider,
+      marginHorizontal: SPACE.md,
+    },
+    toggle: {
+      flexDirection: "row",
+      backgroundColor: withAlpha(c.textMuted, 0.08),
+      borderRadius: RADIUS.pill,
+      padding: 2,
+    },
+    toggleBtn: {
+      paddingHorizontal: SPACE.md,
+      paddingVertical: 4,
+      borderRadius: RADIUS.pill,
+      minWidth: 52,
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    toggleBtnActive: {
+      backgroundColor: c.sodaText,
+    },
+    toggleText: {
+      fontSize: FONT_SIZE.bodySM,
+      fontFamily: FONT.heading,
+      fontWeight: WEIGHT.bold,
+      color: c.textMuted,
+    },
+    toggleTextActive: {
+      color: c.textOnColor,
+    },
+    subCard: {
+      backgroundColor: c.melonLight,
+      borderRadius: RADIUS.lg,
+      padding: SPACE.lg,
+      gap: SPACE.sm,
+    },
+    subHeadline: {
+      fontSize: FONT_SIZE.headingMD,
+      fontFamily: FONT.heading,
+      fontWeight: WEIGHT.bold,
+      color: c.textPrimary,
+    },
+    subBody: {
+      fontSize: FONT_SIZE.bodyMD,
+      fontFamily: FONT.body,
+      color: c.textSubtitle,
+      lineHeight: 20,
+    },
+    subUpgradeBtn: {
+      alignSelf: "flex-start",
+      marginTop: SPACE.xs,
+      paddingHorizontal: SPACE.lg,
+      paddingVertical: SPACE.xs + 2,
+      borderRadius: RADIUS.pill,
+      backgroundColor: c.melonText,
+    },
+    subUpgradeText: {
+      fontSize: FONT_SIZE.bodyMD,
+      fontFamily: FONT.heading,
+      fontWeight: WEIGHT.bold,
+      color: c.textOnColor,
+    },
+    primaryCta: {
+      marginHorizontal: SPACE.md,
+      marginVertical: SPACE.sm,
+      paddingVertical: SPACE.md - 2,
+      borderRadius: RADIUS.pill,
+      backgroundColor: c.sodaText,
+      alignItems: "center",
+    },
+    primaryCtaText: {
+      fontSize: FONT_SIZE.bodyLG,
+      fontFamily: FONT.heading,
+      fontWeight: WEIGHT.bold,
+      color: c.textOnColor,
+    },
+    askAgentBtn: {
+      marginHorizontal: SPACE.md,
+      marginBottom: SPACE.sm,
+      paddingVertical: SPACE.md - 2,
+      borderRadius: RADIUS.pill,
+      backgroundColor: c.melonLight,
+      alignItems: "center",
+      opacity: 0.85,
+    },
+    askAgentText: {
+      fontSize: FONT_SIZE.bodyMD,
+      fontFamily: FONT.heading,
+      fontWeight: WEIGHT.bold,
+      color: c.melonText,
+    },
+    walletBtnRow: {
+      flexDirection: "row",
+      gap: SPACE.sm,
+      paddingHorizontal: SPACE.md,
+      paddingTop: SPACE.xs,
+      paddingBottom: SPACE.sm,
+    },
+    walletBtn: {
+      flex: 1,
+      paddingVertical: SPACE.sm + 2,
+      borderRadius: RADIUS.pill,
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    walletBtnFilled: {
+      backgroundColor: c.melonText,
+    },
+    walletBtnFilledText: {
+      fontSize: FONT_SIZE.bodySM,
+      fontFamily: FONT.heading,
+      fontWeight: WEIGHT.bold,
+      color: c.textOnColor,
+    },
+    walletBtnOutlined: {
+      borderWidth: 1,
+      borderColor: c.borderStrong,
+      backgroundColor: "transparent",
+    },
+    walletBtnOutlinedText: {
+      fontSize: FONT_SIZE.bodySM,
+      fontFamily: FONT.heading,
+      fontWeight: WEIGHT.bold,
+      color: c.textPrimary,
+    },
+    signOutRow: {
+      paddingHorizontal: SPACE.md,
+      paddingTop: SPACE.xs,
+      paddingBottom: SPACE.md,
+    },
+    signOutText: {
+      fontSize: FONT_SIZE.bodyMD,
+      fontFamily: FONT.heading,
+      fontWeight: WEIGHT.semibold,
+      color: c.cherryDark,
+    },
+    footer: {
+      marginTop: SPACE.xxl,
+      paddingTop: SPACE.md,
+      paddingBottom: SPACE.lg,
+    },
+    footerText: {
+      fontSize: FONT_SIZE.caption,
+      fontFamily: FONT.body,
+      color: c.textMuted,
+      textAlign: "center",
+    },
+  });
+}
