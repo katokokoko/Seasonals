@@ -1,18 +1,20 @@
 /**
- * WalletPopover — drink button から起動する 右上 fade-in popover (Phase 5A.8 retake)
- *
- * Prototype `WalletPopover.tsx` 準拠 (slide-up sheet ではなく native Modal で fade)。
+ * WalletPopover — drink button から起動する 右上 pop-out popover (Phase 5A.8 / 7.6)
  *
  * 構成 (anchor: top: anchorTop, right: 14, width: 280):
  *   "Wallets" overline
- *   wallets 配列の各 row (active marker + label + truncated address)
+ *   MWA 接続済 wallet の row (label + truncated address + status dot)
  *   "+ Add Wallet" row (tap → useWallet().connect()、MWA はここからのみ起動)
  *   "Subscription" full-width pill button
  *
- * 5A.8.5 empty state: wallets.length === 0 → wallet section を完全省略。
+ * 5A.8.5 empty state: 未接続 → wallet section を完全省略。
+ *
+ * Phase 7.6 motion: Modal animationType="none" + SharedValue enter (0→1) で
+ * card を transformOrigin "top right" の scale + opacity、backdrop を同期 fade。
+ * ActionModal (Phase 6.4) と同じ renderModal lifecycle パターン。
  */
 
-import React from "react";
+import React, { useEffect, useState } from "react";
 import {
   Modal,
   Pressable,
@@ -22,6 +24,14 @@ import {
 } from "react-native";
 import { useRouter } from "expo-router";
 import { BlurView } from "expo-blur";
+import Animated, {
+  Easing,
+  runOnJS,
+  useAnimatedStyle,
+  useSharedValue,
+  withSpring,
+  withTiming,
+} from "react-native-reanimated";
 
 import {
   COLOR,
@@ -63,6 +73,39 @@ export function WalletPopover({
   // Phase 7.4: fixture wallets を撤去、MWA authorization のみを表示
   const { authorization, connect } = useWallet();
 
+  // Phase 7.6 motion: ActionModal と同型の renderModal lifecycle で
+  // close 完了後に Modal を unmount する (中断時は finished===false で安全)。
+  const [renderModal, setRenderModal] = useState(visible);
+  const enter = useSharedValue(0);
+
+  useEffect(() => {
+    if (visible) {
+      setRenderModal(true);
+      enter.value = withSpring(1, {
+        damping: 18,
+        stiffness: 220,
+        mass: 0.6,
+      });
+    } else {
+      enter.value = withTiming(
+        0,
+        { duration: 180, easing: Easing.in(Easing.cubic) },
+        (finished) => {
+          if (finished) runOnJS(setRenderModal)(false);
+        }
+      );
+    }
+  }, [visible, enter]);
+
+  const cardAnim = useAnimatedStyle(() => ({
+    opacity: enter.value,
+    transform: [{ scale: 0.88 + 0.12 * enter.value }],
+  }));
+
+  const backdropAnim = useAnimatedStyle(() => ({
+    opacity: enter.value * 0.18,
+  }));
+
   const handleAddWallet = async () => {
     onClose();
     try {
@@ -80,14 +123,22 @@ export function WalletPopover({
 
   return (
     <Modal
-      visible={visible}
+      visible={renderModal}
       transparent
-      animationType="fade"
+      animationType="none"
       onRequestClose={onClose}
       testID={testID}
     >
-      <Pressable style={styles.backdrop} onPress={onClose} />
-      <View style={[styles.card, { top: anchorTop }]}>
+      <Animated.View
+        style={[styles.backdropBase, backdropAnim]}
+        pointerEvents="none"
+      />
+      <Pressable
+        style={StyleSheet.absoluteFill}
+        onPress={onClose}
+        accessibilityLabel="Close wallet menu"
+      />
+      <Animated.View style={[styles.card, { top: anchorTop }, cardAnim]}>
         <BlurView
           intensity={60}
           tint="light"
@@ -152,15 +203,16 @@ export function WalletPopover({
         >
           <Text style={styles.subBtnText}>Subscription</Text>
         </Pressable>
-      </View>
+      </Animated.View>
     </Modal>
   );
 }
 
 const styles = StyleSheet.create({
-  backdrop: {
-    flex: 1,
-    backgroundColor: "rgba(0,0,0,0.18)",
+  // Phase 7.6: backdrop は alpha を Animated で駆動するため不透明色 + opacity 分離
+  backdropBase: {
+    ...StyleSheet.absoluteFillObject,
+    backgroundColor: "#000",
   },
   card: {
     position: "absolute",
@@ -172,6 +224,8 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: COLOR.border,
     overflow: "hidden",
+    // Phase 7.6: drink button (右上) を支点に scale させる
+    transformOrigin: "top right",
     shadowColor: "rgba(0,0,0,0.18)",
     shadowOffset: { width: 0, height: 8 },
     shadowOpacity: 1,
