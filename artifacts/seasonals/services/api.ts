@@ -41,7 +41,11 @@ import {
   type Wallet,
 } from "@workspace/lib/types";
 
-import { BFF_BASE_URL, IS_TEST_ENV } from "./config";
+import {
+  BFF_BASE_URL,
+  IS_TEST_ENV,
+  SHOULD_FALLBACK_TO_FIXTURES,
+} from "./config";
 import { useDevFallbackLog } from "../stores/devFallbackLog";
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -90,9 +94,9 @@ async function httpPostJson<T>(path: string, body?: unknown): Promise<T> {
 /**
  * test / dev / production の path 切替:
  *   - test (`IS_TEST_ENV`): fixture path のみ。HTTP は呼ばない (jest 環境で network 失敗を防ぐ)
- *   - dev real device (`__DEV__` && BFF 未起動): HTTP を試行 → 失敗時に fixture へ silent fallback
+ *   - local device APK (`BFF_BASE_URL` が localhost 系): HTTP を試行 → 失敗時に fixture へ fallback
  *     (Seeker から Mac の BFF に届かない場合でも UI が空にならないため)
- *   - production: HTTP のみ。失敗は error として propagate
+ *   - production real BFF URL: HTTP のみ。失敗は error として propagate
  */
 async function tryHttpThenFixture<T>(
   http: () => Promise<T>,
@@ -103,7 +107,10 @@ async function tryHttpThenFixture<T>(
   try {
     return await http();
   } catch (err) {
-    if (typeof __DEV__ !== "undefined" && __DEV__) {
+    if (
+      (typeof __DEV__ !== "undefined" && __DEV__) ||
+      SHOULD_FALLBACK_TO_FIXTURES
+    ) {
       // Phase 5B.3: console.warn は LogBox が persistent toast を出すため使わず、
       // store に最終 fallback を記録するのみ (Settings DEVELOPER row が表示)。
       useDevFallbackLog
@@ -213,11 +220,20 @@ export async function getTimeEvents(): Promise<UnifiedTimeEvent[]> {
   );
 }
 
-export async function getPositions(): Promise<Position[]> {
+/**
+ * Phase 8.1: walletAddress 指定で BFF が Helius DAS 経由の実 position を返す。
+ * 未指定なら従来通り fixture / BFF fixture 経由。
+ */
+export async function getPositions(
+  walletAddress?: string
+): Promise<Position[]> {
+  const path = walletAddress
+    ? `/positions?wallet=${encodeURIComponent(walletAddress)}`
+    : "/positions";
   return tryHttpThenFixture(
-    () => httpGetJson<Position[]>("/positions"),
+    () => httpGetJson<Position[]>(path),
     () => fxGetPositions(),
-    "/positions"
+    path
   );
 }
 

@@ -15,6 +15,13 @@
         "APP_ENV": "development"
       }
     },
+    "onchain": {
+      "extends": "development",
+      "env": {
+        "APP_ENV": "development",
+        "APP_VARIANT": "onchain"
+      }
+    },
     "preview": {
       "distribution": "internal",
       "android": {

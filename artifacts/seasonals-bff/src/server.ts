@@ -32,12 +32,16 @@ import {
   fixtureUserPolicyDefault,
   fixtureWallets,
   fixtureProtocols,
+  KNOWN_PROTOCOL_MINTS,
 } from "@workspace/lib/__fixtures__";
 import {
   AgentPlanStatus,
   type AgentPlan,
+  type Position,
 } from "@workspace/lib/types";
 import { getRegistry } from "@workspace/lib/adapters";
+
+import { fetchAssetsByOwner, type HeliusAsset } from "./clients/helius";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Solana 接続 (Devnet) — approve endpoint で memo tx を構築するため
@@ -87,6 +91,67 @@ async function buildMemoTransaction(
   return Buffer.from(serialized).toString("base64");
 }
 
+/**
+ * Phase 8.1: Helius DAS asset 配列を Position[] に正規化する。
+ * - NFT / cNFT は skip (interface !== "FungibleToken")
+ * - balance=0 はスキップ
+ * - KNOWN_PROTOCOL_MINTS に hit すれば protocol_id / category / symbol を上書き
+ * - 未知 mint は protocol_id="wallet_holding" + category=Other + metadata symbol
+ * - 価格情報は token_info.price_info.price_per_token (float) を 8 decimals string に
+ *
+ * @see CLAUDE.md §11.3 Position、§4.5 数値表現規約 (string-only)
+ */
+function mapAssetsToPositions(
+  assets: HeliusAsset[],
+  walletAddress: string
+): Position[] {
+  const out: Position[] = [];
+  const now = new Date().toISOString();
+  for (const asset of assets) {
+    if (asset.interface !== "FungibleToken") continue;
+    const balance = asset.token_info?.balance;
+    if (!balance || balance === "0") continue;
+
+    const known = KNOWN_PROTOCOL_MINTS[asset.id];
+    const decimals = known?.decimals ?? asset.token_info?.decimals ?? 0;
+    const symbol =
+      known?.asset_symbol ??
+      asset.token_info?.symbol ??
+      asset.content?.metadata?.symbol ??
+      asset.id.slice(0, 4);
+    const priceFloat = asset.token_info?.price_info?.price_per_token;
+    const unitPriceUsd =
+      typeof priceFloat === "number" && Number.isFinite(priceFloat)
+        ? priceFloat.toFixed(8)
+        : "0.00000000";
+
+    out.push({
+      position_id: `helius_${walletAddress}_${asset.id}`,
+      wallet_id: walletAddress,
+      protocol_id: known?.protocol_id ?? "wallet_holding",
+      asset_symbol: symbol,
+      principal_amount: balance,
+      current_amount: balance,
+      accrued_yield_amount: "0",
+      unit_price_usd: unitPriceUsd,
+      unit_price_sol: "0.00000000",
+      deposited_at: now,
+      maturity_at: null,
+      unlock_at: null,
+      health_factor: null,
+      auto_roll_rule: null,
+      risk_score: 0.5,
+      raw_state: {
+        mint: asset.id,
+        source: "helius_das",
+        decimals,
+        helius_interface: asset.interface,
+      },
+    });
+  }
+  return out;
+}
+
 export interface ServerOptions {
   /** Fastify logger config (test では false にして noise を抑制) */
   logger?: boolean;
@@ -114,7 +179,41 @@ export async function buildServer(
 
   // ── time events / positions / wallets / protocols / user policy ──────
   app.get("/time-events", async () => fixtureUnifiedTimeEvents);
-  app.get("/positions", async () => fixturePositions);
+
+  /**
+   * Phase 8.1: /positions?wallet=<base58 address> で Helius DAS から
+   * 実 mainnet 保有を取得。wallet 未指定なら従来通り fixture を返す。
+   */
+  app.get<{ Querystring: { wallet?: string } }>(
+    "/positions",
+    async (req, reply) => {
+      const wallet = req.query?.wallet?.trim();
+      if (!wallet) return fixturePositions;
+
+      // 簡易 base58 validation (44 chars max、空白なし)。詳細は @solana/web3.js
+      // PublicKey の方が確実だが BFF deps を増やしたくないので長さで guard。
+      if (wallet.length < 32 || wallet.length > 44 || /\s/.test(wallet)) {
+        reply.code(400);
+        return { error: "invalid_wallet_address", wallet };
+      }
+
+      try {
+        const assets = await fetchAssetsByOwner(wallet);
+        return mapAssetsToPositions(assets, wallet);
+      } catch (err) {
+        req.log.error(
+          { err: (err as Error).message, wallet },
+          "helius fetch failed"
+        );
+        reply.code(502);
+        return {
+          error: "helius_fetch_failed",
+          message: (err as Error).message,
+        };
+      }
+    }
+  );
+
   app.get("/wallets", async () => fixtureWallets);
   app.get("/protocols", async () => fixtureProtocols);
   app.get("/user-policy", async () => fixtureUserPolicyDefault);

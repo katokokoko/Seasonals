@@ -1,0 +1,60 @@
+/**
+ * Expo app config (Phase 8.1 — env-aware variant)
+ *
+ * APP_VARIANT=onchain で:
+ *   - android.package = "app.seasonals.onchain"
+ *   - expo.name = "Seasonals (onchain)"
+ *   - expo.extra.useOnchain = true (services/config.ts USE_ONCHAIN)
+ *
+ * APP_VARIANT 未設定 / 任意値:
+ *   - 既存 "Seasonals" (app.seasonals.mobile) として build
+ *   - useOnchain = false (BFF /positions を fixture で受ける従来動作)
+ *
+ * 両 variant とも同じ JS bundle / native module を使うため、`pnpm android` と
+ * `pnpm android:onchain` で 2 つの APK を Seeker に並べて install できる。
+ *
+ * @see eas.json `onchain` profile
+ * @see services/config.ts USE_ONCHAIN
+ */
+
+import type { ExpoConfig } from "expo/config";
+
+const variant = process.env.APP_VARIANT;
+const isOnchain = variant === "onchain";
+
+const config: ExpoConfig = {
+  name: isOnchain ? "Seasonals (onchain)" : "Seasonals",
+  slug: "seasonals",
+  version: "0.0.1",
+  orientation: "portrait",
+  scheme: "seasonals",
+  userInterfaceStyle: "automatic",
+  newArchEnabled: false,
+  icon: "./assets/images/icon.png",
+  android: {
+    package: isOnchain ? "app.seasonals.onchain" : "app.seasonals.mobile",
+    adaptiveIcon: {
+      foregroundImage: "./assets/images/icon.png",
+      backgroundColor: "#FFF8E7",
+    },
+  },
+  ios: {
+    bundleIdentifier: isOnchain
+      ? "app.seasonals.onchain"
+      : "app.seasonals.mobile",
+    supportsTablet: false,
+  },
+  web: {
+    favicon: "./assets/images/favicon.png",
+  },
+  plugins: ["expo-router", "expo-secure-store", "expo-notifications"],
+  experiments: {
+    typedRoutes: false,
+  },
+  extra: {
+    // services/config.ts USE_ONCHAIN が参照
+    useOnchain: isOnchain,
+  },
+};
+
+export default config;

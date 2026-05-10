@@ -37,7 +37,9 @@ import * as api from "./api";
 
 export const queryKeys = {
   timeEvents: () => ["time-events"] as const,
-  positions: () => ["positions"] as const,
+  /** Phase 8.1: address があれば address 別 cache (onchain variant、wallet 切替で再 fetch) */
+  positions: (address?: string | null) =>
+    address ? (["positions", address] as const) : (["positions"] as const),
   agentPlan: (planId: string) => ["agent-plan", planId] as const,
   agentPlans: () => ["agent-plans"] as const,
   approvalToken: (tokenId: string) => ["approval-token", tokenId] as const,
@@ -67,10 +69,19 @@ export function useTimeEvents(): UseQueryResult<UnifiedTimeEvent[], Error> {
   });
 }
 
-export function usePositions(): UseQueryResult<Position[], Error> {
+/**
+ * Phase 8.1: address が渡されれば BFF に query param として渡し、Helius DAS
+ * 経由で実 mainnet 保有を取得する。呼び出し側 (HomeScreen 等) で onchain
+ * variant 判定 + walletStore からの address を解決して渡す責務を持つ。
+ * 未指定 (default variant or 未接続) は従来通り fixture/BFF fixture path。
+ */
+export function usePositions(
+  address?: string | null
+): UseQueryResult<Position[], Error> {
+  const effectiveAddress = address ?? null;
   return useQuery({
-    queryKey: queryKeys.positions(),
-    queryFn: api.getPositions,
+    queryKey: queryKeys.positions(effectiveAddress),
+    queryFn: () => api.getPositions(effectiveAddress ?? undefined),
   });
 }
 

@@ -84,6 +84,8 @@ import {
   useThemedStyles,
   type ThemeColors,
 } from "../stores/theme";
+import { useWallet } from "../services/useWallet";
+import { USE_ONCHAIN } from "../services/config";
 
 // MVP fixed reference date (CLAUDE.md auto-memory currentDate と整合)。
 const MOCK_TODAY = new Date("2026-05-09T00:00:00.000Z");
@@ -108,7 +110,12 @@ export default function HomeScreen() {
   const insets = useSafeAreaInsets();
 
   const { data: events = [] } = useTimeEvents();
-  const { data: positions = [] } = usePositions();
+  // Phase 8.1: onchain variant + 接続済 wallet なら address を渡して
+  // Helius DAS 経由の実 mainnet 保有を取得。それ以外は fixture。
+  const { authorization } = useWallet();
+  const onchainAddress =
+    USE_ONCHAIN && authorization?.address ? authorization.address : null;
+  const { data: positions = [] } = usePositions(onchainAddress);
   const { data: protocols = [] } = useProtocols();
   const { data: plans = [] } = useAgentPlans();
   const customEvents = useAllCustomEvents();
