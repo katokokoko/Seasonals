@@ -137,6 +137,10 @@ export default function HomeScreen() {
     });
 
   // MenuDrawer から start action: 該当 protocol/asset の plan を解決
+  //
+  // Phase 7.7 choreography: drawer close (220ms) と ActionModal enter (240ms) を
+  // 完全同時に発火すると別 motion が並走する印象になるため、modal open を 130ms
+  // 遅延させて drawer が約 60% 閉じた頃に modal を立ち上げる連続シーケンスにする。
   const handleStartActionFromServices = (
     protocol: string,
     asset: string,
@@ -154,7 +158,8 @@ export default function HomeScreen() {
         p.status === AgentPlanStatus.Simulated ||
         p.status === AgentPlanStatus.PendingUser
     );
-    setPendingPlan(target ?? fallback ?? null);
+    const next = target ?? fallback ?? null;
+    setTimeout(() => setPendingPlan(next), 130);
   };
 
   const dayEvents = selectedDay
