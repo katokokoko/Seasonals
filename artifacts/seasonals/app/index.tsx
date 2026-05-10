@@ -61,6 +61,7 @@ import { MenuDrawer } from "../components/drawer/MenuDrawer";
 import { ViewModeTogglePill } from "../components/header/ViewModeTogglePill";
 import { WalletDrinkButton } from "../components/header/WalletDrinkButton";
 import { WalletPopover } from "../components/wallet/WalletPopover";
+import { MelonSodaBackground } from "../components/decorative/MelonSodaBackground";
 import { useAllCustomEvents } from "../services/customEventsStore";
 import {
   useAgentPlans,
@@ -210,6 +211,9 @@ export default function HomeScreen() {
 
   return (
     <SafeAreaView style={styles.safe} edges={["bottom"]}>
+      {/* Phase 7.1: melon-soda gravity-aware ambient bg (touch 透過、最背面) */}
+      <MelonSodaBackground />
+
       {/* Row 1: Seasonals | toggle pill | wallet drink */}
       <View style={[styles.row1, { paddingTop: topPad }]}>
         <Pressable
