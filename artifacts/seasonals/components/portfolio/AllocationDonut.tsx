@@ -7,7 +7,7 @@
 
 import React, { useMemo } from "react";
 import { View } from "react-native";
-import Svg, { Path } from "react-native-svg";
+import Svg, { Circle, Path } from "react-native-svg";
 
 import type { AllocationSegment } from "./allocation";
 
@@ -57,32 +57,63 @@ export function AllocationDonut({
   thickness = 22,
   testID,
 }: AllocationDonutProps) {
-  const paths = useMemo(() => {
+  const { paths, fullCircleSegment } = useMemo(() => {
     const total = segments.reduce((acc, s) => acc + s.value, 0);
-    if (total <= 0) return [];
+    if (total <= 0) return { paths: [], fullCircleSegment: null };
 
     const cx = size / 2;
     const cy = size / 2;
     const rOuter = size / 2 - 2;
     const rInner = rOuter - thickness;
 
-    let cursor = -Math.PI / 2; // 12 時方向開始
-    return segments.map((seg) => {
-      const sweep = (seg.value / total) * Math.PI * 2;
-      const start = cursor;
-      const end = cursor + sweep;
-      cursor = end;
+    // Phase 8.8.3: 1 segment === 100% (full circle) は SVG arc では描画できない
+    // (始点 = 終点で degenerate)。Circle で代替描画。
+    const positive = segments.filter((s) => s.value > 0);
+    if (positive.length === 1) {
       return {
-        d: arcPath(cx, cy, rOuter, rInner, start, end),
-        color: seg.color,
-        category: seg.category,
+        paths: [],
+        fullCircleSegment: {
+          category: positive[0]!.category,
+          color: positive[0]!.color,
+          cx,
+          cy,
+          radius: (rOuter + rInner) / 2,
+          strokeWidth: thickness,
+        },
       };
-    });
+    }
+
+    let cursor = -Math.PI / 2; // 12 時方向開始
+    const pathList = segments
+      .filter((s) => s.value > 0)
+      .map((seg) => {
+        const sweep = (seg.value / total) * Math.PI * 2;
+        const start = cursor;
+        const end = cursor + sweep;
+        cursor = end;
+        return {
+          d: arcPath(cx, cy, rOuter, rInner, start, end),
+          color: seg.color,
+          category: seg.category,
+        };
+      });
+    return { paths: pathList, fullCircleSegment: null };
   }, [segments, size, thickness]);
 
   return (
     <View style={{ width: size, height: size }} testID={testID}>
       <Svg width={size} height={size}>
+        {fullCircleSegment && (
+          <Circle
+            cx={fullCircleSegment.cx}
+            cy={fullCircleSegment.cy}
+            r={fullCircleSegment.radius}
+            stroke={fullCircleSegment.color}
+            strokeWidth={fullCircleSegment.strokeWidth}
+            fill="none"
+            testID={`${testID}-seg-${fullCircleSegment.category}`}
+          />
+        )}
         {paths.map((p) => (
           <Path
             key={p.category}

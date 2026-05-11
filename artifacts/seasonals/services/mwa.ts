@@ -162,11 +162,25 @@ export async function signTransactions<
   T extends Transaction | VersionedTransaction
 >(auth: ConnectedAuthorization, transactions: T[]): Promise<T[]> {
   return (await transact(async (wallet: Web3MobileWallet) => {
-    await wallet.reauthorize({
-      auth_token: auth.authToken,
-      identity: DEFAULT_IDENTITY,
-    });
-    return await wallet.signTransactions({ transactions });
+    // Phase 8.8: reauthorize 失敗時 (auth_token 期限切れ等) は fresh authorize で fallback
+    try {
+      await wallet.reauthorize({
+        auth_token: auth.authToken,
+        identity: DEFAULT_IDENTITY,
+      });
+    } catch {
+      await wallet.authorize({
+        chain: auth.chain,
+        identity: DEFAULT_IDENTITY,
+      });
+    }
+    const signed = await wallet.signTransactions({ transactions });
+    if (!signed || signed.length === 0) {
+      throw new Error(
+        "Wallet returned no signed transactions. Try disconnecting and reconnecting."
+      );
+    }
+    return signed;
   })) as T[];
 }
 

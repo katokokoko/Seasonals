@@ -296,6 +296,32 @@ export async function getJupiterLendMarkets(): Promise<JupiterLendMarketDTO[]> {
   );
 }
 
+/**
+ * Phase 8.8: MWA で署名済の raw tx (base64) を BFF 経由で mainnet broadcast。
+ * Phantom の signAndSend が empty result を返す問題を回避するための
+ * sign-only + Helius RPC submit path。
+ */
+export async function submitSignedTx(
+  signedTxBase64: string,
+  opts: { skipPreflight?: boolean } = {}
+): Promise<{ signature: string }> {
+  const res = await fetch(`${BFF_BASE_URL}/tx/submit`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ signedTx: signedTxBase64, ...opts }),
+  });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as {
+      error?: string;
+      message?: string;
+    };
+    throw new Error(
+      body.message ?? body.error ?? `HTTP ${res.status} ${res.statusText}`
+    );
+  }
+  return (await res.json()) as { signature: string };
+}
+
 export interface JupiterDepositTxResponse {
   swapTransaction: string;
   lastValidBlockHeight: number;

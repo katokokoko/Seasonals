@@ -60,6 +60,7 @@ import {
   fetchSwapQuote,
   fetchSwapTransaction,
 } from "./clients/jupiter-swap";
+import { sendTransactionViaHelius } from "./clients/helius-rpc";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Solana 接続 (Devnet) — approve endpoint で memo tx を構築するため
@@ -596,6 +597,38 @@ export async function buildServer(
       }),
     };
   });
+
+  /**
+   * Phase 8.8: Mobile が MWA で署名した raw tx を base64 で受け取り、Helius
+   * mainnet RPC 経由で broadcast。Phantom の signAndSendTransactions が
+   * empty result を返す問題の回避策。
+   */
+  app.post<{ Body: { signedTx?: string; skipPreflight?: boolean } }>(
+    "/tx/submit",
+    async (req, reply) => {
+      const { signedTx, skipPreflight } = req.body ?? {};
+      if (!signedTx || typeof signedTx !== "string") {
+        reply.code(400);
+        return { error: "missing_signed_tx" };
+      }
+      try {
+        const signature = await sendTransactionViaHelius(signedTx, {
+          skipPreflight: Boolean(skipPreflight),
+        });
+        return { signature };
+      } catch (err) {
+        req.log.error(
+          { err: (err as Error).message },
+          "tx submit failed"
+        );
+        reply.code(502);
+        return {
+          error: "submit_failed",
+          message: (err as Error).message,
+        };
+      }
+    }
+  );
 
   /**
    * Phase 8.5: One-tap deposit primitive — Jupiter Swap API 経由で underlying mint →

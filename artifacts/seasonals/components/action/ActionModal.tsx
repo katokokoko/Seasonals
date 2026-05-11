@@ -54,9 +54,13 @@ import {
   useKaminoReserves,
 } from "../../services/queries";
 import { useWallet } from "../../services/useWallet";
-import { signAndSendTransactions } from "../../services/mwa";
+import {
+  signAndSendTransactions,
+  signTransactions,
+} from "../../services/mwa";
 import { USE_ONCHAIN } from "../../services/config";
 import * as api from "../../services/api";
+import { useQueryClient } from "@tanstack/react-query";
 import {
   JUPITER_MINTS,
   JUPITER_TOKEN_DECIMALS,
@@ -110,6 +114,7 @@ export function ActionModal({
 
   const approveMutation = useApproveAgentPlan();
   const { authorization, isConnected } = useWallet();
+  const queryClient = useQueryClient();
 
   const reset = useCallback(() => {
     setPhase("review");
@@ -167,13 +172,28 @@ export function ActionModal({
           amount: action!.amount!,
           slippageBps: 50,
         });
-        // versioned tx (base64) → VersionedTransaction → MWA sign + broadcast
+        // Phase 8.8: sign-only + Helius RPC submit。Phantom の signAndSend が
+        // empty result を返す問題 (v0 versioned tx + lookup tables) を回避。
         setPhase("signing");
         const bytes = Buffer.from(swap.swapTransaction, "base64");
         const tx = VersionedTransaction.deserialize(bytes);
-        const sigs = await signAndSendTransactions(authorization!, [tx]);
-        setSignature(sigs[0] ?? null);
+        const [signedTx] = await signTransactions(authorization!, [tx]);
+        if (!signedTx) {
+          throw new Error("Wallet did not return a signed transaction.");
+        }
+        const signedBase64 = Buffer.from(signedTx.serialize()).toString(
+          "base64"
+        );
+        const { signature } = await api.submitSignedTx(signedBase64);
+        setSignature(signature);
         setPhase("success");
+        // Phase 8.8.2: deposit 成功後に portfolio / earn / wallet tx を refetch。
+        // BFF cache 30s + tx confirmation のタイミングで反映されるよう少し待つ。
+        setTimeout(() => {
+          queryClient.invalidateQueries({ queryKey: ["positions"] });
+          queryClient.invalidateQueries({ queryKey: ["earn-positions"] });
+          queryClient.invalidateQueries({ queryKey: ["wallet-time-events"] });
+        }, 5000);
       } catch (e) {
         // Phase 8.6.1: null / 空 message を可視化 (Phantom が無応答で戻った時等)
         const raw =
@@ -536,8 +556,12 @@ function SuccessBody({
   testID?: string;
 }) {
   const styles = useThemedStyles(makeStyles);
+  // Phase 8.8.1: USE_ONCHAIN は mainnet で broadcast、default APK は devnet memo tx。
+  // Explorer link の cluster param を variant に追従させる。
   const explorerUrl = signature
-    ? `https://explorer.solana.com/tx/${signature}?cluster=devnet`
+    ? `https://explorer.solana.com/tx/${signature}${
+        USE_ONCHAIN ? "" : "?cluster=devnet"
+      }`
     : null;
 
   return (
