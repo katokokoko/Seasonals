@@ -47,11 +47,19 @@ import {
 import { getRegistry } from "@workspace/lib/adapters";
 
 import { fetchAssetsByOwner, type HeliusAsset } from "./clients/helius";
-import { fetchEarnPositions } from "./clients/jupiter-lend";
+import {
+  fetchEarnMarkets,
+  fetchEarnPositions,
+  type JupiterLendMarket,
+} from "./clients/jupiter-lend";
 import {
   fetchEnhancedTransactions,
   type HeliusEnhancedTx,
 } from "./clients/helius-tx";
+import {
+  fetchSwapQuote,
+  fetchSwapTransaction,
+} from "./clients/jupiter-swap";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Solana 接続 (Devnet) — approve endpoint で memo tx を構築するため
@@ -240,6 +248,28 @@ const JUPITER_LEND_SHARE_MINTS: Record<string, string> = {
   "9fvHrYNw1A8Evpcj7X2yy4k4fT7nNHcA9L6UsamNHAif": "USDG",  // jlUSDG
   j14XLJZSVMcUYpAfajdZRpnfHUpJieZHS4aPektLWvh: "USDS",     // jlUSDS
   "7GxATsNMnaC88vdwd2t3mwrFuQwwGvmYPrUQ4D6FotXk": "JupUSD",// jlJupUSD
+};
+
+/**
+ * Phase 8.5: underlying asset mint → jlToken (jupiter lend share) mint。
+ * Jupiter Swap が USDC → jlUSDC を直接 route するので、deposit-tx で output として渡す。
+ * Phase 8.6: 7 markets 全部対応。
+ */
+const UNDERLYING_TO_JL_SHARE_MINT: Record<string, string> = {
+  EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v:
+    "9BEcn9aPEmhSPbPQeFGjidRiEKki46fVQDyPpSQXPA2D", // USDC → jlUSDC
+  So11111111111111111111111111111111111111112:
+    "2uQsyo1fXXQkDtcpXnLofWy88PxcvnfH2L8FPSE62FVU", // SOL → jlWSOL
+  Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB:
+    "Cmn4v2wipYV41dkakDvCgFJpxhtaaKt11NyWV8pjSE8A", // USDT → jlUSDT
+  HzwqbKZw8HxMN6bF2yFZNrht3c2iXXzpKcFu7uBEDKtr:
+    "GcV9tEj62VncGithz4o4N9x6HWXARxuRgEAYk9zahNA8", // EURC → jlEURC
+  USDSwr9ApdHk5bvJKMjzff41FfuX8bSxdKcR81vTwcA:
+    "j14XLJZSVMcUYpAfajdZRpnfHUpJieZHS4aPektLWvh", // USDS → jlUSDS
+  "2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH":
+    "9fvHrYNw1A8Evpcj7X2yy4k4fT7nNHcA9L6UsamNHAif", // USDG → jlUSDG
+  JuprjznTrTSp2UFa3ZBUFgwdAmtZCq4MQCwysN55USD:
+    "7GxATsNMnaC88vdwd2t3mwrFuQwwGvmYPrUQ4D6FotXk", // JupUSD → jlJupUSD
 };
 
 /**
@@ -527,6 +557,23 @@ export async function buildServer(
   // ── adapter-driven endpoints (CLAUDE.md §13 / §26) ───────────────────
 
   /** Kamino reserves 一覧 (UI の "explore lending" で使う候補) */
+  /**
+   * Phase 8.6: Jupiter Lend Earn の 7 markets (jlUSDC / jlWSOL / jlUSDT 等) を
+   * lite API から正規化して返す。MenuDrawer の Jupiter drill-down 動的化用。
+   * 失敗時は空配列を返し、UI は fixture pools fallback (Phase 6) で表示。
+   */
+  app.get("/protocols/jupiter-lend/markets", async (req) => {
+    try {
+      return await fetchEarnMarkets();
+    } catch (err) {
+      req.log.warn(
+        { err: (err as Error).message },
+        "jupiter lend markets fetch failed; returning empty"
+      );
+      return [] as JupiterLendMarket[];
+    }
+  });
+
   app.get("/protocols/kamino/reserves", async () => {
     const registry = getRegistry();
     const adapter = registry.getLending("kamino");
@@ -537,6 +584,76 @@ export async function buildServer(
         chain: "solana:devnet",
       }),
     };
+  });
+
+  /**
+   * Phase 8.5: One-tap deposit primitive — Jupiter Swap API 経由で underlying mint →
+   * jlToken mint の swap tx を取得。返り値の swapTransaction (base64 versioned tx) を
+   * Mobile 側で MWA 経由 sign + mainnet broadcast する。
+   *
+   * body: { user, inputMint, amount: smallest unit, slippageBps?: number }
+   *   inputMint は underlying token (USDC mint 等)。output (jlToken) は registry で解決。
+   */
+  app.post<{
+    Body: {
+      user: string;
+      inputMint: string;
+      amount: string;
+      slippageBps?: number;
+    };
+  }>("/protocols/jupiter-lend/deposit-tx", async (req, reply) => {
+    const { user, inputMint, amount, slippageBps } = req.body ?? {};
+    if (!user || !inputMint || !amount) {
+      reply.code(400);
+      return {
+        error: "missing_required_field",
+        required: ["user", "inputMint", "amount"],
+      };
+    }
+    if (user.length < 32 || user.length > 44 || /\s/.test(user)) {
+      reply.code(400);
+      return { error: "invalid_wallet_address", user };
+    }
+    const outputMint = UNDERLYING_TO_JL_SHARE_MINT[inputMint];
+    if (!outputMint) {
+      reply.code(400);
+      return {
+        error: "unsupported_input_mint",
+        message: "Jupiter Lend does not support deposit for this mint via Seasonals",
+        inputMint,
+      };
+    }
+    try {
+      const quote = await fetchSwapQuote({
+        inputMint,
+        outputMint,
+        amount,
+        slippageBps: slippageBps ?? 50,
+      });
+      const tx = await fetchSwapTransaction({
+        quoteResponse: quote,
+        userPublicKey: user,
+        prioritizationFeeLamports: "auto",
+        dynamicComputeUnitLimit: true,
+      });
+      return {
+        swapTransaction: tx.swapTransaction,
+        lastValidBlockHeight: tx.lastValidBlockHeight,
+        outAmount: quote.outAmount,
+        outputMint,
+        quote,
+      };
+    } catch (err) {
+      req.log.error(
+        { err: (err as Error).message, user, inputMint, amount },
+        "jupiter swap deposit-tx failed"
+      );
+      reply.code(502);
+      return {
+        error: "jupiter_swap_failed",
+        message: (err as Error).message,
+      };
+    }
   });
 
   /** Jupiter quote (input → output の swap route preview) */

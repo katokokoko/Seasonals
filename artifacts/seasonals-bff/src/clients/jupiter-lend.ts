@@ -52,9 +52,95 @@ interface CacheEntry {
 
 const positionsCache = new Map<string, CacheEntry>();
 
+/** Phase 8.6: market catalog cache (single global、 wallet 非依存) */
+let marketsCache: { data: JupiterLendMarket[]; ts: number } | null = null;
+
 /** test 用 cache クリア */
 export function _clearJupiterLendCacheForTest(): void {
   positionsCache.clear();
+  marketsCache = null;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Phase 8.6: Markets catalog (lite-api.jup.ag/lend/v1/earn/tokens)
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface JupiterLendMarket {
+  /** jlToken (vault share) mint */
+  jlMint: string;
+  jlSymbol: string;
+  jlDecimals: number;
+  /** Underlying asset mint */
+  underlyingMint: string;
+  /** Underlying asset symbol (USDC / WSOL / USDT etc.) */
+  underlyingSymbol: string;
+  underlyingDecimals: number;
+  underlyingPriceUsd: number;
+  supplyRateBps: number;
+  rewardsRateBps: number;
+  totalRateBps: number;
+  /** Total assets in underlying smallest unit (TVL の底値) */
+  tvlUnderlying: string;
+}
+
+interface JupTokenRaw {
+  id?: number;
+  address: string;
+  name?: string;
+  symbol?: string;
+  decimals?: number;
+  assetAddress?: string;
+  asset?: {
+    address?: string;
+    symbol?: string;
+    decimals?: number;
+    price?: number | string;
+  };
+  supplyRate?: string;
+  rewardsRate?: string;
+  totalRate?: string;
+  totalAssets?: string;
+}
+
+export async function fetchEarnMarkets(): Promise<JupiterLendMarket[]> {
+  if (marketsCache && Date.now() - marketsCache.ts < CACHE_TTL_MS) {
+    return marketsCache.data;
+  }
+  const res = await fetch(`${JUPITER_LEND_BASE}/earn/tokens`, {
+    method: "GET",
+    headers: { accept: "application/json" },
+  });
+  if (!res.ok) {
+    throw new Error(
+      `Jupiter Lend markets HTTP ${res.status}: ${await res.text().catch(() => "")}`
+    );
+  }
+  const json = (await res.json()) as JupTokenRaw[];
+  if (!Array.isArray(json)) {
+    throw new Error("Jupiter Lend markets unexpected response shape");
+  }
+  const data: JupiterLendMarket[] = json
+    .filter((t) => t.address && t.asset?.address)
+    .map((t) => ({
+      jlMint: t.address,
+      jlSymbol: t.symbol ?? "",
+      jlDecimals: t.decimals ?? 0,
+      underlyingMint: t.asset!.address!,
+      underlyingSymbol: t.asset?.symbol ?? "",
+      underlyingDecimals: t.asset?.decimals ?? 0,
+      underlyingPriceUsd:
+        typeof t.asset?.price === "number"
+          ? t.asset.price
+          : typeof t.asset?.price === "string"
+            ? Number.parseFloat(t.asset.price)
+            : 0,
+      supplyRateBps: Number(t.supplyRate) || 0,
+      rewardsRateBps: Number(t.rewardsRate) || 0,
+      totalRateBps: Number(t.totalRate) || 0,
+      tvlUnderlying: String(t.totalAssets ?? "0"),
+    }));
+  marketsCache = { data, ts: Date.now() };
+  return data;
 }
 
 /**

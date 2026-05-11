@@ -377,7 +377,7 @@ export function SettingsDrawer({
                   <Text style={styles.walletBtnOutlinedText}>Subscription</Text>
                 </Pressable>
               </View>
-              {isConnected && (
+              {authorization && (
                 <Pressable
                   accessibilityRole="button"
                   onPress={handleSignOut}

@@ -31,7 +31,7 @@ import Animated, {
   withTiming,
 } from "react-native-reanimated";
 import { BlurView } from "expo-blur";
-import { Transaction } from "@solana/web3.js";
+import { Transaction, VersionedTransaction } from "@solana/web3.js";
 
 import {
   FONT,
@@ -55,6 +55,8 @@ import {
 } from "../../services/queries";
 import { useWallet } from "../../services/useWallet";
 import { signAndSendTransactions } from "../../services/mwa";
+import { USE_ONCHAIN } from "../../services/config";
+import * as api from "../../services/api";
 import {
   JUPITER_MINTS,
   JUPITER_TOKEN_DECIMALS,
@@ -124,11 +126,72 @@ export function ActionModal({
     if (!plan) return;
     setErrorMsg(null);
 
-    // wallet 未接続なら approve だけ走らせて (BFF mock で plan status のみ更新)、
-    // sign skip。dev 用 fallback。
-    const feePayer = isConnected && authorization
-      ? authorization.address
-      : undefined;
+    const action = plan.selected_action;
+    // Phase 8.5.1: Menu fixture の protocol_id は "jupiter" (catalog 上の単一エントリ)
+    // で、EarnPosition では "jupiter_lend"。pool tap 由来の synthetic plan には
+    // どちらが入っても deposit path を起動できるよう両方マッチさせる。
+    const isJupiterLendAction =
+      action?.protocol === "jupiter_lend" || action?.protocol === "jupiter";
+    const isOnchainJupiterLendDeposit =
+      USE_ONCHAIN &&
+      isConnected &&
+      authorization &&
+      isJupiterLendAction &&
+      action?.action_type === "deposit" &&
+      action?.amount &&
+      action?.asset;
+
+    // ── Phase 8.5: onchain + Jupiter Lend deposit は実 mainnet swap path ──
+    if (isOnchainJupiterLendDeposit) {
+      // Phase 8.6: Jupiter Lend Earn の 7 markets underlying mint
+      const ASSET_MINTS: Record<string, string> = {
+        USDC: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        SOL: "So11111111111111111111111111111111111111112",
+        USDT: "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",
+        EURC: "HzwqbKZw8HxMN6bF2yFZNrht3c2iXXzpKcFu7uBEDKtr",
+        USDS: "USDSwr9ApdHk5bvJKMjzff41FfuX8bSxdKcR81vTwcA",
+        USDG: "2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH",
+        JupUSD: "JuprjznTrTSp2UFa3ZBUFgwdAmtZCq4MQCwysN55USD",
+      };
+      const inputMint = ASSET_MINTS[action!.asset!];
+      if (!inputMint) {
+        setErrorMsg(`Unsupported asset for Jupiter Lend: ${action!.asset}`);
+        setPhase("error");
+        return;
+      }
+      setPhase("approving");
+      try {
+        const swap = await api.getJupiterDepositTx({
+          user: authorization!.address,
+          inputMint,
+          amount: action!.amount!,
+          slippageBps: 50,
+        });
+        // versioned tx (base64) → VersionedTransaction → MWA sign + broadcast
+        setPhase("signing");
+        const bytes = Buffer.from(swap.swapTransaction, "base64");
+        const tx = VersionedTransaction.deserialize(bytes);
+        const sigs = await signAndSendTransactions(authorization!, [tx]);
+        setSignature(sigs[0] ?? null);
+        setPhase("success");
+      } catch (e) {
+        // Phase 8.6.1: null / 空 message を可視化 (Phantom が無応答で戻った時等)
+        const raw =
+          e instanceof Error ? e.message : e == null ? "" : String(e);
+        const detail = e instanceof Error && e.stack ? `\n${e.stack.split("\n")[0]}` : "";
+        const msg =
+          raw && raw !== "null"
+            ? raw + detail
+            : "Wallet returned no result. Try disconnecting and reconnecting.";
+        setErrorMsg(msg);
+        setPhase("error");
+      }
+      return;
+    }
+
+    // ── Fallback path: BFF memo tx (Phase 5 / 8 までの動作) ──
+    const feePayer =
+      isConnected && authorization ? authorization.address : undefined;
 
     setPhase("approving");
     try {
@@ -138,13 +201,11 @@ export function ActionModal({
       });
       onSettled?.(result);
 
-      // tx 不在 (wallet 未接続 or BFF が memo tx を構築できなかった) は approve 完了で終了
       if (!result.tx || !authorization) {
         setPhase("success");
         return;
       }
 
-      // base64 → Transaction → MWA sign + broadcast
       setPhase("signing");
       const bytes = Buffer.from(result.tx, "base64");
       const tx = Transaction.from(bytes);
@@ -242,10 +303,10 @@ export function ActionModal({
           />
         )}
 
-        {phase === "approving" && <BusyBody label="BFF に承認中…" />}
+        {phase === "approving" && <BusyBody label="Preparing transaction…" />}
 
         {phase === "signing" && (
-          <BusyBody label="Phantom / Seed Vault で署名してください" />
+          <BusyBody label="Approve in your wallet to sign the transaction" />
         )}
 
         {phase === "success" && (
@@ -270,13 +331,19 @@ export function ActionModal({
   );
 }
 
+// Phase 8.6.1: English labels for consistency with rest of UI
 function phaseLabel(p: Phase): string {
   switch (p) {
-    case "review": return "1-tap で approve";
-    case "approving": return "承認中…";
-    case "signing": return "署名中…";
-    case "success": return "完了";
-    case "error": return "失敗";
+    case "review":
+      return "Review & approve";
+    case "approving":
+      return "Preparing…";
+    case "signing":
+      return "Signing…";
+    case "success":
+      return "Done";
+    case "error":
+      return "Failed";
   }
 }
 
@@ -478,7 +545,7 @@ function SuccessBody({
       <View style={styles.successIconWrap}>
         <Text style={styles.successIcon}>✓</Text>
       </View>
-      <Text style={styles.successTitle}>承認 + 実行 完了</Text>
+      <Text style={styles.successTitle}>Approved & executed</Text>
       {signature ? (
         <>
           <View style={styles.signatureCard}>
@@ -496,12 +563,12 @@ function SuccessBody({
             onPress={() => explorerUrl && Linking.openURL(explorerUrl).catch(() => undefined)}
             style={styles.ctaSecondary}
           >
-            <Text style={styles.ctaSecondaryText}>Solana Explorer で開く ↗</Text>
+            <Text style={styles.ctaSecondaryText}>Open in Solana Explorer ↗</Text>
           </Pressable>
         </>
       ) : (
         <Text style={styles.successHint}>
-          BFF approve のみ完了 (wallet 未接続 or Devnet RPC 失敗)。
+          Plan approved (no transaction was broadcast).
         </Text>
       )}
       <Pressable
@@ -509,7 +576,7 @@ function SuccessBody({
         onPress={onClose}
         style={styles.ctaPrimary}
       >
-        <Text style={styles.ctaPrimaryText}>閉じる</Text>
+        <Text style={styles.ctaPrimaryText}>Close</Text>
       </Pressable>
     </View>
   );
@@ -534,7 +601,7 @@ function ErrorBody({
       <View style={styles.errorIconWrap}>
         <Text style={styles.errorIcon}>!</Text>
       </View>
-      <Text style={styles.errorTitle}>失敗しました</Text>
+      <Text style={styles.errorTitle}>Transaction failed</Text>
       <Text
         style={styles.errorMessage}
         selectable
@@ -547,14 +614,14 @@ function ErrorBody({
         onPress={onRetry}
         style={styles.ctaPrimary}
       >
-        <Text style={styles.ctaPrimaryText}>もう一度</Text>
+        <Text style={styles.ctaPrimaryText}>Try again</Text>
       </Pressable>
       <Pressable
         accessibilityRole="button"
         onPress={onClose}
         style={styles.ctaSecondary}
       >
-        <Text style={styles.ctaSecondaryText}>閉じる</Text>
+        <Text style={styles.ctaSecondaryText}>Close</Text>
       </Pressable>
     </View>
   );

@@ -185,22 +185,36 @@ export default function HomeScreen() {
   const handleStartActionFromServices = (
     protocol: string,
     asset: string,
-    _actionType: "deposit"
+    actionType: "deposit"
   ) => {
-    const target = plans.find(
-      (p) =>
-        p.selected_action?.protocol === protocol &&
-        p.selected_action?.asset === asset &&
-        (p.status === AgentPlanStatus.Simulated ||
-          p.status === AgentPlanStatus.PendingUser)
-    );
-    const fallback = plans.find(
-      (p) =>
-        p.status === AgentPlanStatus.Simulated ||
-        p.status === AgentPlanStatus.PendingUser
-    );
-    const next = target ?? fallback ?? null;
-    setTimeout(() => setPendingPlan(next), 130);
+    // Phase 8.5: synthetic AgentPlan を生成 — fixture からの lookup は廃止し、
+    // pool tap context (protocol / asset / actionType) を直接 plan に詰める。
+    // amount は Phase 8.5 MVP で固定 0.1 USDC (= 100000 smallest unit) 等、
+    // 小額 mainnet test 用 default。将来 ActionModal で edit 可能にする予定。
+    const defaultAmountByAsset: Record<string, string> = {
+      USDC: "100000",      // 0.1 USDC
+      USDT: "100000",      // 0.1 USDT
+      SOL: "1000000",      // 0.001 SOL
+    };
+    const amount = defaultAmountByAsset[asset] ?? "100000";
+
+    const syntheticPlan = {
+      plan_id: `synthetic_${Date.now()}`,
+      status: AgentPlanStatus.PendingUser,
+      objective: "increase_yield",
+      candidate_actions: [],
+      selected_action: {
+        protocol,
+        asset,
+        action_type: actionType,
+        amount,
+      },
+      simulation_result: null,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    } as unknown as AgentPlan;
+
+    setTimeout(() => setPendingPlan(syntheticPlan), 130);
   };
 
   const dayEvents = selectedDay

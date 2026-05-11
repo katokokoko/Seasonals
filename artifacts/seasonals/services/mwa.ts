@@ -35,7 +35,8 @@ import {
 export type SolanaChain =
   | "solana:devnet"
   | "solana:testnet"
-  | "solana:mainnet";
+  | "solana:mainnet"
+  | "solana:mainnet-beta";
 
 export interface MwaIdentity {
   /** wallet 側に表示される dApp name */
@@ -180,11 +181,28 @@ export async function signAndSendTransactions<
   T extends Transaction | VersionedTransaction
 >(auth: ConnectedAuthorization, transactions: T[]): Promise<string[]> {
   return await transact(async (wallet: Web3MobileWallet) => {
-    await wallet.reauthorize({
-      auth_token: auth.authToken,
-      identity: DEFAULT_IDENTITY,
-    });
-    return await wallet.signAndSendTransactions({ transactions });
+    // Phase 8.6.1: reauthorize は auth_token 検証で失敗するケースがあるため、
+    // fresh authorize で session を確立する。Phantom mobile は authorize 後の
+    // signAndSendTransactions を確実に処理する。
+    try {
+      await wallet.reauthorize({
+        auth_token: auth.authToken,
+        identity: DEFAULT_IDENTITY,
+      });
+    } catch {
+      // reauthorize 失敗時は新規 authorize に fallback (chain は保存値を流用)
+      await wallet.authorize({
+        chain: auth.chain,
+        identity: DEFAULT_IDENTITY,
+      });
+    }
+    const result = await wallet.signAndSendTransactions({ transactions });
+    if (!result || result.length === 0) {
+      throw new Error(
+        "Wallet returned empty signatures. The wallet may not support this transaction type."
+      );
+    }
+    return result;
   });
 }
 

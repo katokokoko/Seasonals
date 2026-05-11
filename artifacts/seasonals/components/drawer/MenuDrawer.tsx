@@ -59,7 +59,11 @@ import {
   type ProtocolPool,
 } from "@workspace/lib/types";
 
-import { useMenuListings, usePositions } from "../../services/queries";
+import {
+  useJupiterLendMarkets,
+  useMenuListings,
+  usePositions,
+} from "../../services/queries";
 
 const SCREEN_WIDTH = Dimensions.get("window").width;
 const DRAWER_WIDTH = Math.min(360, SCREEN_WIDTH * 0.86);
@@ -209,6 +213,8 @@ export function MenuDrawer({
 
   const { data: listings = [] } = useMenuListings();
   const { data: positions = [] } = usePositions();
+  // Phase 8.6: Jupiter Lend live markets (drill-down で fixture pools を上書き)
+  const { data: jlMarkets = [] } = useJupiterLendMarkets();
 
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<FilterKey>("all");
@@ -327,10 +333,44 @@ export function MenuDrawer({
   }, [filtered]);
 
   // 現在 detail pane で表示中の protocol entry
-  const selectedEntry = useMemo(
+  const baseSelectedEntry = useMemo(
     () => listings.find((l) => l.protocol_id === selectedProtocolId) ?? null,
     [listings, selectedProtocolId]
   );
+
+  // Phase 8.6: Jupiter drill-down の pools を Jupiter Lend live markets で上書き
+  const selectedEntry = useMemo<ProtocolMenuEntry | null>(() => {
+    if (!baseSelectedEntry) return null;
+    if (baseSelectedEntry.protocol_id !== "jupiter") return baseSelectedEntry;
+    if (jlMarkets.length === 0) return baseSelectedEntry; // fetch 前は fixture
+    const liveSupportedAssets = Array.from(
+      new Set(
+        jlMarkets.map((m) =>
+          m.underlyingSymbol === "WSOL" ? "SOL" : m.underlyingSymbol
+        )
+      )
+    );
+    const livePools: ProtocolPool[] = jlMarkets.map((m) => {
+      const displayAsset =
+        m.underlyingSymbol === "WSOL" ? "SOL" : m.underlyingSymbol;
+      const tvlUsd =
+        (Number(m.tvlUnderlying) / Math.pow(10, m.underlyingDecimals)) *
+        m.underlyingPriceUsd;
+      return {
+        pool_id: `jl_${displayAsset}`,
+        name: `Jupiter Lend ${displayAsset}`,
+        category: PositionCategory.Stable,
+        asset: displayAsset,
+        apy: m.supplyRateBps / 10000,
+        tvl_usd: tvlUsd,
+      };
+    });
+    return {
+      ...baseSelectedEntry,
+      supported_assets: liveSupportedAssets,
+      pools: livePools,
+    };
+  }, [baseSelectedEntry, jlMarkets]);
 
   const handlePoolTap = useCallback(
     (entry: ProtocolMenuEntry, pool: ProtocolPool) => {

@@ -266,6 +266,68 @@ export async function getEarnPositions(
 }
 
 /**
+ * Phase 8.5: Jupiter Lend に deposit する swap tx を BFF 経由で取得。
+ * BFF が Jupiter Swap API を call して serialized versioned tx を返す。
+ * Mobile 側で Transaction.from で deserialize → MWA で sign + send。
+ */
+/**
+ * Phase 8.6: Jupiter Lend Earn の 7 markets を BFF 経由で取得。
+ * MenuDrawer drill-down で fixture pools の代わりに表示する。
+ */
+export interface JupiterLendMarketDTO {
+  jlMint: string;
+  jlSymbol: string;
+  jlDecimals: number;
+  underlyingMint: string;
+  underlyingSymbol: string;
+  underlyingDecimals: number;
+  underlyingPriceUsd: number;
+  supplyRateBps: number;
+  rewardsRateBps: number;
+  totalRateBps: number;
+  tvlUnderlying: string;
+}
+
+export async function getJupiterLendMarkets(): Promise<JupiterLendMarketDTO[]> {
+  return tryHttpThenFixture(
+    () => httpGetJson<JupiterLendMarketDTO[]>("/protocols/jupiter-lend/markets"),
+    async () => [],
+    "/protocols/jupiter-lend/markets"
+  );
+}
+
+export interface JupiterDepositTxResponse {
+  swapTransaction: string;
+  lastValidBlockHeight: number;
+  outAmount: string;
+  outputMint: string;
+  quote: unknown;
+}
+
+export async function getJupiterDepositTx(input: {
+  user: string;
+  inputMint: string;
+  amount: string;
+  slippageBps?: number;
+}): Promise<JupiterDepositTxResponse> {
+  const res = await fetch(`${BFF_BASE_URL}/protocols/jupiter-lend/deposit-tx`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as {
+      error?: string;
+      message?: string;
+    };
+    throw new Error(
+      body.message ?? body.error ?? `HTTP ${res.status} ${res.statusText}`
+    );
+  }
+  return (await res.json()) as JupiterDepositTxResponse;
+}
+
+/**
  * Phase 8.3: 接続済 wallet の tx 履歴から派生する time events を取得。
  * BFF /time-events/wallet が UnifiedTimeEventDTO[] (triggerAt string) で返すので、
  * Mobile 側で Date に復元してから返す。fixture 未提供、未接続 / 失敗時は空配列。

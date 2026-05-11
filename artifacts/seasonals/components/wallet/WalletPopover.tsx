@@ -75,7 +75,8 @@ export function WalletPopover({
 }: WalletPopoverProps) {
   const router = useRouter();
   // Phase 7.4: fixture wallets を撤去、MWA authorization のみを表示
-  const { authorization, connect } = useWallet();
+  // Phase 8.5.1: disconnect も使えるように expose
+  const { authorization, connect, disconnect } = useWallet();
   // Phase 7.9: theme 連動 styles
   const styles = useThemedStyles(makeStyles);
 
@@ -135,6 +136,16 @@ export function WalletPopover({
     onClose();
     // /settings/subscription route 未実装 — TODO Phase 5+
     router.push("/theme-shop");
+  };
+
+  // Phase 8.5.1: 接続済 wallet を切断 (mainnet 接続切替 / disconnect 用)
+  const handleDisconnect = async () => {
+    onClose();
+    try {
+      await disconnect();
+    } catch {
+      /* silent */
+    }
   };
 
   return (
@@ -219,6 +230,18 @@ export function WalletPopover({
         >
           <Text style={styles.subBtnText}>Subscription</Text>
         </Pressable>
+
+        {/* Phase 8.5.1: Disconnect (接続済時のみ表示) */}
+        {authorization && (
+          <Pressable
+            accessibilityRole="button"
+            onPress={handleDisconnect}
+            style={styles.disconnectRow}
+            testID={testID ? `${testID}-disconnect` : undefined}
+          >
+            <Text style={styles.disconnectText}>Disconnect</Text>
+          </Pressable>
+        )}
       </Animated.View>
     </Modal>
   );
@@ -371,6 +394,18 @@ function makeStyles(c: ThemeColors) {
       fontFamily: FONT.heading,
       fontWeight: WEIGHT.bold,
       color: c.textOnColor,
+    },
+    // Phase 8.5.1: Disconnect 行 (cherryDark で警告系)
+    disconnectRow: {
+      marginTop: SPACE.xs,
+      paddingVertical: SPACE.xs + 2,
+      alignItems: "center",
+    },
+    disconnectText: {
+      fontSize: FONT_SIZE.bodySM,
+      fontFamily: FONT.heading,
+      fontWeight: WEIGHT.semibold,
+      color: c.cherryDark,
     },
   });
 }

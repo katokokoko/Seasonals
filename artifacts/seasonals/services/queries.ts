@@ -31,6 +31,7 @@ import type {
 import type { ProtocolMenuEntry } from "@workspace/lib/types";
 
 import * as api from "./api";
+import type { JupiterLendMarketDTO } from "./api";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Query keys (cache invalidation 用、文字列直書きを避ける)
@@ -46,6 +47,8 @@ export const queryKeys = {
   /** Phase 8.3: wallet tx 履歴から派生する time events、address 必須 */
   walletTimeEvents: (address: string) =>
     ["wallet-time-events", address] as const,
+  /** Phase 8.6: Jupiter Lend Earn の 7 markets */
+  jupiterLendMarkets: () => ["jupiter-lend-markets"] as const,
   agentPlan: (planId: string) => ["agent-plan", planId] as const,
   agentPlans: () => ["agent-plans"] as const,
   approvalToken: (tokenId: string) => ["approval-token", tokenId] as const,
@@ -120,6 +123,20 @@ export function useWalletTimeEvents(
     queryFn: () =>
       address ? api.getWalletTimeEvents(address) : Promise.resolve([]),
     enabled: Boolean(address),
+  });
+}
+
+/**
+ * Phase 8.6: Jupiter Lend Earn の 7 markets を取得。MenuDrawer の Jupiter
+ * drill-down で fixture pools を上書きする用。
+ */
+export function useJupiterLendMarkets(): UseQueryResult<
+  JupiterLendMarketDTO[],
+  Error
+> {
+  return useQuery({
+    queryKey: queryKeys.jupiterLendMarkets(),
+    queryFn: api.getJupiterLendMarkets,
   });
 }
 

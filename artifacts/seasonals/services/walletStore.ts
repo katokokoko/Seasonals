@@ -29,6 +29,7 @@ import {
   type ConnectOptions,
   type ConnectedAuthorization,
 } from "./mwa";
+import { USE_ONCHAIN } from "./config";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Storage 層 — expo-secure-store の StateStorage adapter
@@ -85,7 +86,15 @@ export const useWalletStore = create<WalletStore>()(
       connect: async (opts) => {
         set({ status: "connecting", error: null });
         try {
-          const authorization = await connectWallet(opts);
+          // Phase 8.5: onchain variant は mainnet wallet を要求 (Jupiter Lend deposit
+          // を mainnet で実行するため)。default variant は devnet (Phase 5 round-trip 用)。
+          // opts.chain を caller が明示している場合はそれを優先。
+          // Phase 8.5.2: MWA 1.0 spec の chain identifier は "solana:mainnet" (固定)。
+          // Phantom mobile はこの値で mainnet auth_token を発行する。
+          const chain =
+            opts?.chain ??
+            (USE_ONCHAIN ? "solana:mainnet" : "solana:devnet");
+          const authorization = await connectWallet({ ...opts, chain });
           set({ authorization, status: "connected", error: null });
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
