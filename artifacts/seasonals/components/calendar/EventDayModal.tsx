@@ -50,14 +50,14 @@ import {
 } from "../../stores/theme";
 
 const CATEGORY_LABELS: Record<TimeEventCategory, string> = {
-  [TimeEventCategory.Maturity]: "満期",
-  [TimeEventCategory.Epoch]: "エポック",
-  [TimeEventCategory.Claim]: "クレーム",
-  [TimeEventCategory.Health]: "健全性",
+  [TimeEventCategory.Maturity]: "Maturity",
+  [TimeEventCategory.Epoch]: "Epoch",
+  [TimeEventCategory.Claim]: "Claim",
+  [TimeEventCategory.Health]: "Health",
   [TimeEventCategory.VestingCliff]: "Vesting cliff",
-  [TimeEventCategory.VoteDeadline]: "投票締切",
-  [TimeEventCategory.LockupEnd]: "ロックアップ終了",
-  [TimeEventCategory.ForecastMarker]: "予測",
+  [TimeEventCategory.VoteDeadline]: "Vote deadline",
+  [TimeEventCategory.LockupEnd]: "Lockup end",
+  [TimeEventCategory.ForecastMarker]: "Forecast",
 };
 
 // Phase 8.0: urgency 配色は active theme と連動。caller が themeColors を渡す。
@@ -144,7 +144,7 @@ export function EventDayModal({
     >
       <View style={styles.header}>
         <View>
-          <Text style={styles.headerLabel}>選択日</Text>
+          <Text style={styles.headerLabel}>Selected day</Text>
           <Text style={styles.headerDate}>
             {day ? format(day, "yyyy/MM/dd (EEE)") : "—"}
           </Text>
@@ -162,7 +162,7 @@ export function EventDayModal({
 
       <BottomSheetScrollView contentContainerStyle={styles.bodyInner}>
         {events.length === 0 ? (
-          <Text style={styles.emptyText}>protocol イベントなし</Text>
+          <Text style={styles.emptyText}>No protocol events</Text>
         ) : (
           events.map((event) => (
             <EventCard
@@ -181,7 +181,7 @@ export function EventDayModal({
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// CustomEventsSection — user 作成 marker の list + 追加 form
+// CustomEventsSection — user 作成 marker の list + Add form
 // ─────────────────────────────────────────────────────────────────────────────
 
 function CustomEventsSection({
@@ -236,13 +236,13 @@ function CustomEventsSection({
             style={styles.customAddBtn}
             testID={testID ? `${testID}-custom-add` : undefined}
           >
-            <Text style={styles.customAddBtnText}>+ 追加</Text>
+            <Text style={styles.customAddBtnText}>+ Add</Text>
           </Pressable>
         )}
       </View>
 
       {customs.length === 0 && !adding && (
-        <Text style={styles.customEmpty}>カスタムイベントなし</Text>
+        <Text style={styles.customEmpty}>No custom events</Text>
       )}
 
       {customs.map((ce) => (
@@ -269,7 +269,7 @@ function CustomEventsSection({
               accessibilityLabel="title"
               value={title}
               onChangeText={setTitle}
-              placeholder="タイトル (e.g., 税務メモ)"
+              placeholder="Title (e.g., tax memo)"
               placeholderTextColor={themeColors.textMuted}
               style={[styles.customInput, styles.customInputTitle]}
               testID={testID ? `${testID}-custom-title` : undefined}
@@ -279,7 +279,7 @@ function CustomEventsSection({
             accessibilityLabel="amount usd"
             value={amount}
             onChangeText={setAmount}
-            placeholder="USD 金額 (任意)"
+            placeholder="USD amount (optional)"
             placeholderTextColor={themeColors.textMuted}
             keyboardType="decimal-pad"
             style={styles.customInput}
@@ -291,7 +291,7 @@ function CustomEventsSection({
               onPress={reset}
               style={[styles.customFormBtn, styles.customFormBtnSecondary]}
             >
-              <Text style={styles.customFormBtnSecondaryText}>キャンセル</Text>
+              <Text style={styles.customFormBtnSecondaryText}>Cancel</Text>
             </Pressable>
             <Pressable
               accessibilityRole="button"
@@ -304,7 +304,7 @@ function CustomEventsSection({
               ]}
               testID={testID ? `${testID}-custom-save` : undefined}
             >
-              <Text style={styles.customFormBtnPrimaryText}>保存</Text>
+              <Text style={styles.customFormBtnPrimaryText}>Save</Text>
             </Pressable>
           </View>
         </View>

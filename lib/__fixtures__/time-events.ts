@@ -187,6 +187,8 @@ export const fixtureEventForecastMarker: UnifiedTimeEvent = {
  * 全 8 カテゴリの fixture (golden test 用)。
  * 配列順序は §11.4 / `enums.ts` の TIME_EVENT_CATEGORIES と同じ。
  */
+// Phase 8.4: test 用に fixture array を維持 (8 categories 全網羅の golden test 用)。
+// BFF / Mobile の production path は直接 [] を返すよう変更 (server.ts / api.ts)。
 export const fixtureUnifiedTimeEvents: UnifiedTimeEvent[] = [
   fixtureEventMaturity,
   fixtureEventEpoch,

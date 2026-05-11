@@ -52,29 +52,26 @@ describe("GET /health", () => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe("GET /time-events", () => {
-  it("fixture の 8 件 (TimeEventCategory 全網羅) を返す", async () => {
+  // Phase 8.4: production cleanup — fixture は返さず空配列。wallet 接続済の
+  // 接続済 wallet からの履歴は別途 /time-events/wallet?wallet=<addr> 経由。
+  it("returns an empty array (Phase 8.4: no fixture in production)", async () => {
     const res = await app.inject({ method: "GET", url: "/time-events" });
     expect(res.statusCode).toBe(200);
     const body = res.json() as Array<{ category: string; id: string }>;
-    expect(body).toHaveLength(8);
-    const categories = body.map((e) => e.category);
-    for (const c of TIME_EVENT_CATEGORIES) {
-      expect(categories).toContain(c);
-    }
+    expect(Array.isArray(body)).toBe(true);
+    expect(body).toHaveLength(0);
   });
 });
 
 describe("GET /positions", () => {
-  it("fixture の 4 件を返す。amount は smallest unit string で素通し", async () => {
+  // Phase 8.4: production cleanup — wallet 無指定なら []。
+  // wallet 指定時は Helius DAS 経由で実 positions を返す path に行く。
+  it("returns an empty array when no wallet query is provided", async () => {
     const res = await app.inject({ method: "GET", url: "/positions" });
     expect(res.statusCode).toBe(200);
-    const body = res.json() as Array<{
-      position_id: string;
-      principal_amount: string;
-    }>;
-    expect(body).toHaveLength(fixturePositions.length);
-    const lending = body.find((p) => p.position_id === "pos_001");
-    expect(lending?.principal_amount).toBe("1500000000"); // string (§4.5)
+    const body = res.json() as Array<unknown>;
+    expect(Array.isArray(body)).toBe(true);
+    expect(body).toHaveLength(0);
   });
 });
 
@@ -237,11 +234,9 @@ describe("POST /push-tokens", () => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe("fixture との shape 一致", () => {
-  it("/time-events response は fixture と完全一致 (verbatim 返却)", async () => {
+  it("/time-events returns empty array (Phase 8.4: no fixture in production)", async () => {
     const res = await app.inject({ method: "GET", url: "/time-events" });
-    // JSON serialize 後に Date が string になるので、fixture 側もシリアライズ往復
-    const expected = JSON.parse(JSON.stringify(fixtureUnifiedTimeEvents));
-    expect(res.json()).toEqual(expected);
+    expect(res.json()).toEqual([]);
   });
 
   it("/approval-tokens/:id は fixture と一致", async () => {

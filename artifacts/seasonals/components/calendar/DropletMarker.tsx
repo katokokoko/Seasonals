@@ -58,16 +58,16 @@ export interface DropletMarkerProps {
 // Default accessibility labels (i18n 前の placeholder)
 // ─────────────────────────────────────────────────────────────────────────────
 
-const SHAPE_LABEL_JA: Record<DropletShape, string> = {
-  maturity: "満期",
-  lockup_end: "ロックアップ終了",
-  epoch: "エポック境界",
-  claim: "クレーム期限",
-  health: "健全性アラート",
+const SHAPE_LABEL: Record<DropletShape, string> = {
+  maturity: "Maturity",
+  lockup_end: "Lockup end",
+  epoch: "Epoch boundary",
+  claim: "Claim deadline",
+  health: "Health alert",
   vesting_cliff: "Vesting cliff",
-  vote_deadline: "投票締切",
-  forecast_marker: "予測",
-  deposit_history: "預入日",
+  vote_deadline: "Vote deadline",
+  forecast_marker: "Forecast",
+  deposit_history: "Deposit",
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -85,7 +85,7 @@ export function DropletMarker({
   // health は prototype の "subtle warning" を踏襲: critical でも caramel に固定 (red triangle 化を避ける)
   const color =
     colorProp ?? (category === "health" ? COLOR.caramel : urgencyColor(urgency));
-  const label = accessibilityLabel ?? SHAPE_LABEL_JA[category];
+  const label = accessibilityLabel ?? SHAPE_LABEL[category];
 
   return (
     <Svg

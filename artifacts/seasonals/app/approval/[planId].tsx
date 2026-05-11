@@ -44,18 +44,18 @@ export default function ApprovalScreen() {
 
   return (
     <SafeAreaView style={styles.safe} edges={["top", "bottom"]}>
-      <Stack.Screen options={{ title: "承認", headerShown: false }} />
+      <Stack.Screen options={{ title: "Approval", headerShown: false }} />
 
       {isPending && (
         <View style={styles.center}>
           <ActivityIndicator color={COLOR.sodaText} size="large" />
-          <Text style={styles.loadingText}>読み込み中…</Text>
+          <Text style={styles.loadingText}>Loading…</Text>
         </View>
       )}
 
       {!isPending && error && (
         <View style={styles.center}>
-          <Text style={styles.errorTitle}>取得失敗</Text>
+          <Text style={styles.errorTitle}>Fetch failed</Text>
           <Text style={styles.errorBody}>{error.message}</Text>
         </View>
       )}

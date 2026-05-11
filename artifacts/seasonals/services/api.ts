@@ -38,6 +38,7 @@ import {
   type Position,
   type Protocol,
   type UnifiedTimeEvent,
+  type UnifiedTimeEventDTO,
   type UserPolicy,
   type Wallet,
 } from "@workspace/lib/types";
@@ -132,11 +133,17 @@ async function tryHttpThenFixture<T>(
 
 async function fxGetTimeEvents(): Promise<UnifiedTimeEvent[]> {
   await nextTick();
+  // Phase 8.4: production cleanup — test 環境では従来通り fixture、production
+  // (APK で BFF が落ちた fallback path 等) では空配列を返す。fixture event 8 種は
+  // golden test (DropletMarker / queries) のために残しているだけで UI 表示は禁止。
+  if (!IS_TEST_ENV) return [];
   return cloned(fixtureUnifiedTimeEvents);
 }
 
 async function fxGetPositions(): Promise<Position[]> {
   await nextTick();
+  // Phase 8.4: production cleanup — test 環境のみ fixture、production は []。
+  if (!IS_TEST_ENV) return [];
   return cloned(fixturePositions);
 }
 
@@ -256,6 +263,26 @@ export async function getEarnPositions(
     async () => empty,
     path
   );
+}
+
+/**
+ * Phase 8.3: 接続済 wallet の tx 履歴から派生する time events を取得。
+ * BFF /time-events/wallet が UnifiedTimeEventDTO[] (triggerAt string) で返すので、
+ * Mobile 側で Date に復元してから返す。fixture 未提供、未接続 / 失敗時は空配列。
+ */
+export async function getWalletTimeEvents(
+  walletAddress: string
+): Promise<UnifiedTimeEvent[]> {
+  const path = `/time-events/wallet?wallet=${encodeURIComponent(walletAddress)}`;
+  const dtos = await tryHttpThenFixture<UnifiedTimeEventDTO[]>(
+    () => httpGetJson<UnifiedTimeEventDTO[]>(path),
+    async () => [],
+    path
+  );
+  return dtos.map((d) => ({
+    ...d,
+    triggerAt: new Date(d.triggerAt),
+  }));
 }
 
 export async function getAgentPlan(planId: string): Promise<AgentPlan> {

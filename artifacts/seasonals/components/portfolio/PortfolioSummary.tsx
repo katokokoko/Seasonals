@@ -48,7 +48,10 @@ import { Charts } from "./Charts";
 import { SponsoredCard } from "./SponsoredCard";
 import {
   aggregateAllocation,
+  totalUsdValue,
+  SOL_USD_PRICE,
   type AllocationSegment,
+  type CurrencyUnit,
 } from "./allocation";
 import {
   buildPortfolioTimeSeries,
@@ -59,7 +62,7 @@ import {
 
 const RANGE_KEYS: RangeKey[] = ["1W", "1M", "3M", "1Y", "ALL"];
 
-const SOL_TO_USD = 168.5; // mock pricing — Phase C5 / 将来 Pyth に差替
+// Phase 8.4.1: SOL/USD は allocation.ts SOL_USD_PRICE に集約 (import で参照)。
 
 const SNAP_INDEX_KEY = "home:bottomSheetSnapIndex"; // Phase 5B.1 persist
 
@@ -119,28 +122,30 @@ export function PortfolioSummary({
     });
   }, []);
 
-  const [currency, setCurrency] = useState<"USDC" | "SOL">("SOL");
+  const [currency, setCurrency] = useState<CurrencyUnit>("USDC");
   const [range, setRange] = useState<RangeKey>("1M");
 
-  const totalSol = useMemo(() => totalSolValue(positions), [positions]);
-  const totalUsd = totalSol * SOL_TO_USD;
+  // Phase 8.4.1: total を asset_symbol price table から直接計算 (allocation.ts と同じロジック)
+  const totalUsd = useMemo(() => totalUsdValue(positions), [positions]);
+  const totalSol = totalUsd / SOL_USD_PRICE;
 
-  // 単純 yield: APY 5.7% × range 日数 / 365 × 現在値
-  // 表示は固定式 (prototype の "+15.49 SOL (5.70%)" を再現)
+  // 単純 yield: APY 5.7% × range 日数 / 365 × 現在値 (mock、Phase 8.5 で
+  // earn position の supply_rate_bps 加重平均に差替予定)
   const yieldRatio = 0.057;
-  const yieldDays = 90; // 既得 yield の対象期間 (mock、約 3 ヶ月)
-  const yieldSol = totalSol * yieldRatio * (yieldDays / 365);
-  const yieldUsd = yieldSol * SOL_TO_USD;
-  const avgYieldDisplay = "9.67%"; // prototype 値、mock
+  const yieldDays = 90;
+  const yieldUsd = totalUsd * yieldRatio * (yieldDays / 365);
+  const yieldSol = yieldUsd / SOL_USD_PRICE;
+  const avgYieldDisplay = "—"; // 本物 yield は別 phase で計算
 
   const series: PortfolioPoint[] = useMemo(
     () => buildPortfolioTimeSeries(positions, range, today),
     [positions, range, today]
   );
 
+  // Phase 8.4.1: currency 駆動で donut value も切替
   const allocation: AllocationSegment[] = useMemo(
-    () => aggregateAllocation(positions, protocols),
-    [positions, protocols]
+    () => aggregateAllocation(positions, protocols, currency),
+    [positions, protocols, currency]
   );
 
   const screenWidth = Dimensions.get("window").width;
@@ -216,17 +221,17 @@ export function PortfolioSummary({
         {/* Total */}
         <Text style={styles.total} testID={testID ? `${testID}-total` : undefined}>
           {currency === "SOL"
-            ? `${totalSol.toFixed(2)} SOL`
-            : `$${totalUsd.toLocaleString("en-US", { maximumFractionDigits: 2 })}`}
+            ? `${totalSol.toFixed(4)} SOL`
+            : `${totalUsd.toLocaleString("en-US", { maximumFractionDigits: 2, minimumFractionDigits: 2 })} USDC`}
         </Text>
 
-        {/* Yield row */}
+        {/* Yield row — Phase 8.4.1: 表示単位を currency に追従 (mock APY 5.7%) */}
         <View style={styles.yieldRow}>
           <Text style={styles.yieldText}>
             +
             {currency === "SOL"
-              ? `${yieldSol.toFixed(2)} SOL`
-              : `$${yieldUsd.toLocaleString("en-US", { maximumFractionDigits: 2 })}`}{" "}
+              ? `${yieldSol.toFixed(4)} SOL`
+              : `${yieldUsd.toLocaleString("en-US", { maximumFractionDigits: 2, minimumFractionDigits: 2 })} USDC`}{" "}
             ({(yieldRatio * 100).toFixed(2)}%)
           </Text>
           <View style={styles.avgYieldPill}>
@@ -257,13 +262,28 @@ export function PortfolioSummary({
           ))}
         </View>
 
-        {/* Chart */}
-        <Charts
-          data={series}
-          width={chartWidth}
-          height={chartHeight}
-          testID={testID ? `${testID}-chart` : undefined}
-        />
+        {/* Chart — Phase 8.4: history は wallet tx index 後の phase で実装。
+            positions 空 / series 空 の時は empty state を出して、過去データの
+            偽造をやめる (旧 APY 5.7% mock 撤去済)。 */}
+        {series.length > 0 ? (
+          <Charts
+            data={series}
+            width={chartWidth}
+            height={chartHeight}
+            testID={testID ? `${testID}-chart` : undefined}
+          />
+        ) : (
+          <View
+            style={[styles.section, { paddingVertical: SPACE.lg }]}
+            testID={testID ? `${testID}-chart-empty` : undefined}
+          >
+            <Text style={styles.empty}>
+              {positions.length === 0
+                ? "Connect a wallet to see your positions"
+                : "Time-series history will appear once tx activity is indexed"}
+            </Text>
+          </View>
+        )}
 
         {/* Allocation section — donut + legend */}
         {allocation.length > 0 && (
@@ -285,7 +305,9 @@ export function PortfolioSummary({
                       <Text style={styles.legendLabel}>{seg.label}</Text>
                     </View>
                     <Text style={styles.legendValue}>
-                      {seg.sol.toFixed(2)} SOL
+                      {currency === "SOL"
+                        ? `${seg.value.toFixed(4)} SOL`
+                        : `${seg.value.toLocaleString("en-US", { maximumFractionDigits: 2, minimumFractionDigits: 2 })} USDC`}
                     </Text>
                   </View>
                 ))}
@@ -301,7 +323,7 @@ export function PortfolioSummary({
         </View>
 
         {isPending && positions.length === 0 && (
-          <Text style={styles.empty}>読み込み中…</Text>
+          <Text style={styles.empty}>Loading…</Text>
         )}
       </BottomSheetScrollView>
     </BottomSheet>

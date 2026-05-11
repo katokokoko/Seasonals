@@ -58,7 +58,7 @@ export function AllocationDonut({
   testID,
 }: AllocationDonutProps) {
   const paths = useMemo(() => {
-    const total = segments.reduce((acc, s) => acc + s.sol, 0);
+    const total = segments.reduce((acc, s) => acc + s.value, 0);
     if (total <= 0) return [];
 
     const cx = size / 2;
@@ -68,7 +68,7 @@ export function AllocationDonut({
 
     let cursor = -Math.PI / 2; // 12 時方向開始
     return segments.map((seg) => {
-      const sweep = (seg.sol / total) * Math.PI * 2;
+      const sweep = (seg.value / total) * Math.PI * 2;
       const start = cursor;
       const end = cursor + sweep;
       cursor = end;

@@ -36,15 +36,22 @@ import {
 } from "@workspace/lib/__fixtures__";
 import {
   AgentPlanStatus,
+  TimeEventCategory,
+  Urgency,
   type AgentPlan,
   type EarnPosition,
   type EarnPositionsResponse,
   type Position,
+  type UnifiedTimeEventDTO,
 } from "@workspace/lib/types";
 import { getRegistry } from "@workspace/lib/adapters";
 
 import { fetchAssetsByOwner, type HeliusAsset } from "./clients/helius";
 import { fetchEarnPositions } from "./clients/jupiter-lend";
+import {
+  fetchEnhancedTransactions,
+  type HeliusEnhancedTx,
+} from "./clients/helius-tx";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Solana 接続 (Devnet) — approve endpoint で memo tx を構築するため
@@ -221,6 +228,70 @@ function mapKaminoBestEffortFromHelius(assets: HeliusAsset[]): EarnPosition[] {
   return out;
 }
 
+/** Phase 8.3: Jupiter Lend / Kamino share token mint registry。tx parsing で
+ *  「これは earn deposit/withdraw」と判定するための whitelist。
+ *  Jupiter Lend は v1 API 出典 (7 markets)、Kamino は metadata.name で best-effort 検出。
+ */
+const JUPITER_LEND_SHARE_MINTS: Record<string, string> = {
+  "9BEcn9aPEmhSPbPQeFGjidRiEKki46fVQDyPpSQXPA2D": "USDC",  // jlUSDC
+  "2uQsyo1fXXQkDtcpXnLofWy88PxcvnfH2L8FPSE62FVU": "SOL",   // jlWSOL
+  Cmn4v2wipYV41dkakDvCgFJpxhtaaKt11NyWV8pjSE8A: "USDT",    // jlUSDT
+  GcV9tEj62VncGithz4o4N9x6HWXARxuRgEAYk9zahNA8: "EURC",    // jlEURC
+  "9fvHrYNw1A8Evpcj7X2yy4k4fT7nNHcA9L6UsamNHAif": "USDG",  // jlUSDG
+  j14XLJZSVMcUYpAfajdZRpnfHUpJieZHS4aPektLWvh: "USDS",     // jlUSDS
+  "7GxATsNMnaC88vdwd2t3mwrFuQwwGvmYPrUQ4D6FotXk": "JupUSD",// jlJupUSD
+};
+
+/**
+ * Phase 8.3: Helius Enhanced Tx を UnifiedTimeEventDTO[] に変換。
+ * - jlToken mint の transfer in/out → Jupiter Lend deposit/withdraw
+ * - tokenTransfers のみ見る (depth 1)、Kamino は本 phase 軽量検出 (mint name 検査は
+ *   Helius Enhanced API では取れないので Phase 8.2 同様 wallet 保有検出のみ、tx 履歴
+ *   側からの Kamino detection は将来 SDK 連携時に拡張)。
+ *
+ * UnifiedTimeEventDTO に変換 (BFF は DTO で返す、Mobile 側で Date に復元)。
+ * category は 8-fixed 中 "Epoch" を generic temporal marker として流用。
+ */
+function mapTxsToWalletTimeEvents(
+  txs: HeliusEnhancedTx[],
+  walletAddress: string
+): UnifiedTimeEventDTO[] {
+  const out: UnifiedTimeEventDTO[] = [];
+  for (const tx of txs) {
+    const transfers = tx.tokenTransfers ?? [];
+    let idx = 0;
+    for (const t of transfers) {
+      const jlAsset = JUPITER_LEND_SHARE_MINTS[t.mint];
+      if (!jlAsset) continue;
+      const isDeposit = t.toUserAccount === walletAddress;
+      const isWithdraw = t.fromUserAccount === walletAddress;
+      if (!isDeposit && !isWithdraw) continue;
+      const verb = isDeposit ? "Deposited" : "Withdrew";
+      out.push({
+        id: `tx_${tx.signature}_${idx}`,
+        protocol: "jupiter_lend",
+        category: TimeEventCategory.Epoch,
+        triggerAt: new Date(tx.timestamp * 1000).toISOString(),
+        urgency: Urgency.Info,
+        walletAddress,
+        positionRef: null,
+        actions: [],
+        agentReadable: true,
+        metadata: {
+          source: "helius_tx",
+          signature: tx.signature,
+          tx_type: tx.type,
+          headline: `${verb} ${t.tokenAmount.toFixed(4)} ${jlAsset} on Jupiter Lend`,
+          direction: isDeposit ? "deposit" : "withdraw",
+          jl_share_mint: t.mint,
+        },
+      });
+      idx += 1;
+    }
+  }
+  return out;
+}
+
 export interface ServerOptions {
   /** Fastify logger config (test では false にして noise を抑制) */
   logger?: boolean;
@@ -247,7 +318,9 @@ export async function buildServer(
   }));
 
   // ── time events / positions / wallets / protocols / user policy ──────
-  app.get("/time-events", async () => fixtureUnifiedTimeEvents);
+  // Phase 8.4: production cleanup — fixture を返さず空配列。
+  // wallet 接続時は別途 /time-events/wallet?wallet=<addr> で Helius tx を引く。
+  app.get("/time-events", async () => [] as UnifiedTimeEventDTO[]);
 
   /**
    * Phase 8.1: /positions?wallet=<base58 address> で Helius DAS から
@@ -257,7 +330,9 @@ export async function buildServer(
     "/positions",
     async (req, reply) => {
       const wallet = req.query?.wallet?.trim();
-      if (!wallet) return fixturePositions;
+      // Phase 8.4: production cleanup — wallet 無指定なら空配列を返す。
+      // 接続済 wallet があれば Helius DAS 経由で実 positions を返す path に行く。
+      if (!wallet) return [] as Position[];
 
       // 簡易 base58 validation (44 chars max、空白なし)。詳細は @solana/web3.js
       // PublicKey の方が確実だが BFF deps を増やしたくないので長さで guard。
@@ -286,6 +361,36 @@ export async function buildServer(
   app.get("/wallets", async () => fixtureWallets);
   app.get("/protocols", async () => fixtureProtocols);
   app.get("/user-policy", async () => fixtureUserPolicyDefault);
+
+  /**
+   * Phase 8.3: 接続済 wallet の tx 履歴を Helius Enhanced API で引いて、
+   * Jupiter Lend deposit/withdraw を UnifiedTimeEventDTO[] に変換。
+   * 失敗時は空配列を返し、calendar には既存 fixture event のみ表示する fallback。
+   */
+  app.get<{ Querystring: { wallet?: string } }>(
+    "/time-events/wallet",
+    async (req, reply) => {
+      const wallet = req.query?.wallet?.trim();
+      if (!wallet) {
+        reply.code(400);
+        return { error: "wallet_required" };
+      }
+      if (wallet.length < 32 || wallet.length > 44 || /\s/.test(wallet)) {
+        reply.code(400);
+        return { error: "invalid_wallet_address", wallet };
+      }
+      try {
+        const txs = await fetchEnhancedTransactions(wallet);
+        return mapTxsToWalletTimeEvents(txs, wallet);
+      } catch (err) {
+        req.log.warn(
+          { err: (err as Error).message, wallet },
+          "helius enhanced-tx fetch failed; returning empty wallet events"
+        );
+        return [] as UnifiedTimeEventDTO[];
+      }
+    }
+  );
 
   /**
    * Phase 8.2: 接続済 wallet の Jupiter Lend / Kamino earn positions を返す。

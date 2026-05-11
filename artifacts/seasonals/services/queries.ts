@@ -43,6 +43,9 @@ export const queryKeys = {
     address ? (["positions", address] as const) : (["positions"] as const),
   /** Phase 8.2: earn positions (Jupiter Lend + Kamino)、address 必須 */
   earnPositions: (address: string) => ["earn-positions", address] as const,
+  /** Phase 8.3: wallet tx 履歴から派生する time events、address 必須 */
+  walletTimeEvents: (address: string) =>
+    ["wallet-time-events", address] as const,
   agentPlan: (planId: string) => ["agent-plan", planId] as const,
   agentPlans: () => ["agent-plans"] as const,
   approvalToken: (tokenId: string) => ["approval-token", tokenId] as const,
@@ -101,6 +104,21 @@ export function useEarnPositions(
       address
         ? api.getEarnPositions(address)
         : Promise.resolve({ jupiterLend: [], kaminoBestEffort: [] }),
+    enabled: Boolean(address),
+  });
+}
+
+/**
+ * Phase 8.3: address が渡された時のみ wallet tx 履歴から派生する time events
+ * を取得 (deposit / withdraw を calendar に表示する用途)。
+ */
+export function useWalletTimeEvents(
+  address: string | null
+): UseQueryResult<UnifiedTimeEvent[], Error> {
+  return useQuery({
+    queryKey: queryKeys.walletTimeEvents(address ?? "disabled"),
+    queryFn: () =>
+      address ? api.getWalletTimeEvents(address) : Promise.resolve([]),
     enabled: Boolean(address),
   });
 }

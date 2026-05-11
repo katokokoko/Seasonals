@@ -66,6 +66,7 @@ import {
   useAgentPlans,
   useEarnPositions,
   usePositions,
+  useWalletTimeEvents,
   useProtocols,
   useTimeEvents,
 } from "../services/queries";
@@ -87,6 +88,7 @@ import {
 } from "../stores/theme";
 import { useWallet } from "../services/useWallet";
 import { USE_ONCHAIN } from "../services/config";
+import { mergeEarnPositions } from "../services/earn-to-position";
 
 // MVP fixed reference date (CLAUDE.md auto-memory currentDate と整合)。
 const MOCK_TODAY = new Date("2026-05-09T00:00:00.000Z");
@@ -96,8 +98,9 @@ function localDayKey(day: Date): string {
 }
 
 function eventDayKey(triggerAt: UnifiedTimeEvent["triggerAt"]): string {
+  // Phase 8.3.1: local TZ で日付 key を生成。cell の localDayKey と TZ 一致させる。
   const ts = triggerAt instanceof Date ? triggerAt : new Date(triggerAt);
-  return `${ts.getUTCFullYear()}-${String(ts.getUTCMonth() + 1).padStart(2, "0")}-${String(ts.getUTCDate()).padStart(2, "0")}`;
+  return `${ts.getFullYear()}-${String(ts.getMonth() + 1).padStart(2, "0")}-${String(ts.getDate()).padStart(2, "0")}`;
 }
 
 export default function HomeScreen() {
@@ -110,17 +113,31 @@ export default function HomeScreen() {
 
   const insets = useSafeAreaInsets();
 
-  const { data: events = [] } = useTimeEvents();
+  const { data: fixtureEvents = [] } = useTimeEvents();
   // Phase 8.1: onchain variant + 接続済 wallet なら address を渡して
   // Helius DAS 経由の実 mainnet 保有を取得。それ以外は fixture。
   const { authorization } = useWallet();
   const onchainAddress =
     USE_ONCHAIN && authorization?.address ? authorization.address : null;
-  const { data: positions = [] } = usePositions(onchainAddress);
+  const { data: basePositions = [] } = usePositions(onchainAddress);
   // Phase 8.2: onchain APK で接続済みなら Jupiter Lend / Kamino positions を取得、
   // MenuDrawer "Your Positions" section に渡す
   const { data: earnPositionsData } = useEarnPositions(onchainAddress);
+  // Phase 8.3: wallet tx 履歴から派生する deposit/withdraw time events を取得し、
+  // 既存 fixture events と merge して calendar に渡す
+  const { data: walletEvents = [] } = useWalletTimeEvents(onchainAddress);
   const { data: protocols = [] } = useProtocols();
+
+  // Phase 8.3 Part A: earn positions を Position に変換して portfolio donut に計上
+  const positions = useMemo(
+    () => mergeEarnPositions(basePositions, earnPositionsData),
+    [basePositions, earnPositionsData]
+  );
+  // Phase 8.3 Part B: wallet tx 由来 events + fixture events を merge
+  const events = useMemo(
+    () => [...fixtureEvents, ...walletEvents],
+    [fixtureEvents, walletEvents]
+  );
   const { data: plans = [] } = useAgentPlans();
   const customEvents = useAllCustomEvents();
 
@@ -291,7 +308,7 @@ export default function HomeScreen() {
               customEvents={customEvents}
               selectedDay={selectedDay}
               onDayPress={handleDayPress}
-              today={MOCK_TODAY}
+              today={new Date()}
               testID="home-calendar"
             />
           ) : (

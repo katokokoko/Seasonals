@@ -113,7 +113,7 @@ describe("DropletMarker", () => {
       expect(svg.props.height).toBe(16);
     });
 
-    it("default accessibilityLabel は category の日本語名", () => {
+    it("default accessibilityLabel uses category English name", () => {
       render(
         <DropletMarker
           category="maturity"
@@ -121,7 +121,9 @@ describe("DropletMarker", () => {
           testID="dm"
         />
       );
-      expect(screen.getByTestId("dm").props.accessibilityLabel).toBe("満期");
+      expect(screen.getByTestId("dm").props.accessibilityLabel).toBe(
+        "Maturity"
+      );
     });
 
     it("custom accessibilityLabel で default を上書きできる", () => {

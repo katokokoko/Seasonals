@@ -212,6 +212,9 @@ export const fixturePositionJupiterLendStable: Position = {
   raw_state: { wrapped: "jupUSD", apy: 0.0530 },
 };
 
+// Phase 8.4: test 用に fixture array を維持。BFF / Mobile の production path は
+// 直接 [] を返すよう変更 (server.ts / api.ts)。本配列は golden test と
+// integration test のための canonical data として残置。
 export const fixturePositions: Position[] = [
   fixturePositionKaminoLending,
   fixturePositionJitoStaking,

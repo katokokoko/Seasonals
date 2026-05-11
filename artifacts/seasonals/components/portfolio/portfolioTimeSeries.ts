@@ -13,8 +13,11 @@
 
 import { addDays } from "date-fns";
 
-import { TOKEN_DECIMALS, toHumanReadable } from "@workspace/lib/utils/numeric";
 import type { Position } from "@workspace/lib/types";
+
+// Phase 8.4.1: 計算ロジックは allocation.ts に集約済 (asset_symbol → price table)。
+// 旧 currentSolOf (position.unit_price_sol 依存) は撤去。
+import { totalSolValue as allocationTotalSolValue } from "./allocation";
 
 export type RangeKey = "1W" | "1M" | "3M" | "1Y" | "ALL";
 
@@ -25,25 +28,9 @@ export interface PortfolioPoint {
   isFuture: boolean;
 }
 
-/** asset_symbol → decimals。TOKEN_DECIMALS に無い未知 asset は 6 fallback */
-function decimalsOf(asset: string): number {
-  if (asset in TOKEN_DECIMALS) {
-    return (TOKEN_DECIMALS as Record<string, number>)[asset]!;
-  }
-  return 6;
-}
-
-/** 1 position の現在 SOL 評価額 (smallest unit を decimals で正規化) */
-function currentSolOf(p: Position): number {
-  const decimals = decimalsOf(p.asset_symbol);
-  const amount = Number(toHumanReadable(p.current_amount, decimals));
-  const sol = Number(p.unit_price_sol);
-  return amount * sol;
-}
-
-/** ポートフォリオ全体の現在 SOL 評価額 (debt 含む単純合計) */
+/** ポートフォリオ全体の現在 SOL 評価額 (allocation.ts と同じ計算ロジック) */
 export function totalSolValue(positions: Position[]): number {
-  return positions.reduce((sum, p) => sum + currentSolOf(p), 0);
+  return allocationTotalSolValue(positions);
 }
 
 /** range key → 過去日数 */
@@ -62,43 +49,29 @@ function rangeToDays(range: RangeKey): number {
   }
 }
 
-const FUTURE_DAYS = 14;
-
 /**
- * fixture positions から portfolio time-series を生成。
+ * Phase 8.4: history を偽造しない。
+ * - positions が空: 空配列を返し、PortfolioSummary 側で empty state を出す
+ * - positions あり: 現在値だけの **flat line** (range の両端 2 点)。chart が破綻
+ *   しない最低 data。実際に過去 balance を retrieve するには Helius tx history
+ *   から逐次再構築が必要だが、別 phase で対応。
  *
- * 単純モデル: 現在の総 SOL 額を起点に、APY 5.7% (prototype の "+5.70%" と一致) で
- * past 方向 / future 方向に linear 推移。実 production では reserve ごとの実 rate
- * + 過去価格を read してマージ。
+ * 旧版は APY 5.7% mock で linear 推移を生成していた (Prototype "+5.70%" のため
+ * の演出) が、本物の wallet position と整合が取れないため撤去。
  */
 export function buildPortfolioTimeSeries(
   positions: Position[],
   range: RangeKey,
-  today: Date,
-  apy = 0.057
+  today: Date
 ): PortfolioPoint[] {
+  if (positions.length === 0) return [];
+  const totalSol = totalSolValue(positions);
   const pastDays = rangeToDays(range);
-  const totalDays = pastDays + FUTURE_DAYS;
-  const dailyRate = apy / 365;
-  const currentSol = totalSolValue(positions);
-
-  const points: PortfolioPoint[] = [];
-  // step を粗く: 1Y / ALL では daily だと点が多すぎ、5-day step に間引く
-  const step = pastDays > 90 ? 5 : 1;
-
-  for (let i = 0; i <= totalDays; i += step) {
-    const dayOffset = i - pastDays; // negative = past, 0 = today, positive = future
-    const date = addDays(today, dayOffset);
-    // 単純線形: today を起点に過去 / 未来を APY 比率で逆算 / 推進
-    const factor = 1 + dailyRate * dayOffset;
-    const sol = currentSol * factor;
-    points.push({
-      date,
-      sol,
-      isFuture: dayOffset > 0,
-    });
-  }
-  return points;
+  const start = addDays(today, -pastDays);
+  return [
+    { date: start, sol: totalSol, isFuture: false },
+    { date: today, sol: totalSol, isFuture: false },
+  ];
 }
 
 /** chart の y 軸範囲 (min / max を少し膨らませて余白) */

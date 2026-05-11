@@ -66,8 +66,9 @@ function localDayKey(day: Date): string {
 }
 
 function eventDayKey(triggerAt: UnifiedTimeEvent["triggerAt"]): string {
+  // Phase 8.3.1: local TZ で日付 key を生成。cell の localDayKey と TZ 一致させる。
   const ts = triggerAt instanceof Date ? triggerAt : new Date(triggerAt);
-  return `${ts.getUTCFullYear()}-${String(ts.getUTCMonth() + 1).padStart(2, "0")}-${String(ts.getUTCDate()).padStart(2, "0")}`;
+  return `${ts.getFullYear()}-${String(ts.getMonth() + 1).padStart(2, "0")}-${String(ts.getDate()).padStart(2, "0")}`;
 }
 
 function eventsOnDay(events: UnifiedTimeEvent[], day: Date): UnifiedTimeEvent[] {
