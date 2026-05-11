@@ -92,6 +92,29 @@ export const fixtureProtocolJupiterLend: Protocol = {
   metadata: { homepage: "https://jup.ag" },
 };
 
+/**
+ * Phase 8.7: Wallet 直接保有の raw token を Portfolio の category 集計に乗せるための
+ * placeholder Protocol。stable と native SOL を別 protocol_id に分けて、
+ * Donut で Stable / Other segment として表示する。
+ */
+export const fixtureProtocolWalletStable: Protocol = {
+  protocol_id: "wallet_stable",
+  name: "Wallet (Stable)",
+  category: PositionCategory.Stable,
+  trust_level: TrustLevel.A,
+  enabled: true,
+  metadata: {},
+};
+
+export const fixtureProtocolWalletSol: Protocol = {
+  protocol_id: "wallet_sol",
+  name: "Wallet (SOL)",
+  category: PositionCategory.Other,
+  trust_level: TrustLevel.A,
+  enabled: true,
+  metadata: {},
+};
+
 export const fixtureProtocols: Protocol[] = [
   fixtureProtocolKamino,
   fixtureProtocolJito,
@@ -102,4 +125,6 @@ export const fixtureProtocols: Protocol[] = [
   fixtureProtocolMeteora,
   fixtureProtocolRateX,
   fixtureProtocolJupiterLend,
+  fixtureProtocolWalletStable,
+  fixtureProtocolWalletSol,
 ];

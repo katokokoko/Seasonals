@@ -38,6 +38,8 @@ export const ALLOCATION_DISPLAY_ORDER: readonly PositionCategory[] = [
   PositionCategory.LP,
   PositionCategory.PTYT,
   PositionCategory.Stable,
+  // Phase 8.7: native SOL の wallet 保有を Other segment として表示
+  PositionCategory.Other,
 ] as const;
 
 const LABEL_BY_CATEGORY: Record<PositionCategory, string> = {

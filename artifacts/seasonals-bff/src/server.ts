@@ -119,6 +119,17 @@ async function buildMemoTransaction(
  *
  * @see CLAUDE.md §11.3 Position、§4.5 数値表現規約 (string-only)
  */
+/**
+ * Phase 8.7: 未知 mint の raw 保有を asset 種別で protocol_id に振り分け。
+ * これによって donut で stable / native SOL カテゴリに集計できる。
+ */
+function deriveWalletProtocol(assetSymbol: string): string {
+  const stables = ["USDC", "USDT", "USDS", "USDG", "EURC", "JupUSD"];
+  if (stables.includes(assetSymbol)) return "wallet_stable";
+  if (assetSymbol === "SOL" || assetSymbol === "WSOL") return "wallet_sol";
+  return "wallet_holding";
+}
+
 function mapAssetsToPositions(
   assets: HeliusAsset[],
   walletAddress: string
@@ -150,7 +161,7 @@ function mapAssetsToPositions(
     out.push({
       position_id: `helius_${walletAddress}_${asset.id}`,
       wallet_id: walletAddress,
-      protocol_id: known?.protocol_id ?? "wallet_holding",
+      protocol_id: known?.protocol_id ?? deriveWalletProtocol(symbol),
       asset_symbol: symbol,
       principal_amount: balance,
       current_amount: balance,

@@ -48,6 +48,8 @@ import { Charts } from "./Charts";
 import { SponsoredCard } from "./SponsoredCard";
 import {
   aggregateAllocation,
+  positionUsdValue,
+  positionSolValue,
   totalUsdValue,
   SOL_USD_PRICE,
   type AllocationSegment,
@@ -146,6 +148,18 @@ export function PortfolioSummary({
   const allocation: AllocationSegment[] = useMemo(
     () => aggregateAllocation(positions, protocols, currency),
     [positions, protocols, currency]
+  );
+
+  // Phase 8.7: wallet 直接保有 (raw token) を separate section で list 表示
+  const walletHoldings = useMemo(
+    () =>
+      positions.filter(
+        (p) =>
+          p.protocol_id === "wallet_stable" ||
+          p.protocol_id === "wallet_sol" ||
+          p.protocol_id === "wallet_holding"
+      ),
+    [positions]
   );
 
   const screenWidth = Dimensions.get("window").width;
@@ -312,6 +326,48 @@ export function PortfolioSummary({
                   </View>
                 ))}
               </View>
+            </View>
+          </View>
+        )}
+
+        {/* Phase 8.7: Wallet holdings — Allocation section の下に individual token list */}
+        {walletHoldings.length > 0 && (
+          <View
+            style={styles.section}
+            testID={testID ? `${testID}-wallet-holdings` : undefined}
+          >
+            <Text style={styles.sectionLabel}>Wallet holdings</Text>
+            <View style={styles.legend}>
+              {walletHoldings.map((h) => (
+                <View key={h.position_id} style={styles.legendRow}>
+                  <View style={styles.legendLeft}>
+                    <View
+                      style={[
+                        styles.holdingBadge,
+                        {
+                          backgroundColor:
+                            h.asset_symbol === "SOL" ||
+                            h.asset_symbol === "WSOL"
+                              ? styles.holdingBadgeSol.backgroundColor
+                              : styles.holdingBadgeStable.backgroundColor,
+                        },
+                      ]}
+                    >
+                      <Text style={styles.holdingBadgeText}>
+                        {h.asset_symbol.charAt(0)}
+                      </Text>
+                    </View>
+                    <Text style={styles.legendLabel} numberOfLines={1}>
+                      {h.asset_symbol === "WSOL" ? "SOL" : h.asset_symbol}
+                    </Text>
+                  </View>
+                  <Text style={styles.legendValue}>
+                    {currency === "SOL"
+                      ? `${positionSolValue(h).toFixed(4)} SOL`
+                      : `${positionUsdValue(h).toLocaleString("en-US", { maximumFractionDigits: 2, minimumFractionDigits: 2 })} USDC`}
+                  </Text>
+                </View>
+              ))}
             </View>
           </View>
         )}
@@ -547,6 +603,26 @@ function makeStyles(c: ThemeColors) {
       color: c.textMuted,
       textAlign: "center",
       paddingVertical: SPACE.lg,
+    },
+    // Phase 8.7: Wallet holdings token badge
+    holdingBadge: {
+      width: 22,
+      height: 22,
+      borderRadius: 11,
+      alignItems: "center",
+      justifyContent: "center",
+    },
+    holdingBadgeStable: {
+      backgroundColor: c.sodaText,
+    },
+    holdingBadgeSol: {
+      backgroundColor: c.caramel,
+    },
+    holdingBadgeText: {
+      fontSize: 11,
+      fontFamily: FONT.heading,
+      fontWeight: WEIGHT.bold,
+      color: c.textOnColor,
     },
   });
 }
