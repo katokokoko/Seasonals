@@ -201,6 +201,8 @@ function mapJupiterLendToEarnPositions(
       protocol_name: "Jupiter Lend",
       market_symbol: raw.token.asset.symbol,
       share_mint: raw.token.address,
+      shares: raw.shares,
+      share_decimals: raw.token.decimals,
       asset_symbol: raw.token.asset.symbol,
       underlying_amount: raw.underlyingAssets,
       underlying_decimals: raw.token.asset.decimals,
@@ -238,6 +240,8 @@ function mapKaminoBestEffortFromHelius(assets: HeliusAsset[]): EarnPosition[] {
       protocol_name: "Kamino",
       market_symbol: name || symbol || asset.id.slice(0, 4),
       share_mint: asset.id,
+      shares: balance,
+      share_decimals: decimals,
       asset_symbol: symbol || "—",
       underlying_amount: balance,
       underlying_decimals: decimals,
@@ -629,6 +633,79 @@ export async function buildServer(
       }
     }
   );
+
+  /**
+   * Phase 8.9: One-tap withdraw — jlToken → underlying mint の Jupiter Swap tx。
+   * deposit と inverse の swap route で同じ Jupiter Lend Earn AMM を通る。
+   *
+   * body: { user, jlMint, amount: shares smallest unit, slippageBps?: number }
+   *   jlMint = jlToken mint (jlUSDC 等)。output = underlying mint (registry 逆引き)。
+   */
+  app.post<{
+    Body: {
+      user: string;
+      jlMint: string;
+      amount: string;
+      slippageBps?: number;
+    };
+  }>("/protocols/jupiter-lend/withdraw-tx", async (req, reply) => {
+    const { user, jlMint, amount, slippageBps } = req.body ?? {};
+    if (!user || !jlMint || !amount) {
+      reply.code(400);
+      return {
+        error: "missing_required_field",
+        required: ["user", "jlMint", "amount"],
+      };
+    }
+    if (user.length < 32 || user.length > 44 || /\s/.test(user)) {
+      reply.code(400);
+      return { error: "invalid_wallet_address", user };
+    }
+    // jlMint → underlying mint (inverse of UNDERLYING_TO_JL_SHARE_MINT)
+    const inverse = Object.entries(UNDERLYING_TO_JL_SHARE_MINT).find(
+      ([, jl]) => jl === jlMint
+    );
+    if (!inverse) {
+      reply.code(400);
+      return {
+        error: "unsupported_jl_mint",
+        message: "Unknown Jupiter Lend share mint",
+        jlMint,
+      };
+    }
+    const outputMint = inverse[0];
+    try {
+      const quote = await fetchSwapQuote({
+        inputMint: jlMint,
+        outputMint,
+        amount,
+        slippageBps: slippageBps ?? 50,
+      });
+      const tx = await fetchSwapTransaction({
+        quoteResponse: quote,
+        userPublicKey: user,
+        prioritizationFeeLamports: "auto",
+        dynamicComputeUnitLimit: true,
+      });
+      return {
+        swapTransaction: tx.swapTransaction,
+        lastValidBlockHeight: tx.lastValidBlockHeight,
+        outAmount: quote.outAmount,
+        outputMint,
+        quote,
+      };
+    } catch (err) {
+      req.log.error(
+        { err: (err as Error).message, user, jlMint, amount },
+        "jupiter swap withdraw-tx failed"
+      );
+      reply.code(502);
+      return {
+        error: "jupiter_swap_failed",
+        message: (err as Error).message,
+      };
+    }
+  });
 
   /**
    * Phase 8.5: One-tap deposit primitive — Jupiter Swap API 経由で underlying mint →

@@ -145,6 +145,15 @@ export function ActionModal({
       action?.action_type === "deposit" &&
       action?.amount &&
       action?.asset;
+    // Phase 8.9: withdraw path — share_mint と shares amount を metadata で渡す
+    const isOnchainJupiterLendWithdraw =
+      USE_ONCHAIN &&
+      isConnected &&
+      authorization &&
+      isJupiterLendAction &&
+      action?.action_type === "withdraw" &&
+      action?.amount &&
+      typeof (action.metadata?.share_mint as unknown) === "string";
 
     // ── Phase 8.5: onchain + Jupiter Lend deposit は実 mainnet swap path ──
     if (isOnchainJupiterLendDeposit) {
@@ -202,6 +211,48 @@ export function ActionModal({
         const msg =
           raw && raw !== "null"
             ? raw + detail
+            : "Wallet returned no result. Try disconnecting and reconnecting.";
+        setErrorMsg(msg);
+        setPhase("error");
+      }
+      return;
+    }
+
+    // ── Phase 8.9: onchain + Jupiter Lend withdraw (jlToken → underlying) ──
+    if (isOnchainJupiterLendWithdraw) {
+      const jlMint = action!.metadata!.share_mint as string;
+      setPhase("approving");
+      try {
+        const swap = await api.getJupiterWithdrawTx({
+          user: authorization!.address,
+          jlMint,
+          amount: action!.amount!,
+          slippageBps: 50,
+        });
+        setPhase("signing");
+        const bytes = Buffer.from(swap.swapTransaction, "base64");
+        const tx = VersionedTransaction.deserialize(bytes);
+        const [signedTx] = await signTransactions(authorization!, [tx]);
+        if (!signedTx) {
+          throw new Error("Wallet did not return a signed transaction.");
+        }
+        const signedBase64 = Buffer.from(signedTx.serialize()).toString(
+          "base64"
+        );
+        const { signature } = await api.submitSignedTx(signedBase64);
+        setSignature(signature);
+        setPhase("success");
+        setTimeout(() => {
+          queryClient.invalidateQueries({ queryKey: ["positions"] });
+          queryClient.invalidateQueries({ queryKey: ["earn-positions"] });
+          queryClient.invalidateQueries({ queryKey: ["wallet-time-events"] });
+        }, 5000);
+      } catch (e) {
+        const raw =
+          e instanceof Error ? e.message : e == null ? "" : String(e);
+        const msg =
+          raw && raw !== "null"
+            ? raw
             : "Wallet returned no result. Try disconnecting and reconnecting.";
         setErrorMsg(msg);
         setPhase("error");

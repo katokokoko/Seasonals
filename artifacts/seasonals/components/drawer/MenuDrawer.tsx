@@ -193,6 +193,8 @@ export interface MenuDrawerProps {
     asset: string,
     actionType: "deposit"
   ) => void;
+  /** Phase 8.9: Your Positions row tap で withdraw */
+  onWithdrawPosition?: (position: EarnPosition) => void;
   /**
    * Phase 8.2: 接続済 wallet の Jupiter Lend / Kamino positions。
    * undefined or 空配列なら "Your Positions" section を hide。
@@ -205,6 +207,7 @@ export function MenuDrawer({
   visible,
   onClose,
   onStartAction,
+  onWithdrawPosition,
   earnPositions,
   testID,
 }: MenuDrawerProps) {
@@ -528,6 +531,7 @@ export function MenuDrawer({
                   onBack={goBackToList}
                   onPoolTap={(pool) => handlePoolTap(selectedEntry, pool)}
                   earnPositions={earnPositions}
+                  onWithdrawPosition={onWithdrawPosition}
                   testID={testID ? `${testID}-detail` : undefined}
                 />
               )}
@@ -584,16 +588,29 @@ function formatApyBps(bps: number | null): string {
 
 interface YourPositionRowProps {
   position: EarnPosition;
+  onWithdraw?: (position: EarnPosition) => void;
   testID?: string;
 }
 
-function YourPositionRow({ position, testID }: YourPositionRowProps) {
+function YourPositionRow({
+  position,
+  onWithdraw,
+  testID,
+}: YourPositionRowProps) {
   const amount = formatUnderlyingAmount(
     position.underlying_amount,
     position.underlying_decimals
   );
+  // Phase 8.9: row tap で withdraw 起動 (Jupiter Lend のみ、Kamino best-effort は disable)
+  const canWithdraw =
+    position.protocol_id === "jupiter_lend" && onWithdraw !== undefined;
   return (
-    <View style={styles.earnRow} testID={testID}>
+    <Pressable
+      accessibilityRole={canWithdraw ? "button" : "none"}
+      onPress={canWithdraw ? () => onWithdraw!(position) : undefined}
+      style={styles.earnRow}
+      testID={testID}
+    >
       <View style={styles.earnBadge}>
         <Text style={styles.earnBadgeText}>
           {position.protocol_id === "jupiter_lend" ? "J" : "K"}
@@ -605,10 +622,11 @@ function YourPositionRow({ position, testID }: YourPositionRowProps) {
         </Text>
         <Text style={styles.earnSubtitle} numberOfLines={1}>
           {amount} {position.asset_symbol}
+          {canWithdraw ? " · Tap to withdraw" : ""}
         </Text>
       </View>
       <Text style={styles.earnApy}>{formatApyBps(position.supply_rate_bps)}</Text>
-    </View>
+    </Pressable>
   );
 }
 
@@ -692,6 +710,8 @@ interface PoolDetailPaneProps {
   onPoolTap: (pool: ProtocolPool) => void;
   /** Phase 8.2.1: drill-down 内に "Your Positions" subsection を出すための data */
   earnPositions?: EarnPositionsResponse;
+  /** Phase 8.9: Your Positions row tap で withdraw 起動 */
+  onWithdrawPosition?: (position: EarnPosition) => void;
   testID?: string;
 }
 
@@ -700,6 +720,7 @@ function PoolDetailPane({
   onBack,
   onPoolTap,
   earnPositions,
+  onWithdrawPosition,
   testID,
 }: PoolDetailPaneProps) {
   const iconSrc = ICON_BY_ID[entry.icon_id];
@@ -773,6 +794,7 @@ function PoolDetailPane({
                 <YourPositionRow
                   key={`${pos.protocol_id}-${pos.share_mint}`}
                   position={pos}
+                  onWithdraw={onWithdrawPosition}
                   testID={
                     testID
                       ? `${testID}-earn-row-${pos.share_mint}`

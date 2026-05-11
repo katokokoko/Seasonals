@@ -217,6 +217,33 @@ export default function HomeScreen() {
     setTimeout(() => setPendingPlan(syntheticPlan), 130);
   };
 
+  // Phase 8.9: Your Positions row tap → withdraw 起動 (synthetic plan)
+  const handleWithdrawPosition = (position: import("@workspace/lib/types").EarnPosition) => {
+    setServicesOpen(false);
+    const syntheticPlan = {
+      plan_id: `synthetic_withdraw_${Date.now()}`,
+      status: AgentPlanStatus.PendingUser,
+      objective: "rebalance",
+      candidate_actions: [],
+      selected_action: {
+        protocol: position.protocol_id,
+        asset: position.asset_symbol,
+        action_type: "withdraw",
+        // amount = shares smallest unit (jlToken 全量 withdraw)
+        amount: position.shares,
+        metadata: {
+          share_mint: position.share_mint,
+          share_decimals: position.share_decimals,
+          underlying_decimals: position.underlying_decimals,
+        },
+      },
+      simulation_result: null,
+      created_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    } as unknown as AgentPlan;
+    setTimeout(() => setPendingPlan(syntheticPlan), 130);
+  };
+
   const dayEvents = selectedDay
     ? events.filter((e) => eventDayKey(e.triggerAt) === localDayKey(selectedDay))
     : [];
@@ -398,6 +425,7 @@ export default function HomeScreen() {
         visible={servicesOpen}
         onClose={() => setServicesOpen(false)}
         onStartAction={handleStartActionFromServices}
+        onWithdrawPosition={handleWithdrawPosition}
         earnPositions={earnPositionsData}
         testID="home-menu-drawer"
       />

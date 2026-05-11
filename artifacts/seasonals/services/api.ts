@@ -354,6 +354,33 @@ export async function getJupiterDepositTx(input: {
 }
 
 /**
+ * Phase 8.9: Jupiter Lend withdraw tx (jlToken → underlying)。
+ * Mobile 側で MWA で sign → BFF /tx/submit で broadcast。
+ */
+export async function getJupiterWithdrawTx(input: {
+  user: string;
+  jlMint: string;
+  amount: string;
+  slippageBps?: number;
+}): Promise<JupiterDepositTxResponse> {
+  const res = await fetch(`${BFF_BASE_URL}/protocols/jupiter-lend/withdraw-tx`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as {
+      error?: string;
+      message?: string;
+    };
+    throw new Error(
+      body.message ?? body.error ?? `HTTP ${res.status} ${res.statusText}`
+    );
+  }
+  return (await res.json()) as JupiterDepositTxResponse;
+}
+
+/**
  * Phase 8.3: 接続済 wallet の tx 履歴から派生する time events を取得。
  * BFF /time-events/wallet が UnifiedTimeEventDTO[] (triggerAt string) で返すので、
  * Mobile 側で Date に復元してから返す。fixture 未提供、未接続 / 失敗時は空配列。

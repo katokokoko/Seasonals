@@ -24,6 +24,10 @@ export interface EarnPosition {
   market_symbol: string;
   /** share token (jlToken / kVault share) の mint pubkey */
   share_mint: string;
+  /** share token (jlToken) 保有量 (smallest unit string、withdraw 時の input amount) */
+  shares: string;
+  /** share token (jlToken) の decimals */
+  share_decimals: number;
   /** underlying asset symbol ("USDC" / "SOL" / "USDT" 等) */
   asset_symbol: string;
   /** underlying 数量 (smallest unit string、underlying decimals 基準) */
