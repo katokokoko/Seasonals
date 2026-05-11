@@ -310,21 +310,33 @@ export function PortfolioSummary({
                 testID={testID ? `${testID}-allocation-donut` : undefined}
               />
               <View style={styles.legend}>
-                {allocation.map((seg) => (
-                  <View key={seg.category} style={styles.legendRow}>
-                    <View style={styles.legendLeft}>
-                      <View
-                        style={[styles.swatch, { backgroundColor: seg.color }]}
-                      />
-                      <Text style={styles.legendLabel}>{seg.label}</Text>
-                    </View>
-                    <Text style={styles.legendValue}>
-                      {currency === "SOL"
-                        ? `${seg.value.toFixed(4)} SOL`
-                        : `${seg.value.toLocaleString("en-US", { maximumFractionDigits: 2, minimumFractionDigits: 2 })} USDC`}
-                    </Text>
-                  </View>
-                ))}
+                {(() => {
+                  // Phase 8.8.4: 凡例は currency 単位の絶対値ではなく **割合 (%)** で表示。
+                  const totalSegValue = allocation.reduce(
+                    (sum, s) => sum + s.value,
+                    0
+                  );
+                  return allocation.map((seg) => {
+                    const pct =
+                      totalSegValue > 0
+                        ? (seg.value / totalSegValue) * 100
+                        : 0;
+                    return (
+                      <View key={seg.category} style={styles.legendRow}>
+                        <View style={styles.legendLeft}>
+                          <View
+                            style={[
+                              styles.swatch,
+                              { backgroundColor: seg.color },
+                            ]}
+                          />
+                          <Text style={styles.legendLabel}>{seg.label}</Text>
+                        </View>
+                        <Text style={styles.legendValue}>{`${pct.toFixed(1)}%`}</Text>
+                      </View>
+                    );
+                  });
+                })()}
               </View>
             </View>
           </View>
