@@ -52,6 +52,8 @@ import {
 } from "@workspace/lib/design-system";
 import {
   PositionCategory,
+  type EarnPosition,
+  type EarnPositionsResponse,
   type Position,
   type ProtocolMenuEntry,
   type ProtocolPool,
@@ -187,6 +189,11 @@ export interface MenuDrawerProps {
     asset: string,
     actionType: "deposit"
   ) => void;
+  /**
+   * Phase 8.2: 接続済 wallet の Jupiter Lend / Kamino positions。
+   * undefined or 空配列なら "Your Positions" section を hide。
+   */
+  earnPositions?: EarnPositionsResponse | undefined;
   testID?: string;
 }
 
@@ -194,6 +201,7 @@ export function MenuDrawer({
   visible,
   onClose,
   onStartAction,
+  earnPositions,
   testID,
 }: MenuDrawerProps) {
   const translateX = useSharedValue(DRAWER_WIDTH);
@@ -479,6 +487,7 @@ export function MenuDrawer({
                   entry={selectedEntry}
                   onBack={goBackToList}
                   onPoolTap={(pool) => handlePoolTap(selectedEntry, pool)}
+                  earnPositions={earnPositions}
                   testID={testID ? `${testID}-detail` : undefined}
                 />
               )}
@@ -486,6 +495,79 @@ export function MenuDrawer({
           </Animated.View>
         </Animated.View>
       </GestureDetector>
+    </View>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Your Positions helpers (Phase 8.2 → 8.2.1: drill-down 内表示に移動)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Menu fixture の protocol_id → EarnPosition 配列を解決 */
+function positionsForProtocol(
+  protocolId: string,
+  earnPositions: EarnPositionsResponse | undefined
+): EarnPosition[] {
+  if (!earnPositions) return [];
+  switch (protocolId) {
+    case "jupiter":
+      return earnPositions.jupiterLend;
+    case "kamino":
+      return earnPositions.kaminoBestEffort;
+    default:
+      return [];
+  }
+}
+
+function formatUnderlyingAmount(
+  amount: string,
+  decimals: number
+): string {
+  // smallest unit string → human-readable. 大雑把に integer/fraction で表示。
+  // §4.5: parse はしない、文字列分割で humanize。
+  if (decimals === 0) return amount;
+  if (amount.length <= decimals) {
+    const padded = amount.padStart(decimals + 1, "0");
+    const head = padded.slice(0, -decimals) || "0";
+    const tail = padded.slice(-decimals).replace(/0+$/, "");
+    return tail ? `${head}.${tail.slice(0, 4)}` : head;
+  }
+  const head = amount.slice(0, amount.length - decimals);
+  const tail = amount.slice(-decimals).replace(/0+$/, "");
+  return tail ? `${head}.${tail.slice(0, 4)}` : head;
+}
+
+function formatApyBps(bps: number | null): string {
+  if (bps === null) return "—";
+  return `${(bps / 100).toFixed(2)}% APY`;
+}
+
+interface YourPositionRowProps {
+  position: EarnPosition;
+  testID?: string;
+}
+
+function YourPositionRow({ position, testID }: YourPositionRowProps) {
+  const amount = formatUnderlyingAmount(
+    position.underlying_amount,
+    position.underlying_decimals
+  );
+  return (
+    <View style={styles.earnRow} testID={testID}>
+      <View style={styles.earnBadge}>
+        <Text style={styles.earnBadgeText}>
+          {position.protocol_id === "jupiter_lend" ? "J" : "K"}
+        </Text>
+      </View>
+      <View style={styles.earnBody}>
+        <Text style={styles.earnLabel} numberOfLines={1}>
+          {position.protocol_name} · {position.market_symbol}
+        </Text>
+        <Text style={styles.earnSubtitle} numberOfLines={1}>
+          {amount} {position.asset_symbol}
+        </Text>
+      </View>
+      <Text style={styles.earnApy}>{formatApyBps(position.supply_rate_bps)}</Text>
     </View>
   );
 }
@@ -568,6 +650,8 @@ interface PoolDetailPaneProps {
   entry: ProtocolMenuEntry;
   onBack: () => void;
   onPoolTap: (pool: ProtocolPool) => void;
+  /** Phase 8.2.1: drill-down 内に "Your Positions" subsection を出すための data */
+  earnPositions?: EarnPositionsResponse;
   testID?: string;
 }
 
@@ -575,6 +659,7 @@ function PoolDetailPane({
   entry,
   onBack,
   onPoolTap,
+  earnPositions,
   testID,
 }: PoolDetailPaneProps) {
   const iconSrc = ICON_BY_ID[entry.icon_id];
@@ -631,6 +716,34 @@ function PoolDetailPane({
         contentContainerStyle={styles.detailListInner}
         showsVerticalScrollIndicator={false}
       >
+        {/* Phase 8.2.1: Your Positions subsection (該当 protocol の position があれば) */}
+        {(() => {
+          const myPositions = positionsForProtocol(
+            entry.protocol_id,
+            earnPositions
+          );
+          if (myPositions.length === 0) return null;
+          return (
+            <View
+              style={styles.detailEarnSection}
+              testID={testID ? `${testID}-earn` : undefined}
+            >
+              <Text style={styles.detailEarnHeader}>Your Positions</Text>
+              {myPositions.map((pos) => (
+                <YourPositionRow
+                  key={`${pos.protocol_id}-${pos.share_mint}`}
+                  position={pos}
+                  testID={
+                    testID
+                      ? `${testID}-earn-row-${pos.share_mint}`
+                      : undefined
+                  }
+                />
+              ))}
+            </View>
+          );
+        })()}
+
         {entry.pools.map((pool, idx) => (
           <Pressable
             key={pool.pool_id}
@@ -833,6 +946,66 @@ const styles = StyleSheet.create({
     gap: SPACE.sm,
   },
   sectionHeader: {
+    fontSize: FONT_SIZE.overline,
+    fontFamily: FONT.body,
+    fontWeight: WEIGHT.bold,
+    color: COLOR.textMuted,
+    letterSpacing: 1.2,
+    marginBottom: SPACE.xs,
+  },
+  // Phase 8.2 — Your Positions row (Jupiter Lend / Kamino best-effort)
+  earnRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: SPACE.md,
+    paddingVertical: SPACE.sm + 2,
+    borderRadius: RADIUS.lg,
+    backgroundColor: withAlpha(COLOR.sodaLight, 0.45),
+    borderWidth: 1,
+    borderColor: withAlpha(COLOR.sodaText, 0.25),
+    gap: SPACE.sm,
+  },
+  earnBadge: {
+    width: 32,
+    height: 32,
+    borderRadius: RADIUS.pill,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: COLOR.sodaText,
+  },
+  earnBadgeText: {
+    fontSize: FONT_SIZE.bodyMD,
+    fontFamily: FONT.heading,
+    fontWeight: WEIGHT.bold,
+    color: COLOR.textOnColor,
+  },
+  earnBody: {
+    flex: 1,
+    gap: 2,
+  },
+  earnLabel: {
+    fontSize: FONT_SIZE.bodyMD,
+    fontFamily: FONT.heading,
+    fontWeight: WEIGHT.bold,
+    color: COLOR.textPrimary,
+  },
+  earnSubtitle: {
+    fontSize: FONT_SIZE.bodySM,
+    fontFamily: FONT.body,
+    color: COLOR.textSubtitle,
+  },
+  earnApy: {
+    fontSize: FONT_SIZE.bodySM,
+    fontFamily: FONT.heading,
+    fontWeight: WEIGHT.semibold,
+    color: COLOR.melonText,
+  },
+  // Phase 8.2.1: drill-down 内 Your Positions subsection
+  detailEarnSection: {
+    paddingBottom: SPACE.md,
+    gap: SPACE.sm,
+  },
+  detailEarnHeader: {
     fontSize: FONT_SIZE.overline,
     fontFamily: FONT.body,
     fontWeight: WEIGHT.bold,

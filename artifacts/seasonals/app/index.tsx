@@ -64,6 +64,7 @@ import { MelonSodaBackground } from "../components/decorative/MelonSodaBackgroun
 import { useAllCustomEvents } from "../services/customEventsStore";
 import {
   useAgentPlans,
+  useEarnPositions,
   usePositions,
   useProtocols,
   useTimeEvents,
@@ -116,6 +117,9 @@ export default function HomeScreen() {
   const onchainAddress =
     USE_ONCHAIN && authorization?.address ? authorization.address : null;
   const { data: positions = [] } = usePositions(onchainAddress);
+  // Phase 8.2: onchain APK で接続済みなら Jupiter Lend / Kamino positions を取得、
+  // MenuDrawer "Your Positions" section に渡す
+  const { data: earnPositionsData } = useEarnPositions(onchainAddress);
   const { data: protocols = [] } = useProtocols();
   const { data: plans = [] } = useAgentPlans();
   const customEvents = useAllCustomEvents();
@@ -363,6 +367,7 @@ export default function HomeScreen() {
         visible={servicesOpen}
         onClose={() => setServicesOpen(false)}
         onStartAction={handleStartActionFromServices}
+        earnPositions={earnPositionsData}
         testID="home-menu-drawer"
       />
 

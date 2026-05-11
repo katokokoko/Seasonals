@@ -34,6 +34,7 @@ import {
   AgentPlanStatus,
   type AgentPlan,
   type ApprovalToken,
+  type EarnPositionsResponse,
   type Position,
   type Protocol,
   type UnifiedTimeEvent,
@@ -233,6 +234,26 @@ export async function getPositions(
   return tryHttpThenFixture(
     () => httpGetJson<Position[]>(path),
     () => fxGetPositions(),
+    path
+  );
+}
+
+/**
+ * Phase 8.2: 接続済 wallet の earn positions (Jupiter Lend + Kamino best-effort)。
+ * MenuDrawer "Your Positions" section が消費。fixture 未提供なので未接続 / fetch
+ * 失敗時は空オブジェクトを返す。
+ */
+export async function getEarnPositions(
+  walletAddress: string
+): Promise<EarnPositionsResponse> {
+  const path = `/positions/earn?wallet=${encodeURIComponent(walletAddress)}`;
+  const empty: EarnPositionsResponse = {
+    jupiterLend: [],
+    kaminoBestEffort: [],
+  };
+  return tryHttpThenFixture(
+    () => httpGetJson<EarnPositionsResponse>(path),
+    async () => empty,
     path
   );
 }

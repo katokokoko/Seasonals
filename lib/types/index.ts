@@ -6,3 +6,4 @@ export * from "./approval-token";
 export * from "./user-policy";
 export * from "./custom-event";
 export * from "./protocol-pool";
+export * from "./earn-position";

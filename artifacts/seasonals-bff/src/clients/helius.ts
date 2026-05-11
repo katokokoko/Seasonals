@@ -31,8 +31,11 @@ export interface HeliusAsset {
   id: string;
   interface: string;
   token_info?: {
-    /** smallest unit string */
-    balance?: string;
+    /**
+     * smallest unit。Helius は number で返す既知の挙動があるので string | number。
+     * mapAssetsToPositions 側で String() に正規化する。
+     */
+    balance?: string | number;
     decimals?: number;
     symbol?: string;
     price_info?: {

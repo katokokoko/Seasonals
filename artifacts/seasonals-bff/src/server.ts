@@ -37,11 +37,14 @@ import {
 import {
   AgentPlanStatus,
   type AgentPlan,
+  type EarnPosition,
+  type EarnPositionsResponse,
   type Position,
 } from "@workspace/lib/types";
 import { getRegistry } from "@workspace/lib/adapters";
 
 import { fetchAssetsByOwner, type HeliusAsset } from "./clients/helius";
+import { fetchEarnPositions } from "./clients/jupiter-lend";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Solana 接続 (Devnet) — approve endpoint で memo tx を構築するため
@@ -109,8 +112,12 @@ function mapAssetsToPositions(
   const now = new Date().toISOString();
   for (const asset of assets) {
     if (asset.interface !== "FungibleToken") continue;
-    const balance = asset.token_info?.balance;
-    if (!balance || balance === "0") continue;
+    // Helius は balance を number / string 両方で返す既知挙動。CLAUDE.md §4.5 規約は
+    // smallest unit string なので必ず String() に揃える。
+    const rawBalance = asset.token_info?.balance;
+    if (rawBalance === undefined || rawBalance === null) continue;
+    const balance = String(rawBalance);
+    if (balance === "0" || balance === "") continue;
 
     const known = KNOWN_PROTOCOL_MINTS[asset.id];
     const decimals = known?.decimals ?? asset.token_info?.decimals ?? 0;
@@ -147,6 +154,68 @@ function mapAssetsToPositions(
         decimals,
         helius_interface: asset.interface,
       },
+    });
+  }
+  return out;
+}
+
+/**
+ * Phase 8.2: Jupiter Lend raw position → 共通 EarnPosition shape へ正規化。
+ * shares === "0" は除外。
+ */
+function mapJupiterLendToEarnPositions(
+  raws: Awaited<ReturnType<typeof fetchEarnPositions>>
+): EarnPosition[] {
+  const out: EarnPosition[] = [];
+  for (const raw of raws) {
+    if (!raw.shares || raw.shares === "0") continue;
+    out.push({
+      protocol_id: "jupiter_lend",
+      protocol_name: "Jupiter Lend",
+      market_symbol: raw.token.asset.symbol,
+      share_mint: raw.token.address,
+      asset_symbol: raw.token.asset.symbol,
+      underlying_amount: raw.underlyingAssets,
+      underlying_decimals: raw.token.asset.decimals,
+      underlying_usd: raw.underlyingBalance,
+      supply_rate_bps: Number(raw.supplyRate) || 0,
+    });
+  }
+  return out;
+}
+
+/**
+ * Phase 8.2 best-effort: Helius DAS の token metadata から "Kamino" 系 token を
+ * 抽出する。Kamino 公式 API 不明のため APY / USD は null/0、表示は label のみ。
+ */
+function mapKaminoBestEffortFromHelius(assets: HeliusAsset[]): EarnPosition[] {
+  const out: EarnPosition[] = [];
+  for (const asset of assets) {
+    if (asset.interface !== "FungibleToken") continue;
+    const rawBalance = asset.token_info?.balance;
+    if (rawBalance === undefined || rawBalance === null) continue;
+    const balance = String(rawBalance);
+    if (balance === "0" || balance === "") continue;
+
+    const name = asset.content?.metadata?.name ?? "";
+    const symbol =
+      asset.content?.metadata?.symbol ?? asset.token_info?.symbol ?? "";
+    const decimals = asset.token_info?.decimals ?? 0;
+
+    const looksLikeKamino =
+      /\bKamino\b/i.test(name) || /^k[A-Z]/.test(symbol);
+    if (!looksLikeKamino) continue;
+
+    out.push({
+      protocol_id: "kamino",
+      protocol_name: "Kamino",
+      market_symbol: name || symbol || asset.id.slice(0, 4),
+      share_mint: asset.id,
+      asset_symbol: symbol || "—",
+      underlying_amount: balance,
+      underlying_decimals: decimals,
+      underlying_usd: "0",
+      supply_rate_bps: null,
     });
   }
   return out;
@@ -217,6 +286,61 @@ export async function buildServer(
   app.get("/wallets", async () => fixtureWallets);
   app.get("/protocols", async () => fixtureProtocols);
   app.get("/user-policy", async () => fixtureUserPolicyDefault);
+
+  /**
+   * Phase 8.2: 接続済 wallet の Jupiter Lend / Kamino earn positions を返す。
+   * MenuDrawer "Your Positions" section が消費。
+   *   - Jupiter Lend: 公式 lite API (v1) から確定取得
+   *   - Kamino: Helius DAS metadata から best-effort 検出 (APY null)
+   */
+  app.get<{ Querystring: { wallet?: string } }>(
+    "/positions/earn",
+    async (req, reply) => {
+      const wallet = req.query?.wallet?.trim();
+      if (!wallet) {
+        reply.code(400);
+        return { error: "wallet_required" };
+      }
+      if (wallet.length < 32 || wallet.length > 44 || /\s/.test(wallet)) {
+        reply.code(400);
+        return { error: "invalid_wallet_address", wallet };
+      }
+
+      // Jupiter / Helius を並列実行 (どちらかが遅れても他方を返せるよう Promise.allSettled)
+      const [jupRes, heliusRes] = await Promise.allSettled([
+        fetchEarnPositions(wallet),
+        fetchAssetsByOwner(wallet),
+      ]);
+
+      const jupiterLend: EarnPosition[] =
+        jupRes.status === "fulfilled"
+          ? mapJupiterLendToEarnPositions(jupRes.value)
+          : [];
+      const kaminoBestEffort: EarnPosition[] =
+        heliusRes.status === "fulfilled"
+          ? mapKaminoBestEffortFromHelius(heliusRes.value)
+          : [];
+
+      if (jupRes.status === "rejected") {
+        req.log.warn(
+          { err: (jupRes.reason as Error).message },
+          "jupiter lend fetch failed"
+        );
+      }
+      if (heliusRes.status === "rejected") {
+        req.log.warn(
+          { err: (heliusRes.reason as Error).message },
+          "helius fetch failed (kamino detection skipped)"
+        );
+      }
+
+      const response: EarnPositionsResponse = {
+        jupiterLend,
+        kaminoBestEffort,
+      };
+      return response;
+    }
+  );
 
   // ── agent plans (list + read + approve/reject) ───────────────────────
   app.get("/agent-plans", async () => fixtureAgentPlans);

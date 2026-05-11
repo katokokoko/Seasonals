@@ -21,6 +21,7 @@ import {
 import type {
   AgentPlan,
   ApprovalToken,
+  EarnPositionsResponse,
   Position,
   Protocol,
   UnifiedTimeEvent,
@@ -40,6 +41,8 @@ export const queryKeys = {
   /** Phase 8.1: address があれば address 別 cache (onchain variant、wallet 切替で再 fetch) */
   positions: (address?: string | null) =>
     address ? (["positions", address] as const) : (["positions"] as const),
+  /** Phase 8.2: earn positions (Jupiter Lend + Kamino)、address 必須 */
+  earnPositions: (address: string) => ["earn-positions", address] as const,
   agentPlan: (planId: string) => ["agent-plan", planId] as const,
   agentPlans: () => ["agent-plans"] as const,
   approvalToken: (tokenId: string) => ["approval-token", tokenId] as const,
@@ -82,6 +85,23 @@ export function usePositions(
   return useQuery({
     queryKey: queryKeys.positions(effectiveAddress),
     queryFn: () => api.getPositions(effectiveAddress ?? undefined),
+  });
+}
+
+/**
+ * Phase 8.2: address が渡された時のみ Jupiter Lend / Kamino best-effort の
+ * earn positions を取得 (default variant / 未接続 ではクエリ自体 disable)。
+ */
+export function useEarnPositions(
+  address: string | null
+): UseQueryResult<EarnPositionsResponse, Error> {
+  return useQuery({
+    queryKey: queryKeys.earnPositions(address ?? "disabled"),
+    queryFn: () =>
+      address
+        ? api.getEarnPositions(address)
+        : Promise.resolve({ jupiterLend: [], kaminoBestEffort: [] }),
+    enabled: Boolean(address),
   });
 }
 
