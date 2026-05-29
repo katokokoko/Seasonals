@@ -44,6 +44,10 @@ import {
   type Position,
   type UnifiedTimeEventDTO,
 } from "@workspace/lib/types";
+import {
+  isValidTokenAmount,
+  toHumanReadable,
+} from "@workspace/lib/utils/numeric";
 import { getRegistry } from "@workspace/lib/adapters";
 
 import { fetchAssetsByOwner, type HeliusAsset } from "./clients/helius";
@@ -187,10 +191,26 @@ function mapAssetsToPositions(
 }
 
 /**
+ * Phase 8.12: Jupiter Lend "8-decimal fixed-point integer string"
+ *   ("3763527416" = $37.63527416) → §4.5 canonical decimal string ("37.63527416")
+ * 不正値 (null / 空 / non-numeric) は "0" fallback。
+ */
+export function normalizeJup8DecimalUsd(
+  raw: string | null | undefined
+): string {
+  if (raw === null || raw === undefined) return "0";
+  if (!isValidTokenAmount(raw)) return "0";
+  return toHumanReadable(raw, 8);
+}
+
+/**
  * Phase 8.2: Jupiter Lend raw position → 共通 EarnPosition shape へ正規化。
  * shares === "0" は除外。
+ *
+ * Phase 8.12: Jupiter は USD を 8-dec integer string で返すため、
+ * §4.5 decimal string contract に合わせて `normalizeJup8DecimalUsd` を経由。
  */
-function mapJupiterLendToEarnPositions(
+export function mapJupiterLendToEarnPositions(
   raws: Awaited<ReturnType<typeof fetchEarnPositions>>
 ): EarnPosition[] {
   const out: EarnPosition[] = [];
@@ -206,7 +226,7 @@ function mapJupiterLendToEarnPositions(
       asset_symbol: raw.token.asset.symbol,
       underlying_amount: raw.underlyingAssets,
       underlying_decimals: raw.token.asset.decimals,
-      underlying_usd: raw.underlyingBalance,
+      underlying_usd: normalizeJup8DecimalUsd(raw.underlyingBalance),
       supply_rate_bps: Number(raw.supplyRate) || 0,
     });
   }

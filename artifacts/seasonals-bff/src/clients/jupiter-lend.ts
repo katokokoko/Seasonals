@@ -10,9 +10,11 @@
  * Cache: in-memory Map で 30 秒 TTL (rate limit 不明、conservative)。
  *
  * 規約 (CLAUDE.md §4.5):
- *   - shares / underlyingAssets / underlyingBalance は smallest unit string で来る
+ *   - shares / underlyingAssets は underlying / share token の smallest unit integer string
+ *   - underlyingBalance は **USD 値を 8-decimal fixed-point integer string** で返す
+ *     (例: "3763527416" = $37.63527416)。BFF (server.ts) で §4.5 decimal string に正規化
  *   - supplyRate は basis points string ("303" = 3.03 %)
- *   - 取得時は string で受けて Number 変換しない
+ *   - 取得時は string で受けて Number 変換しない (mapper 層で boundary 経由)
  */
 
 const JUPITER_LEND_BASE = "https://lite-api.jup.ag/lend/v1";
@@ -33,11 +35,15 @@ export interface JupiterLendPositionRaw {
       price?: number;
     };
   };
-  /** 保有 jlToken (smallest unit string) */
+  /** 保有 jlToken (smallest unit integer string、share decimals 基準) */
   shares: string;
-  /** underlying token 換算 (smallest unit string) */
+  /** underlying token 換算 (smallest unit integer string、underlying decimals 基準) */
   underlyingAssets: string;
-  /** USD 換算 (string、Jupiter は USD price で算出済) */
+  /**
+   * USD 換算 — Jupiter は **8-decimal fixed-point integer string** で返す。
+   * 例: "3763527416" = $37.63527416 USD。
+   * server.ts の mapper で `normalizeJup8DecimalUsd` 経由で §4.5 decimal string に正規化される。
+   */
   underlyingBalance: string;
   supplyRate: string;
   rewardsRate: string;

@@ -58,7 +58,9 @@ import {
   type ProtocolMenuEntry,
   type ProtocolPool,
 } from "@workspace/lib/types";
+import { formatUsd } from "@workspace/lib/utils/numeric";
 
+import type { JupiterLendMarketDTO } from "../../services/api";
 import {
   useJupiterLendMarkets,
   useMenuListings,
@@ -182,6 +184,247 @@ function formatTvlUsd(usd: number): string {
 
 function formatBorrowedUsd(usd: number): string {
   return formatTvlUsd(usd);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Phase 8.11: Jupiter drill-down redesign — unified vault list helpers
+// ─────────────────────────────────────────────────────────────────────────────
+
+interface JupiterVaultRow {
+  jlMint: string;
+  assetSymbol: string;
+  apyBps: number;
+  tvlUsd: number;
+  underlyingDecimals: number;
+  isDeposited: boolean;
+  /** smallest unit string (underlying decimals 基準) */
+  userUnderlyingAmount: string;
+  /** display only — Phase 8.4.1 carve-out (UI direct presentation) */
+  userUnderlyingHuman: number;
+  userUnderlyingUsd: number;
+  userEarnedUsd: number;
+  earnPosition?: EarnPosition;
+}
+
+const JUPITER_STABLE_ASSETS = new Set([
+  "USDC",
+  "USDT",
+  "USDS",
+  "USDG",
+  "EURC",
+  "jupUSD",
+  "JupUSD",
+]);
+
+/** Phase 8.12: 大 list で直接見せる primary vaults。それ以外は Others に折りたたむ。 */
+const JUPITER_PRIMARY_ASSETS: readonly string[] = [
+  "JupUSD",
+  "USDC",
+  "SOL",
+] as const;
+
+function isJupiterPrimaryAsset(asset: string): boolean {
+  return JUPITER_PRIMARY_ASSETS.includes(asset);
+}
+
+function sortByPrimaryOrder(rows: JupiterVaultRow[]): JupiterVaultRow[] {
+  const indexOf = (s: string) => JUPITER_PRIMARY_ASSETS.indexOf(s);
+  return [...rows].sort((a, b) => indexOf(a.assetSymbol) - indexOf(b.assetSymbol));
+}
+
+/** per-asset brand color (asset 固有 branding、CLAUDE.md §6 例外として AssetBadge 内に閉じ込め) */
+const ASSET_BADGE_COLOR: Record<string, string> = {
+  USDC: "#2775CA",
+  USDT: "#26A17B",
+  USDS: "#F59E0B",
+  USDG: "#4F46E5",
+  EURC: "#3578E5",
+  JupUSD: "#F97316",
+  jupUSD: "#F97316",
+  SOL: "#7C3AED",
+};
+
+function assetBadgeColor(asset: string): string {
+  return ASSET_BADGE_COLOR[asset] ?? COLOR.sodaText;
+}
+
+function displayJupiterAsset(symbol: string): string {
+  if (symbol === "WSOL") return "SOL";
+  if (symbol === "jupUSD") return "JupUSD";
+  return symbol;
+}
+
+/** Phase 8.12: per-asset 公式ロゴ PNG (assets/brands/tokens/) */
+const ASSET_ICON_BY_SYMBOL: Record<string, ImageRequireSource> = {
+  USDC: require("../../assets/brands/tokens/usdc.png"),
+  USDT: require("../../assets/brands/tokens/usdt.png"),
+  SOL: require("../../assets/brands/tokens/sol.png"),
+  EURC: require("../../assets/brands/tokens/eurc.png"),
+  USDS: require("../../assets/brands/tokens/usds.png"),
+  USDG: require("../../assets/brands/tokens/usdg.png"),
+  JupUSD: require("../../assets/brands/tokens/jupusd.png"),
+};
+
+function buildJupiterVaultRows(
+  markets: JupiterLendMarketDTO[],
+  earnPositions?: EarnPositionsResponse
+): JupiterVaultRow[] {
+  const byShareMint = new Map<string, EarnPosition>();
+  for (const p of earnPositions?.jupiterLend ?? []) {
+    byShareMint.set(p.share_mint, p);
+  }
+  return markets.map((m) => {
+    const assetSymbol = displayJupiterAsset(m.underlyingSymbol);
+    const tvlUsd =
+      (Number(m.tvlUnderlying) / Math.pow(10, m.underlyingDecimals)) *
+      m.underlyingPriceUsd;
+    const pos = byShareMint.get(m.jlMint);
+    if (!pos) {
+      return {
+        jlMint: m.jlMint,
+        assetSymbol,
+        apyBps: m.supplyRateBps,
+        tvlUsd,
+        underlyingDecimals: m.underlyingDecimals,
+        isDeposited: false,
+        userUnderlyingAmount: "0",
+        userUnderlyingHuman: 0,
+        userUnderlyingUsd: 0,
+        userEarnedUsd: 0,
+      };
+    }
+    const human =
+      Number(pos.underlying_amount) /
+      Math.pow(10, pos.underlying_decimals);
+    const usd = Number(pos.underlying_usd);
+    const usdSafe = Number.isFinite(usd) ? usd : 0;
+    // 簡易推定: APR × 30/365 (Phase 8.13 候補で position 実 earnings に差替)
+    const earnedUsd = usdSafe * (m.supplyRateBps / 10000) * (30 / 365);
+    return {
+      jlMint: m.jlMint,
+      assetSymbol,
+      apyBps: m.supplyRateBps,
+      tvlUsd,
+      underlyingDecimals: pos.underlying_decimals,
+      isDeposited: true,
+      userUnderlyingAmount: pos.underlying_amount,
+      userUnderlyingHuman: human,
+      userUnderlyingUsd: usdSafe,
+      userEarnedUsd: earnedUsd,
+      earnPosition: pos,
+    };
+  });
+}
+
+interface JupiterSummary {
+  depositedUsd: number;
+  earningsUsd: number;
+  avgApyBps: number | null;
+}
+
+function computeJupiterSummary(rows: JupiterVaultRow[]): JupiterSummary {
+  let depositedUsd = 0;
+  let earningsUsd = 0;
+  let weighted = 0;
+  for (const r of rows) {
+    if (!r.isDeposited) continue;
+    depositedUsd += r.userUnderlyingUsd;
+    earningsUsd += r.userEarnedUsd;
+    weighted += r.userUnderlyingUsd * (r.apyBps / 10000);
+  }
+  const avgApyBps =
+    depositedUsd > 0 ? Math.round((weighted / depositedUsd) * 10000) : null;
+  return { depositedUsd, earningsUsd, avgApyBps };
+}
+
+/** Number (USD, 表示専用) → "$1,234.56" 形式 */
+function formatUsdDisplay(usd: number, fractionDigits = 2): string {
+  if (!Number.isFinite(usd)) return "—";
+  const fixed = usd.toFixed(fractionDigits);
+  return formatUsd(fixed);
+}
+
+function formatHumanAmount(amount: number): string {
+  if (!Number.isFinite(amount)) return "0";
+  if (amount === 0) return "0";
+  if (amount >= 1) return amount.toFixed(2);
+  return amount.toFixed(4);
+}
+
+function AssetBadge({ asset, size = 36 }: { asset: string; size?: number }) {
+  const iconSrc = ASSET_ICON_BY_SYMBOL[asset];
+  if (iconSrc) {
+    return (
+      <Image
+        source={iconSrc}
+        resizeMode="contain"
+        style={{
+          width: size,
+          height: size,
+          borderRadius: size / 2,
+        }}
+      />
+    );
+  }
+  // Fallback: per-asset brand color circle + letter
+  const bg = assetBadgeColor(asset);
+  const letter = (asset[0] ?? "?").toUpperCase();
+  return (
+    <View
+      style={{
+        width: size,
+        height: size,
+        borderRadius: size / 2,
+        alignItems: "center",
+        justifyContent: "center",
+        backgroundColor: bg,
+      }}
+    >
+      <Text
+        style={{
+          fontSize: size * 0.42,
+          fontFamily: FONT.heading,
+          fontWeight: WEIGHT.bold,
+          color: COLOR.textOnColor,
+          includeFontPadding: false,
+        }}
+      >
+        {letter}
+      </Text>
+    </View>
+  );
+}
+
+type JupiterFilter = "all" | "stable" | "sol" | "deposited";
+
+const JUPITER_FILTER_ORDER: readonly JupiterFilter[] = [
+  "all",
+  "stable",
+  "sol",
+  "deposited",
+] as const;
+
+const JUPITER_FILTER_LABEL: Record<JupiterFilter, string> = {
+  all: "All",
+  stable: "Stable",
+  sol: "SOL",
+  deposited: "Deposited",
+};
+
+function applyJupiterFilter(
+  rows: JupiterVaultRow[],
+  filter: JupiterFilter
+): JupiterVaultRow[] {
+  switch (filter) {
+    case "all":
+      return rows;
+    case "stable":
+      return rows.filter((r) => JUPITER_STABLE_ASSETS.has(r.assetSymbol));
+    case "sol":
+      return rows.filter((r) => r.assetSymbol === "SOL");
+    case "deposited":
+      return rows.filter((r) => r.isDeposited);
+  }
 }
 
 export interface MenuDrawerProps {
@@ -532,6 +775,7 @@ export function MenuDrawer({
                   onPoolTap={(pool) => handlePoolTap(selectedEntry, pool)}
                   earnPositions={earnPositions}
                   onWithdrawPosition={onWithdrawPosition}
+                  jlMarkets={jlMarkets}
                   testID={testID ? `${testID}-detail` : undefined}
                 />
               )}
@@ -712,10 +956,20 @@ interface PoolDetailPaneProps {
   earnPositions?: EarnPositionsResponse;
   /** Phase 8.9: Your Positions row tap で withdraw 起動 */
   onWithdrawPosition?: (position: EarnPosition) => void;
+  /** Phase 8.11: Jupiter drill-down で vault rows を構築するための raw markets */
+  jlMarkets?: JupiterLendMarketDTO[];
   testID?: string;
 }
 
-function PoolDetailPane({
+function PoolDetailPane(props: PoolDetailPaneProps) {
+  // Phase 8.11: Jupiter は専用 pane (unified vault list)
+  if (props.entry.protocol_id === "jupiter") {
+    return <JupiterDetailPane {...props} />;
+  }
+  return <DefaultPoolDetailPane {...props} />;
+}
+
+function DefaultPoolDetailPane({
   entry,
   onBack,
   onPoolTap,
@@ -845,6 +1099,371 @@ function PoolDetailPane({
           </Pressable>
         ))}
       </ScrollView>
+    </View>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Phase 8.11: JupiterDetailPane — unified vault list
+// ─────────────────────────────────────────────────────────────────────────────
+
+function JupiterDetailPane({
+  entry,
+  onBack,
+  onPoolTap,
+  earnPositions,
+  onWithdrawPosition,
+  jlMarkets,
+  testID,
+}: PoolDetailPaneProps) {
+  const iconSrc = ICON_BY_ID[entry.icon_id];
+  const [filter, setFilter] = useState<JupiterFilter>("all");
+  const [othersExpanded, setOthersExpanded] = useState(false);
+
+  const rows = useMemo(
+    () => buildJupiterVaultRows(jlMarkets ?? [], earnPositions),
+    [jlMarkets, earnPositions]
+  );
+  const summary = useMemo(() => computeJupiterSummary(rows), [rows]);
+  const filteredRows = useMemo(
+    () => applyJupiterFilter(rows, filter),
+    [rows, filter]
+  );
+
+  // Phase 8.12: "All" filter 時のみ primary / others partition
+  const { primaryRows, otherRows } = useMemo(() => {
+    if (filter !== "all") {
+      return { primaryRows: filteredRows, otherRows: [] as JupiterVaultRow[] };
+    }
+    const primary = sortByPrimaryOrder(
+      filteredRows.filter((r) => isJupiterPrimaryAsset(r.assetSymbol))
+    );
+    const others = filteredRows.filter(
+      (r) => !isJupiterPrimaryAsset(r.assetSymbol)
+    );
+    return { primaryRows: primary, otherRows: others };
+  }, [filteredRows, filter]);
+  const showOthersExpander = filter === "all" && otherRows.length > 0;
+
+  const assetList = useMemo(() => {
+    const assets = Array.from(new Set(rows.map((r) => r.assetSymbol)));
+    return assets.length > 0 ? assets.join(", ") : "—";
+  }, [rows]);
+
+  const handleDeposit = useCallback(
+    (row: JupiterVaultRow) => {
+      const pool: ProtocolPool = {
+        pool_id: `jl_${row.assetSymbol}`,
+        name: `Jupiter Lend ${row.assetSymbol}`,
+        category: PositionCategory.Stable,
+        asset: row.assetSymbol,
+        apy: row.apyBps / 10000,
+        tvl_usd: row.tvlUsd,
+      };
+      onPoolTap(pool);
+    },
+    [onPoolTap]
+  );
+
+  const handleManage = useCallback(
+    (row: JupiterVaultRow) => {
+      if (row.earnPosition) {
+        onWithdrawPosition?.(row.earnPosition);
+      }
+    },
+    [onWithdrawPosition]
+  );
+
+  return (
+    <View style={styles.detailPane}>
+      {/* Back row */}
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel="Back to menu"
+        onPress={onBack}
+        style={styles.backRow}
+        hitSlop={8}
+        testID={testID ? `${testID}-back` : undefined}
+      >
+        <Text style={styles.backChevron}>‹</Text>
+        <Text style={styles.backLabel}>Menu</Text>
+      </Pressable>
+
+      {/* Protocol header — "Jupiter / Lending · N vaults / assets" */}
+      <View style={styles.detailHeader}>
+        {iconSrc ? (
+          <View style={[styles.iconBoxLg, { backgroundColor: entry.icon_bg }]}>
+            <Image
+              source={iconSrc}
+              resizeMode="contain"
+              style={[
+                styles.iconImgLg,
+                { transform: [{ scale: scaleOf(entry.icon_id) }] },
+              ]}
+            />
+          </View>
+        ) : (
+          <View style={[styles.iconBoxLg, { backgroundColor: entry.icon_bg }]}>
+            <Text style={styles.iconLetterLg}>
+              {entry.display_name.charAt(0).toUpperCase()}
+            </Text>
+          </View>
+        )}
+        <View style={styles.detailHeaderMain}>
+          <Text style={styles.detailName}>Jupiter</Text>
+          <Text style={styles.detailMeta}>
+            <Text style={styles.metaCategory}>Lending</Text>
+            {`  ·  ${rows.length} vault${rows.length === 1 ? "" : "s"}`}
+          </Text>
+          <Text style={styles.jupAssetLine} numberOfLines={2}>
+            {assetList}
+          </Text>
+        </View>
+      </View>
+
+      <ScrollView
+        style={styles.list}
+        contentContainerStyle={styles.detailListInner}
+        showsVerticalScrollIndicator={false}
+      >
+        {/* Summary card — Your Jupiter Balance */}
+        <View
+          style={styles.jupSummaryCard}
+          testID={testID ? `${testID}-summary` : undefined}
+        >
+          <Text style={styles.jupSummaryTitle}>Your Balance</Text>
+          <View style={styles.jupSummaryMetricsRow}>
+            <View style={styles.jupSummaryMetric}>
+              <Text style={styles.jupSummaryMetricLabel}>Deposited</Text>
+              <Text style={styles.jupSummaryMetricValue}>
+                {summary.depositedUsd > 0
+                  ? formatUsdDisplay(summary.depositedUsd)
+                  : "—"}
+              </Text>
+            </View>
+            <View style={styles.jupSummaryDivider} />
+            <View style={styles.jupSummaryMetric}>
+              <Text style={styles.jupSummaryMetricLabel}>Earnings</Text>
+              <Text
+                style={[
+                  styles.jupSummaryMetricValue,
+                  summary.earningsUsd > 0 && { color: COLOR.melonText },
+                ]}
+              >
+                {summary.earningsUsd > 0
+                  ? formatUsdDisplay(summary.earningsUsd, 4)
+                  : "—"}
+              </Text>
+            </View>
+            <View style={styles.jupSummaryDivider} />
+            <View style={styles.jupSummaryMetric}>
+              <Text style={styles.jupSummaryMetricLabel}>Avg APY</Text>
+              <Text style={styles.jupSummaryMetricValue}>
+                {summary.avgApyBps !== null
+                  ? `${(summary.avgApyBps / 100).toFixed(2)}%`
+                  : "—"}
+              </Text>
+            </View>
+          </View>
+        </View>
+
+        {/* Filter chips */}
+        <ScrollView
+          horizontal
+          showsHorizontalScrollIndicator={false}
+          style={styles.jupFilterScroll}
+          contentContainerStyle={styles.jupFilterRow}
+        >
+          {JUPITER_FILTER_ORDER.map((k) => {
+            const active = filter === k;
+            return (
+              <Pressable
+                key={k}
+                accessibilityRole="button"
+                accessibilityState={{ selected: active }}
+                onPress={() => setFilter(k)}
+                style={[styles.chip, active && styles.chipActive]}
+                testID={
+                  testID ? `${testID}-filter-${k}` : undefined
+                }
+              >
+                <Text
+                  style={[
+                    styles.chipText,
+                    active && styles.chipTextActive,
+                  ]}
+                >
+                  {JUPITER_FILTER_LABEL[k]}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </ScrollView>
+
+        {/* All vaults section header */}
+        <Text style={styles.jupSectionHeader}>ALL VAULTS</Text>
+
+        {filteredRows.length === 0 && (
+          <Text style={styles.empty}>No vaults match.</Text>
+        )}
+
+        {primaryRows.map((row) => (
+          <JupiterVaultRowView
+            key={row.jlMint}
+            row={row}
+            onDeposit={() => handleDeposit(row)}
+            onManage={() => handleManage(row)}
+            testID={
+              testID ? `${testID}-vault-${row.assetSymbol}` : undefined
+            }
+          />
+        ))}
+
+        {showOthersExpander && (
+          <OthersExpanderRow
+            others={otherRows}
+            expanded={othersExpanded}
+            onToggle={() => setOthersExpanded((v) => !v)}
+            testID={testID ? `${testID}-others-expander` : undefined}
+          />
+        )}
+
+        {showOthersExpander &&
+          othersExpanded &&
+          otherRows.map((row) => (
+            <JupiterVaultRowView
+              key={row.jlMint}
+              row={row}
+              onDeposit={() => handleDeposit(row)}
+              onManage={() => handleManage(row)}
+              testID={
+                testID ? `${testID}-vault-${row.assetSymbol}` : undefined
+              }
+            />
+          ))}
+      </ScrollView>
+    </View>
+  );
+}
+
+function OthersExpanderRow({
+  others,
+  expanded,
+  onToggle,
+  testID,
+}: {
+  others: JupiterVaultRow[];
+  expanded: boolean;
+  onToggle: () => void;
+  testID?: string;
+}) {
+  const stackIcons = others.slice(0, 3);
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityState={{ expanded }}
+      onPress={onToggle}
+      style={styles.jupOthersRow}
+      testID={testID}
+    >
+      <View style={styles.jupOthersIconStack}>
+        {stackIcons.map((r, idx) => (
+          <View
+            key={r.jlMint}
+            style={[
+              styles.jupOthersIconBubble,
+              { left: idx * 16, zIndex: stackIcons.length - idx },
+            ]}
+          >
+            <AssetBadge asset={r.assetSymbol} size={28} />
+          </View>
+        ))}
+      </View>
+      <View style={styles.jupOthersLabelBlock}>
+        <Text style={styles.jupOthersLabel}>Others</Text>
+        <Text style={styles.jupOthersCount}>
+          {`${others.length} vault${others.length === 1 ? "" : "s"}`}
+        </Text>
+      </View>
+      <Text style={styles.jupOthersChevron}>{expanded ? "⌄" : "›"}</Text>
+    </Pressable>
+  );
+}
+
+function JupiterVaultRowView({
+  row,
+  onDeposit,
+  onManage,
+  testID,
+}: {
+  row: JupiterVaultRow;
+  onDeposit: () => void;
+  onManage: () => void;
+  testID?: string;
+}) {
+  const deposited = row.isDeposited;
+  return (
+    <View
+      style={[
+        styles.jupVaultRow,
+        deposited ? styles.jupVaultRowDeposited : styles.jupVaultRowDefault,
+      ]}
+      testID={testID}
+    >
+      <View style={styles.jupVaultTopRow}>
+        <AssetBadge asset={row.assetSymbol} />
+        <View style={styles.jupVaultMain}>
+          <View style={styles.jupVaultTitleRow}>
+            <Text style={styles.jupVaultAsset}>{row.assetSymbol}</Text>
+            {deposited && (
+              <Text style={styles.jupDepositedBadge}>Deposited</Text>
+            )}
+          </View>
+          <Text style={styles.jupVaultSubtitle}>
+            {`Jupiter Lend  ·  TVL ${formatTvlUsd(row.tvlUsd)}`}
+          </Text>
+        </View>
+        <View style={styles.jupVaultApyBlock}>
+          <Text
+            style={[styles.jupVaultApy, { color: apyAccent(row.apyBps / 10000) }]}
+          >
+            {`${(row.apyBps / 100).toFixed(2)}%`}
+          </Text>
+          <Text style={styles.jupVaultApyLabel}>APY</Text>
+        </View>
+      </View>
+
+      <View style={styles.jupVaultBottomRow}>
+        <Text style={styles.jupVaultDepositLine} numberOfLines={1}>
+          {deposited
+            ? `You: ${formatHumanAmount(row.userUnderlyingHuman)} ${row.assetSymbol} · Earned ${row.userEarnedUsd > 0 ? formatHumanAmount(row.userEarnedUsd) : "0"} USD`
+            : "No deposit yet"}
+        </Text>
+        <Pressable
+          accessibilityRole="button"
+          onPress={deposited ? onManage : onDeposit}
+          style={[
+            styles.jupVaultCta,
+            deposited ? styles.jupVaultCtaManage : styles.jupVaultCtaDeposit,
+          ]}
+          testID={
+            testID
+              ? `${testID}-cta-${deposited ? "manage" : "deposit"}`
+              : undefined
+          }
+        >
+          <Text
+            style={[
+              styles.jupVaultCtaText,
+              deposited
+                ? styles.jupVaultCtaTextManage
+                : styles.jupVaultCtaTextDeposit,
+            ]}
+          >
+            {deposited ? "Manage" : "Deposit"}
+          </Text>
+        </Pressable>
+      </View>
     </View>
   );
 }
@@ -1274,5 +1893,231 @@ const styles = StyleSheet.create({
     fontSize: FONT_SIZE.bodySM,
     fontFamily: FONT.body,
     color: COLOR.textMuted,
+  },
+  // ─── Phase 8.11 — Jupiter drill-down (unified vault list) ──────────────
+  jupAssetLine: {
+    fontSize: FONT_SIZE.bodySM,
+    fontFamily: FONT.body,
+    color: COLOR.textSubtitle,
+    marginTop: 2,
+  },
+  jupSummaryCard: {
+    borderRadius: RADIUS.lg,
+    backgroundColor: withAlpha(COLOR.sodaLight, 0.45),
+    borderWidth: 1,
+    borderColor: withAlpha(COLOR.sodaText, 0.25),
+    paddingHorizontal: SPACE.md,
+    paddingVertical: SPACE.md,
+    marginBottom: SPACE.md,
+  },
+  jupSummaryTitle: {
+    fontSize: FONT_SIZE.bodySM,
+    fontFamily: FONT.heading,
+    fontWeight: WEIGHT.bold,
+    color: COLOR.textSubtitle,
+    letterSpacing: 0.5,
+    marginBottom: SPACE.sm,
+  },
+  jupSummaryMetricsRow: {
+    flexDirection: "row",
+    alignItems: "center",
+  },
+  jupSummaryMetric: {
+    flex: 1,
+    alignItems: "flex-start",
+    gap: 2,
+  },
+  jupSummaryMetricLabel: {
+    fontSize: FONT_SIZE.bodySM,
+    fontFamily: FONT.body,
+    color: COLOR.textMuted,
+  },
+  jupSummaryMetricValue: {
+    fontSize: FONT_SIZE.bodyLG,
+    fontFamily: FONT.heading,
+    fontWeight: WEIGHT.bold,
+    color: COLOR.textPrimary,
+  },
+  jupSummaryDivider: {
+    width: 1,
+    alignSelf: "stretch",
+    backgroundColor: withAlpha(COLOR.sodaText, 0.2),
+    marginHorizontal: SPACE.xs,
+  },
+  jupFilterScroll: {
+    height: 44,
+    flexGrow: 0,
+    flexShrink: 0,
+    marginHorizontal: -SPACE.md,
+    marginBottom: SPACE.xs,
+  },
+  jupFilterRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    columnGap: 8,
+    height: 44,
+    paddingHorizontal: SPACE.md,
+  },
+  jupSectionHeader: {
+    fontSize: FONT_SIZE.overline,
+    fontFamily: FONT.body,
+    fontWeight: WEIGHT.bold,
+    color: COLOR.textMuted,
+    letterSpacing: 1.2,
+    marginTop: SPACE.sm,
+    marginBottom: SPACE.sm,
+  },
+  jupVaultRow: {
+    borderRadius: RADIUS.lg,
+    borderWidth: 1,
+    paddingHorizontal: SPACE.md,
+    paddingVertical: SPACE.sm + 2,
+    marginBottom: SPACE.sm,
+    gap: SPACE.sm,
+  },
+  jupVaultRowDefault: {
+    backgroundColor: withAlpha(COLOR.textOnColor, 0.6),
+    borderColor: COLOR.border,
+  },
+  jupVaultRowDeposited: {
+    backgroundColor: withAlpha(COLOR.melonLight, 0.55),
+    borderColor: withAlpha(COLOR.melonText, 0.4),
+  },
+  jupVaultTopRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: SPACE.sm,
+  },
+  jupVaultMain: {
+    flex: 1,
+    gap: 2,
+  },
+  jupVaultTitleRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: SPACE.xs,
+  },
+  jupVaultAsset: {
+    fontSize: FONT_SIZE.bodyLG,
+    fontFamily: FONT.heading,
+    fontWeight: WEIGHT.bold,
+    color: COLOR.textPrimary,
+  },
+  jupDepositedBadge: {
+    fontSize: FONT_SIZE.bodySM,
+    fontFamily: FONT.heading,
+    fontWeight: WEIGHT.semibold,
+    color: COLOR.melonText,
+    backgroundColor: withAlpha(COLOR.melonText, 0.15),
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: RADIUS.pill,
+    overflow: "hidden",
+  },
+  jupVaultSubtitle: {
+    fontSize: FONT_SIZE.bodySM,
+    fontFamily: FONT.body,
+    color: COLOR.textSubtitle,
+  },
+  jupVaultApyBlock: {
+    alignItems: "flex-end",
+    gap: 2,
+  },
+  jupVaultApy: {
+    fontSize: FONT_SIZE.bodyLG,
+    fontFamily: FONT.heading,
+    fontWeight: WEIGHT.bold,
+  },
+  jupVaultApyLabel: {
+    fontSize: FONT_SIZE.bodySM,
+    fontFamily: FONT.body,
+    color: COLOR.textMuted,
+  },
+  jupVaultBottomRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    gap: SPACE.sm,
+  },
+  jupVaultDepositLine: {
+    flex: 1,
+    fontSize: FONT_SIZE.bodySM,
+    fontFamily: FONT.body,
+    color: COLOR.textSubtitle,
+  },
+  jupVaultCta: {
+    paddingHorizontal: SPACE.md,
+    paddingVertical: SPACE.xs + 2,
+    borderRadius: RADIUS.pill,
+  },
+  jupVaultCtaDeposit: {
+    backgroundColor: COLOR.sodaText,
+  },
+  jupVaultCtaManage: {
+    backgroundColor: COLOR.melonText,
+  },
+  jupVaultCtaText: {
+    fontSize: FONT_SIZE.bodyMD,
+    fontFamily: FONT.heading,
+    fontWeight: WEIGHT.bold,
+  },
+  jupVaultCtaTextDeposit: {
+    color: COLOR.textOnColor,
+  },
+  jupVaultCtaTextManage: {
+    color: COLOR.textOnColor,
+  },
+  // Phase 8.12 — Others expander row
+  jupOthersRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: SPACE.md,
+    paddingVertical: SPACE.sm + 2,
+    borderRadius: RADIUS.lg,
+    backgroundColor: withAlpha(COLOR.textOnColor, 0.6),
+    borderWidth: 1,
+    borderColor: COLOR.border,
+    marginBottom: SPACE.sm,
+    gap: SPACE.md,
+  },
+  jupOthersIconStack: {
+    width: 28 + 16 * 2,
+    height: 28,
+    position: "relative",
+  },
+  jupOthersIconBubble: {
+    position: "absolute",
+    top: 0,
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    borderWidth: 2,
+    borderColor: COLOR.bgPrimary,
+    overflow: "hidden",
+  },
+  jupOthersLabelBlock: {
+    flex: 1,
+    gap: 2,
+  },
+  jupOthersLabel: {
+    fontSize: FONT_SIZE.bodyLG,
+    fontFamily: FONT.heading,
+    fontWeight: WEIGHT.bold,
+    color: COLOR.textPrimary,
+  },
+  jupOthersCount: {
+    fontSize: FONT_SIZE.bodySM,
+    fontFamily: FONT.body,
+    color: COLOR.textSubtitle,
+  },
+  jupOthersChevron: {
+    fontSize: 24,
+    fontFamily: FONT.heading,
+    fontWeight: WEIGHT.bold,
+    color: COLOR.textMuted,
+    width: 24,
+    textAlign: "center",
+    lineHeight: 24,
+    includeFontPadding: false,
   },
 });

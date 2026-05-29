@@ -43,6 +43,7 @@ import {
   useThemedStyles,
   type ThemeColors,
 } from "../../stores/theme";
+import { useJupiterLendMarkets } from "../../services/queries";
 import { AllocationDonut } from "./AllocationDonut";
 import { Charts } from "./Charts";
 import { SponsoredCard } from "./SponsoredCard";
@@ -131,13 +132,62 @@ export function PortfolioSummary({
   const totalUsd = useMemo(() => totalUsdValue(positions), [positions]);
   const totalSol = totalUsd / SOL_USD_PRICE;
 
-  // 単純 yield: APY 5.7% × range 日数 / 365 × 現在値 (mock、Phase 8.5 で
-  // earn position の supply_rate_bps 加重平均に差替予定)
-  const yieldRatio = 0.057;
-  const yieldDays = 90;
-  const yieldUsd = totalUsd * yieldRatio * (yieldDays / 365);
-  const yieldSol = yieldUsd / SOL_USD_PRICE;
-  const avgYieldDisplay = "—"; // 本物 yield は別 phase で計算
+  // Phase 8.10: earn position (Jupiter Lend / Kamino) の supply_rate_bps を
+  // USD 重みで加重平均して実効 APR を算出。range 日数で按分して period yield に。
+  // Phase 8.10.1: position 側 supply_rate_bps が 0 / 欠落する場合は markets API
+  // (useJupiterLendMarkets) の値を share_mint で fallback ルックアップ。
+  const rangeDaysByKey: Record<RangeKey, number> = {
+    "1W": 7,
+    "1M": 30,
+    "3M": 90,
+    "1Y": 365,
+    ALL: 730,
+  };
+  const { data: jlMarketsForYield = [] } = useJupiterLendMarkets();
+  const bpsByJlMint = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const mkt of jlMarketsForYield) {
+      m.set(mkt.jlMint, mkt.supplyRateBps);
+    }
+    return m;
+  }, [jlMarketsForYield]);
+  const { yieldUsd, yieldSol, yieldRatio, avgYieldDisplay } = useMemo(() => {
+    let weighted = 0;
+    let earnUsd = 0;
+    for (const p of positions) {
+      // earn position の判定: protocol_id が "jupiter_lend" or "kamino"
+      const isEarn =
+        p.protocol_id === "jupiter_lend" || p.protocol_id === "kamino";
+      if (!isEarn) continue;
+      const rs = (p.raw_state ?? {}) as Record<string, unknown>;
+      const fromRaw =
+        typeof rs.supply_rate_bps === "number" ? rs.supply_rate_bps : 0;
+      // fallback: share_mint で markets を引く
+      const shareMint =
+        typeof rs.share_mint === "string" ? rs.share_mint : null;
+      const fromMarkets =
+        shareMint && bpsByJlMint.has(shareMint)
+          ? bpsByJlMint.get(shareMint)!
+          : 0;
+      const bps = fromRaw > 0 ? fromRaw : fromMarkets;
+      if (bps <= 0) continue;
+      // USD weight = positionUsdValue
+      const usd = positionUsdValue(p);
+      if (!Number.isFinite(usd) || usd <= 0) continue;
+      earnUsd += usd;
+      weighted += usd * (bps / 10000);
+    }
+    const avgApr = earnUsd > 0 ? weighted / earnUsd : 0;
+    const days = rangeDaysByKey[range];
+    const yUsd = earnUsd * avgApr * (days / 365);
+    return {
+      yieldUsd: yUsd,
+      yieldSol: yUsd / SOL_USD_PRICE,
+      yieldRatio: avgApr,
+      avgYieldDisplay:
+        avgApr > 0 ? `${(avgApr * 100).toFixed(2)}%` : "—",
+    };
+  }, [positions, range, bpsByJlMint]);
 
   const series: PortfolioPoint[] = useMemo(
     () => buildPortfolioTimeSeries(positions, range, today),
@@ -239,14 +289,21 @@ export function PortfolioSummary({
             : `${totalUsd.toLocaleString("en-US", { maximumFractionDigits: 2, minimumFractionDigits: 2 })} USDC`}
         </Text>
 
-        {/* Yield row — Phase 8.4.1: 表示単位を currency に追従 (mock APY 5.7%) */}
+        {/* Phase 8.10: Yield row — earn position supply_rate_bps の加重平均から算出。
+            earn 不在時は "—" で表示。 */}
         <View style={styles.yieldRow}>
           <Text style={styles.yieldText}>
-            +
-            {currency === "SOL"
-              ? `${yieldSol.toFixed(4)} SOL`
-              : `${yieldUsd.toLocaleString("en-US", { maximumFractionDigits: 2, minimumFractionDigits: 2 })} USDC`}{" "}
-            ({(yieldRatio * 100).toFixed(2)}%)
+            {yieldRatio > 0 ? (
+              <>
+                +
+                {currency === "SOL"
+                  ? `${yieldSol.toFixed(4)} SOL`
+                  : `${yieldUsd.toLocaleString("en-US", { maximumFractionDigits: 2, minimumFractionDigits: 2 })} USDC`}{" "}
+                ({(yieldRatio * 100).toFixed(2)}%)
+              </>
+            ) : (
+              "— no earn positions"
+            )}
           </Text>
           <View style={styles.avgYieldPill}>
             <Text style={styles.avgYieldLabel}>AVG YIELD</Text>

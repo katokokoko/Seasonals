@@ -21,7 +21,11 @@ import {
 } from "@workspace/lib/__fixtures__";
 import { TIME_EVENT_CATEGORIES } from "@workspace/lib/types";
 
-import { buildServer } from "./server";
+import {
+  buildServer,
+  mapJupiterLendToEarnPositions,
+  normalizeJup8DecimalUsd,
+} from "./server";
 
 let app: FastifyInstance;
 
@@ -245,5 +249,86 @@ describe("fixture との shape 一致", () => {
       url: "/approval-tokens/tok_active_001",
     });
     expect(res.json()).toEqual(fixtureApprovalTokens[0]);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Phase 8.12: Jupiter Lend underlying_usd 正規化
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("Phase 8.12 — Jupiter Lend underlying_usd 正規化", () => {
+  it("normalizeJup8DecimalUsd: 8-dec integer string → §4.5 decimal string", () => {
+    expect(normalizeJup8DecimalUsd("3763527416")).toBe("37.63527416");
+    expect(normalizeJup8DecimalUsd("100000000")).toBe("1");
+    expect(normalizeJup8DecimalUsd("1")).toBe("0.00000001");
+    expect(normalizeJup8DecimalUsd("0")).toBe("0");
+  });
+
+  it("normalizeJup8DecimalUsd: 不正値は '0' fallback", () => {
+    expect(normalizeJup8DecimalUsd("")).toBe("0");
+    expect(normalizeJup8DecimalUsd("abc")).toBe("0");
+    expect(normalizeJup8DecimalUsd("12.3")).toBe("0"); // decimal point は token amount として無効
+    expect(normalizeJup8DecimalUsd(null)).toBe("0");
+    expect(normalizeJup8DecimalUsd(undefined)).toBe("0");
+  });
+
+  it("mapJupiterLendToEarnPositions: underlying_usd を decimal string に変換", () => {
+    const raws = [
+      {
+        token: {
+          address: "JL_USDC_MINT",
+          name: "Jupiter Lend USDC",
+          symbol: "jlUSDC",
+          decimals: 6,
+          assetAddress: "USDC_MINT",
+          asset: {
+            address: "USDC_MINT",
+            symbol: "USDC",
+            decimals: 6,
+            price: 1.0,
+          },
+        },
+        shares: "37635272",
+        underlyingAssets: "37635272",
+        underlyingBalance: "3763527416",
+        supplyRate: "303",
+        rewardsRate: "0",
+        totalRate: "303",
+        ownerAddress: "TEST_OWNER",
+      },
+    ];
+    const result = mapJupiterLendToEarnPositions(raws);
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({
+      protocol_id: "jupiter_lend",
+      asset_symbol: "USDC",
+      underlying_amount: "37635272",
+      underlying_decimals: 6,
+      underlying_usd: "37.63527416",
+      supply_rate_bps: 303,
+    });
+  });
+
+  it("mapJupiterLendToEarnPositions: shares='0' は除外", () => {
+    const raws = [
+      {
+        token: {
+          address: "JL_USDC_MINT",
+          name: "Jupiter Lend USDC",
+          symbol: "jlUSDC",
+          decimals: 6,
+          assetAddress: "USDC_MINT",
+          asset: { address: "USDC_MINT", symbol: "USDC", decimals: 6 },
+        },
+        shares: "0",
+        underlyingAssets: "0",
+        underlyingBalance: "0",
+        supplyRate: "303",
+        rewardsRate: "0",
+        totalRate: "303",
+        ownerAddress: "TEST",
+      },
+    ];
+    expect(mapJupiterLendToEarnPositions(raws)).toHaveLength(0);
   });
 });
