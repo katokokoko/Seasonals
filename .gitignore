@@ -7,10 +7,18 @@ node_modules/
 !.env.example
 .idea/
 
-# Claude local state; keep shared project commands tracked
+# Claude local state; keep shared project harness tracked
+# (settings.local.json stays ignored — personal overrides)
 .claude/*
 !.claude/commands/
 !.claude/commands/**
+!.claude/settings.json
+!.claude/hooks/
+!.claude/hooks/**
+!.claude/skills/
+!.claude/skills/**
+!.claude/ts-baseline/
+!.claude/ts-baseline/**
 
 # Build and framework output
 .expo/

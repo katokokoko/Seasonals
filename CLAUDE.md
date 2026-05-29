@@ -354,6 +354,38 @@ skill は `~/.claude/skills/` に展開される。Seasonals リポジトリ固�
   - partial_fill ケースの approval_token 再利用拒否
   - `approval_mode = auto` の feature flag 検証
 
+### 8.1 Phase 完了ゲート (CRITICAL)
+
+multi-file 変更や §21 phase を「完了」と宣言する **前に**、必ず以下を green にすること。トーリングを実際に走らせる前に done と言わない:
+
+```bash
+pnpm -r test        # 全 workspace の jest (現状: 150 mobile / 67 lib / 22 BFF)
+pnpm -r typecheck   # 全 workspace の tsc --noEmit
+```
+
+- 個別 workspace のみ変えた時は該当 workspace の `pnpm test` / `pnpm typecheck` でよいが、`lib/` を触ったら 3 workspace 全部に波及するので `-r` で回す
+- mobile の実機確認が要る変更 (UI / MWA / tx) は Seeker onchain APK で JS reload して logcat エラーなしまで見る (§5)
+
+### 8.2 ts-guard hook (自動 typecheck)
+
+`.claude/settings.json` の PostToolUse hook (`.claude/hooks/ts-guard.sh`) が Edit/Write 毎に **編集した workspace の `tsc --noEmit`** を走らせ、**baseline に無い新規 TS error だけ** を非ブロッキングで通知する (pre-existing の library / config 型エラーは `.claude/ts-baseline/*.txt` に記録済で無視)。
+
+- 新規エラーが出たら phase 完了前に直す
+- 既知エラーを意図的に増減させた時は baseline を refresh (手順は `ts-guard.sh` 冒頭コメント)
+
+### 8.3 jest / metro config の既知パターン (regression 禁止)
+
+過去に試行錯誤して確定した設定。**壊さないこと**:
+
+- `artifacts/seasonals/jest.config.js`:
+  - `transformIgnorePatterns: []` — `@solana/web3.js` の ESM transitive dep (uuid / jayson / `@solana/codecs-*`) が広範なため、許可リストではなく **全 node_modules transform**。cache 後の追加コストはほぼ無し
+  - `transform` に `.mjs` / `.cjs` を明示 — jest-expo preset の default regex は `.mjs` を含まず、`@solana/codecs-numbers` 等が `.native.mjs` を export するため
+  - `moduleNameMapper` で `@workspace/lib/*` を `../../lib` に直結 (ts-jest 不要)
+  - `forceExit: true` — open handle (WarningArea の `setTimeout` 等) での CI hang 防止
+- `artifacts/seasonals/metro.config.js`:
+  - `watchFolders = [workspaceRoot]` + `nodeModulesPaths` 2 段 + `unstable_enableSymlinks` — monorepo で `lib/` を symlink 解決するため。これが無いと emulator/Expo が `@workspace/lib` を解決できない
+- TanStack Query: `gcTime` を過度に短くしない (cache GC で server state が消える)
+
 ---
 
 ## 9. 整合性チェック (§32.2) — PR 前 self-check

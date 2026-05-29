@@ -1,0 +1,41 @@
+name: CI
+
+# Seasonals monorepo CI — push/PR ごとに lib / BFF / mobile の jest を回す共有ゲート。
+# - test: ブロッキング gate (現状 150 mobile / 67 lib / 22 BFF = 239 件すべて green が必須)
+# - typecheck: pre-existing な library/config 型エラー (CLAUDE.md §8.3) があるため当面 report-only。
+#   新規 TS エラーはローカルの ts-guard hook (.claude/hooks/ts-guard.sh) が編集時に捕捉する。
+#   baseline=0 まで掃除できたら continue-on-error を外して gate 化できる。
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile
+
+      - name: Test (all workspaces — blocking gate)
+        run: pnpm -r test
+
+      - name: Typecheck (report-only — pre-existing errors tolerated)
+        run: pnpm -r typecheck
+        continue-on-error: true
