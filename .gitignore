@@ -20,6 +20,10 @@ node_modules/
 !.claude/ts-baseline/
 !.claude/ts-baseline/**
 
+# Full v0.2.15 requirements spec — kept local-only (戦略/競合記述を含むため非公開)
+# CLAUDE.md の §参照・/spec・/check はローカルの docs/spec.md で機能する
+docs/spec.md
+
 # Build and framework output
 .expo/
 .next/
