@@ -22,6 +22,7 @@ import type {
   AgentPlan,
   ApprovalToken,
   EarnPositionsResponse,
+  OracleResult,
   Position,
   Protocol,
   UnifiedTimeEvent,
@@ -49,6 +50,8 @@ export const queryKeys = {
     ["wallet-time-events", address] as const,
   /** Phase 8.6: Jupiter Lend Earn の 7 markets */
   jupiterLendMarkets: () => ["jupiter-lend-markets"] as const,
+  /** Phase 8.14: underlying mint 別の oracle 判定 (§4.6) */
+  oracleStatus: (mint: string) => ["oracle-status", mint] as const,
   agentPlan: (planId: string) => ["agent-plan", planId] as const,
   agentPlans: () => ["agent-plans"] as const,
   approvalToken: (tokenId: string) => ["approval-token", tokenId] as const,
@@ -108,6 +111,22 @@ export function useEarnPositions(
         ? api.getEarnPositions(address)
         : Promise.resolve({ jupiterLend: [], kaminoBestEffort: [] }),
     enabled: Boolean(address),
+  });
+}
+
+/**
+ * Phase 8.14 §4.6: deposit/withdraw する underlying mint の oracle 判定を取得。
+ * ActionModal が review 時に引いて WarningArea 表示 / CTA gate に使う。
+ * 価格は変動するため staleTime は短く (10s)。mint=null では無効。
+ */
+export function useOracleStatus(
+  mint: string | null
+): UseQueryResult<OracleResult, Error> {
+  return useQuery({
+    queryKey: queryKeys.oracleStatus(mint ?? "disabled"),
+    queryFn: () => api.getOracleStatus(mint as string),
+    enabled: Boolean(mint),
+    staleTime: 10_000,
   });
 }
 

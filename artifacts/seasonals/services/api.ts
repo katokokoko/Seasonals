@@ -35,6 +35,7 @@ import {
   type AgentPlan,
   type ApprovalToken,
   type EarnPositionsResponse,
+  type OracleResult,
   type Position,
   type Protocol,
   type UnifiedTimeEvent,
@@ -378,6 +379,28 @@ export async function getJupiterWithdrawTx(input: {
     );
   }
   return (await res.json()) as JupiterDepositTxResponse;
+}
+
+/**
+ * Phase 8.14 §4.6: underlying mint の実 oracle 判定 (Pyth→Switchboard)。
+ * ActionModal が deposit/withdraw review 時に引いて WarningArea 表示 / CTA gate に使う。
+ * test 環境では network を呼ばず安全側の ok を返す (fixture path)。
+ */
+export async function getOracleStatus(mint: string): Promise<OracleResult> {
+  if (IS_TEST_ENV) {
+    return {
+      asset_symbol: "TEST",
+      status: "ok",
+      primary: "pyth",
+      price_usd: null,
+      pyth: { available: true, price_usd: null, age_seconds: 0 },
+      switchboard: { available: false, price_usd: null, age_seconds: null },
+      divergence_pct: null,
+      warnings: [],
+      block_reason: null,
+    };
+  }
+  return httpGetJson<OracleResult>(`/oracle/status?mint=${encodeURIComponent(mint)}`);
 }
 
 /**

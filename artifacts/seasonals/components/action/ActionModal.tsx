@@ -52,7 +52,14 @@ import {
   useApproveAgentPlan,
   useJupiterQuote,
   useKaminoReserves,
+  useOracleStatus,
 } from "../../services/queries";
+import { WarningArea } from "./WarningArea";
+import {
+  JUPITER_UNDERLYING_MINTS,
+  oracleBlockLabel,
+  resolveOracleMint,
+} from "./oracle-gate";
 import { useWallet } from "../../services/useWallet";
 import {
   signAndSendTransactions,
@@ -89,6 +96,7 @@ function shortenSig(sig: string): string {
   if (sig.length <= 14) return sig;
   return `${sig.slice(0, 8)}…${sig.slice(-6)}`;
 }
+
 
 export interface ActionModalProps {
   /** 表示中の AgentPlan。null なら modal 非表示 */
@@ -157,17 +165,7 @@ export function ActionModal({
 
     // ── Phase 8.5: onchain + Jupiter Lend deposit は実 mainnet swap path ──
     if (isOnchainJupiterLendDeposit) {
-      // Phase 8.6: Jupiter Lend Earn の 7 markets underlying mint
-      const ASSET_MINTS: Record<string, string> = {
-        USDC: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
-        SOL: "So11111111111111111111111111111111111111112",
-        USDT: "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",
-        EURC: "HzwqbKZw8HxMN6bF2yFZNrht3c2iXXzpKcFu7uBEDKtr",
-        USDS: "USDSwr9ApdHk5bvJKMjzff41FfuX8bSxdKcR81vTwcA",
-        USDG: "2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH",
-        JupUSD: "JuprjznTrTSp2UFa3ZBUFgwdAmtZCq4MQCwysN55USD",
-      };
-      const inputMint = ASSET_MINTS[action!.asset!];
+      const inputMint = JUPITER_UNDERLYING_MINTS[action!.asset!];
       if (!inputMint) {
         setErrorMsg(`Unsupported asset for Jupiter Lend: ${action!.asset}`);
         setPhase("error");
@@ -433,7 +431,6 @@ function ReviewBody({
 }) {
   const styles = useThemedStyles(makeStyles);
   const action = plan.selected_action;
-  const sim = plan.simulation_result;
   const decimals = resolveDecimals(action?.asset);
   const amountText =
     action?.amount && action.asset
@@ -450,8 +447,12 @@ function ReviewBody({
     candidate?.estimated_apy != null
       ? formatPercentage(candidate.estimated_apy)
       : "—";
-  const divergencePct = sim?.oracle?.divergence_pct ?? 0;
-  const hasOracleWarning = divergencePct >= 2 && divergencePct <= 5;
+  // Phase 8.14 §4.6: 実 oracle 判定 (Pyth→Switchboard)。mock simulation_result.oracle は使わない。
+  const oracleMint = resolveOracleMint(action);
+  const { data: oracle, isLoading: oracleLoading } = useOracleStatus(oracleMint);
+  const oracleChecking = Boolean(oracleMint) && oracleLoading;
+  const oracleBlocked = oracle?.status === "blocked";
+  const oracleWarnings = oracleBlocked ? [] : oracle?.warnings ?? [];
 
   // Kamino reserve metadata (lending action 時のみ表示)
   const isKamino = action?.protocol === "kamino";
@@ -508,11 +509,12 @@ function ReviewBody({
         />
       )}
 
-      {hasOracleWarning && (
-        <View style={styles.warningCard} testID={testID ? `${testID}-warning` : undefined}>
-          <Text style={styles.warningIcon}>⚠️</Text>
+      {/* Phase 8.14 §4.6: fail-closed で execute 拒否 (両 stale / 乖離>5% / 未取得) */}
+      {oracleBlocked && (
+        <View style={styles.warningCard} testID={testID ? `${testID}-oracle-blocked` : undefined}>
+          <Text style={styles.warningIcon}>⛔</Text>
           <Text style={styles.warningText}>
-            Pyth ↔ Switchboard 価格が {divergencePct.toFixed(1)}% 乖離。実行前に再確認推奨。
+            Oracle check failed: {oracleBlockLabel(oracle?.block_reason)}。安全のため実行できません。
           </Text>
         </View>
       )}
@@ -525,16 +527,34 @@ function ReviewBody({
         </View>
       )}
 
-      <Pressable
-        accessibilityRole="button"
-        onPress={onExecute}
-        style={styles.ctaPrimary}
-        testID={testID ? `${testID}-execute` : undefined}
-      >
-        <Text style={styles.ctaPrimaryText}>
-          {isConnected ? "署名して実行" : "Approve のみ実行"}
-        </Text>
-      </Pressable>
+      {/* Phase 8.14: oracle warning (2-5% 乖離 / Pyth stale) は WarningArea が CTA 直上に
+          強警告 + 1s grayout。blocked / 確認中 / 未接続を含め CTA disabled を統合制御。 */}
+      <WarningArea
+        oracleWarnings={oracleWarnings}
+        testID={testID ? `${testID}-warning-area` : undefined}
+        renderCta={({ disabled }) => {
+          const ctaDisabled = disabled || oracleBlocked || oracleChecking;
+          return (
+            <Pressable
+              accessibilityRole="button"
+              onPress={onExecute}
+              disabled={ctaDisabled}
+              style={[styles.ctaPrimary, ctaDisabled && styles.ctaDisabled]}
+              testID={testID ? `${testID}-execute` : undefined}
+            >
+              <Text style={styles.ctaPrimaryText}>
+                {oracleBlocked
+                  ? "実行不可 (oracle)"
+                  : oracleChecking
+                    ? "Oracle 確認中…"
+                    : isConnected
+                      ? "署名して実行"
+                      : "Approve のみ実行"}
+              </Text>
+            </Pressable>
+          );
+        }}
+      />
     </View>
   );
 }
@@ -986,6 +1006,10 @@ function makeStyles(c: ThemeColors) {
       fontFamily: FONT.heading,
       fontWeight: WEIGHT.bold,
       color: c.textOnColor,
+    },
+    // Phase 8.14: oracle blocked / 確認中 / grayout 時の CTA disabled 表現
+    ctaDisabled: {
+      backgroundColor: withAlpha(c.textMuted, 0.4),
     },
     ctaSecondary: {
       paddingVertical: SPACE.md,

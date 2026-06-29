@@ -68,6 +68,7 @@ import {
   fetchSwapTransaction,
 } from "./clients/jupiter-swap";
 import { sendTransactionViaHelius } from "./clients/helius-rpc";
+import { getOracleResult } from "./clients/oracle";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Solana 接続 (Devnet) — approve endpoint で memo tx を構築するため
@@ -736,6 +737,23 @@ export async function buildServer(
   });
 
   /**
+   * Phase 8.14 §4.6: underlying mint の実 oracle 判定 (Pyth→Switchboard fail-closed)。
+   * Mobile ActionModal が review 時に引いて WarningArea 表示 / CTA gate に使う。
+   * deposit/withdraw-tx の server 強制 gate と同じ getOracleResult を共有。
+   */
+  app.get<{ Querystring: { mint?: string } }>(
+    "/oracle/status",
+    async (req, reply) => {
+      const mint = req.query?.mint?.trim();
+      if (!mint) {
+        reply.code(400);
+        return { error: "mint_required" };
+      }
+      return getOracleResult(mint);
+    }
+  );
+
+  /**
    * Phase 8.8: Mobile が MWA で署名した raw tx を base64 で受け取り、Helius
    * mainnet RPC 経由で broadcast。Phantom の signAndSendTransactions が
    * empty result を返す問題の回避策。
@@ -806,7 +824,14 @@ export async function buildServer(
         jlMint,
       };
     }
-    const outputMint = inverse[0];
+    const outputMint = inverse[0]!;
+    // Phase 8.14 §4.6: fail-closed oracle gate。両 stale / 乖離>5% / 両未取得 は
+    // swapTransaction を返さず 409。未設定 asset (not_configured) は通す。
+    const oracle = await getOracleResult(outputMint);
+    if (oracle.status === "blocked") {
+      reply.code(409);
+      return { error: "oracle_blocked", block_reason: oracle.block_reason, oracle };
+    }
     try {
       const quote = await fetchSwapQuote({
         inputMint: jlMint,
@@ -876,6 +901,13 @@ export async function buildServer(
         message: "Jupiter Lend does not support deposit for this mint via Seasonals",
         inputMint,
       };
+    }
+    // Phase 8.14 §4.6: fail-closed oracle gate。deposit する underlying (inputMint) を
+    // 判定し、blocked なら swapTransaction を返さず 409。未設定 asset は通す。
+    const oracle = await getOracleResult(inputMint);
+    if (oracle.status === "blocked") {
+      reply.code(409);
+      return { error: "oracle_blocked", block_reason: oracle.block_reason, oracle };
     }
     try {
       const quote = await fetchSwapQuote({

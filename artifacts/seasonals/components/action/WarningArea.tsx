@@ -38,34 +38,16 @@ import {
   RADIUS,
   withAlpha,
 } from "@workspace/lib/design-system";
+// Phase 8.14: OracleWarningKind / OracleWarning は lib canonical に統合 (§32.2)。
+import type { OracleWarning, OracleWarningKind } from "@workspace/lib/types";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Public types
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * oracle warning の種別 (§4.6)。
- * - `oracle_divergence_warning`: Pyth ↔ Switchboard の価格乖離が 2-5%
- * - `oracle_pyth_stale`: Pyth が >60秒 stale、Switchboard を fallback 使用中
- * - `oracle_switchboard_stale`: Switchboard が >60秒 stale、Pyth を使用中 (rare)
- *
- * NOTE: 両 stale / >5% 乖離は §4.6 fail-closed で execute 拒否されるため、
- *       本 component には到達しない。
- */
-export type OracleWarningKind =
-  | "oracle_divergence_warning"
-  | "oracle_pyth_stale"
-  | "oracle_switchboard_stale";
-
-export interface OracleWarning {
-  kind: OracleWarningKind;
-  /** 乖離率 (%)。`oracle_divergence_warning` で必須 */
-  divergencePct?: number;
-  /** Pyth の最終更新からの経過秒数。`oracle_pyth_stale` で必須 */
-  pythAgeSeconds?: number;
-  /** Switchboard の最終更新からの経過秒数。`oracle_switchboard_stale` で必須 */
-  switchboardAgeSeconds?: number;
-}
+// Phase 8.14: oracle warning 種別 (§4.6) は lib/types/oracle.ts に canonical 化。
+// 既存 importer (MCPApprovalPushCard) 互換のため WarningArea からも re-export する。
+export type { OracleWarning, OracleWarningKind };
 
 export interface SimulationWarning {
   /** warning 種別の machine-readable identifier (analytics 用) */
