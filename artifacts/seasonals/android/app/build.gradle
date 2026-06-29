@@ -109,9 +109,9 @@ android {
     buildToolsVersion rootProject.ext.buildToolsVersion
     compileSdk rootProject.ext.compileSdkVersion
 
-    namespace 'app.seasonals.mobile'
+    namespace 'app.seasonals.onchain'
     defaultConfig {
-        applicationId 'app.seasonals.mobile'
+        applicationId 'app.seasonals.onchain'
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode 1

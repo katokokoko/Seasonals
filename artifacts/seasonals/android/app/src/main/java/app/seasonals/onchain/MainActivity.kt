@@ -1,4 +1,4 @@
-package app.seasonals.mobile
+package app.seasonals.onchain
 
 import android.os.Build
 import android.os.Bundle
