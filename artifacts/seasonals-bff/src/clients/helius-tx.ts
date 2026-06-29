@@ -23,6 +23,31 @@ export interface HeliusTokenTransfer {
   tokenAmount: number; // float (Helius が humanized で返す)
 }
 
+/**
+ * Phase 8.13: Enhanced API は accountData[].tokenBalanceChanges[] に
+ * smallest-unit 整数 string (符号付き) を返す。cost-basis 計算は float の
+ * tokenTransfers.tokenAmount ではなくこちらを使う (§4.5 精度規約)。
+ */
+export interface HeliusRawTokenAmount {
+  /** smallest unit, 符号付き整数 string (wallet 減少なら先頭 "-") */
+  tokenAmount: string;
+  decimals: number;
+}
+
+export interface HeliusTokenBalanceChange {
+  mint: string;
+  /** この balance change の主体 wallet (owner) */
+  userAccount: string;
+  /** token account 自体の address */
+  tokenAccount?: string;
+  rawTokenAmount: HeliusRawTokenAmount;
+}
+
+export interface HeliusAccountData {
+  account: string;
+  tokenBalanceChanges?: HeliusTokenBalanceChange[];
+}
+
 export interface HeliusEnhancedTx {
   signature: string;
   /** unix seconds */
@@ -31,6 +56,8 @@ export interface HeliusEnhancedTx {
   description?: string;
   fee: number;
   tokenTransfers?: HeliusTokenTransfer[];
+  /** Phase 8.13: cost-basis 用の smallest-unit 整数 balance changes */
+  accountData?: HeliusAccountData[];
 }
 
 interface CacheEntry {

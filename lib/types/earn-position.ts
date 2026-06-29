@@ -38,6 +38,30 @@ export interface EarnPosition {
   underlying_usd: string;
   /** Supply APR の basis points (Jupiter は供給、Kamino は best-effort で null) */
   supply_rate_bps: number | null;
+  /**
+   * Phase 8.13: 実 accrued yield。
+   * earned の **絶対値** を underlying smallest unit string で保持 (§4.5 `^[0-9]+$`)。
+   * 損失 (current < cost-basis) でも magnitude を入れ、符号は `accrued_yield_sign`
+   * で表す (`TOKEN_AMOUNT_REGEX` が負数を禁止するため magnitude + sign 方式)。
+   * cost-basis 不明時は "0"。
+   * 注: earned は **underlying トークン建て**で、価格変動を含まない
+   *     (stablecoin ≈ USD 利回り、SOL は SOL 建て利回り)。
+   */
+  accrued_yield_amount: string;
+  /**
+   * Phase 8.13: earned の符号。
+   *   "gain"    — current >= cost-basis (利益 or break-even)
+   *   "loss"    — current <  cost-basis (含み損)
+   *   "unknown" — cost-basis 不明 (tx 履歴 window 外 / 別 wallet / API 失敗)。
+   *               UI は実額でなく "—" を表示し、概算 fallback に切替える。
+   */
+  accrued_yield_sign: "gain" | "loss" | "unknown";
+  /**
+   * Phase 8.13: cost-basis (純入金 underlying 量、smallest unit string)。
+   * tx 履歴の deposit − withdraw 累計。不明なら null。
+   * 既知なら Position.principal_amount の実元本として使う。
+   */
+  cost_basis_amount: string | null;
 }
 
 /** BFF /positions/earn のレスポンス shape */

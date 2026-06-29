@@ -84,6 +84,14 @@ describe("isValidTokenAmount", () => {
     expect(isValidTokenAmount("1.5")).toBe(false);
     expect(isValidTokenAmount("-1")).toBe(false);
   });
+
+  // Phase 8.13: accrued_yield_amount は「magnitude string + sign enum」方式。
+  // 負数 string を許さない (これが magnitude 方式を採った理由) ことを固定する。
+  it("accrued yield: magnitude は valid / 負数 string は invalid", () => {
+    expect(isValidTokenAmount("500000")).toBe(true); // 損失額も magnitude なら valid
+    expect(isValidTokenAmount("0")).toBe(true); // unknown / break-even
+    expect(isValidTokenAmount("-500000")).toBe(false); // 負数 string は禁止
+  });
 });
 
 describe("isValidUsdAmount", () => {

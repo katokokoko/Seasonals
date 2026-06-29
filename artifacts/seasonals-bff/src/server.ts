@@ -45,7 +45,9 @@ import {
   type UnifiedTimeEventDTO,
 } from "@workspace/lib/types";
 import {
+  fromBigInt,
   isValidTokenAmount,
+  toBigInt,
   toHumanReadable,
 } from "@workspace/lib/utils/numeric";
 import { getRegistry } from "@workspace/lib/adapters";
@@ -59,6 +61,7 @@ import {
 import {
   fetchEnhancedTransactions,
   type HeliusEnhancedTx,
+  type HeliusTokenBalanceChange,
 } from "./clients/helius-tx";
 import {
   fetchSwapQuote,
@@ -211,11 +214,32 @@ export function normalizeJup8DecimalUsd(
  * §4.5 decimal string contract に合わせて `normalizeJup8DecimalUsd` を経由。
  */
 export function mapJupiterLendToEarnPositions(
-  raws: Awaited<ReturnType<typeof fetchEarnPositions>>
+  raws: Awaited<ReturnType<typeof fetchEarnPositions>>,
+  costBasisByShareMint: Map<string, bigint> = new Map()
 ): EarnPosition[] {
   const out: EarnPosition[] = [];
   for (const raw of raws) {
     if (!raw.shares || raw.shares === "0") continue;
+
+    // Phase 8.13: 実 accrued yield = 現在 underlying − cost-basis(純入金 underlying)。
+    // cost-basis 不明 (tx 履歴 window 外 / 別 wallet / API 失敗 / 純入金<=0) は
+    // "unknown" にして UI 概算 fallback に委ねる (フェイク 0 を出さない)。
+    const costBasis = costBasisByShareMint.get(raw.token.address);
+    let accrued_yield_amount = "0";
+    let accrued_yield_sign: EarnPosition["accrued_yield_sign"] = "unknown";
+    let cost_basis_amount: string | null = null;
+    if (
+      costBasis !== undefined &&
+      costBasis > 0n &&
+      isValidTokenAmount(raw.underlyingAssets)
+    ) {
+      const current = toBigInt(raw.underlyingAssets);
+      const delta = current - costBasis;
+      accrued_yield_sign = delta < 0n ? "loss" : "gain";
+      accrued_yield_amount = fromBigInt(delta < 0n ? -delta : delta);
+      cost_basis_amount = fromBigInt(costBasis);
+    }
+
     out.push({
       protocol_id: "jupiter_lend",
       protocol_name: "Jupiter Lend",
@@ -228,6 +252,9 @@ export function mapJupiterLendToEarnPositions(
       underlying_decimals: raw.token.asset.decimals,
       underlying_usd: normalizeJup8DecimalUsd(raw.underlyingBalance),
       supply_rate_bps: Number(raw.supplyRate) || 0,
+      accrued_yield_amount,
+      accrued_yield_sign,
+      cost_basis_amount,
     });
   }
   return out;
@@ -267,6 +294,10 @@ function mapKaminoBestEffortFromHelius(assets: HeliusAsset[]): EarnPosition[] {
       underlying_decimals: decimals,
       underlying_usd: "0",
       supply_rate_bps: null,
+      // Phase 8.13: Kamino は best-effort 検出のみで cost-basis 不明 → 常に unknown。
+      accrued_yield_amount: "0",
+      accrued_yield_sign: "unknown",
+      cost_basis_amount: null,
     });
   }
   return out;
@@ -307,6 +338,74 @@ const UNDERLYING_TO_JL_SHARE_MINT: Record<string, string> = {
   JuprjznTrTSp2UFa3ZBUFgwdAmtZCq4MQCwysN55USD:
     "7GxATsNMnaC88vdwd2t3mwrFuQwwGvmYPrUQ4D6FotXk", // JupUSD → jlJupUSD
 };
+
+/** Phase 8.13: jlToken share mint → underlying asset mint (UNDERLYING_TO_JL_SHARE_MINT の逆引き) */
+const JL_SHARE_TO_UNDERLYING_MINT: Record<string, string> = Object.fromEntries(
+  Object.entries(UNDERLYING_TO_JL_SHARE_MINT).map(([underlying, share]) => [
+    share,
+    underlying,
+  ])
+);
+
+/**
+ * Phase 8.13: tx 履歴から share_mint 別の cost-basis (純入金 underlying 量) を計算。
+ *
+ *   cost-basis = Σ(deposit underlying) − Σ(withdraw underlying)
+ *
+ * Jupiter Lend の deposit は `USDC → jlUSDC` を 1 tx で route するので、同 tx の
+ * accountData[].tokenBalanceChanges に share mint と underlying mint の両方が動く。
+ * share mint の balance change を検出した tx で、同 wallet の underlying mint の
+ * 符号付き rawTokenAmount を読み、入金 (wallet 減少 = 負) を加算・出金 (正) を減算する。
+ *
+ * 全演算 bigint (§4.5)。float の tokenTransfers.tokenAmount は使わない。
+ * 符号付き string は BigInt() で直接 parse (toBigInt は "-" を弾くため不可)。
+ *
+ * 注: jlWSOL は WSOL(So111…112) の balance change として出る。native SOL change は
+ *     route 上 wrap 済なので無視。WSOL change が無ければその tx は cost-basis に寄与しない。
+ */
+export function computeCostBasisByShareMint(
+  txs: HeliusEnhancedTx[],
+  walletAddress: string
+): Map<string, bigint> {
+  const net = new Map<string, bigint>();
+  for (const tx of txs) {
+    const changes: HeliusTokenBalanceChange[] = (tx.accountData ?? []).flatMap(
+      (a) => a.tokenBalanceChanges ?? []
+    );
+    if (changes.length === 0) continue;
+
+    for (const shareMint of Object.keys(JUPITER_LEND_SHARE_MINTS)) {
+      // この tx で wallet の share mint が動いたか (deposit/withdraw のシグナル)
+      const shareMoved = changes.some(
+        (c) => c.mint === shareMint && c.userAccount === walletAddress
+      );
+      if (!shareMoved) continue;
+
+      const underlyingMint = JL_SHARE_TO_UNDERLYING_MINT[shareMint];
+      if (!underlyingMint) continue;
+
+      // 同 tx・同 wallet の underlying balance change を合算 (符号付き)。
+      let underlyingDelta = 0n;
+      let sawUnderlying = false;
+      for (const c of changes) {
+        if (c.mint !== underlyingMint || c.userAccount !== walletAddress) {
+          continue;
+        }
+        const rawStr = c.rawTokenAmount?.tokenAmount;
+        if (rawStr === undefined || rawStr === null || rawStr === "") continue;
+        if (!/^-?[0-9]+$/.test(rawStr)) continue;
+        underlyingDelta += BigInt(rawStr);
+        sawUnderlying = true;
+      }
+      if (!sawUnderlying) continue;
+
+      // wallet 視点で underlying が減る = 入金 (cost-basis 増)。符号反転して加算。
+      const prev = net.get(shareMint) ?? 0n;
+      net.set(shareMint, prev - underlyingDelta);
+    }
+  }
+  return net;
+}
 
 /**
  * Phase 8.3: Helius Enhanced Tx を UnifiedTimeEventDTO[] に変換。
@@ -477,15 +576,23 @@ export async function buildServer(
         return { error: "invalid_wallet_address", wallet };
       }
 
-      // Jupiter / Helius を並列実行 (どちらかが遅れても他方を返せるよう Promise.allSettled)
-      const [jupRes, heliusRes] = await Promise.allSettled([
+      // Jupiter / Helius DAS / Helius tx 履歴を並列実行 (一部失敗しても他方を返せるよう Promise.allSettled)。
+      // Phase 8.13: tx 履歴は cost-basis (実 accrued yield) 計算に使う。失敗時は空 Map →
+      // 全 position が accrued_yield_sign:"unknown" に graceful degrade (フェイク 0 を出さない)。
+      const [jupRes, heliusRes, txRes] = await Promise.allSettled([
         fetchEarnPositions(wallet),
         fetchAssetsByOwner(wallet),
+        fetchEnhancedTransactions(wallet),
       ]);
+
+      const costBasisByShareMint =
+        txRes.status === "fulfilled"
+          ? computeCostBasisByShareMint(txRes.value, wallet)
+          : new Map<string, bigint>();
 
       const jupiterLend: EarnPosition[] =
         jupRes.status === "fulfilled"
-          ? mapJupiterLendToEarnPositions(jupRes.value)
+          ? mapJupiterLendToEarnPositions(jupRes.value, costBasisByShareMint)
           : [];
       const kaminoBestEffort: EarnPosition[] =
         heliusRes.status === "fulfilled"
@@ -502,6 +609,12 @@ export async function buildServer(
         req.log.warn(
           { err: (heliusRes.reason as Error).message },
           "helius fetch failed (kamino detection skipped)"
+        );
+      }
+      if (txRes.status === "rejected") {
+        req.log.warn(
+          { err: (txRes.reason as Error).message },
+          "helius tx fetch failed (cost-basis unknown, earnings fall back to estimate)"
         );
       }
 

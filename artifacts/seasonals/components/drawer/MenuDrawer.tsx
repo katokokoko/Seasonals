@@ -202,7 +202,12 @@ interface JupiterVaultRow {
   /** display only — Phase 8.4.1 carve-out (UI direct presentation) */
   userUnderlyingHuman: number;
   userUnderlyingUsd: number;
+  /** signed USD earned (loss は負)。display only。unknown 時は APR 概算 */
   userEarnedUsd: number;
+  /** Phase 8.13: earned が実 cost-basis 由来か (false = APR 概算 fallback) */
+  userEarnedKnown: boolean;
+  /** Phase 8.13: earned 符号 (unknown 時は概算なので "gain" 相当に倒す) */
+  userEarnedSign: "gain" | "loss" | "unknown";
   earnPosition?: EarnPosition;
 }
 
@@ -291,6 +296,8 @@ function buildJupiterVaultRows(
         userUnderlyingHuman: 0,
         userUnderlyingUsd: 0,
         userEarnedUsd: 0,
+        userEarnedKnown: false,
+        userEarnedSign: "unknown",
       };
     }
     const human =
@@ -298,8 +305,19 @@ function buildJupiterVaultRows(
       Math.pow(10, pos.underlying_decimals);
     const usd = Number(pos.underlying_usd);
     const usdSafe = Number.isFinite(usd) ? usd : 0;
-    // 簡易推定: APR × 30/365 (Phase 8.13 候補で position 実 earnings に差替)
-    const earnedUsd = usdSafe * (m.supplyRateBps / 10000) * (30 / 365);
+    // Phase 8.13: cost-basis 既知なら実 accrued yield を USD 換算 (損失は負)。
+    // 不明 (sign === "unknown") はフェイクの APR 概算を出さず earned 不明 (UI は "—")。
+    // (display 専用計算、Phase 8.4.1 UI carve-out)
+    const earnedKnown = pos.accrued_yield_sign !== "unknown";
+    let earnedUsd = 0;
+    if (earnedKnown) {
+      const perUnitUsd = human > 0 ? usdSafe / human : 0;
+      const earnedHuman =
+        Number(pos.accrued_yield_amount) /
+        Math.pow(10, pos.underlying_decimals);
+      const magnitudeUsd = earnedHuman * perUnitUsd;
+      earnedUsd = pos.accrued_yield_sign === "loss" ? -magnitudeUsd : magnitudeUsd;
+    }
     return {
       jlMint: m.jlMint,
       assetSymbol,
@@ -311,6 +329,8 @@ function buildJupiterVaultRows(
       userUnderlyingHuman: human,
       userUnderlyingUsd: usdSafe,
       userEarnedUsd: earnedUsd,
+      userEarnedKnown: earnedKnown,
+      userEarnedSign: pos.accrued_yield_sign,
       earnPosition: pos,
     };
   });
@@ -319,6 +339,8 @@ function buildJupiterVaultRows(
 interface JupiterSummary {
   depositedUsd: number;
   earningsUsd: number;
+  /** Phase 8.13: cost-basis 既知の earned が 1 件でもあるか (false なら earnings は "—") */
+  hasKnownEarnings: boolean;
   avgApyBps: number | null;
 }
 
@@ -326,15 +348,21 @@ function computeJupiterSummary(rows: JupiterVaultRow[]): JupiterSummary {
   let depositedUsd = 0;
   let earningsUsd = 0;
   let weighted = 0;
+  let hasKnownEarnings = false;
   for (const r of rows) {
     if (!r.isDeposited) continue;
     depositedUsd += r.userUnderlyingUsd;
-    earningsUsd += r.userEarnedUsd;
+    // Phase 8.13: cost-basis 既知の実 earned のみ合算 (符号付き)。
+    // 不明は概算を混ぜず除外し、全件不明なら "—" 表示にする。
+    if (r.userEarnedKnown) {
+      earningsUsd += r.userEarnedUsd;
+      hasKnownEarnings = true;
+    }
     weighted += r.userUnderlyingUsd * (r.apyBps / 10000);
   }
   const avgApyBps =
     depositedUsd > 0 ? Math.round((weighted / depositedUsd) * 10000) : null;
-  return { depositedUsd, earningsUsd, avgApyBps };
+  return { depositedUsd, earningsUsd, hasKnownEarnings, avgApyBps };
 }
 
 /** Number (USD, 表示専用) → "$1,234.56" 形式 */
@@ -1247,11 +1275,18 @@ function JupiterDetailPane({
               <Text
                 style={[
                   styles.jupSummaryMetricValue,
-                  summary.earningsUsd > 0 && { color: COLOR.melonText },
+                  // Phase 8.13: 実 earned の符号で着色 (gain=melon / loss=cherry)
+                  summary.hasKnownEarnings &&
+                    summary.earningsUsd > 0 && { color: COLOR.melonText },
+                  summary.hasKnownEarnings &&
+                    summary.earningsUsd < 0 && { color: COLOR.cherryDark },
                 ]}
               >
-                {summary.earningsUsd > 0
-                  ? formatUsdDisplay(summary.earningsUsd, 4)
+                {summary.hasKnownEarnings
+                  ? `${summary.earningsUsd < 0 ? "−" : "+"}${formatUsdDisplay(
+                      Math.abs(summary.earningsUsd),
+                      4
+                    )}`
                   : "—"}
               </Text>
             </View>
@@ -1436,7 +1471,13 @@ function JupiterVaultRowView({
       <View style={styles.jupVaultBottomRow}>
         <Text style={styles.jupVaultDepositLine} numberOfLines={1}>
           {deposited
-            ? `You: ${formatHumanAmount(row.userUnderlyingHuman)} ${row.assetSymbol} · Earned ${row.userEarnedUsd > 0 ? formatHumanAmount(row.userEarnedUsd) : "0"} USD`
+            ? `You: ${formatHumanAmount(row.userUnderlyingHuman)} ${row.assetSymbol} · Earned ${
+                row.userEarnedKnown
+                  ? `${row.userEarnedUsd < 0 ? "−" : "+"}${formatHumanAmount(
+                      Math.abs(row.userEarnedUsd)
+                    )} USD`
+                  : "— USD"
+              }`
             : "No deposit yet"}
         </Text>
         <Pressable

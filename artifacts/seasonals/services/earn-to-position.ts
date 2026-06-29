@@ -63,9 +63,13 @@ export function earnPositionToPosition(earn: EarnPosition): Position {
     wallet_id: "current",
     protocol_id: earn.protocol_id,
     asset_symbol: earn.asset_symbol,
-    principal_amount: earn.underlying_amount,
+    // Phase 8.13: cost-basis が既知なら実元本、不明なら現状動作 (current = principal) を踏襲。
+    principal_amount: earn.cost_basis_amount ?? earn.underlying_amount,
     current_amount: earn.underlying_amount,
-    accrued_yield_amount: "0",
+    // Phase 8.13: BFF が tx 履歴の cost-basis から算出した実 accrued yield の magnitude。
+    // 符号・既知性は raw_state (accrued_yield_sign / cost_basis_amount) で伝搬する
+    // (Position.accrued_yield_amount は §4.5 `^[0-9]+$` の magnitude string を維持)。
+    accrued_yield_amount: earn.accrued_yield_amount,
     unit_price_usd: earn.underlying_usd,
     unit_price_sol,
     deposited_at: new Date().toISOString(),
@@ -78,6 +82,8 @@ export function earnPositionToPosition(earn: EarnPosition): Position {
       source: "earn_position",
       share_mint: earn.share_mint,
       supply_rate_bps: earn.supply_rate_bps,
+      accrued_yield_sign: earn.accrued_yield_sign,
+      cost_basis_amount: earn.cost_basis_amount,
     },
   };
 }
