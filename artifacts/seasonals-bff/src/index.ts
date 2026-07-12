@@ -12,7 +12,9 @@
 
 import "dotenv/config";
 
-import { buildServer } from "./server";
+import { buildAutonomousDeps, buildServer } from "./server";
+import { startAutonomousLoop } from "./autonomous";
+import { isObjective } from "@workspace/lib/types";
 
 // 3000 は Next.js dev server の慣例 port なので 3030 を default に。
 // env var で override 可能 (CI / staging / production で別 port にする場合)。
@@ -25,6 +27,21 @@ async function main(): Promise<void> {
     await app.listen({ port: PORT, host: HOST });
     // eslint-disable-next-line no-console
     console.log(`Seasonals BFF listening on http://${HOST}:${PORT}`);
+
+    // Phase 8.29: 自律 scheduler は opt-in (AUTONOMOUS_LOOP_MS)。buildServer 外
+    // で起動するため test は timer を生まない。flag/devnet/kill は各 cycle が判定。
+    const loopMs = Number(process.env.AUTONOMOUS_LOOP_MS ?? 0);
+    if (loopMs > 0) {
+      const objective = isObjective(process.env.AUTONOMOUS_OBJECTIVE)
+        ? process.env.AUTONOMOUS_OBJECTIVE
+        : "safety_first";
+      startAutonomousLoop(buildAutonomousDeps(app), loopMs, {
+        objective,
+        asset: process.env.AUTONOMOUS_ASSET,
+      });
+      // eslint-disable-next-line no-console
+      console.log(`Autonomous loop enabled (${loopMs}ms, ${objective})`);
+    }
   } catch (err) {
     // eslint-disable-next-line no-console
     console.error("Failed to start BFF:", err);

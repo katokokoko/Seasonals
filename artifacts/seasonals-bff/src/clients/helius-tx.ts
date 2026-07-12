@@ -45,6 +45,12 @@ export interface HeliusTokenBalanceChange {
 
 export interface HeliusAccountData {
   account: string;
+  /**
+   * Phase 8.19: account の lamports 変化。position account 作成 (open) では rent 分
+   * 正になる — LP cost-basis の「open が tx window 内に見えているか」判定に使う
+   * (>0 比較のみで算術しないため Number で可、§4.5 適用外)。
+   */
+  nativeBalanceChange?: number;
   tokenBalanceChanges?: HeliusTokenBalanceChange[];
 }
 

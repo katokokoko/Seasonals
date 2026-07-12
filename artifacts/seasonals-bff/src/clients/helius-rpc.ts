@@ -69,3 +69,166 @@ export async function sendTransactionViaHelius(
   }
   return json.result;
 }
+
+// ── Phase 8.16: epoch info (LST 保有者向けの実 epoch 境界イベント用) ──────────
+
+export interface EpochInfo {
+  epoch: number;
+  slotIndex: number;
+  slotsInEpoch: number;
+  absoluteSlot: number;
+}
+
+let epochCache: { at: number; info: EpochInfo } | null = null;
+const EPOCH_CACHE_TTL_MS = 60_000;
+
+/** Solana getEpochInfo (60s cache)。epoch 境界の推定に使う。 */
+export async function getEpochInfo(): Promise<EpochInfo> {
+  if (epochCache && Date.now() - epochCache.at < EPOCH_CACHE_TTL_MS) {
+    return epochCache.info;
+  }
+  const res = await fetch(buildUrl(), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: "seasonals-epoch",
+      method: "getEpochInfo",
+      params: [],
+    }),
+  });
+  if (!res.ok) {
+    throw new Error(`Helius getEpochInfo HTTP ${res.status}`);
+  }
+  const json = (await res.json()) as {
+    result?: EpochInfo;
+    error?: { code: number; message: string };
+  };
+  if (json.error || !json.result) {
+    throw new Error(
+      `Helius getEpochInfo RPC error: ${json.error?.message ?? "no result"}`
+    );
+  }
+  epochCache = { at: Date.now(), info: json.result };
+  return json.result;
+}
+
+// ── Phase 8.26: token supply (Solstice TVL 等の表示用) ────────────────────────
+
+const supplyCache = new Map<string, { at: number; ui: number }>();
+const SUPPLY_TTL_MS = 10 * 60_000;
+
+/**
+ * mint の総供給 (uiAmount、表示専用 Number — §4.5 適用外の概算 TVL 用)。
+ * 10min cache (供給はゆっくりしか動かない)。
+ */
+export async function getTokenSupplyUi(mint: string): Promise<number> {
+  const hit = supplyCache.get(mint);
+  if (hit && Date.now() - hit.at < SUPPLY_TTL_MS) return hit.ui;
+  const res = await fetch(buildUrl(), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: "seasonals-supply",
+      method: "getTokenSupply",
+      params: [mint],
+    }),
+  });
+  if (!res.ok) {
+    throw new Error(`Helius getTokenSupply HTTP ${res.status}`);
+  }
+  const json = (await res.json()) as {
+    result?: { value?: { uiAmount?: number } };
+    error?: { code: number; message: string };
+  };
+  const ui = json.result?.value?.uiAmount;
+  if (json.error || typeof ui !== "number" || !Number.isFinite(ui)) {
+    throw new Error(
+      `Helius getTokenSupply error: ${json.error?.message ?? "invalid uiAmount"}`
+    );
+  }
+  supplyCache.set(mint, { at: Date.now(), ui });
+  return ui;
+}
+
+// ── Phase 8.20: native stake accounts (lockup_end イベント用) ─────────────────
+
+export interface StakeAccountInfo {
+  /** stake account pubkey */
+  address: string;
+  /** delegation.stake (lamports、integer string §4.5) */
+  stake_lamports: string;
+  /**
+   * deactivation を要求した epoch。u64::MAX ("18446744073709551615") = active
+   * (解除要求なし)。<= 現 epoch = cooldown 完了 or 進行中。
+   */
+  deactivation_epoch: string;
+}
+
+/**
+ * wallet が withdrawer の native stake account を列挙する。
+ * getProgramAccounts (Stake program、jsonParsed) — withdrawer は Meta.authorized
+ * の 2 番目 pubkey (offset 44)。plan によっては GPA が拒否されるため呼び手は
+ * 失敗を degrade すること (allSettled)。
+ */
+export async function fetchStakeAccounts(
+  wallet: string
+): Promise<StakeAccountInfo[]> {
+  const res = await fetch(buildUrl(), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: "seasonals-stake",
+      method: "getProgramAccounts",
+      params: [
+        "Stake11111111111111111111111111111111111111",
+        {
+          encoding: "jsonParsed",
+          commitment: "confirmed",
+          filters: [
+            { dataSize: 200 },
+            { memcmp: { offset: 44, bytes: wallet } },
+          ],
+        },
+      ],
+    }),
+  });
+  if (!res.ok) {
+    throw new Error(`Helius getProgramAccounts(stake) HTTP ${res.status}`);
+  }
+  const json = (await res.json()) as {
+    result?: {
+      pubkey: string;
+      account: {
+        data: {
+          parsed?: {
+            info?: {
+              stake?: {
+                delegation?: { stake?: string; deactivationEpoch?: string };
+              };
+            };
+          };
+        };
+      };
+    }[];
+    error?: { code: number; message: string };
+  };
+  if (json.error || !Array.isArray(json.result)) {
+    throw new Error(
+      `Helius getProgramAccounts(stake) RPC error: ${json.error?.message ?? "no result"}`
+    );
+  }
+  const out: StakeAccountInfo[] = [];
+  for (const acc of json.result) {
+    const delegation = acc.account?.data?.parsed?.info?.stake?.delegation;
+    if (!delegation?.stake || !delegation.deactivationEpoch) continue;
+    out.push({
+      address: acc.pubkey,
+      stake_lamports: delegation.stake,
+      deactivation_epoch: delegation.deactivationEpoch,
+    });
+  }
+  return out;
+}

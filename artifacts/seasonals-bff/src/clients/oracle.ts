@@ -73,6 +73,12 @@ const ASSET_ORACLE_FEEDS: Record<string, FeedConfig> = {
     pythFeedId:
       "0x2b89b9dc8fdf9f34709a5b106b472f0f39bb6ca9ce04b0fd7f2e971688e2e53b",
   },
+  // JLP (Phase 8.27 — Kamino JLP reserve 用。Hermes query で実在確認 2026-07-11)
+  "27G8MtK7VtTcCHkpASjSDdkWWYfoqT6ggEuKidVJidD4": {
+    symbol: "JLP",
+    pythFeedId:
+      "0xc811abc82b4bad1f9bd711a2773ccaa935b03ecef974236942cec5e0eb845a3a",
+  },
 };
 
 const UNAVAILABLE: OracleSourceStatus = {

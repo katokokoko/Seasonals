@@ -15,7 +15,11 @@
  *   - Postgres を入れる時は services/db.ts + repository pattern
  */
 
-import Fastify, { type FastifyInstance } from "fastify";
+import Fastify, {
+  type FastifyInstance,
+  type FastifyReply,
+  type FastifyRequest,
+} from "fastify";
 import cors from "@fastify/cors";
 import {
   Connection,
@@ -49,7 +53,14 @@ import {
   isValidTokenAmount,
   toBigInt,
   toHumanReadable,
+  toSmallestUnit,
 } from "@workspace/lib/utils/numeric";
+import {
+  deriveAllTimeEvents,
+  deriveTimeEvents,
+  type PositionSnapshot,
+} from "@workspace/lib/derive/derive-time-events";
+import { toDTO as timeEventToDTO } from "@workspace/lib/types";
 import { getRegistry } from "@workspace/lib/adapters";
 
 import { fetchAssetsByOwner, type HeliusAsset } from "./clients/helius";
@@ -67,8 +78,143 @@ import {
   fetchSwapQuote,
   fetchSwapTransaction,
 } from "./clients/jupiter-swap";
-import { sendTransactionViaHelius } from "./clients/helius-rpc";
+import {
+  fetchStakeAccounts,
+  getEpochInfo,
+  getTokenSupplyUi,
+  sendTransactionViaHelius,
+  type StakeAccountInfo,
+} from "./clients/helius-rpc";
 import { getOracleResult } from "./clients/oracle";
+import {
+  SWAP_EARN_MARKETS,
+  findMarketByProtocolAsset,
+  findMarketByShareMint,
+  jupiterLendUnderlyingToShare,
+} from "@workspace/lib/config/swap-earn-markets";
+import {
+  KAMINO_MAIN_MARKET,
+  KAMINO_MARKETS,
+  KAMINO_VAULTS,
+  findKaminoMarketByReserve,
+  findKaminoVaultByAddress,
+  type KaminoVault,
+} from "@workspace/lib/config/kamino-markets";
+import {
+  fetchKaminoDepositTx,
+  fetchKaminoObligationPnl,
+  fetchKaminoObligations,
+  fetchKaminoReserveMetrics,
+  fetchKaminoVaultDepositTx,
+  fetchKaminoVaultMetrics,
+  fetchKaminoVaultPnl,
+  fetchKaminoVaultUserPositions,
+  fetchKaminoVaultWithdrawTx,
+  fetchKaminoWithdrawTx,
+  type KaminoObligationPnl,
+  type KaminoRawObligation,
+  type KaminoReserveMetric,
+  type KaminoVaultMetrics,
+  type KaminoVaultPnl,
+  type KaminoVaultUserPosition,
+} from "./clients/kamino-tx";
+import {
+  fetchExponentApys,
+  fetchExponentSyRates,
+  fetchJupiterRateOut,
+  fetchLstApys,
+  fetchPerenaUsdStarApy,
+  fetchSanctumSolValues,
+} from "./clients/rates";
+import {
+  DRIFT_MARKETS,
+  findDriftMarketByKey,
+  type DriftMarket,
+} from "@workspace/lib/config/drift-markets";
+import {
+  buildDriftDepositTx,
+  buildDriftWithdrawTx,
+  fetchDriftSpotMarketRates,
+  fetchDriftSpotPositions,
+  type DriftMarketRate,
+} from "./clients/drift-tx";
+import {
+  METEORA_MARKETS,
+  findMeteoraMarketByPool,
+  type MeteoraDlmmMarket,
+} from "@workspace/lib/config/meteora-markets";
+import {
+  FULL_WITHDRAW_BPS,
+  buildMeteoraDepositTxns,
+  buildMeteoraWithdrawTxns,
+  fetchMeteoraPoolStats,
+  fetchMeteoraPositions,
+  type MeteoraPoolStats,
+  type MeteoraRawPosition,
+} from "./clients/meteora-tx";
+import {
+  ORCA_MARKETS,
+  findOrcaMarketByPool,
+} from "@workspace/lib/config/orca-markets";
+import {
+  buildOrcaDepositTxns,
+  buildOrcaWithdrawTxns,
+  fetchOrcaPoolStats,
+  fetchOrcaPositions,
+  type OrcaPoolStats,
+  type OrcaRawPosition,
+} from "./clients/orca-tx";
+import {
+  SAVE_MARKETS,
+  findSaveMarketByCToken,
+  findSaveMarketByReserve,
+  type SaveMarket,
+} from "@workspace/lib/config/save-markets";
+import {
+  buildSaveDepositTxns,
+  buildSaveWithdrawTxns,
+  fetchSaveReserveRates,
+  type SaveReserveRate,
+} from "./clients/save-tx";
+import { fixtureMenuListings } from "@workspace/lib/__fixtures__";
+import { isObjective } from "@workspace/lib/types";
+import { canAutoExecute } from "@workspace/lib/policy/evaluate-policy";
+import {
+  getCurrentPolicy,
+  patchCurrentPolicy,
+  PolicyPatchError,
+} from "./policy-store";
+import {
+  AutonomousDisabledError,
+  getAutonomousStatus,
+  isAutonomousFeatureEnabled,
+  isKilled,
+  kill as killAutonomous,
+  listExecutionRecords,
+  resume as resumeAutonomous,
+  runAutonomousCycle,
+  type AutonomousDeps,
+  type ExecutionPushPayload,
+  type RunAutonomousOpts,
+} from "./autonomous";
+import type {
+  ActionSpec,
+  CandidateAction,
+  ProtocolMenuEntry,
+} from "@workspace/lib/types";
+import {
+  computeBundleHash,
+  createPlan,
+  getLatestTokenForPlan,
+  getStoredPlan,
+  getStoredToken,
+  issueApprovalToken,
+  listPushTokens,
+  listStoredPlans,
+  registerPushToken,
+  updatePlan,
+  validateAndConsumeToken,
+} from "./plan-store";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Solana 接続 (Devnet) — approve endpoint で memo tx を構築するため
@@ -319,26 +465,12 @@ const JUPITER_LEND_SHARE_MINTS: Record<string, string> = {
 };
 
 /**
- * Phase 8.5: underlying asset mint → jlToken (jupiter lend share) mint。
- * Jupiter Swap が USDC → jlUSDC を直接 route するので、deposit-tx で output として渡す。
- * Phase 8.6: 7 markets 全部対応。
+ * Phase 8.5-8.6: underlying asset mint → jlToken (jupiter lend share) mint。
+ * Phase 8.15: 共有 registry (lib/config/swap-earn-markets) の jupiter_lend 行から導出
+ * (single source of truth、mint 重複定義を排除)。
  */
-const UNDERLYING_TO_JL_SHARE_MINT: Record<string, string> = {
-  EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v:
-    "9BEcn9aPEmhSPbPQeFGjidRiEKki46fVQDyPpSQXPA2D", // USDC → jlUSDC
-  So11111111111111111111111111111111111111112:
-    "2uQsyo1fXXQkDtcpXnLofWy88PxcvnfH2L8FPSE62FVU", // SOL → jlWSOL
-  Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB:
-    "Cmn4v2wipYV41dkakDvCgFJpxhtaaKt11NyWV8pjSE8A", // USDT → jlUSDT
-  HzwqbKZw8HxMN6bF2yFZNrht3c2iXXzpKcFu7uBEDKtr:
-    "GcV9tEj62VncGithz4o4N9x6HWXARxuRgEAYk9zahNA8", // EURC → jlEURC
-  USDSwr9ApdHk5bvJKMjzff41FfuX8bSxdKcR81vTwcA:
-    "j14XLJZSVMcUYpAfajdZRpnfHUpJieZHS4aPektLWvh", // USDS → jlUSDS
-  "2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH":
-    "9fvHrYNw1A8Evpcj7X2yy4k4fT7nNHcA9L6UsamNHAif", // USDG → jlUSDG
-  JuprjznTrTSp2UFa3ZBUFgwdAmtZCq4MQCwysN55USD:
-    "7GxATsNMnaC88vdwd2t3mwrFuQwwGvmYPrUQ4D6FotXk", // JupUSD → jlJupUSD
-};
+const UNDERLYING_TO_JL_SHARE_MINT: Record<string, string> =
+  jupiterLendUnderlyingToShare();
 
 /** Phase 8.13: jlToken share mint → underlying asset mint (UNDERLYING_TO_JL_SHARE_MINT の逆引き) */
 const JL_SHARE_TO_UNDERLYING_MINT: Record<string, string> = Object.fromEntries(
@@ -347,6 +479,1326 @@ const JL_SHARE_TO_UNDERLYING_MINT: Record<string, string> = Object.fromEntries(
     underlying,
   ])
 );
+
+/**
+ * Phase 8.15.x: cost-basis 対象の share mint → underlying mint (全 registry から導出)。
+ *   - swap-earn 全行 (jl 7 + jitoSOL/mSOL/INF/USD*)
+ *   - Save cToken (cUSDC/cSOL)
+ * tx 内で share と underlying の両 SPL balance change が同 wallet に現れるものが対象
+ * (native SOL は route 上 WSOL So111…112 として現れる)。Kamino obligation/kVault は
+ * share が wallet に来ないため対象外 (earned は Kamino PnL API で取る)。
+ */
+const COST_BASIS_SHARE_TO_UNDERLYING: Record<string, string> = {
+  ...Object.fromEntries(
+    SWAP_EARN_MARKETS.map((m) => [m.share_mint, m.underlying_mint])
+  ),
+  ...Object.fromEntries(
+    SAVE_MARKETS.map((m) => [m.ctoken_mint, m.underlying_mint])
+  ),
+};
+
+/**
+ * Phase 8.15: swap-earn 共通処理。oracle fail-closed gate (§4.6) → Jupiter Swap
+ * quote → swap tx を組み立てて返す。Jupiter Lend / 汎用 swap-earn endpoint で共有。
+ *   - oracleMint: fail-closed 判定する underlying mint (deposit/withdraw とも underlying)
+ *   - blocked → reply 409 + oracle_blocked、swap 失敗 → 502。
+ */
+async function buildSwapEarnTx(
+  req: FastifyRequest,
+  reply: FastifyReply,
+  p: {
+    user: string;
+    inputMint: string;
+    outputMint: string;
+    oracleMint: string;
+    amount: string;
+    slippageBps?: number;
+  }
+): Promise<Record<string, unknown>> {
+  const oracle = await getOracleResult(p.oracleMint);
+  if (oracle.status === "blocked") {
+    reply.code(409);
+    return { error: "oracle_blocked", block_reason: oracle.block_reason, oracle };
+  }
+  try {
+    const quote = await fetchSwapQuote({
+      inputMint: p.inputMint,
+      outputMint: p.outputMint,
+      amount: p.amount,
+      slippageBps: p.slippageBps ?? 50,
+    });
+    const tx = await fetchSwapTransaction({
+      quoteResponse: quote,
+      userPublicKey: p.user,
+      prioritizationFeeLamports: "auto",
+      dynamicComputeUnitLimit: true,
+    });
+    return {
+      swapTransaction: tx.swapTransaction,
+      lastValidBlockHeight: tx.lastValidBlockHeight,
+      outAmount: quote.outAmount,
+      outputMint: p.outputMint,
+      quote,
+    };
+  } catch (err) {
+    req.log.error(
+      { err: (err as Error).message, ...p },
+      "swap-earn tx build failed"
+    );
+    reply.code(502);
+    return { error: "jupiter_swap_failed", message: (err as Error).message };
+  }
+}
+
+// ── Kamino Lend (Phase 8.15b) ────────────────────────────────────────────────
+
+/** Kamino "scaled fraction" (value × 2^60) → USD 8-decimals string (§4.5、bigint 経由)。 */
+export function sfToUsd8(marketValueSf: unknown): string {
+  if (typeof marketValueSf !== "string" || !/^[0-9]+$/.test(marketValueSf)) {
+    return "0";
+  }
+  // USD × 10^8 = sf × 10^8 / 2^60 (整数除算、Number 不使用)
+  const scaled = (BigInt(marketValueSf) * 100_000_000n) >> 60n;
+  const intPart = scaled / 100_000_000n;
+  const frac = (scaled % 100_000_000n).toString().padStart(8, "0");
+  return `${intPart.toString()}.${frac}`;
+}
+
+/** obligation の deposit を `depositReserve` で SWAP している placeholder かどうか。 */
+const KAMINO_EMPTY_RESERVE = "11111111111111111111111111111111";
+
+/**
+ * Phase 8.16 fix: obligation の deposits/borrows は **top-level (friendly、空 {} の
+ * こともある) と state 配下 (raw on-chain 形) の 2 形**が実 API に混在する。
+ * top-level が空なら state 側に fallback する (live 検証: AfcZ… は top が {} で
+ * state.deposits/borrows に実データ)。array / object どちらの形も許容。
+ */
+function obligationEntries(
+  o: KaminoRawObligation,
+  key: "deposits" | "borrows"
+): unknown[] {
+  const entriesOf = (raw: unknown): unknown[] =>
+    Array.isArray(raw)
+      ? raw
+      : raw && typeof raw === "object"
+        ? Object.values(raw as Record<string, unknown>)
+        : [];
+  const top = entriesOf((o as Record<string, unknown>)[key]);
+  if (top.length > 0) return top;
+  const state = (o as { state?: Record<string, unknown> }).state;
+  return entriesOf(state?.[key]);
+}
+
+/**
+ * Phase 8.15b: Kamino obligation 群 → EarnPosition[]。supported reserve
+ * (KAMINO_MARKETS) に hit する deposit のみ surface する。
+ *   - deposits の shape 揺れは obligationEntries が吸収 (top-level / state 両対応)。
+ *   - `depositedAmount` は collateral cToken 量 (reserve decimals ≈ underlying、僅かに
+ *     conservative)。position key/withdraw 入力に流用し、USD は marketValueSf から算出。
+ */
+export function mapKaminoObligationsToEarnPositions(
+  obligations: KaminoRawObligation[],
+  apyBpsByReserve: Map<string, number>
+): EarnPosition[] {
+  const out: EarnPosition[] = [];
+  for (const o of obligations) {
+    const deposits = obligationEntries(o, "deposits");
+    for (const d of deposits) {
+      const dep = d as {
+        depositReserve?: unknown;
+        depositedAmount?: unknown;
+        marketValueSf?: unknown;
+      };
+      const reserve = dep.depositReserve;
+      const amount = dep.depositedAmount;
+      if (
+        typeof reserve !== "string" ||
+        reserve === KAMINO_EMPTY_RESERVE ||
+        typeof amount !== "string" ||
+        !/^[0-9]+$/.test(amount) ||
+        amount === "0"
+      ) {
+        continue;
+      }
+      const mkt = findKaminoMarketByReserve(reserve);
+      if (!mkt) continue; // supported reserve のみ表示
+      out.push({
+        protocol_id: "kamino",
+        protocol_name: "Kamino",
+        market_symbol: mkt.underlying_symbol,
+        share_mint: mkt.reserve, // reserve = position key (withdraw 解決)
+        shares: amount, // cToken 量 = withdraw 入力 (smallest unit)
+        share_decimals: mkt.underlying_decimals,
+        asset_symbol: mkt.underlying_symbol,
+        underlying_amount: amount,
+        underlying_decimals: mkt.underlying_decimals,
+        underlying_usd: sfToUsd8(dep.marketValueSf),
+        supply_rate_bps: apyBpsByReserve.get(reserve) ?? null,
+        accrued_yield_amount: "0",
+        accrued_yield_sign: "unknown", // cost-basis 実値化は follow-up
+        cost_basis_amount: null,
+      });
+    }
+  }
+  return out;
+}
+
+/** reserve metrics → LendingReserveInfo[]（supported reserve のみ、実 APY/TVL）。 */
+function kaminoMetricsToSummary(
+  metrics: KaminoReserveMetric[]
+): {
+  reserve_id: string;
+  name: string;
+  asset_symbol: string;
+  lend_apy: number;
+  borrow_apy: number;
+  utilization: number;
+  tvl_usd: string;
+}[] {
+  const byReserve = new Map(metrics.map((m) => [m.reserve, m]));
+  const out: {
+    reserve_id: string;
+    name: string;
+    asset_symbol: string;
+    lend_apy: number;
+    borrow_apy: number;
+    utilization: number;
+    tvl_usd: string;
+  }[] = [];
+  for (const mkt of KAMINO_MARKETS) {
+    const m = byReserve.get(mkt.reserve);
+    if (!m) continue;
+    // APY / utilization は 0..1 の比率 (§4.5 適用外、Number で十分)
+    const supply = Number(m.totalSupplyUsd) || 0;
+    const borrow = Number(m.totalBorrowUsd) || 0;
+    out.push({
+      reserve_id: m.reserve,
+      name: `${m.liquidityToken} Main Market`,
+      asset_symbol: mkt.underlying_symbol,
+      lend_apy: Number(m.supplyApy) || 0,
+      borrow_apy: Number(m.borrowApy) || 0,
+      utilization: supply > 0 ? borrow / supply : 0,
+      tvl_usd: truncateUsd8(m.totalSupplyUsd),
+    });
+  }
+  return out;
+}
+
+/** 外部 API の USD 文字列を §4.5 の 8-decimals string に丸める (Number 不使用、桁切り)。 */
+function truncateUsd8(raw: string): string {
+  if (typeof raw !== "string" || !/^[0-9]+(\.[0-9]+)?$/.test(raw)) return "0";
+  const [int, frac = ""] = raw.split(".");
+  return frac ? `${int}.${frac.slice(0, 8)}` : (int as string);
+}
+
+/** reserve address → supply APY bps の Map (obligation の supply_rate_bps 用)。 */
+function kaminoApyBpsByReserve(
+  metrics: KaminoReserveMetric[]
+): Map<string, number> {
+  const map = new Map<string, number>();
+  for (const m of metrics) {
+    const apy = Number(m.supplyApy);
+    if (Number.isFinite(apy)) map.set(m.reserve, Math.round(apy * 10000));
+  }
+  return map;
+}
+
+/**
+ * Phase 8.15b: Kamino deposit/withdraw の共通処理。oracle fail-closed gate (§4.6) →
+ * smallest-unit → human/decimal 変換 → Kamino REST の unsigned tx builder。
+ *   - reserve で market を解決し、oracle は underlying に掛ける。
+ *   - blocked → 409、未知 reserve → 400、Kamino 失敗 → 502。
+ */
+async function buildKaminoTx(
+  req: FastifyRequest,
+  reply: FastifyReply,
+  p: { user: string; reserve: string; amount: string; action: "deposit" | "withdraw" }
+): Promise<Record<string, unknown>> {
+  const mkt = findKaminoMarketByReserve(p.reserve);
+  if (!mkt) {
+    reply.code(400);
+    return {
+      error: "unsupported_reserve",
+      message: "No Kamino market registered for this reserve",
+      reserve: p.reserve,
+    };
+  }
+  if (!isValidTokenAmount(p.amount)) {
+    reply.code(400);
+    return { error: "invalid_amount", amount: p.amount };
+  }
+  const oracle = await getOracleResult(mkt.underlying_mint);
+  if (oracle.status === "blocked") {
+    reply.code(409);
+    return { error: "oracle_blocked", block_reason: oracle.block_reason, oracle };
+  }
+  // Kamino API は human/decimal 単位。§4.5 smallest-unit → human へ変換して渡す。
+  const amountHuman = toHumanReadable(p.amount, mkt.underlying_decimals);
+  try {
+    const fn =
+      p.action === "deposit" ? fetchKaminoDepositTx : fetchKaminoWithdrawTx;
+    const { transaction } = await fn({
+      wallet: p.user,
+      market: mkt.market,
+      reserve: mkt.reserve,
+      amount: amountHuman,
+    });
+    return {
+      transaction,
+      reserve: mkt.reserve,
+      market: mkt.market,
+      underlyingMint: mkt.underlying_mint,
+    };
+  } catch (err) {
+    req.log.error(
+      { err: (err as Error).message, reserve: p.reserve, action: p.action },
+      "kamino tx build failed"
+    );
+    reply.code(502);
+    return { error: "kamino_tx_failed", message: (err as Error).message };
+  }
+}
+
+/** 外部 API の decimal string を指定桁で切り捨て (§4.5: parse せず文字列操作のみ)。 */
+export function truncateDecimal(value: string, places: number): string {
+  if (typeof value !== "string" || !/^[0-9]+(\.[0-9]+)?$/.test(value)) return "0";
+  const [int, frac = ""] = value.split(".");
+  const cut = frac.slice(0, places);
+  return cut ? `${int}.${cut}` : (int as string);
+}
+
+/**
+ * Phase 8.15.x: 外部 API の decimal string を正規化する (§4.5: Number() 不使用)。
+ * 符号 (-/+) と指数表記 ("6.1998e-7" — Kamino PnL が返す) を文字列操作で plain
+ * decimal に展開する。不正 shape は null。
+ */
+export function normalizeDecimalString(
+  value: unknown
+): { negative: boolean; abs: string } | null {
+  if (typeof value !== "string") return null;
+  let s = value.trim();
+  let negative = false;
+  if (s.startsWith("-")) {
+    negative = true;
+    s = s.slice(1);
+  } else if (s.startsWith("+")) {
+    s = s.slice(1);
+  }
+  const m = s.match(/^([0-9]+)(?:\.([0-9]+))?(?:[eE]([+-]?[0-9]+))?$/);
+  if (!m) return null;
+  const digits = m[1]! + (m[2] ?? "");
+  // 指数は小整数 (§4.5 適用外) — 小数点位置の移動量としてのみ使う
+  const exp = m[3] ? parseInt(m[3], 10) : 0;
+  const pointPos = m[1]!.length + exp;
+  let abs: string;
+  if (pointPos <= 0) {
+    abs = `0.${"0".repeat(-pointPos)}${digits}`;
+  } else if (pointPos >= digits.length) {
+    abs = digits + "0".repeat(pointPos - digits.length);
+  } else {
+    abs = `${digits.slice(0, pointPos)}.${digits.slice(pointPos)}`;
+  }
+  abs = abs.replace(/^0+(?=[0-9])/, "");
+  const isZero = /^0*(\.0*)?$/.test(abs);
+  return { negative: negative && !isZero, abs: isZero ? "0" : abs };
+}
+
+/**
+ * 符号付き decimal string → smallest unit の magnitude + 符号。
+ * 不正 / 変換不能は { magnitude: "0", negative: false } (graceful degrade)。
+ */
+export function signedDecimalToSmallest(
+  value: unknown,
+  decimals: number
+): { magnitude: string; negative: boolean } {
+  const norm = normalizeDecimalString(value);
+  if (!norm) return { magnitude: "0", negative: false };
+  try {
+    const smallest = toSmallestUnit(truncateDecimal(norm.abs, decimals), decimals);
+    return { magnitude: smallest, negative: norm.negative && smallest !== "0" };
+  } catch {
+    return { magnitude: "0", negative: false };
+  }
+}
+
+/** USD scaled bigint (×1e8) → §4.5 の 8-dec string ("10.08128552")。 */
+function formatUsd8(scaled8: bigint): string {
+  const neg = scaled8 < 0n;
+  const v = neg ? -scaled8 : scaled8;
+  const intPart = v / 100_000_000n;
+  const frac = (v % 100_000_000n).toString().padStart(8, "0");
+  return `${neg ? "-" : ""}${intPart.toString()}.${frac}`;
+}
+
+/** oracle price_usd (8-dec decimal string) → scaled bigint (×1e8)。不明は null。 */
+function priceUsd8ToScaled(priceUsd: string | null): bigint | null {
+  if (!priceUsd) return null;
+  try {
+    return toBigInt(toSmallestUnit(truncateDecimal(priceUsd, 8), 8));
+  } catch {
+    return null;
+  }
+}
+
+/** kVault rate/価格演算の bigint スケール (12 桁精度)。 */
+const KVAULT_RATE_SCALE = 12;
+
+/**
+ * Phase 8.15d: kVault 保有 positions → EarnPosition[]。登録済 vault のみ surface。
+ *   - API の shares は human decimal string → `toSmallestUnit` で §4.5 smallest 化。
+ *   - underlying = shares × tokensPerShare、USD = underlying × tokenPrice。
+ *     decimal×decimal は bigint スケール乗算 (Number() 不使用)。
+ *   - metrics 取得失敗時は shares のみ (underlying "0" / APY null) の graceful degrade。
+ */
+export function mapKaminoVaultPositionsToEarnPositions(
+  positions: KaminoVaultUserPosition[],
+  metricsByVault: Map<string, KaminoVaultMetrics>
+): EarnPosition[] {
+  const out: EarnPosition[] = [];
+  for (const p of positions) {
+    const vault = findKaminoVaultByAddress(p.vaultAddress);
+    if (!vault) continue;
+    let sharesSmallest: string;
+    try {
+      sharesSmallest = toSmallestUnit(
+        truncateDecimal(p.totalShares, vault.shares_decimals),
+        vault.shares_decimals
+      );
+    } catch {
+      continue; // 不正 shape は silent に落とさず skip (§4.5 boundary)
+    }
+    if (sharesSmallest === "0") continue;
+
+    const m = metricsByVault.get(p.vaultAddress);
+    let underlyingSmallest = "0";
+    let usd8 = "0";
+    let apyBps: number | null = null;
+    if (m) {
+      // underlying_smallest = shares(human) × tokensPerShare × 10^u_dec
+      //   = sharesSmallest × rateScaled × 10^u_dec / (10^s_dec × 10^SCALE)
+      const rateScaled = toBigInt(
+        toSmallestUnit(truncateDecimal(m.tokensPerShare, KVAULT_RATE_SCALE), KVAULT_RATE_SCALE)
+      );
+      const shares = toBigInt(sharesSmallest);
+      const underlying =
+        (shares * rateScaled * 10n ** BigInt(vault.underlying_decimals)) /
+        (10n ** BigInt(vault.shares_decimals) * 10n ** BigInt(KVAULT_RATE_SCALE));
+      underlyingSmallest = fromBigInt(underlying);
+      // USD (8-dec) = underlying × tokenPrice
+      const priceScaled = toBigInt(
+        toSmallestUnit(truncateDecimal(m.tokenPrice, 8), 8)
+      );
+      const usdScaled8 =
+        (underlying * priceScaled) / 10n ** BigInt(vault.underlying_decimals);
+      const intPart = usdScaled8 / 100_000_000n;
+      const frac = (usdScaled8 % 100_000_000n).toString().padStart(8, "0");
+      usd8 = `${intPart.toString()}.${frac}`;
+      const apy = Number(m.apy);
+      apyBps = Number.isFinite(apy) ? Math.round(apy * 10000) : null;
+    }
+    out.push({
+      protocol_id: "kamino",
+      protocol_name: "Kamino",
+      market_symbol: vault.display_name,
+      share_mint: vault.vault, // vault address = position key (withdraw 解決)
+      shares: sharesSmallest,
+      share_decimals: vault.shares_decimals,
+      asset_symbol: vault.underlying_symbol,
+      underlying_amount: underlyingSmallest,
+      underlying_decimals: vault.underlying_decimals,
+      underlying_usd: usd8,
+      supply_rate_bps: apyBps,
+      accrued_yield_amount: "0",
+      accrued_yield_sign: "unknown",
+      cost_basis_amount: null,
+    });
+  }
+  return out;
+}
+
+// ── Phase 8.15.x: earnings 実値化 ────────────────────────────────────────────
+
+/** Helius DAS asset から (mint → smallest balance bigint) を安全に引く。 */
+function assetBalanceSmallest(asset: HeliusAsset): bigint | null {
+  const raw = asset.token_info?.balance;
+  const s = typeof raw === "number" ? String(raw) : raw;
+  if (typeof s !== "string" || !/^[0-9]+$/.test(s)) return null;
+  return BigInt(s);
+}
+
+/**
+ * 保有 LST/USD* (swap-earn share、jupiter_lend 除く) を enriched EarnPosition に。
+ *   underlying = shares × rate (SOL 系: Sanctum sol-value、USD* / eUSX: Jupiter quote out/probe)
+ *   USD = underlying × oracle price、earned = underlying − cost-basis (取れた場合)
+ * rate が無い share は旧 semantics (share 建て表示 + unknown) に degrade。
+ * Phase 8.24: USD* 専用だった quote rate を share_symbol キーの Map に一般化 (eUSX 対応)。
+ */
+export function mapSwapEarnHoldingsToEarnPositions(
+  assets: HeliusAsset[],
+  solValuesBySymbol: Map<string, bigint>,
+  quoteRatesBySymbol: Map<string, { probe: bigint; out: bigint }>,
+  priceUsd8ByMint: Map<string, bigint>,
+  costBasisByShareMint: Map<string, bigint>,
+  // Phase 8.23: LST symbol → APY (0..1)。未指定/miss は従来通り null
+  lstApysBySymbol: Map<string, number> = new Map()
+): EarnPosition[] {
+  const out: EarnPosition[] = [];
+  for (const asset of assets) {
+    const m = findMarketByShareMint(asset.id);
+    if (!m || m.protocol_id === "jupiter_lend") continue; // jl は jupiterLend 配列で処理
+    const shares = assetBalanceSmallest(asset);
+    if (shares === null || shares === 0n) continue;
+
+    // underlying 換算 (bigint スケール演算のみ)
+    let underlying: bigint | null = null;
+    const solValue = solValuesBySymbol.get(m.share_symbol);
+    const quoteRate = quoteRatesBySymbol.get(m.share_symbol);
+    if (solValue !== undefined && solValue > 0n) {
+      // shares(share smallest) × lamports-per-whole ÷ 10^share_dec → lamports
+      underlying =
+        (shares * solValue) / 10n ** BigInt(m.share_decimals);
+    } else if (quoteRate && quoteRate.probe > 0n) {
+      underlying = (shares * quoteRate.out) / quoteRate.probe;
+    }
+
+    const protocolName =
+      m.protocol_id.charAt(0).toUpperCase() + m.protocol_id.slice(1);
+    if (underlying === null) {
+      // rate 不明 → 旧 semantics (share 建て表示、フェイク値は出さない)
+      out.push({
+        protocol_id: m.protocol_id,
+        protocol_name: protocolName,
+        market_symbol: m.underlying_symbol,
+        share_mint: m.share_mint,
+        shares: fromBigInt(shares),
+        share_decimals: m.share_decimals,
+        asset_symbol: m.share_symbol,
+        underlying_amount: fromBigInt(shares),
+        underlying_decimals: m.share_decimals,
+        underlying_usd: "0",
+        supply_rate_bps: null,
+        accrued_yield_amount: "0",
+        accrued_yield_sign: "unknown",
+        cost_basis_amount: null,
+      });
+      continue;
+    }
+
+    // USD (underlying × price / 10^u_dec、8-dec string)
+    const price8 = priceUsd8ByMint.get(m.underlying_mint);
+    const usd8 =
+      price8 !== undefined
+        ? formatUsd8((underlying * price8) / 10n ** BigInt(m.underlying_decimals))
+        : "0";
+
+    // earned (underlying 建て) = current − cost-basis
+    let accrued = "0";
+    let sign: EarnPosition["accrued_yield_sign"] = "unknown";
+    let costBasisAmount: string | null = null;
+    const costBasis = costBasisByShareMint.get(m.share_mint);
+    if (costBasis !== undefined && costBasis > 0n) {
+      const delta = underlying - costBasis;
+      sign = delta < 0n ? "loss" : "gain";
+      accrued = fromBigInt(delta < 0n ? -delta : delta);
+      costBasisAmount = fromBigInt(costBasis);
+    }
+
+    // Phase 8.23: LST APY (Sanctum、0..1) → bps。miss は null (従来表示)
+    const lstApy = lstApysBySymbol.get(m.share_symbol);
+    const supplyRateBps =
+      lstApy !== undefined && Number.isFinite(lstApy)
+        ? Math.round(lstApy * 10000)
+        : null;
+
+    out.push({
+      protocol_id: m.protocol_id,
+      protocol_name: protocolName,
+      market_symbol: m.share_symbol, // "jitoSOL" (ラベル)
+      share_mint: m.share_mint,
+      shares: fromBigInt(shares),
+      share_decimals: m.share_decimals,
+      asset_symbol: m.underlying_symbol, // 表示は underlying 建て ("SOL")
+      underlying_amount: fromBigInt(underlying),
+      underlying_decimals: m.underlying_decimals,
+      underlying_usd: usd8,
+      supply_rate_bps: supplyRateBps,
+      accrued_yield_amount: accrued,
+      accrued_yield_sign: sign,
+      cost_basis_amount: costBasisAmount,
+    });
+  }
+  return out;
+}
+
+/**
+ * 保有 Save cToken を enriched EarnPosition に。
+ *   underlying = cToken × ctoken_exchange_rate (cToken decimals = underlying decimals)
+ *   earned = underlying − cost-basis (cUSDC/USDC は同一 tx の SPL⇄SPL なので 8.13 機構が効く)
+ */
+export function mapSaveHoldingsToEarnPositions(
+  assets: HeliusAsset[],
+  saveRates: { reserve: string; supply_apy: number; ctoken_exchange_rate: string }[],
+  priceUsd8ByMint: Map<string, bigint>,
+  costBasisByShareMint: Map<string, bigint>
+): EarnPosition[] {
+  const rateByReserve = new Map(saveRates.map((r) => [r.reserve, r]));
+  const out: EarnPosition[] = [];
+  for (const asset of assets) {
+    const m = findSaveMarketByCToken(asset.id);
+    if (!m) continue;
+    const shares = assetBalanceSmallest(asset);
+    if (shares === null || shares === 0n) continue;
+
+    const rate = rateByReserve.get(m.reserve);
+    let underlying: bigint | null = null;
+    if (rate) {
+      try {
+        const rateScaled = toBigInt(
+          toSmallestUnit(truncateDecimal(rate.ctoken_exchange_rate, 12), 12)
+        );
+        if (rateScaled > 0n) {
+          // cToken decimals == underlying decimals → スケール補正不要
+          underlying = (shares * rateScaled) / 10n ** 12n;
+        }
+      } catch {
+        underlying = null;
+      }
+    }
+    const apyBps =
+      rate && Number.isFinite(rate.supply_apy)
+        ? Math.round(rate.supply_apy * 10000)
+        : null;
+
+    if (underlying === null) {
+      // rate 不明 → 旧 semantics (cToken 建て表示)
+      out.push({
+        protocol_id: "savefi",
+        protocol_name: "Save",
+        market_symbol: m.underlying_symbol,
+        share_mint: m.ctoken_mint,
+        shares: fromBigInt(shares),
+        share_decimals: m.underlying_decimals,
+        asset_symbol: m.ctoken_symbol,
+        underlying_amount: fromBigInt(shares),
+        underlying_decimals: m.underlying_decimals,
+        underlying_usd: "0",
+        supply_rate_bps: apyBps,
+        accrued_yield_amount: "0",
+        accrued_yield_sign: "unknown",
+        cost_basis_amount: null,
+      });
+      continue;
+    }
+
+    const price8 = priceUsd8ByMint.get(m.underlying_mint);
+    const usd8 =
+      price8 !== undefined
+        ? formatUsd8((underlying * price8) / 10n ** BigInt(m.underlying_decimals))
+        : "0";
+
+    let accrued = "0";
+    let sign: EarnPosition["accrued_yield_sign"] = "unknown";
+    let costBasisAmount: string | null = null;
+    const costBasis = costBasisByShareMint.get(m.ctoken_mint);
+    if (costBasis !== undefined && costBasis > 0n) {
+      const delta = underlying - costBasis;
+      sign = delta < 0n ? "loss" : "gain";
+      accrued = fromBigInt(delta < 0n ? -delta : delta);
+      costBasisAmount = fromBigInt(costBasis);
+    }
+
+    out.push({
+      protocol_id: "savefi",
+      protocol_name: "Save",
+      market_symbol: m.ctoken_symbol, // "cUSDC" (ラベル)
+      share_mint: m.ctoken_mint,
+      shares: fromBigInt(shares),
+      share_decimals: m.underlying_decimals,
+      asset_symbol: m.underlying_symbol, // 表示は underlying 建て ("USDC")
+      underlying_amount: fromBigInt(underlying),
+      underlying_decimals: m.underlying_decimals,
+      underlying_usd: usd8,
+      supply_rate_bps: apyBps,
+      accrued_yield_amount: accrued,
+      accrued_yield_sign: sign,
+      cost_basis_amount: costBasisAmount,
+    });
+  }
+  return out;
+}
+
+/**
+ * kVault positions に Kamino 算出の実 PnL (token 建て) を合流。
+ * pnl が正規化できない position は unknown のまま (フェイク値は出さない)。
+ */
+export function attachKaminoVaultPnl(
+  positions: EarnPosition[],
+  pnlByVault: Map<string, KaminoVaultPnl>
+): EarnPosition[] {
+  return positions.map((p) => {
+    const pnl = pnlByVault.get(p.share_mint);
+    if (!pnl) return p;
+    const earned = signedDecimalToSmallest(pnl.pnlToken, p.underlying_decimals);
+    const cost = signedDecimalToSmallest(pnl.costBasisToken, p.underlying_decimals);
+    // pnlToken が不正 shape (normalize 失敗で "0"/false) でも costBasis > 0 なら
+    // break-even として扱えるが、区別できないため cost>0 のときのみ実値扱い。
+    if (cost.magnitude === "0") return p;
+    return {
+      ...p,
+      accrued_yield_amount: earned.magnitude,
+      accrued_yield_sign: earned.negative ? ("loss" as const) : ("gain" as const),
+      cost_basis_amount: cost.magnitude,
+    };
+  });
+}
+
+/**
+ * Kamino reserve (obligation) positions に obligation PnL を合流。
+ * 帰属が明確な「supported deposit がちょうど 1 つの obligation」由来の position のみ。
+ * underlying=SOL は pnl.sol をそのまま、USDC は pnl.usd を oracle price で USDC 換算
+ * (peg 近似はしない)。
+ */
+export function attachKaminoObligationPnl(
+  positions: EarnPosition[],
+  pnlByReserve: Map<string, KaminoObligationPnl>,
+  priceUsd8ByMint: Map<string, bigint>
+): EarnPosition[] {
+  const SOL_MINT = "So11111111111111111111111111111111111111112";
+  return positions.map((p) => {
+    if (p.protocol_id !== "kamino") return p;
+    const pnl = pnlByReserve.get(p.share_mint); // reserve address キー
+    if (!pnl) return p;
+    const mkt = findKaminoMarketByReserve(p.share_mint);
+    if (!mkt) return p;
+    let earned: { magnitude: string; negative: boolean } | null = null;
+    if (mkt.underlying_mint === SOL_MINT) {
+      earned = signedDecimalToSmallest(pnl.sol, mkt.underlying_decimals);
+    } else {
+      // USD 建て PnL → oracle price で underlying (USDC) に換算
+      const price8 = priceUsd8ByMint.get(mkt.underlying_mint);
+      const norm = normalizeDecimalString(pnl.usd);
+      if (price8 !== undefined && price8 > 0n && norm) {
+        try {
+          const usdScaled8 = toBigInt(
+            toSmallestUnit(truncateDecimal(norm.abs, 8), 8)
+          );
+          const underlying =
+            (usdScaled8 * 10n ** BigInt(mkt.underlying_decimals)) / price8;
+          earned = { magnitude: fromBigInt(underlying), negative: norm.negative };
+        } catch {
+          earned = null;
+        }
+      }
+    }
+    if (!earned) return p;
+    return {
+      ...p,
+      accrued_yield_amount: earned.magnitude,
+      accrued_yield_sign: earned.negative ? ("loss" as const) : ("gain" as const),
+    };
+  });
+}
+
+/**
+ * obligation PnL の帰属が明確な reserve → obligationAddress の Map を作る。
+ * 条件: (a) 借入なし (供給専用 — PnL ≈ 累積利息)、(b) 非空 deposit がちょうど 1 つ、
+ * (c) その deposit が supported reserve、(d) 同一 reserve が複数 obligation に
+ * 現れない (曖昧なら除外)。条件外は unknown 継続 (フェイク値を出さない)。
+ */
+export function singleSupportedDepositObligations(
+  obligations: KaminoRawObligation[]
+): Map<string, string> {
+  const candidate = new Map<string, string>();
+  const ambiguous = new Set<string>();
+  for (const o of obligations) {
+    const deposits = obligationEntries(o, "deposits");
+    const borrows = obligationEntries(o, "borrows");
+    const hasBorrow = borrows.some((b) => {
+      const br = b as { borrowReserve?: unknown };
+      return (
+        typeof br.borrowReserve === "string" &&
+        br.borrowReserve !== KAMINO_EMPTY_RESERVE
+      );
+    });
+    if (hasBorrow) continue;
+    const nonEmpty: string[] = [];
+    for (const d of deposits) {
+      const dep = d as { depositReserve?: unknown; depositedAmount?: unknown };
+      if (
+        typeof dep.depositReserve !== "string" ||
+        dep.depositReserve === KAMINO_EMPTY_RESERVE ||
+        typeof dep.depositedAmount !== "string" ||
+        dep.depositedAmount === "0"
+      ) {
+        continue;
+      }
+      nonEmpty.push(dep.depositReserve);
+    }
+    const addr = (o as { obligationAddress?: unknown }).obligationAddress;
+    if (
+      nonEmpty.length === 1 &&
+      typeof addr === "string" &&
+      findKaminoMarketByReserve(nonEmpty[0]!)
+    ) {
+      const reserve = nonEmpty[0]!;
+      if (candidate.has(reserve)) ambiguous.add(reserve);
+      else candidate.set(reserve, addr);
+    }
+  }
+  for (const r of ambiguous) candidate.delete(r);
+  return candidate;
+}
+
+/**
+ * Phase 8.15d: kVault deposit/withdraw 共通処理。oracle gate (§4.6 underlying) →
+ * §4.5 変換 → Kamino REST unsigned tx。
+ *   deposit  : amount = underlying smallest → human (underlying_decimals)
+ *   withdraw : amount = shares smallest → human (shares_decimals、share 建て確認済)
+ */
+async function buildKaminoVaultTx(
+  req: FastifyRequest,
+  reply: FastifyReply,
+  p: { user: string; vault: string; amount: string; action: "deposit" | "withdraw" }
+): Promise<Record<string, unknown>> {
+  const vault: KaminoVault | undefined = findKaminoVaultByAddress(p.vault);
+  if (!vault) {
+    reply.code(400);
+    return {
+      error: "unsupported_vault",
+      message: "No Kamino vault registered for this address",
+      vault: p.vault,
+    };
+  }
+  if (!isValidTokenAmount(p.amount)) {
+    reply.code(400);
+    return { error: "invalid_amount", amount: p.amount };
+  }
+  const oracle = await getOracleResult(vault.underlying_mint);
+  if (oracle.status === "blocked") {
+    reply.code(409);
+    return { error: "oracle_blocked", block_reason: oracle.block_reason, oracle };
+  }
+  const amountHuman =
+    p.action === "deposit"
+      ? toHumanReadable(p.amount, vault.underlying_decimals)
+      : toHumanReadable(p.amount, vault.shares_decimals);
+  try {
+    const fn =
+      p.action === "deposit" ? fetchKaminoVaultDepositTx : fetchKaminoVaultWithdrawTx;
+    const { transaction } = await fn({
+      wallet: p.user,
+      kvault: vault.vault,
+      amount: amountHuman,
+    });
+    return {
+      transaction,
+      vault: vault.vault,
+      underlyingMint: vault.underlying_mint,
+    };
+  } catch (err) {
+    req.log.error(
+      { err: (err as Error).message, vault: p.vault, action: p.action },
+      "kamino vault tx build failed"
+    );
+    reply.code(502);
+    return { error: "kamino_tx_failed", message: (err as Error).message };
+  }
+}
+
+/**
+ * Phase 8.15c: Save (旧 Solend) deposit/withdraw の共通処理。oracle fail-closed gate
+ * (§4.6) → solend-sdk で unsigned v0 tx 群 (最大: pull-price + pre + 本体 + post) を
+ * 構築して base64 string[] を返す。amount は smallest-unit string を SDK に passthrough。
+ */
+async function buildSaveTx(
+  req: FastifyRequest,
+  reply: FastifyReply,
+  p: {
+    user: string;
+    market: SaveMarket;
+    amount: string;
+    action: "deposit" | "withdraw";
+  }
+): Promise<Record<string, unknown>> {
+  if (!isValidTokenAmount(p.amount)) {
+    reply.code(400);
+    return { error: "invalid_amount", amount: p.amount };
+  }
+  const oracle = await getOracleResult(p.market.underlying_mint);
+  if (oracle.status === "blocked") {
+    reply.code(409);
+    return { error: "oracle_blocked", block_reason: oracle.block_reason, oracle };
+  }
+  try {
+    const fn = p.action === "deposit" ? buildSaveDepositTxns : buildSaveWithdrawTxns;
+    const { transactions } = await fn({
+      wallet: p.user,
+      market: p.market,
+      amount: p.amount,
+    });
+    return {
+      transactions,
+      reserve: p.market.reserve,
+      ctokenMint: p.market.ctoken_mint,
+      underlyingMint: p.market.underlying_mint,
+    };
+  } catch (err) {
+    req.log.error(
+      { err: (err as Error).message, reserve: p.market.reserve, action: p.action },
+      "save tx build failed"
+    );
+    reply.code(502);
+    return { error: "save_tx_failed", message: (err as Error).message };
+  }
+}
+
+/**
+ * Phase 8.15e: Drift spot deposit/withdraw の共通処理。oracle fail-closed gate (§4.6)
+ * → drift-sdk (BFF 内) で unsigned v0 tx を構築。amount は smallest-unit string を
+ * BN で passthrough (§4.5)。withdraw は reduceOnly (client 側で固定)。
+ */
+async function buildDriftTx(
+  req: FastifyRequest,
+  reply: FastifyReply,
+  p: {
+    user: string;
+    market: DriftMarket;
+    amount: string;
+    action: "deposit" | "withdraw";
+  }
+): Promise<Record<string, unknown>> {
+  if (!isValidTokenAmount(p.amount)) {
+    reply.code(400);
+    return { error: "invalid_amount", amount: p.amount };
+  }
+  const oracle = await getOracleResult(p.market.underlying_mint);
+  if (oracle.status === "blocked") {
+    reply.code(409);
+    return { error: "oracle_blocked", block_reason: oracle.block_reason, oracle };
+  }
+  try {
+    const fn = p.action === "deposit" ? buildDriftDepositTx : buildDriftWithdrawTx;
+    const { transaction, firstDeposit } = await fn({
+      wallet: p.user,
+      market: p.market,
+      amountSmallest: p.amount,
+    });
+    return {
+      transaction,
+      firstDeposit,
+      positionKey: p.market.position_key,
+      underlyingMint: p.market.underlying_mint,
+    };
+  } catch (err) {
+    req.log.error(
+      { err: (err as Error).message, market: p.market.position_key, action: p.action },
+      "drift tx build failed"
+    );
+    reply.code(502);
+    return { error: "drift_tx_failed", message: (err as Error).message };
+  }
+}
+
+/**
+ * Phase 8.15e: Drift spot 保有 → EarnPosition[]。share_mint には合成 position_key
+ * ("drift_spot_{index}") を流用 (SPL 受取が無いため)。earned は unknown (follow-up)。
+ */
+export function mapDriftHoldingsToEarnPositions(
+  holdings: { market_index: number; token_amount: string; supply_apy: number | null }[],
+  priceUsd8ByMint: Map<string, bigint>
+): EarnPosition[] {
+  const out: EarnPosition[] = [];
+  for (const h of holdings) {
+    const m = DRIFT_MARKETS.find((d) => d.market_index === h.market_index);
+    if (!m || !/^[0-9]+$/.test(h.token_amount) || h.token_amount === "0") continue;
+    const underlying = toBigInt(h.token_amount);
+    const price8 = priceUsd8ByMint.get(m.underlying_mint);
+    const usd8 =
+      price8 !== undefined
+        ? formatUsd8((underlying * price8) / 10n ** BigInt(m.underlying_decimals))
+        : "0";
+    out.push({
+      protocol_id: "drift",
+      protocol_name: "Drift",
+      market_symbol: `${m.underlying_symbol} Spot`,
+      share_mint: m.position_key,
+      shares: h.token_amount,
+      share_decimals: m.underlying_decimals,
+      asset_symbol: m.underlying_symbol,
+      underlying_amount: h.token_amount,
+      underlying_decimals: m.underlying_decimals,
+      underlying_usd: usd8,
+      supply_rate_bps:
+        h.supply_apy !== null && Number.isFinite(h.supply_apy)
+          ? Math.round(h.supply_apy * 10000)
+          : null,
+      accrued_yield_amount: "0",
+      accrued_yield_sign: "unknown",
+      cost_basis_amount: null,
+    });
+  }
+  return out;
+}
+
+// ── Phase 8.17: Meteora DLMM ─────────────────────────────────────────────────
+
+/** SDK の amount 文字列 (integer / decimal 揺れあり) → 整数 smallest bigint。不正は null。 */
+function meteoraAmountToBigInt(value: string): bigint | null {
+  if (/^[0-9]+$/.test(value)) return BigInt(value);
+  const norm = normalizeDecimalString(value);
+  if (!norm || norm.negative) return null;
+  // decimal 表現は端数 (除算由来) — 整数部のみ採用 (§4.5: raw smallest 単位)
+  return BigInt(truncateDecimal(norm.abs, 0));
+}
+
+const METEORA_PRICE_SCALE = 12;
+
+/**
+ * DLMM position の X/Y 残高を deposit token 建てに一本化した総額 (smallest bigint)。
+ * price_raw = X smallest 1 単位あたりの Y smallest (on-chain activeBin.price、検証済)。
+ */
+export function meteoraTotalsInDepositTerms(
+  raw: Pick<MeteoraRawPosition, "total_x" | "total_y" | "fee_x" | "fee_y" | "price_raw">,
+  depositSide: "x" | "y"
+): { total: bigint; fee: bigint } | null {
+  const x = meteoraAmountToBigInt(raw.total_x);
+  const y = meteoraAmountToBigInt(raw.total_y);
+  const feeX = meteoraAmountToBigInt(raw.fee_x);
+  const feeY = meteoraAmountToBigInt(raw.fee_y);
+  const priceNorm = normalizeDecimalString(raw.price_raw);
+  if (x === null || y === null || feeX === null || feeY === null || !priceNorm) {
+    return null;
+  }
+  let priceScaled: bigint;
+  try {
+    priceScaled = toBigInt(
+      toSmallestUnit(truncateDecimal(priceNorm.abs, METEORA_PRICE_SCALE), METEORA_PRICE_SCALE)
+    );
+  } catch {
+    return null;
+  }
+  if (priceScaled <= 0n) return null;
+  const scale = 10n ** BigInt(METEORA_PRICE_SCALE);
+  if (depositSide === "x") {
+    // Y → X: y / price
+    return {
+      total: x + (y * scale) / priceScaled,
+      fee: feeX + (feeY * scale) / priceScaled,
+    };
+  }
+  // X → Y: x × price
+  return {
+    total: y + (x * priceScaled) / scale,
+    fee: feeY + (feeX * priceScaled) / scale,
+  };
+}
+
+/**
+ * Phase 8.19: LP position の earned フィールドを決める共通ロジック。
+ * cost-basis 判明時: earned = (現在総額 + 未請求 fee) − cost — **IL 込み** の実損益
+ * (8.13 と同じ magnitude + sign 方式)。不明時: 従来の fee-only "gain" を維持
+ * (fee は真の下限情報なので 8.13 の "unknown → —" にはしない)。
+ */
+function lpEarnedFields(
+  totals: { total: bigint; fee: bigint },
+  cost: bigint | undefined
+): Pick<
+  EarnPosition,
+  "accrued_yield_amount" | "accrued_yield_sign" | "cost_basis_amount"
+> {
+  if (cost === undefined || cost <= 0n) {
+    return {
+      accrued_yield_amount: fromBigInt(totals.fee),
+      accrued_yield_sign: "gain",
+      cost_basis_amount: null,
+    };
+  }
+  const delta = totals.total + totals.fee - cost;
+  return {
+    accrued_yield_amount: fromBigInt(delta < 0n ? -delta : delta),
+    accrued_yield_sign: delta < 0n ? "loss" : "gain",
+    cost_basis_amount: fromBigInt(cost),
+  };
+}
+
+/**
+ * Meteora DLMM positions → EarnPosition[]。share_mint = position account pubkey。
+ * underlying は deposit token 建て総額。earned は lpCostBasis 判明時 IL 込み実損益、
+ * 不明時は未請求 swap fee (gain 固定) — Phase 8.19。
+ * APY は新データ API の pool stats (Phase 8.24、取得失敗時 null)。
+ */
+export function mapMeteoraPositionsToEarnPositions(
+  positions: MeteoraRawPosition[],
+  priceUsd8ByMint: Map<string, bigint>,
+  lpCostBasis: Map<string, bigint> = new Map(),
+  statsByAddress: Map<string, MeteoraPoolStats> = new Map()
+): EarnPosition[] {
+  const out: EarnPosition[] = [];
+  for (const raw of positions) {
+    const m = METEORA_MARKETS.find((mk) => mk.pool_id === raw.pool_id);
+    if (!m) continue;
+    const totals = meteoraTotalsInDepositTerms(raw, m.deposit_side);
+    if (!totals || totals.total === 0n) continue;
+    const price8 = priceUsd8ByMint.get(m.deposit_mint);
+    const usd8 =
+      price8 !== undefined
+        ? formatUsd8((totals.total * price8) / 10n ** BigInt(m.deposit_decimals))
+        : "0";
+    const stats = statsByAddress.get(m.pool_address);
+    out.push({
+      protocol_id: "meteora",
+      protocol_name: "Meteora",
+      market_symbol: m.pair_name,
+      share_mint: raw.position_address, // position account 実 pubkey (withdraw キー)
+      shares: fromBigInt(totals.total),
+      share_decimals: m.deposit_decimals,
+      asset_symbol: m.deposit_symbol,
+      underlying_amount: fromBigInt(totals.total),
+      underlying_decimals: m.deposit_decimals,
+      underlying_usd: usd8,
+      supply_rate_bps: stats ? stats.apy_bps : null,
+      ...lpEarnedFields(totals, lpCostBasis.get(raw.position_address)),
+    });
+  }
+  return out;
+}
+
+/**
+ * LP withdraw の bps 計算 (Meteora / Orca 共通、8.18 で共通化):
+ * 要求額 / 現在総額 (deposit 建て)。round、1..10000 clamp。総額以上 → 10000 (全量)。
+ */
+export function withdrawBpsFor(requested: bigint, total: bigint | null): number {
+  if (total === null || total <= 0n || requested >= total) {
+    return FULL_WITHDRAW_BPS;
+  }
+  const bps = Number((requested * 10_000n + total / 2n) / total);
+  return Math.max(1, Math.min(FULL_WITHDRAW_BPS, bps));
+}
+
+/** Whirlpool sqrtPrice (X64) → B smallest per A smallest ×10^12 (bigint)。 */
+const ORCA_PRICE_SCALE = 12;
+
+function orcaIntOrNull(value: string): bigint | null {
+  return /^[0-9]+$/.test(value) ? BigInt(value) : null;
+}
+
+/**
+ * Whirlpool position の A/B 残高を deposit token 建てに一本化した総額 (smallest bigint)。
+ * price = (sqrtPrice / 2^64)^2 が「A smallest 1 単位あたりの B smallest」(on-chain、検証済)。
+ */
+export function orcaTotalsInDepositTerms(
+  raw: Pick<OrcaRawPosition, "token_a" | "token_b" | "fee_owed_a" | "fee_owed_b" | "sqrt_price">,
+  depositSide: "a" | "b"
+): { total: bigint; fee: bigint } | null {
+  const a = orcaIntOrNull(raw.token_a);
+  const b = orcaIntOrNull(raw.token_b);
+  const feeA = orcaIntOrNull(raw.fee_owed_a);
+  const feeB = orcaIntOrNull(raw.fee_owed_b);
+  const sqrt = orcaIntOrNull(raw.sqrt_price);
+  if (a === null || b === null || feeA === null || feeB === null || sqrt === null) {
+    return null;
+  }
+  const scale = 10n ** BigInt(ORCA_PRICE_SCALE);
+  const priceScaled = (sqrt * sqrt * scale) >> 128n;
+  if (priceScaled <= 0n) return null;
+  if (depositSide === "a") {
+    // B → A: b / price
+    return {
+      total: a + (b * scale) / priceScaled,
+      fee: feeA + (feeB * scale) / priceScaled,
+    };
+  }
+  // A → B: a × price
+  return {
+    total: b + (a * priceScaled) / scale,
+    fee: feeB + (feeA * priceScaled) / scale,
+  };
+}
+
+/**
+ * Orca Whirlpool positions → EarnPosition[]。share_mint = position mint (NFT) 実 pubkey
+ * (withdraw キー)。underlying は deposit token 建て総額。earned は lpCostBasis 判明時
+ * IL 込み実損益、不明時は feeOwed (gain 固定) — Phase 8.19。
+ * APY は pool stats API の totalApr.day (実値、取得失敗時 null)。
+ */
+export function mapOrcaPositionsToEarnPositions(
+  positions: OrcaRawPosition[],
+  priceUsd8ByMint: Map<string, bigint>,
+  statsByAddress: Map<string, OrcaPoolStats>,
+  lpCostBasis: Map<string, bigint> = new Map()
+): EarnPosition[] {
+  const out: EarnPosition[] = [];
+  for (const raw of positions) {
+    const m = ORCA_MARKETS.find((mk) => mk.pool_id === raw.pool_id);
+    if (!m) continue;
+    const totals = orcaTotalsInDepositTerms(raw, m.deposit_side);
+    if (!totals || totals.total === 0n) continue;
+    const price8 = priceUsd8ByMint.get(m.deposit_mint);
+    const usd8 =
+      price8 !== undefined
+        ? formatUsd8((totals.total * price8) / 10n ** BigInt(m.deposit_decimals))
+        : "0";
+    const stats = statsByAddress.get(m.pool_address);
+    out.push({
+      protocol_id: "orca",
+      protocol_name: "Orca",
+      market_symbol: m.pair_name,
+      share_mint: raw.position_mint, // position mint (NFT) 実 pubkey (withdraw キー)
+      shares: fromBigInt(totals.total),
+      share_decimals: m.deposit_decimals,
+      asset_symbol: m.deposit_symbol,
+      underlying_amount: fromBigInt(totals.total),
+      underlying_decimals: m.deposit_decimals,
+      underlying_usd: usd8,
+      supply_rate_bps: stats ? stats.apr_day_bps : null,
+      ...lpEarnedFields(totals, lpCostBasis.get(raw.position_mint)),
+    });
+  }
+  return out;
+}
+
+// ── Phase 8.19: LP cost-basis (IL 込み earned) ───────────────────────────────
+
+/** Whirlpool の全 tick 範囲 (±443636 を tick_spacing に整列 — TickUtil と同義)。 */
+function orcaFullRangeTick(tickSpacing: number): number {
+  return Math.floor(443636 / tickSpacing) * tickSpacing;
+}
+
+/**
+ * LP position の cost-basis (deposit token 建て純入金、smallest bigint) を
+ * wallet の tx 履歴から計算する。key は EarnPosition.share_mint に一致:
+ * meteora → position account pubkey、orca → position mint (NFT) pubkey。
+ *
+ * 検出: position account が tx の accountData に載る tx (open / increase /
+ * decrease / claim / close) を position の lifecycle tx とする (live 検証済
+ * 2026-07-10 — Orca open tx で position PDA + user の両脚 delta を確認)。
+ *
+ * cost 計算 (§4.5 全 bigint、8.13 と同じ delta 集計規約):
+ * - stable pair (USDC-USDT): cost = Σ −(depositΔ + otherΔ) — 1:1 換算で
+ *   open / increase / 部分 withdraw / fee claim 全形状を正しく積む
+ *   (claim は cost を減らす = realized earnings が earned に反映される)。
+ * - volatile pair (SOL-USDC): 過去価格が取れないため自アプリのフロー形のみ:
+ *     orca   — tx 1 件 (zap open) + full-range + deposit 脚流出 → −depositΔ × 2
+ *              (full-range は 50:50 value split、live tx で実証。SOL 脚は
+ *              一時 WSOL account 側に付き user delta に出ない)
+ *     meteora — 全 tx で other 脚 0 (single-sided) → Σ −depositΔ
+ *   該当しない形 (部分 withdraw 済 / 集中レンジ / 外部 UI 由来) は cost 不明。
+ *
+ * **open 可視性ガード**: window は履歴の suffix なので、position account の作成
+ * (rent 入金 = accountData.nativeBalanceChange > 0、live 検証済) が window 内に
+ * 見えている場合のみ全 lifecycle tx が揃っていると保証できる。open が window 外の
+ * position は「直近の increase/claim だけを積んだ過小 cost」になるため cost 不明に
+ * 倒す (実 wallet で観測した欠陥への対策)。
+ *
+ * 注: zap の swap 脚 (tx1) は position を触らないため検出外 — swap fee/slippage
+ * (~0.05%) 分 cost が過小 = earned が僅かに過大。cost <= 0 は 8.13 同様 skip。
+ * tx window (直近 50 件) 外の古い position も不明 → fee-only 表示に fallback。
+ *
+ * Phase 8.27: volatile orca で deposit 脚 (SOL) が一時 WSOL account 経由になり
+ * user delta に出ないケース (jitoSOL-SOL zap) 向けに、**相方脚 × otherLegRates
+ * (deposit 建て換算、LST は rate がゆっくりで現在値換算の誤差僅少) × 2** の
+ * fallback を追加。rate は呼び手が入力として渡す (決定性維持)。
+ */
+export function computeLpCostBasisByPositionKey(
+  txs: HeliusEnhancedTx[],
+  walletAddress: string,
+  orcaPositions: OrcaRawPosition[],
+  meteoraPositions: MeteoraRawPosition[],
+  /** other_mint → deposit smallest 換算 rate (num/den)。8.27 */
+  otherLegRates: Map<string, { num: bigint; den: bigint }> = new Map()
+): Map<string, bigint> {
+  const out = new Map<string, bigint>();
+  interface LpTarget {
+    key: string;
+    address: string;
+    depositMint: string;
+    otherMint: string;
+    stablePair: boolean;
+    kind: "orca" | "meteora";
+    fullRange: boolean;
+  }
+  const targets: LpTarget[] = [];
+  for (const p of orcaPositions) {
+    const m = ORCA_MARKETS.find((mk) => mk.pool_id === p.pool_id);
+    if (!m) continue;
+    const full = orcaFullRangeTick(m.tick_spacing);
+    targets.push({
+      key: p.position_mint,
+      address: p.position_address,
+      depositMint: m.deposit_mint,
+      otherMint: m.other_mint,
+      stablePair: m.stable_pair,
+      kind: "orca",
+      fullRange: p.tick_lower === -full && p.tick_upper === full,
+    });
+  }
+  for (const p of meteoraPositions) {
+    const m = METEORA_MARKETS.find((mk) => mk.pool_id === p.pool_id);
+    if (!m) continue;
+    targets.push({
+      key: p.position_address,
+      address: p.position_address,
+      depositMint: m.deposit_mint,
+      otherMint: m.other_mint,
+      stablePair: m.stable_pair,
+      kind: "meteora",
+      fullRange: false,
+    });
+  }
+  if (targets.length === 0) return out;
+
+  for (const t of targets) {
+    const posTxs = txs.filter((tx) =>
+      (tx.accountData ?? []).some((a) => a.account === t.address)
+    );
+    if (posTxs.length === 0) continue;
+    // open 可視性ガード: 作成 tx (position account への rent 入金) が window 内に無い
+    // = 履歴が部分的にしか見えていない → cost 不明
+    const sawOpen = posTxs.some((tx) =>
+      (tx.accountData ?? []).some(
+        (a) => a.account === t.address && (a.nativeBalanceChange ?? 0) > 0
+      )
+    );
+    if (!sawOpen) continue;
+    // 各 tx の wallet 視点 deposit/other 脚 delta (入金 = 負)
+    const deltas = posTxs.map((tx) => {
+      let dep = 0n;
+      let oth = 0n;
+      for (const a of tx.accountData ?? []) {
+        for (const c of a.tokenBalanceChanges ?? []) {
+          if (c.userAccount !== walletAddress) continue;
+          const rawStr = c.rawTokenAmount?.tokenAmount;
+          if (!rawStr || !/^-?[0-9]+$/.test(rawStr)) continue;
+          if (c.mint === t.depositMint) dep += BigInt(rawStr);
+          else if (c.mint === t.otherMint) oth += BigInt(rawStr);
+        }
+      }
+      return { dep, oth };
+    });
+    let cost: bigint | null = null;
+    if (t.stablePair) {
+      cost = deltas.reduce((acc, d) => acc - d.dep - d.oth, 0n);
+    } else if (t.kind === "orca") {
+      if (posTxs.length === 1 && t.fullRange && deltas[0]!.dep < 0n) {
+        cost = -deltas[0]!.dep * 2n;
+      } else if (posTxs.length === 1 && t.fullRange && deltas[0]!.oth < 0n) {
+        // 8.27: deposit 脚が一時 WSOL account 経由で user delta に出ない zap 向け —
+        // 相方脚 (user ATA 経由で確実に出る) を deposit 建てに換算して ×2
+        const rate = otherLegRates.get(t.otherMint);
+        if (rate && rate.den > 0n) {
+          cost = ((-deltas[0]!.oth * rate.num) / rate.den) * 2n;
+        }
+      }
+    } else if (
+      deltas.every((d) => d.oth === 0n) &&
+      deltas.some((d) => d.dep !== 0n)
+    ) {
+      cost = deltas.reduce((acc, d) => acc - d.dep, 0n);
+    }
+    if (cost !== null && cost > 0n) out.set(t.key, cost);
+  }
+  return out;
+}
 
 /**
  * Phase 8.13: tx 履歴から share_mint 別の cost-basis (純入金 underlying 量) を計算。
@@ -375,14 +1827,15 @@ export function computeCostBasisByShareMint(
     );
     if (changes.length === 0) continue;
 
-    for (const shareMint of Object.keys(JUPITER_LEND_SHARE_MINTS)) {
+    // Phase 8.15.x: jl だけでなく LST/USD*/Save cToken も対象 (registry 導出 map)。
+    for (const shareMint of Object.keys(COST_BASIS_SHARE_TO_UNDERLYING)) {
       // この tx で wallet の share mint が動いたか (deposit/withdraw のシグナル)
       const shareMoved = changes.some(
         (c) => c.mint === shareMint && c.userAccount === walletAddress
       );
       if (!shareMoved) continue;
 
-      const underlyingMint = JL_SHARE_TO_UNDERLYING_MINT[shareMint];
+      const underlyingMint = COST_BASIS_SHARE_TO_UNDERLYING[shareMint];
       if (!underlyingMint) continue;
 
       // 同 tx・同 wallet の underlying balance change を合算 (符号付き)。
@@ -409,33 +1862,83 @@ export function computeCostBasisByShareMint(
 }
 
 /**
- * Phase 8.3: Helius Enhanced Tx を UnifiedTimeEventDTO[] に変換。
- * - jlToken mint の transfer in/out → Jupiter Lend deposit/withdraw
- * - tokenTransfers のみ見る (depth 1)、Kamino は本 phase 軽量検出 (mint name 検査は
- *   Helius Enhanced API では取れないので Phase 8.2 同様 wallet 保有検出のみ、tx 履歴
- *   側からの Kamino detection は将来 SDK 連携時に拡張)。
- *
- * UnifiedTimeEventDTO に変換 (BFF は DTO で返す、Mobile 側で Date に復元)。
- * category は 8-fixed 中 "Epoch" を generic temporal marker として流用。
+ * Phase 8.16: wallet イベント検出用の share mint registry (全 registry 導出)。
+ * swap-earn (jl 7 + jitoSOL/mSOL/INF/USD*) + Save cToken。表示名/decimals 込み。
  */
-function mapTxsToWalletTimeEvents(
+const WALLET_EVENT_SHARE_REGISTRY: Record<
+  string,
+  {
+    protocol_id: string;
+    display: string;
+    share_symbol: string;
+    share_decimals: number;
+  }
+> = {
+  ...Object.fromEntries(
+    SWAP_EARN_MARKETS.map((m) => [
+      m.share_mint,
+      {
+        protocol_id: m.protocol_id,
+        display:
+          m.protocol_id === "jupiter_lend"
+            ? "Jupiter Lend"
+            : m.protocol_id.charAt(0).toUpperCase() + m.protocol_id.slice(1),
+        share_symbol: m.share_symbol,
+        share_decimals: m.share_decimals,
+      },
+    ])
+  ),
+  ...Object.fromEntries(
+    SAVE_MARKETS.map((m) => [
+      m.ctoken_mint,
+      {
+        protocol_id: "savefi",
+        display: "Save",
+        share_symbol: m.ctoken_symbol,
+        share_decimals: m.underlying_decimals,
+      },
+    ])
+  ),
+};
+
+/**
+ * Phase 8.3 → 8.16: Helius Enhanced Tx を UnifiedTimeEventDTO[] に変換。
+ * - 全 protocol の share mint (WALLET_EVENT_SHARE_REGISTRY) の入出金を検出
+ * - 金額は accountData[].tokenBalanceChanges の bigint (§4.5、float の tokenTransfers
+ *   は使わない)。同一 tx 内の同一 mint change は合算して 1 イベント。
+ * - category は 8-fixed 中 "Epoch" を temporal marker として流用 (droplet shape は
+ *   mobile 側が metadata.source === "helius_tx" で deposit_history に解決)。
+ */
+export function mapTxsToWalletTimeEvents(
   txs: HeliusEnhancedTx[],
   walletAddress: string
 ): UnifiedTimeEventDTO[] {
   const out: UnifiedTimeEventDTO[] = [];
   for (const tx of txs) {
-    const transfers = tx.tokenTransfers ?? [];
+    const changes: HeliusTokenBalanceChange[] = (tx.accountData ?? []).flatMap(
+      (a) => a.tokenBalanceChanges ?? []
+    );
+    if (changes.length === 0) continue;
+    // share mint ごとに wallet の delta を合算 (bigint)
+    const deltaByMint = new Map<string, bigint>();
+    for (const ch of changes) {
+      const reg = WALLET_EVENT_SHARE_REGISTRY[ch.mint];
+      if (!reg || ch.userAccount !== walletAddress) continue;
+      const raw = ch.rawTokenAmount?.tokenAmount;
+      if (typeof raw !== "string" || !/^-?[0-9]+$/.test(raw)) continue;
+      deltaByMint.set(ch.mint, (deltaByMint.get(ch.mint) ?? 0n) + BigInt(raw));
+    }
     let idx = 0;
-    for (const t of transfers) {
-      const jlAsset = JUPITER_LEND_SHARE_MINTS[t.mint];
-      if (!jlAsset) continue;
-      const isDeposit = t.toUserAccount === walletAddress;
-      const isWithdraw = t.fromUserAccount === walletAddress;
-      if (!isDeposit && !isWithdraw) continue;
+    for (const [mint, delta] of deltaByMint) {
+      if (delta === 0n) continue;
+      const reg = WALLET_EVENT_SHARE_REGISTRY[mint]!;
+      const isDeposit = delta > 0n;
+      const magnitude = fromBigInt(delta < 0n ? -delta : delta);
+      const human = toHumanReadable(magnitude, reg.share_decimals);
       const verb = isDeposit ? "Deposited" : "Withdrew";
       out.push({
         id: `tx_${tx.signature}_${idx}`,
-        protocol: "jupiter_lend",
+        protocol: reg.protocol_id,
         category: TimeEventCategory.Epoch,
         triggerAt: new Date(tx.timestamp * 1000).toISOString(),
         urgency: Urgency.Info,
@@ -447,15 +1950,370 @@ function mapTxsToWalletTimeEvents(
           source: "helius_tx",
           signature: tx.signature,
           tx_type: tx.type,
-          headline: `${verb} ${t.tokenAmount.toFixed(4)} ${jlAsset} on Jupiter Lend`,
+          headline: `${verb} ${human} ${reg.share_symbol} on ${reg.display}`,
           direction: isDeposit ? "deposit" : "withdraw",
-          jl_share_mint: t.mint,
+          share_mint: mint,
         },
       });
       idx += 1;
     }
   }
   return out;
+}
+
+/**
+ * Phase 8.16: LST 保有者向けの実 epoch 境界イベント (staking 報酬確定タイミング)。
+ * holdsLst=false なら null。境界時刻は slotsRemaining × 400ms の概算 (日単位表示に十分)。
+ */
+export function buildEpochBoundaryEvent(
+  epochInfo: { epoch: number; slotIndex: number; slotsInEpoch: number },
+  holdsLst: boolean,
+  walletAddress: string,
+  now: Date
+): UnifiedTimeEventDTO | null {
+  if (!holdsLst) return null;
+  const remaining = epochInfo.slotsInEpoch - epochInfo.slotIndex;
+  if (!Number.isFinite(remaining) || remaining < 0) return null;
+  // Phase 8.20: 導出は lib deriveAllTimeEvents (§26.2) — snapshot 0 件でも
+  // ctx.epoch から wallet-scoped の epoch イベントを 1 回だけ返す。
+  const endsAtIso = new Date(now.getTime() + remaining * 400).toISOString();
+  const events = deriveAllTimeEvents([], {
+    now,
+    wallet: walletAddress,
+    epoch: { epoch: epochInfo.epoch, endsAtIso, holdsLst },
+  });
+  return events[0] ? timeEventToDTO(events[0]) : null;
+}
+
+/**
+ * Phase 8.16: Kamino obligation の health イベント (§11.4 Health)。
+ * 借入がある obligation のみ対象 (供給専用は liquidation リスク無し)。
+ *   LTV/liqLTV ≥ 0.9 → Critical、≥ 0.7 → Watch、未満 → イベント無し。
+ * actions は空 (repay 経路未実装のため fail-closed でボタンを出さない)。
+ * LTV は 0..1 比率 (§4.5 適用外 — Number 可)。
+ */
+export function mapObligationsToHealthEvents(
+  obligations: KaminoRawObligation[],
+  walletAddress: string,
+  now: Date
+): UnifiedTimeEventDTO[] {
+  // Phase 8.20: 閾値判定・urgency・headline は lib deriveTimeEvents に移譲。
+  // ここは obligation の raw parse → PositionSnapshot 構築のみ。
+  const snapshots: PositionSnapshot[] = [];
+  for (const o of obligations) {
+    const borrows = obligationEntries(o, "borrows");
+    const hasBorrow = borrows.some((b) => {
+      const br = b as { borrowReserve?: unknown };
+      return (
+        typeof br.borrowReserve === "string" &&
+        br.borrowReserve !== KAMINO_EMPTY_RESERVE
+      );
+    });
+    if (!hasBorrow) continue;
+    const stats = (o as { refreshedStats?: unknown }).refreshedStats as
+      | { loanToValue?: unknown; liquidationLtv?: unknown }
+      | undefined;
+    const ltv = Number(stats?.loanToValue);
+    const liq = Number(stats?.liquidationLtv);
+    if (!Number.isFinite(ltv) || !Number.isFinite(liq) || liq <= 0) continue;
+    const addr = (o as { obligationAddress?: unknown }).obligationAddress;
+    snapshots.push({
+      protocol: "kamino",
+      position_ref: typeof addr === "string" ? addr : null,
+      health: { ltv, liquidation_ltv: liq },
+      metadata: { source: "kamino_obligation" },
+    });
+  }
+  const ctx = { now, wallet: walletAddress };
+  return snapshots.flatMap((s) => deriveTimeEvents(s, ctx).map(timeEventToDTO));
+}
+
+/**
+ * Phase 8.20: LP position (Meteora / Orca) の未請求 fee → claim イベント (§11.4)。
+ * fee > 0 の position のみ。event には "Withdraw & claim" action と synthetic
+ * withdraw plan 用 metadata (share_mint / shares / decimals) が付く — mobile の
+ * handleActionPress がカレンダーから直接 ActionModal を起動できる (§29.1)。
+ */
+/**
+ * claim イベントを watch に上げる fee 閾値 (~$1 相当、deposit token smallest)。
+ * 未登録 symbol は undefined = 常に info。
+ */
+const CLAIM_WATCH_THRESHOLD: Record<string, string> = {
+  USDC: "1000000", // 1 USDC
+  SOL: "10000000", // 0.01 SOL
+};
+
+export function mapLpPositionsToClaimEvents(
+  orcaPositions: OrcaRawPosition[],
+  meteoraPositions: MeteoraRawPosition[],
+  walletAddress: string,
+  now: Date
+): UnifiedTimeEventDTO[] {
+  const snapshots: PositionSnapshot[] = [];
+  for (const raw of orcaPositions) {
+    const m = ORCA_MARKETS.find((mk) => mk.pool_id === raw.pool_id);
+    if (!m) continue;
+    const totals = orcaTotalsInDepositTerms(raw, m.deposit_side);
+    if (!totals || totals.fee <= 0n) continue;
+    snapshots.push({
+      protocol: "orca",
+      position_ref: raw.position_mint,
+      claimable: {
+        amount: fromBigInt(totals.fee),
+        symbol: m.deposit_symbol,
+        decimals: m.deposit_decimals,
+        watch_amount: CLAIM_WATCH_THRESHOLD[m.deposit_symbol],
+        withdraw: {
+          share_mint: raw.position_mint,
+          share_decimals: m.deposit_decimals,
+          underlying_decimals: m.deposit_decimals,
+          underlying_amount: fromBigInt(totals.total),
+          shares: fromBigInt(totals.total),
+          asset_symbol: m.deposit_symbol,
+        },
+      },
+      metadata: { source: "lp_fee", pool_id: m.pool_id, pair: m.pair_name },
+    });
+  }
+  for (const raw of meteoraPositions) {
+    const m = METEORA_MARKETS.find((mk) => mk.pool_id === raw.pool_id);
+    if (!m) continue;
+    const totals = meteoraTotalsInDepositTerms(raw, m.deposit_side);
+    if (!totals || totals.fee <= 0n) continue;
+    snapshots.push({
+      protocol: "meteora",
+      position_ref: raw.position_address,
+      claimable: {
+        amount: fromBigInt(totals.fee),
+        symbol: m.deposit_symbol,
+        decimals: m.deposit_decimals,
+        watch_amount: CLAIM_WATCH_THRESHOLD[m.deposit_symbol],
+        withdraw: {
+          share_mint: raw.position_address,
+          share_decimals: m.deposit_decimals,
+          underlying_decimals: m.deposit_decimals,
+          underlying_amount: fromBigInt(totals.total),
+          shares: fromBigInt(totals.total),
+          asset_symbol: m.deposit_symbol,
+        },
+      },
+      metadata: { source: "lp_fee", pool_id: m.pool_id, pair: m.pair_name },
+    });
+  }
+  const ctx = { now, wallet: walletAddress };
+  return snapshots.flatMap((s) => deriveTimeEvents(s, ctx).map(timeEventToDTO));
+}
+
+/** deactivation 未要求の sentinel (u64::MAX) */
+const STAKE_ACTIVE_SENTINEL = "18446744073709551615";
+
+/**
+ * Phase 8.20: native stake account の解除状態 → lockup_end イベント (§11.4)。
+ *   deactivationEpoch == 現 epoch  → 今 epoch 境界で解除 (cooldown 中)
+ *   deactivationEpoch <  現 epoch  → 解除済 = withdrawable now (watch)
+ *   u64::MAX (active)              → イベント無し
+ */
+export function mapStakeAccountsToLockupEvents(
+  stakes: StakeAccountInfo[],
+  epochInfo: { epoch: number; slotIndex: number; slotsInEpoch: number },
+  walletAddress: string,
+  now: Date
+): UnifiedTimeEventDTO[] {
+  const remaining = epochInfo.slotsInEpoch - epochInfo.slotIndex;
+  const boundaryIso = new Date(
+    now.getTime() + Math.max(0, remaining) * 400
+  ).toISOString();
+  const snapshots: PositionSnapshot[] = [];
+  for (const s of stakes) {
+    if (s.deactivation_epoch === STAKE_ACTIVE_SENTINEL) continue;
+    if (!/^[0-9]+$/.test(s.deactivation_epoch)) continue;
+    const deactivated = BigInt(s.deactivation_epoch) < BigInt(epochInfo.epoch);
+    const human = toHumanReadable(s.stake_lamports, 9);
+    snapshots.push({
+      protocol: "solana",
+      position_ref: s.address,
+      // 解除済は unlock_at = now (lib が unlocked=true / watch にする)
+      unlock_at: deactivated ? now.toISOString() : boundaryIso,
+      metadata: {
+        source: "stake_account",
+        stake_lamports: s.stake_lamports,
+        headline: deactivated
+          ? `${human} SOL unstaked — withdrawable now`
+          : `${human} SOL unstaking — withdrawable after epoch ${epochInfo.epoch}`,
+      },
+    });
+  }
+  const ctx = { now, wallet: walletAddress };
+  return snapshots.flatMap((s) => deriveTimeEvents(s, ctx).map(timeEventToDTO));
+}
+
+// ── Phase 8.22: /menu-listings (live APY/TVL overlay) ────────────────────────
+
+/**
+ * /menu-listings の live ソース束。undefined のソースは fixture 値のまま
+ * (graceful degrade — 呼び手が allSettled で詰める)。
+ */
+export interface MenuLiveSources {
+  jupiterMarkets?: JupiterLendMarket[];
+  kaminoReserves?: KaminoReserveMetric[];
+  /** vault address → metrics */
+  kaminoVaults?: Map<string, KaminoVaultMetrics>;
+  saveRates?: SaveReserveRate[];
+  /** whirlpool address → stats */
+  orcaStats?: Map<string, OrcaPoolStats>;
+  /** market_index → deposit APY + utilization (Phase 8.26 で拡張) */
+  driftRates?: Map<number, DriftMarketRate>;
+  /**
+   * yield token symbol → APY (0..1)。Sanctum LST (8.23) + Exponent underlyingApy
+   * (8.24、eUSX 等) の merge 済み Map。
+   */
+  lstApys?: Map<string, number>;
+  /** DLMM pool_address → stats (Phase 8.24、dlmm.datapi.meteora.ag) */
+  meteoraStats?: Map<string, MeteoraPoolStats>;
+  /** Phase 8.26: eUSX 総供給 × syExchangeRate (表示専用 USD) */
+  solsticeTvlUsd?: number;
+}
+
+/**
+ * Phase 8.23/8.24: yield token 系 menu pool → APY symbol の対応。
+ * fixture の LST pool は asset が全て "SOL" のため明示 map で引く。
+ * jito_restaking_vault は LST APY ではないため対象外 (fixture 維持)。
+ */
+export const LST_POOL_SYMBOLS: Record<string, string> = {
+  sanctum_inf: "INF",
+  sanctum_jitosol: "jitoSOL",
+  sanctum_bsol: "bSOL",
+  marinade_msol: "mSOL",
+  jito_jitosol: "jitoSOL",
+  solstice_eusx: "eUSX", // Exponent underlyingApy (8.24)
+  perena_usd_star: "USD*", // Perena app の非公開 endpoint (8.25)
+  hylo_hylosol: "hyloSOL", // Exponent underlyingApy (8.27)
+};
+
+/** 有限 number のみ採用 (不正値は fixture 維持)。 */
+function finite(n: number): number | null {
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * fixture menu listing に live APY/TVL を pool 単位で overlay する純関数。
+ * apy (0..1 fraction) / tvl_usd / borrowed_usd (USD number) は ProtocolPool の
+ * documented display carve-out (§3) — smallest-unit string 規約の適用外。
+ * 対応 protocol: jupiter / kamino (reserve + kVault) / savefi / orca / drift。
+ * それ以外 (LST / meteora / perena / solstice) は live ソースが無く fixture 値。
+ */
+export function applyMenuLiveOverlays(
+  listings: ProtocolMenuEntry[],
+  s: MenuLiveSources
+): ProtocolMenuEntry[] {
+  return listings.map((entry) => ({
+    ...entry,
+    pools: entry.pools.map((pool) => {
+      const out = { ...pool };
+      if (entry.protocol_id === "jupiter" && s.jupiterMarkets) {
+        // MenuDrawer の client 側 override (Phase 8.6) と同じ換算式。
+        // 8.26: jl API は SOL market を "WSOL" で返すため alias で match
+        // (mobile 側 MenuDrawer と同じ規約)
+        const norm = (sym: string) => (sym === "WSOL" ? "SOL" : sym);
+        const m = s.jupiterMarkets.find(
+          (mk) => norm(mk.underlyingSymbol) === norm(pool.asset)
+        );
+        if (m) {
+          const apy = finite(m.supplyRateBps / 10000);
+          const tvl = finite(
+            (Number(m.tvlUnderlying) / 10 ** m.underlyingDecimals) *
+              m.underlyingPriceUsd
+          );
+          if (apy !== null) out.apy = apy;
+          if (tvl !== null) out.tvl_usd = tvl;
+        }
+      } else if (entry.protocol_id === "kamino") {
+        const reserve = KAMINO_MARKETS.find((mk) => mk.pool_id === pool.pool_id);
+        const metric =
+          reserve && s.kaminoReserves
+            ? s.kaminoReserves.find((r) => r.reserve === reserve.reserve)
+            : undefined;
+        if (metric) {
+          const apy = finite(Number(metric.supplyApy));
+          const tvl = finite(Number(metric.totalSupplyUsd));
+          const borrowed = finite(Number(metric.totalBorrowUsd));
+          if (apy !== null) out.apy = apy;
+          if (tvl !== null) out.tvl_usd = tvl;
+          if (borrowed !== null) out.borrowed_usd = borrowed;
+          // Phase 8.26: 稼働率 = borrow/supply (1.0 clamp、withdraw 流動性リスク可視化)
+          if (tvl !== null && borrowed !== null && tvl > 0) {
+            out.utilization = Math.min(1, borrowed / tvl);
+          }
+        }
+        const vault = KAMINO_VAULTS.find((v) => v.pool_id === pool.pool_id);
+        const vm = vault ? s.kaminoVaults?.get(vault.vault) : undefined;
+        if (vm) {
+          const apy = finite(Number(vm.apy));
+          if (apy !== null) out.apy = apy; // TVL は metrics に無く fixture 維持
+        }
+      } else if (entry.protocol_id === "savefi" && s.saveRates) {
+        const mkt = SAVE_MARKETS.find((mk) => mk.pool_id === pool.pool_id);
+        const rate = mkt
+          ? s.saveRates.find((r) => r.reserve === mkt.reserve)
+          : undefined;
+        const apy = rate ? finite(rate.supply_apy) : null;
+        if (apy !== null) out.apy = apy;
+      } else if (entry.protocol_id === "orca" && s.orcaStats) {
+        const mkt = ORCA_MARKETS.find((mk) => mk.pool_id === pool.pool_id);
+        const stats = mkt ? s.orcaStats.get(mkt.pool_address) : undefined;
+        if (stats) {
+          const apy = finite(stats.apr_day_bps / 10000);
+          const tvl = finite(stats.tvl_usd);
+          if (apy !== null) out.apy = apy;
+          if (tvl !== null) out.tvl_usd = tvl;
+        }
+      } else if (entry.protocol_id === "drift" && s.driftRates) {
+        const mkt = DRIFT_MARKETS.find((mk) => mk.pool_id === pool.pool_id);
+        const rate =
+          mkt !== undefined ? s.driftRates.get(mkt.market_index) : undefined;
+        if (rate) {
+          if (finite(rate.apy) !== null) out.apy = rate.apy;
+          // Phase 8.26: 稼働率 (1.0 近傍 = withdraw 流動性リスク) を可視化
+          if (finite(rate.utilization) !== null) {
+            out.utilization = Math.min(1, rate.utilization);
+          }
+        }
+      } else if (
+        (entry.protocol_id === "jito" ||
+          entry.protocol_id === "marinade" ||
+          entry.protocol_id === "sanctum" ||
+          entry.protocol_id === "solstice" ||
+          entry.protocol_id === "perena" ||
+          entry.protocol_id === "hylo") &&
+        s.lstApys
+      ) {
+        // Phase 8.23/8.24: yield token APY (TVL は原則ソース無し、fixture 維持)
+        const sym = LST_POOL_SYMBOLS[pool.pool_id];
+        const apy = sym !== undefined ? s.lstApys.get(sym) : undefined;
+        if (apy !== undefined && finite(apy) !== null) out.apy = apy;
+        // Phase 8.26: solstice のみ供給 × syRate で実 TVL
+        if (
+          pool.pool_id === "solstice_eusx" &&
+          s.solsticeTvlUsd !== undefined &&
+          finite(s.solsticeTvlUsd) !== null &&
+          s.solsticeTvlUsd > 0
+        ) {
+          out.tvl_usd = s.solsticeTvlUsd;
+        }
+      } else if (entry.protocol_id === "meteora" && s.meteoraStats) {
+        // Phase 8.24: 新データ API (dlmm.datapi.meteora.ag) の実 apy/tvl
+        const mkt = METEORA_MARKETS.find((mk) => mk.pool_id === pool.pool_id);
+        const stats = mkt ? s.meteoraStats.get(mkt.pool_address) : undefined;
+        if (stats) {
+          const apy = finite(stats.apy_bps / 10000);
+          const tvl = finite(stats.tvl_usd);
+          if (apy !== null) out.apy = apy;
+          if (tvl !== null && tvl > 0) out.tvl_usd = tvl;
+        }
+      }
+      return out;
+    }),
+  }));
 }
 
 export interface ServerOptions {
@@ -526,7 +2384,24 @@ export async function buildServer(
 
   app.get("/wallets", async () => fixtureWallets);
   app.get("/protocols", async () => fixtureProtocols);
-  app.get("/user-policy", async () => fixtureUserPolicyDefault);
+  // Phase 8.29: override 無しは fixture と byte 一致 (回帰安全)
+  app.get("/user-policy", async () => getCurrentPolicy());
+
+  /** Phase 8.29: policy 編集 (auto 設定 / caps)。§6.4 の editable フィールドのみ。 */
+  app.patch<{ Body: Record<string, unknown> }>(
+    "/user-policy",
+    async (req, reply) => {
+      try {
+        return patchCurrentPolicy(req.body ?? {});
+      } catch (err) {
+        reply.code(400);
+        return {
+          error: "invalid_policy_field",
+          field: (err as PolicyPatchError).field,
+        };
+      }
+    }
+  );
 
   /**
    * Phase 8.3: 接続済 wallet の tx 履歴を Helius Enhanced API で引いて、
@@ -545,18 +2420,202 @@ export async function buildServer(
         reply.code(400);
         return { error: "invalid_wallet_address", wallet };
       }
-      try {
-        const txs = await fetchEnhancedTransactions(wallet);
-        return mapTxsToWalletTimeEvents(txs, wallet);
-      } catch (err) {
-        req.log.warn(
-          { err: (err as Error).message, wallet },
-          "helius enhanced-tx fetch failed; returning empty wallet events"
-        );
-        return [] as UnifiedTimeEventDTO[];
+      // Phase 8.16: tx 履歴 (入出金イベント) + epoch (LST 保有時) + Kamino health を
+      // 並列取得。source 単位で graceful degrade (全滅でも 200 + 部分結果)。
+      // Phase 8.20: LP fee (claim) + native stake (lockup_end) を追加。
+      const [txsR, assetsR, epochR, obligR, orcaR, meteoraR, stakeR] =
+        await Promise.allSettled([
+          fetchEnhancedTransactions(wallet),
+          fetchAssetsByOwner(wallet),
+          getEpochInfo(),
+          fetchKaminoObligations(KAMINO_MAIN_MARKET, wallet),
+          fetchOrcaPositions(wallet),
+          fetchMeteoraPositions(wallet),
+          fetchStakeAccounts(wallet),
+        ]);
+      for (const [r, label] of [
+        [txsR, "helius tx"],
+        [assetsR, "helius das"],
+        [epochR, "epoch info"],
+        [obligR, "kamino obligations"],
+        [orcaR, "orca positions"],
+        [meteoraR, "meteora positions"],
+        [stakeR, "stake accounts"],
+      ] as const) {
+        if (r.status === "rejected") {
+          req.log.warn(
+            { err: (r.reason as Error).message, wallet },
+            `${label} fetch failed (wallet events degrade)`
+          );
+        }
       }
+
+      const events: UnifiedTimeEventDTO[] =
+        txsR.status === "fulfilled"
+          ? mapTxsToWalletTimeEvents(txsR.value, wallet)
+          : [];
+
+      // LST (SOL 系 swap-earn share) 保有時のみ実 epoch 境界イベントを 1 件追加
+      if (assetsR.status === "fulfilled" && epochR.status === "fulfilled") {
+        const SOL_MINT = "So11111111111111111111111111111111111111112";
+        const lstMints = new Set(
+          SWAP_EARN_MARKETS.filter(
+            (m) => m.underlying_mint === SOL_MINT && m.protocol_id !== "jupiter_lend"
+          ).map((m) => m.share_mint)
+        );
+        const holdsLst = assetsR.value.some((a) => {
+          if (!lstMints.has(a.id)) return false;
+          const bal = a.token_info?.balance;
+          const s = typeof bal === "number" ? String(bal) : bal;
+          return typeof s === "string" && /^[0-9]+$/.test(s) && s !== "0";
+        });
+        const epochEvent = buildEpochBoundaryEvent(
+          epochR.value,
+          holdsLst,
+          wallet,
+          new Date()
+        );
+        if (epochEvent) events.push(epochEvent);
+      }
+
+      // Kamino 借入 obligation の health イベント
+      if (obligR.status === "fulfilled") {
+        events.push(
+          ...mapObligationsToHealthEvents(obligR.value, wallet, new Date())
+        );
+      }
+
+      // Phase 8.20: LP 未請求 fee → claim イベント (Withdraw & claim action 付き)
+      const orcaRaws = orcaR.status === "fulfilled" ? orcaR.value : [];
+      const meteoraRaws = meteoraR.status === "fulfilled" ? meteoraR.value : [];
+      if (orcaRaws.length > 0 || meteoraRaws.length > 0) {
+        events.push(
+          ...mapLpPositionsToClaimEvents(orcaRaws, meteoraRaws, wallet, new Date())
+        );
+      }
+
+      // Phase 8.20: native stake の解除状態 → lockup_end イベント
+      if (stakeR.status === "fulfilled" && epochR.status === "fulfilled") {
+        events.push(
+          ...mapStakeAccountsToLockupEvents(
+            stakeR.value,
+            epochR.value,
+            wallet,
+            new Date()
+          )
+        );
+      }
+
+      return events;
     }
   );
+
+  /**
+   * Phase 8.22: menu listing (fixture skeleton + live APY/TVL overlay)。
+   * mobile は getMenuListings → useMenuListings (staleTime 60s) で既に配線済み。
+   * 全ソース allSettled — 失敗した protocol は fixture 値のまま 200 を返す。
+   * 組み立て結果は 60s cache (buildServer instance 単位 — テスト間で漏れない)。
+   */
+  let menuCache: { at: number; data: ProtocolMenuEntry[] } | null = null;
+  const MENU_CACHE_TTL_MS = 60_000;
+  app.get("/menu-listings", async (req) => {
+    if (menuCache && Date.now() - menuCache.at < MENU_CACHE_TTL_MS) {
+      return menuCache.data;
+    }
+    const [
+      jupR,
+      kaminoR,
+      kvaultR,
+      saveR,
+      orcaR,
+      driftR,
+      lstR,
+      expR,
+      metR,
+      perenaR,
+      solTvlR,
+    ] = await Promise.allSettled([
+        fetchEarnMarkets(),
+        fetchKaminoReserveMetrics(KAMINO_MAIN_MARKET),
+        Promise.allSettled(
+          KAMINO_VAULTS.map(
+            async (v) => [v.vault, await fetchKaminoVaultMetrics(v.vault)] as const
+          )
+        ),
+        fetchSaveReserveRates(SAVE_MARKETS.map((m) => m.reserve)),
+        fetchOrcaPoolStats(),
+        fetchDriftSpotMarketRates(),
+        fetchLstApys([...new Set(Object.values(LST_POOL_SYMBOLS))]),
+        fetchExponentApys(),
+        fetchMeteoraPoolStats(),
+        fetchPerenaUsdStarApy(),
+        // Phase 8.26: Solstice TVL = eUSX 総供給 × syExchangeRate (≈USD)
+        (async () => {
+          const eusx = SWAP_EARN_MARKETS.find(
+            (m) => m.protocol_id === "solstice"
+          );
+          if (!eusx) throw new Error("solstice market not registered");
+          const [supply, syRates] = await Promise.all([
+            getTokenSupplyUi(eusx.share_mint),
+            fetchExponentSyRates(),
+          ]);
+          const rate = syRates.get(eusx.share_symbol);
+          if (rate === undefined) throw new Error("no eUSX syExchangeRate");
+          return supply * rate;
+        })(),
+      ]);
+    for (const [r, label] of [
+      [jupR, "jupiter lend markets"],
+      [kaminoR, "kamino reserves"],
+      [saveR, "save rates"],
+      [orcaR, "orca stats"],
+      [driftR, "drift rates"],
+      [lstR, "lst apys"],
+      [expR, "exponent apys"],
+      [metR, "meteora stats"],
+      [perenaR, "perena apy"],
+      [solTvlR, "solstice tvl"],
+    ] as const) {
+      if (r.status === "rejected") {
+        req.log.warn(
+          { err: (r.reason as Error).message },
+          `${label} fetch failed (menu fixture 値のまま)`
+        );
+      }
+    }
+    const kaminoVaults = new Map<string, KaminoVaultMetrics>();
+    if (kvaultR.status === "fulfilled") {
+      for (const r of kvaultR.value) {
+        if (r.status === "fulfilled") kaminoVaults.set(r.value[0], r.value[1]);
+      }
+    }
+    // Sanctum LST + Exponent underlyingApy + Perena USD* を 1 つの symbol→APY Map
+    // に merge (各ソースの失敗は他に影響しない)。instanceof guard は不正 resolve 対策
+    const yieldApys = new Map<string, number>([
+      ...(lstR.status === "fulfilled" && lstR.value instanceof Map
+        ? lstR.value
+        : new Map<string, number>()),
+      ...(expR.status === "fulfilled" && expR.value instanceof Map
+        ? expR.value
+        : new Map<string, number>()),
+    ]);
+    if (perenaR.status === "fulfilled" && Number.isFinite(perenaR.value)) {
+      yieldApys.set("USD*", perenaR.value);
+    }
+    const data = applyMenuLiveOverlays(fixtureMenuListings, {
+      jupiterMarkets: jupR.status === "fulfilled" ? jupR.value : undefined,
+      kaminoReserves: kaminoR.status === "fulfilled" ? kaminoR.value : undefined,
+      kaminoVaults,
+      saveRates: saveR.status === "fulfilled" ? saveR.value : undefined,
+      orcaStats: orcaR.status === "fulfilled" ? orcaR.value : undefined,
+      driftRates: driftR.status === "fulfilled" ? driftR.value : undefined,
+      lstApys: yieldApys.size > 0 ? yieldApys : undefined,
+      meteoraStats: metR.status === "fulfilled" ? metR.value : undefined,
+      solsticeTvlUsd: solTvlR.status === "fulfilled" ? solTvlR.value : undefined,
+    });
+    menuCache = { at: Date.now(), data };
+    return data;
+  });
 
   /**
    * Phase 8.2: 接続済 wallet の Jupiter Lend / Kamino earn positions を返す。
@@ -580,11 +2639,132 @@ export async function buildServer(
       // Jupiter / Helius DAS / Helius tx 履歴を並列実行 (一部失敗しても他方を返せるよう Promise.allSettled)。
       // Phase 8.13: tx 履歴は cost-basis (実 accrued yield) 計算に使う。失敗時は空 Map →
       // 全 position が accrued_yield_sign:"unknown" に graceful degrade (フェイク 0 を出さない)。
-      const [jupRes, heliusRes, txRes] = await Promise.allSettled([
-        fetchEarnPositions(wallet),
-        fetchAssetsByOwner(wallet),
-        fetchEnhancedTransactions(wallet),
-      ]);
+      // Phase 8.15d: kVault 保有 + 登録 vault の metrics (main の allSettled と並走)。
+      // 失敗は graceful degrade (positions → 空、metrics → shares のみ表示)。
+      const kvaultPosPromise: Promise<KaminoVaultUserPosition[]> =
+        fetchKaminoVaultUserPositions(wallet).catch((err) => {
+          req.log.warn(
+            { err: (err as Error).message },
+            "kvault positions fetch failed"
+          );
+          return [];
+        });
+      const kvaultMetricsPromise = Promise.allSettled(
+        KAMINO_VAULTS.map(async (v) => [v.vault, await fetchKaminoVaultMetrics(v.vault)] as const)
+      );
+
+      // Phase 8.15e: Drift spot 保有 (SDK read、失敗は空 = graceful degrade)
+      const driftPositionsPromise = fetchDriftSpotPositions(wallet).catch(
+        (err) => {
+          req.log.warn(
+            { err: (err as Error).message },
+            "drift positions fetch failed"
+          );
+          return [] as Awaited<ReturnType<typeof fetchDriftSpotPositions>>;
+        }
+      );
+      // Phase 8.17: Meteora DLMM positions (SDK read、失敗は空)
+      const meteoraPositionsPromise = fetchMeteoraPositions(wallet).catch(
+        (err) => {
+          req.log.warn(
+            { err: (err as Error).message },
+            "meteora positions fetch failed"
+          );
+          return [] as MeteoraRawPosition[];
+        }
+      );
+      // Phase 8.18: Orca Whirlpool positions + pool stats (実 APY。失敗は空)
+      const orcaPositionsPromise = fetchOrcaPositions(wallet).catch((err) => {
+        req.log.warn(
+          { err: (err as Error).message },
+          "orca positions fetch failed"
+        );
+        return [] as OrcaRawPosition[];
+      });
+      const orcaStatsPromise = fetchOrcaPoolStats().catch((err) => {
+        req.log.warn({ err: (err as Error).message }, "orca pool stats failed");
+        return new Map<string, OrcaPoolStats>();
+      });
+
+      // Phase 8.15.x: earnings 実値化用の rate / oracle 価格 (全て失敗許容、並走)。
+      const SOL_MINT = "So11111111111111111111111111111111111111112";
+      const USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+      const sanctumPromise = fetchSanctumSolValues(["jitoSOL", "mSOL", "INF"]).catch(
+        (err) => {
+          req.log.warn({ err: (err as Error).message }, "sanctum rates failed");
+          return new Map<string, bigint>();
+        }
+      );
+      // Phase 8.23-8.25: yield token 行の supply_rate_bps 用 — Sanctum LST +
+      // Exponent (eUSX) + Perena (USD*) を merge (各失敗は他に影響しない)
+      const lstApysPromise = Promise.allSettled([
+        fetchLstApys(["jitoSOL", "mSOL", "INF"]),
+        fetchExponentApys(),
+        fetchPerenaUsdStarApy(),
+      ]).then(([a, b, c]) => {
+        const map = new Map<string, number>([
+          ...(a.status === "fulfilled" && a.value instanceof Map
+            ? a.value
+            : new Map<string, number>()),
+          ...(b.status === "fulfilled" && b.value instanceof Map
+            ? b.value
+            : new Map<string, number>()),
+        ]);
+        if (c.status === "fulfilled" && Number.isFinite(c.value)) {
+          map.set("USD*", c.value);
+        }
+        return map;
+      });
+      // Phase 8.24: meteora positions の実 APY (失敗は null 表示に degrade)
+      const meteoraStatsPromise = fetchMeteoraPoolStats().catch(
+        () => new Map<string, MeteoraPoolStats>()
+      );
+      // Phase 8.24: USD* 専用だった quote rate を share_symbol キー Map に一般化
+      // (perena USD* + solstice eUSX)。個別失敗はその symbol だけ degrade。
+      const quoteRateMarkets = SWAP_EARN_MARKETS.filter(
+        (m) =>
+          m.protocol_id === "perena" ||
+          m.protocol_id === "solstice" ||
+          m.protocol_id === "hylo" // 8.27: hyloSOL / sHYUSD とも quote 換算
+      );
+      const quoteRatesPromise = Promise.allSettled(
+        quoteRateMarkets.map(async (m) => {
+          const probe = 10n ** BigInt(m.share_decimals);
+          const out = await fetchJupiterRateOut(
+            m.share_mint,
+            m.underlying_mint,
+            probe.toString()
+          );
+          return [m.share_symbol, { probe, out }] as const;
+        })
+      ).then((rs) => {
+        const map = new Map<string, { probe: bigint; out: bigint }>();
+        for (const r of rs) {
+          if (r.status === "fulfilled") map.set(r.value[0], r.value[1]);
+        }
+        return map;
+      });
+      const saveRatesPromise = fetchSaveReserveRates(
+        SAVE_MARKETS.map((m) => m.reserve)
+      ).catch(() => [] as Awaited<ReturnType<typeof fetchSaveReserveRates>>);
+      const solPricePromise = getOracleResult(SOL_MINT).catch(() => null);
+      const usdcPricePromise = getOracleResult(USDC_MINT).catch(() => null);
+
+      const [jupRes, heliusRes, txRes, kaminoObRes, kaminoResRes] =
+        await Promise.allSettled([
+          fetchEarnPositions(wallet),
+          fetchAssetsByOwner(wallet),
+          fetchEnhancedTransactions(wallet),
+          // Phase 8.15b: 実 Kamino obligation + reserve APY
+          fetchKaminoObligations(KAMINO_MAIN_MARKET, wallet),
+          fetchKaminoReserveMetrics(KAMINO_MAIN_MARKET),
+        ]);
+
+      const kvaultPositions = await kvaultPosPromise;
+      const kvaultMetricsByVault = new Map<string, KaminoVaultMetrics>();
+      for (const r of await kvaultMetricsPromise) {
+        if (r.status === "fulfilled") kvaultMetricsByVault.set(r.value[0], r.value[1]);
+      }
 
       const costBasisByShareMint =
         txRes.status === "fulfilled"
@@ -595,10 +2775,135 @@ export async function buildServer(
         jupRes.status === "fulfilled"
           ? mapJupiterLendToEarnPositions(jupRes.value, costBasisByShareMint)
           : [];
-      const kaminoBestEffort: EarnPosition[] =
-        heliusRes.status === "fulfilled"
-          ? mapKaminoBestEffortFromHelius(heliusRes.value)
+
+      // Phase 8.15b: 実 obligation が取れればそれを使い (reserve-keyed → withdraw 可能)、
+      // 失敗時のみ DAS best-effort 検出に fallback (share_mint が違い withdraw 不可)。
+      const kaminoApyBps =
+        kaminoResRes.status === "fulfilled"
+          ? kaminoApyBpsByReserve(kaminoResRes.value)
+          : new Map<string, number>();
+      const kaminoReal: EarnPosition[] =
+        kaminoObRes.status === "fulfilled"
+          ? mapKaminoObligationsToEarnPositions(kaminoObRes.value, kaminoApyBps)
           : [];
+      // Phase 8.15d: kVault 保有 (登録 vault のみ) を Kamino positions に合流
+      const kaminoVaultPositions = mapKaminoVaultPositionsToEarnPositions(
+        kvaultPositions,
+        kvaultMetricsByVault
+      );
+
+      // ── Phase 8.15.x: earnings 実値化 ──
+      // oracle 価格 (underlying mint → USD ×1e8)
+      const priceUsd8ByMint = new Map<string, bigint>();
+      const solOracle = await solPricePromise;
+      const usdcOracle = await usdcPricePromise;
+      const solPrice8 = priceUsd8ToScaled(solOracle?.price_usd ?? null);
+      if (solPrice8 !== null && solPrice8 > 0n) priceUsd8ByMint.set(SOL_MINT, solPrice8);
+      const usdcPrice8 = priceUsd8ToScaled(usdcOracle?.price_usd ?? null);
+      if (usdcPrice8 !== null && usdcPrice8 > 0n) priceUsd8ByMint.set(USDC_MINT, usdcPrice8);
+
+      // kVault: 保有 vault の実 PnL (token 建て) を attach
+      const pnlByVault = new Map<string, KaminoVaultPnl>();
+      const heldVaults = kaminoVaultPositions.map((p) => p.share_mint);
+      if (heldVaults.length > 0) {
+        const rs = await Promise.allSettled(
+          heldVaults.map(
+            async (v) => [v, await fetchKaminoVaultPnl(wallet, v)] as const
+          )
+        );
+        for (const r of rs) {
+          if (r.status === "fulfilled") pnlByVault.set(r.value[0], r.value[1]);
+        }
+      }
+      const kaminoVaultWithPnl = attachKaminoVaultPnl(
+        kaminoVaultPositions,
+        pnlByVault
+      );
+
+      // Kamino reserve: 帰属が明確な obligation のみ実 PnL を attach
+      const obligPnlByReserve = new Map<string, KaminoObligationPnl>();
+      if (kaminoObRes.status === "fulfilled" && kaminoReal.length > 0) {
+        const singles = singleSupportedDepositObligations(kaminoObRes.value);
+        const rs = await Promise.allSettled(
+          [...singles].map(
+            async ([reserve, ob]) =>
+              [reserve, await fetchKaminoObligationPnl(KAMINO_MAIN_MARKET, ob)] as const
+          )
+        );
+        for (const r of rs) {
+          if (r.status === "fulfilled") obligPnlByReserve.set(r.value[0], r.value[1]);
+        }
+      }
+      const kaminoRealWithPnl = attachKaminoObligationPnl(
+        kaminoReal,
+        obligPnlByReserve,
+        priceUsd8ByMint
+      );
+
+      const kaminoBestEffort: EarnPosition[] = [
+        ...(kaminoRealWithPnl.length > 0
+          ? kaminoRealWithPnl
+          : heliusRes.status === "fulfilled"
+            ? mapKaminoBestEffortFromHelius(heliusRes.value)
+            : []),
+        ...kaminoVaultWithPnl,
+      ];
+
+      // LST/USD* + Save cToken の enriched 保有 (rate 換算 + USD + cost-basis earned)
+      const heliusAssets = heliusRes.status === "fulfilled" ? heliusRes.value : [];
+      const swapEarn = mapSwapEarnHoldingsToEarnPositions(
+        heliusAssets,
+        await sanctumPromise,
+        await quoteRatesPromise,
+        priceUsd8ByMint,
+        costBasisByShareMint,
+        await lstApysPromise
+      );
+      const save = mapSaveHoldingsToEarnPositions(
+        heliusAssets,
+        await saveRatesPromise,
+        priceUsd8ByMint,
+        costBasisByShareMint
+      );
+      // Phase 8.15e: Drift spot 保有 (SDK read)
+      const drift = mapDriftHoldingsToEarnPositions(
+        await driftPositionsPromise,
+        priceUsd8ByMint
+      );
+      // Phase 8.19: LP cost-basis (IL 込み earned) — tx 履歴は既存 txRes を再利用
+      const meteoraRaws = await meteoraPositionsPromise;
+      const orcaRaws = await orcaPositionsPromise;
+      // 8.27: jitoSOL-SOL zap の相方脚換算用 rate (sanctum sol-value、SOL 建て)
+      const JITOSOL_MINT = "J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn";
+      const otherLegRates = new Map<string, { num: bigint; den: bigint }>();
+      const jitoSolValue = (await sanctumPromise).get("jitoSOL");
+      if (jitoSolValue !== undefined && jitoSolValue > 0n) {
+        otherLegRates.set(JITOSOL_MINT, { num: jitoSolValue, den: 10n ** 9n });
+      }
+      const lpCostBasis =
+        txRes.status === "fulfilled"
+          ? computeLpCostBasisByPositionKey(
+              txRes.value,
+              wallet,
+              orcaRaws,
+              meteoraRaws,
+              otherLegRates
+            )
+          : new Map<string, bigint>();
+      // Phase 8.17: Meteora DLMM positions (8.24: 実 APY 付き)
+      const meteora = mapMeteoraPositionsToEarnPositions(
+        meteoraRaws,
+        priceUsd8ByMint,
+        lpCostBasis,
+        await meteoraStatsPromise
+      );
+      // Phase 8.18: Orca Whirlpool positions (実 APY 付き)
+      const orca = mapOrcaPositionsToEarnPositions(
+        orcaRaws,
+        priceUsd8ByMint,
+        await orcaStatsPromise,
+        lpCostBasis
+      );
 
       if (jupRes.status === "rejected") {
         req.log.warn(
@@ -612,6 +2917,12 @@ export async function buildServer(
           "helius fetch failed (kamino detection skipped)"
         );
       }
+      if (kaminoObRes.status === "rejected") {
+        req.log.warn(
+          { err: (kaminoObRes.reason as Error).message },
+          "kamino obligations fetch failed (falling back to best-effort)"
+        );
+      }
       if (txRes.status === "rejected") {
         req.log.warn(
           { err: (txRes.reason as Error).message },
@@ -622,19 +2933,30 @@ export async function buildServer(
       const response: EarnPositionsResponse = {
         jupiterLend,
         kaminoBestEffort,
+        swapEarn,
+        save,
+        drift,
+        meteora,
+        orca,
       };
       return response;
     }
   );
 
   // ── agent plans (list + read + approve/reject) ───────────────────────
-  app.get("/agent-plans", async () => fixtureAgentPlans);
+  // Phase 8.28: MCP 由来の store plan と fixture を merge (store 優先)
+  app.get("/agent-plans", async () => [
+    ...listStoredPlans(),
+    ...fixtureAgentPlans,
+  ]);
 
   app.get<{ Params: { planId: string } }>(
     "/agent-plans/:planId",
     async (req, reply) => {
       const { planId } = req.params;
-      const found = fixtureAgentPlans.find((p) => p.plan_id === planId);
+      const found =
+        getStoredPlan(planId) ??
+        fixtureAgentPlans.find((p) => p.plan_id === planId);
       if (!found) {
         reply.code(404);
         return { error: "agent_plan_not_found", plan_id: planId };
@@ -643,11 +2965,170 @@ export async function buildServer(
     }
   );
 
+  /**
+   * Phase 8.28: MCP compare_opportunities が draft plan を作成する (§11.7)。
+   * store 保存 (in-memory — §17/§25 の永続化前段)。
+   */
+  app.post<{
+    Body: {
+      objective?: string;
+      user_id?: string;
+      mcp_client_id?: string;
+      constraints?: AgentPlan["constraints"];
+      candidate_actions?: CandidateAction[];
+    };
+  }>("/agent-plans", async (req, reply) => {
+    const body = req.body ?? {};
+    if (!body.objective || typeof body.objective !== "string") {
+      reply.code(400);
+      return { error: "missing_required_field", required: ["objective"] };
+    }
+    const plan = createPlan({
+      objective: body.objective as AgentPlan["objective"],
+      user_id: body.user_id,
+      mcp_client_id: body.mcp_client_id,
+      constraints: body.constraints,
+      candidate_actions: body.candidate_actions,
+    });
+    reply.code(201);
+    return plan;
+  });
+
+  /**
+   * Phase 8.28: MCP request_user_approval — status を pending_user にし、
+   * 登録済み push token へ Expo push を best-effort 送信 (ApprovalPushPayload
+   * 契約 = mobile services/push.ts)。push 失敗/token 無しでも 200 (poll で成立)。
+   */
+  app.post<{ Params: { planId: string }; Body: { timeout_seconds?: number } }>(
+    "/agent-plans/:planId/request-approval",
+    async (req, reply) => {
+      const { planId } = req.params;
+      const plan = getStoredPlan(planId);
+      if (!plan) {
+        reply.code(404);
+        return { error: "agent_plan_not_found", plan_id: planId };
+      }
+      if (
+        plan.status !== AgentPlanStatus.Simulated &&
+        plan.status !== AgentPlanStatus.PendingUser
+      ) {
+        reply.code(409);
+        return {
+          error: "invalid_status_transition",
+          current: plan.status,
+          target: AgentPlanStatus.PendingUser,
+        };
+      }
+      // Phase 8.29: auto-approve 短絡 — approval_mode=auto かつ flag ON かつ
+      // kill されていなければ、push/待機なしで即 approved + token 発行
+      // (§11.6)。MCP poll (GET /:id/approval) が即 approved+token を観測する。
+      if (
+        plan.status === AgentPlanStatus.Simulated &&
+        !isKilled() &&
+        canAutoExecute(getCurrentPolicy(), isAutonomousFeatureEnabled()) &&
+        plan.selected_action &&
+        plan.simulation_result
+      ) {
+        issueApprovalToken({
+          user_id: plan.user_id,
+          plan_id: plan.plan_id,
+          mcp_client_id: plan.mcp_client_id,
+          bundle_hash: plan.simulation_result.bundle_hash,
+        });
+        return updatePlan(planId, { status: AgentPlanStatus.Approved })!;
+      }
+      // idempotent (§10.3): pending_user なら push を再送しない
+      const alreadyPending = plan.status === AgentPlanStatus.PendingUser;
+      const next = updatePlan(planId, {
+        status: AgentPlanStatus.PendingUser,
+      })!;
+      if (!alreadyPending) {
+        const pushTokens = listPushTokens();
+        if (pushTokens.length > 0) {
+          try {
+            await fetch("https://exp.host/--/api/v2/push/send", {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify(
+                pushTokens.map((to) => ({
+                  to,
+                  title: "Seasonals — approval requested",
+                  body: `Agent plan ${planId} awaits your approval`,
+                  data: { type: "approval", plan_id: planId },
+                }))
+              ),
+            });
+          } catch (err) {
+            req.log.warn(
+              { err: (err as Error).message },
+              "approval push send failed (poll fallback)"
+            );
+          }
+        }
+      }
+      return next;
+    }
+  );
+
+  /**
+   * Phase 8.28: MCP request_user_approval の poll 先 — 承認状態と、承認済み
+   * なら発行済み approval_token を返す (§24.9)。v1 は client 認証の無い dev
+   * 前提 (plan_id を知る者が token を取得できる — README に明記、v2 で auth)。
+   */
+  app.get<{ Params: { planId: string } }>(
+    "/agent-plans/:planId/approval",
+    async (req, reply) => {
+      const { planId } = req.params;
+      const plan = getStoredPlan(planId);
+      if (!plan) {
+        reply.code(404);
+        return { error: "agent_plan_not_found", plan_id: planId };
+      }
+      const token =
+        plan.status === AgentPlanStatus.Approved
+          ? getLatestTokenForPlan(planId)
+          : undefined;
+      return {
+        plan_id: planId,
+        status: plan.status,
+        approval_token: token ?? null,
+      };
+    }
+  );
+
   app.post<{
     Params: { planId: string };
     Body: { fee_payer?: string };
   }>("/agent-plans/:planId/approve", async (req, reply) => {
     const { planId } = req.params;
+    // Phase 8.28: store plan は永続遷移 + ApprovalToken 発行
+    const stored = getStoredPlan(planId);
+    if (stored) {
+      if (
+        stored.status !== AgentPlanStatus.Simulated &&
+        stored.status !== AgentPlanStatus.PendingUser
+      ) {
+        reply.code(409);
+        return {
+          error: "invalid_status_transition",
+          current: stored.status,
+          target: AgentPlanStatus.Approved,
+        };
+      }
+      if (!stored.selected_action || !stored.simulation_result) {
+        reply.code(409);
+        return { error: "simulation_required", plan_id: planId };
+      }
+      const token = issueApprovalToken({
+        user_id: stored.user_id,
+        plan_id: stored.plan_id,
+        mcp_client_id: stored.mcp_client_id,
+        bundle_hash: stored.simulation_result.bundle_hash,
+      });
+      const next = updatePlan(planId, { status: AgentPlanStatus.Approved })!;
+      return { ...next, approval_token: token };
+    }
+
     const found = fixtureAgentPlans.find((p) => p.plan_id === planId);
     if (!found) {
       reply.code(404);
@@ -690,6 +3171,11 @@ export async function buildServer(
     "/agent-plans/:planId/reject",
     async (req, reply) => {
       const { planId } = req.params;
+      // Phase 8.28: store plan は永続遷移
+      const stored = getStoredPlan(planId);
+      if (stored) {
+        return updatePlan(planId, { status: AgentPlanStatus.Rejected })!;
+      }
       const found = fixtureAgentPlans.find((p) => p.plan_id === planId);
       if (!found) {
         reply.code(404);
@@ -703,6 +3189,102 @@ export async function buildServer(
       return next;
     }
   );
+
+  /**
+   * Phase 8.28: MCP execute_approved_action (§24.9 / §29.3)。
+   * approval_token を単一操作で検証+消費 (single-use / TTL / bundle_hash /
+   * plan 一致)。v1 は swap-earn の deposit / withdraw のみ unsigned tx を構築。
+   * Agent は unsigned tx を受け取るだけで署名しない (§6.5)。
+   */
+  app.post<{
+    Params: { planId: string };
+    Body: { approval_token?: string };
+  }>("/agent-plans/:planId/execute", async (req, reply) => {
+    const { planId } = req.params;
+    const tokenId = req.body?.approval_token;
+    if (!tokenId || typeof tokenId !== "string") {
+      reply.code(400);
+      return { error: "missing_required_field", required: ["approval_token"] };
+    }
+    const plan = getStoredPlan(planId);
+    if (!plan) {
+      reply.code(404);
+      return { error: "agent_plan_not_found", plan_id: planId };
+    }
+    if (plan.status !== AgentPlanStatus.Approved) {
+      reply.code(409);
+      return {
+        error: "invalid_status_transition",
+        current: plan.status,
+        target: AgentPlanStatus.Executing,
+      };
+    }
+    const action = plan.selected_action;
+    if (!action) {
+      reply.code(409);
+      return { error: "selected_action_required", plan_id: planId };
+    }
+    const validation = validateAndConsumeToken(tokenId, {
+      plan_id: planId,
+      bundle_hash: computeBundleHash(action),
+    });
+    if (!validation.valid) {
+      reply.code(403);
+      return { error: "approval_token_invalid", reason: validation.reason };
+    }
+
+    // v1: swap-earn (Jupiter routable) の deposit / withdraw のみ
+    const market = action.asset
+      ? findMarketByProtocolAsset(action.protocol, action.asset)
+      : undefined;
+    if (
+      !market ||
+      (action.action_type !== "deposit" && action.action_type !== "withdraw") ||
+      !action.amount ||
+      !isValidTokenAmount(action.amount)
+    ) {
+      reply.code(422);
+      return {
+        error: "unsupported_action_v1",
+        message:
+          "v1 executes swap-earn deposit/withdraw only (valid amount required)",
+      };
+    }
+    const isDeposit = action.action_type === "deposit";
+    try {
+      const quote = await fetchSwapQuote({
+        inputMint: isDeposit ? market.underlying_mint : market.share_mint,
+        outputMint: isDeposit ? market.share_mint : market.underlying_mint,
+        amount: action.amount,
+        slippageBps: 50,
+      });
+      const tx = await fetchSwapTransaction({
+        quoteResponse: quote,
+        userPublicKey: action.wallet_id,
+      });
+      const next = updatePlan(planId, { status: AgentPlanStatus.Executing })!;
+      return {
+        execution_id: `exec_${planId}`,
+        status: "pushed_to_mobile",
+        plan: next,
+        unsigned_transactions: [
+          {
+            index: 0,
+            label: `${action.action_type} ${action.asset} on ${action.protocol}`,
+            tx_base64: tx.swapTransaction,
+          },
+        ],
+      };
+    } catch (err) {
+      req.log.error(
+        { err: (err as Error).message, planId },
+        "execute tx build failed"
+      );
+      updatePlan(planId, { status: AgentPlanStatus.Failed });
+      reply.code(502);
+      return { error: "execute_tx_build_failed", message: (err as Error).message };
+    }
+  });
 
   // ── adapter-driven endpoints (CLAUDE.md §13 / §26) ───────────────────
 
@@ -724,16 +3306,26 @@ export async function buildServer(
     }
   });
 
-  app.get("/protocols/kamino/reserves", async () => {
-    const registry = getRegistry();
-    const adapter = registry.getLending("kamino");
-    if (!adapter) return { reserves: [] };
-    return {
-      reserves: await adapter.fetchReserves({
-        wallet_address: "stub",
-        chain: "solana:devnet",
-      }),
-    };
+  app.get("/protocols/kamino/reserves", async (req) => {
+    // Phase 8.15b: 実 Kamino API の reserve metrics (supported reserve のみ、実 APY/TVL)。
+    // 失敗時は mock adapter に fallback (fixture、graceful degrade)。
+    try {
+      const metrics = await fetchKaminoReserveMetrics(KAMINO_MAIN_MARKET);
+      return { reserves: kaminoMetricsToSummary(metrics) };
+    } catch (err) {
+      req.log.warn(
+        { err: (err as Error).message },
+        "kamino reserves fetch failed, falling back to adapter fixture"
+      );
+      const adapter = getRegistry().getLending("kamino");
+      if (!adapter) return { reserves: [] };
+      return {
+        reserves: await adapter.fetchReserves({
+          wallet_address: "stub",
+          chain: "solana:devnet",
+        }),
+      };
+    }
   });
 
   /**
@@ -825,44 +3417,15 @@ export async function buildServer(
       };
     }
     const outputMint = inverse[0]!;
-    // Phase 8.14 §4.6: fail-closed oracle gate。両 stale / 乖離>5% / 両未取得 は
-    // swapTransaction を返さず 409。未設定 asset (not_configured) は通す。
-    const oracle = await getOracleResult(outputMint);
-    if (oracle.status === "blocked") {
-      reply.code(409);
-      return { error: "oracle_blocked", block_reason: oracle.block_reason, oracle };
-    }
-    try {
-      const quote = await fetchSwapQuote({
-        inputMint: jlMint,
-        outputMint,
-        amount,
-        slippageBps: slippageBps ?? 50,
-      });
-      const tx = await fetchSwapTransaction({
-        quoteResponse: quote,
-        userPublicKey: user,
-        prioritizationFeeLamports: "auto",
-        dynamicComputeUnitLimit: true,
-      });
-      return {
-        swapTransaction: tx.swapTransaction,
-        lastValidBlockHeight: tx.lastValidBlockHeight,
-        outAmount: quote.outAmount,
-        outputMint,
-        quote,
-      };
-    } catch (err) {
-      req.log.error(
-        { err: (err as Error).message, user, jlMint, amount },
-        "jupiter swap withdraw-tx failed"
-      );
-      reply.code(502);
-      return {
-        error: "jupiter_swap_failed",
-        message: (err as Error).message,
-      };
-    }
+    // Phase 8.15: oracle gate (underlying=outputMint) + swap tx を共通 helper に委譲。
+    return buildSwapEarnTx(req, reply, {
+      user,
+      inputMint: jlMint,
+      outputMint,
+      oracleMint: outputMint,
+      amount,
+      slippageBps,
+    });
   });
 
   /**
@@ -902,43 +3465,583 @@ export async function buildServer(
         inputMint,
       };
     }
-    // Phase 8.14 §4.6: fail-closed oracle gate。deposit する underlying (inputMint) を
-    // 判定し、blocked なら swapTransaction を返さず 409。未設定 asset は通す。
-    const oracle = await getOracleResult(inputMint);
+    // Phase 8.15: oracle gate (underlying=inputMint) + swap tx を共通 helper に委譲。
+    return buildSwapEarnTx(req, reply, {
+      user,
+      inputMint,
+      outputMint,
+      oracleMint: inputMint,
+      amount,
+      slippageBps,
+    });
+  });
+
+  /**
+   * Phase 8.15: protocol 汎用 swap-earn deposit-tx。Jupiter Lend で実証済の
+   * "deposit = underlying→share の Jupiter Swap" を SWAP_EARN_MARKETS で一般化。
+   * shareMint で market を解決 → input=underlying, output=share, oracle=underlying。
+   *   body: { user, shareMint, amount: underlying smallest unit, slippageBps? }
+   */
+  app.post<{
+    Body: {
+      user: string;
+      shareMint: string;
+      amount: string;
+      slippageBps?: number;
+    };
+  }>("/protocols/swap-earn/deposit-tx", async (req, reply) => {
+    const { user, shareMint, amount, slippageBps } = req.body ?? {};
+    if (!user || !shareMint || !amount) {
+      reply.code(400);
+      return {
+        error: "missing_required_field",
+        required: ["user", "shareMint", "amount"],
+      };
+    }
+    if (user.length < 32 || user.length > 44 || /\s/.test(user)) {
+      reply.code(400);
+      return { error: "invalid_wallet_address", user };
+    }
+    const market = findMarketByShareMint(shareMint);
+    if (!market) {
+      reply.code(400);
+      return {
+        error: "unsupported_share_mint",
+        message: "No swap-earn market registered for this share mint",
+        shareMint,
+      };
+    }
+    // deposit: underlying → share。oracle gate は underlying に掛ける。
+    return buildSwapEarnTx(req, reply, {
+      user,
+      inputMint: market.underlying_mint,
+      outputMint: market.share_mint,
+      oracleMint: market.underlying_mint,
+      amount,
+      slippageBps,
+    });
+  });
+
+  /**
+   * Phase 8.15: protocol 汎用 swap-earn withdraw-tx。share→underlying の Jupiter Swap。
+   * shareMint で market を解決 → input=share, output=underlying, oracle=underlying。
+   *   body: { user, shareMint, amount: share smallest unit, slippageBps? }
+   */
+  app.post<{
+    Body: {
+      user: string;
+      shareMint: string;
+      amount: string;
+      slippageBps?: number;
+    };
+  }>("/protocols/swap-earn/withdraw-tx", async (req, reply) => {
+    const { user, shareMint, amount, slippageBps } = req.body ?? {};
+    if (!user || !shareMint || !amount) {
+      reply.code(400);
+      return {
+        error: "missing_required_field",
+        required: ["user", "shareMint", "amount"],
+      };
+    }
+    if (user.length < 32 || user.length > 44 || /\s/.test(user)) {
+      reply.code(400);
+      return { error: "invalid_wallet_address", user };
+    }
+    const market = findMarketByShareMint(shareMint);
+    if (!market) {
+      reply.code(400);
+      return {
+        error: "unsupported_share_mint",
+        message: "No swap-earn market registered for this share mint",
+        shareMint,
+      };
+    }
+    // withdraw: share → underlying。oracle gate は underlying に掛ける。
+    return buildSwapEarnTx(req, reply, {
+      user,
+      inputMint: market.share_mint,
+      outputMint: market.underlying_mint,
+      oracleMint: market.underlying_mint,
+      amount,
+      slippageBps,
+    });
+  });
+
+  /**
+   * Phase 8.15b: Kamino Lend deposit-tx。api.kamino.finance の unsigned tx builder を
+   * 叩き base64 tx を返す（swap でなく lending obligation deposit）。
+   *   body: { user, reserve, amount(smallest-unit string) }
+   */
+  app.post<{
+    Body: { user: string; reserve: string; amount: string };
+  }>("/protocols/kamino/deposit-tx", async (req, reply) => {
+    const { user, reserve, amount } = req.body ?? {};
+    if (!user || !reserve || !amount) {
+      reply.code(400);
+      return {
+        error: "missing_required_field",
+        required: ["user", "reserve", "amount"],
+      };
+    }
+    if (user.length < 32 || user.length > 44 || /\s/.test(user)) {
+      reply.code(400);
+      return { error: "invalid_wallet_address", user };
+    }
+    return buildKaminoTx(req, reply, { user, reserve, amount, action: "deposit" });
+  });
+
+  /**
+   * Phase 8.15b: Kamino Lend withdraw-tx（reserve → underlying、amount は保有 cToken
+   * 相当の smallest-unit。Kamino API は残高で cap するので over でも安全）。
+   */
+  app.post<{
+    Body: { user: string; reserve: string; amount: string };
+  }>("/protocols/kamino/withdraw-tx", async (req, reply) => {
+    const { user, reserve, amount } = req.body ?? {};
+    if (!user || !reserve || !amount) {
+      reply.code(400);
+      return {
+        error: "missing_required_field",
+        required: ["user", "reserve", "amount"],
+      };
+    }
+    if (user.length < 32 || user.length > 44 || /\s/.test(user)) {
+      reply.code(400);
+      return { error: "invalid_wallet_address", user };
+    }
+    return buildKaminoTx(req, reply, { user, reserve, amount, action: "withdraw" });
+  });
+
+  /**
+   * Phase 8.15d: Kamino Earn vault (kVault) deposit-tx。
+   *   body: { user, vault, amount(underlying smallest-unit string) }
+   */
+  app.post<{
+    Body: { user: string; vault: string; amount: string };
+  }>("/protocols/kamino/vault-deposit-tx", async (req, reply) => {
+    const { user, vault, amount } = req.body ?? {};
+    if (!user || !vault || !amount) {
+      reply.code(400);
+      return {
+        error: "missing_required_field",
+        required: ["user", "vault", "amount"],
+      };
+    }
+    if (user.length < 32 || user.length > 44 || /\s/.test(user)) {
+      reply.code(400);
+      return { error: "invalid_wallet_address", user };
+    }
+    return buildKaminoVaultTx(req, reply, { user, vault, amount, action: "deposit" });
+  });
+
+  /**
+   * Phase 8.15d: kVault withdraw-tx (share 建て。over-balance は Kamino 側で cap)。
+   *   body: { user, vault, amount(share smallest-unit string) }
+   */
+  app.post<{
+    Body: { user: string; vault: string; amount: string };
+  }>("/protocols/kamino/vault-withdraw-tx", async (req, reply) => {
+    const { user, vault, amount } = req.body ?? {};
+    if (!user || !vault || !amount) {
+      reply.code(400);
+      return {
+        error: "missing_required_field",
+        required: ["user", "vault", "amount"],
+      };
+    }
+    if (user.length < 32 || user.length > 44 || /\s/.test(user)) {
+      reply.code(400);
+      return { error: "invalid_wallet_address", user };
+    }
+    return buildKaminoVaultTx(req, reply, { user, vault, amount, action: "withdraw" });
+  });
+
+  /**
+   * Phase 8.15c: Save (旧 Solend) deposit-tx。solend-sdk (BFF 内) で pure-supply の
+   * unsigned v0 tx 群を構築 (cToken を wallet に mint)。複数 tx は mobile が MWA
+   * 一括署名 → 順次 submit する。
+   *   body: { user, reserve, amount(underlying smallest-unit string) }
+   */
+  app.post<{
+    Body: { user: string; reserve: string; amount: string };
+  }>("/protocols/save/deposit-tx", async (req, reply) => {
+    const { user, reserve, amount } = req.body ?? {};
+    if (!user || !reserve || !amount) {
+      reply.code(400);
+      return {
+        error: "missing_required_field",
+        required: ["user", "reserve", "amount"],
+      };
+    }
+    if (user.length < 32 || user.length > 44 || /\s/.test(user)) {
+      reply.code(400);
+      return { error: "invalid_wallet_address", user };
+    }
+    const market = findSaveMarketByReserve(reserve);
+    if (!market) {
+      reply.code(400);
+      return {
+        error: "unsupported_reserve",
+        message: "No Save market registered for this reserve",
+        reserve,
+      };
+    }
+    return buildSaveTx(req, reply, { user, market, amount, action: "deposit" });
+  });
+
+  /**
+   * Phase 8.15c: Save withdraw-tx (redeem cToken → underlying)。
+   *   body: { user, ctokenMint, amount(cToken smallest-unit string) }
+   */
+  app.post<{
+    Body: { user: string; ctokenMint: string; amount: string };
+  }>("/protocols/save/withdraw-tx", async (req, reply) => {
+    const { user, ctokenMint, amount } = req.body ?? {};
+    if (!user || !ctokenMint || !amount) {
+      reply.code(400);
+      return {
+        error: "missing_required_field",
+        required: ["user", "ctokenMint", "amount"],
+      };
+    }
+    if (user.length < 32 || user.length > 44 || /\s/.test(user)) {
+      reply.code(400);
+      return { error: "invalid_wallet_address", user };
+    }
+    const market = findSaveMarketByCToken(ctokenMint);
+    if (!market) {
+      reply.code(400);
+      return {
+        error: "unsupported_ctoken",
+        message: "No Save market registered for this cToken mint",
+        ctokenMint,
+      };
+    }
+    return buildSaveTx(req, reply, { user, market, amount, action: "withdraw" });
+  });
+
+  /**
+   * Phase 8.15e: Drift spot deposit-tx。drift-sdk (BFF 内) で unsigned v0 tx を構築。
+   * 初回 deposit は User account 作成込み 1 tx (response の firstDeposit=true)。
+   *   body: { user, positionKey ("drift_spot_0" 等), amount(underlying smallest-unit) }
+   */
+  app.post<{
+    Body: { user: string; positionKey: string; amount: string };
+  }>("/protocols/drift/deposit-tx", async (req, reply) => {
+    const { user, positionKey, amount } = req.body ?? {};
+    if (!user || !positionKey || !amount) {
+      reply.code(400);
+      return {
+        error: "missing_required_field",
+        required: ["user", "positionKey", "amount"],
+      };
+    }
+    if (user.length < 32 || user.length > 44 || /\s/.test(user)) {
+      reply.code(400);
+      return { error: "invalid_wallet_address", user };
+    }
+    const market = findDriftMarketByKey(positionKey);
+    if (!market) {
+      reply.code(400);
+      return {
+        error: "unsupported_market",
+        message: "No Drift spot market registered for this key",
+        positionKey,
+      };
+    }
+    return buildDriftTx(req, reply, { user, market, amount, action: "deposit" });
+  });
+
+  /**
+   * Phase 8.15e: Drift spot withdraw-tx (reduceOnly — 預金超は cap、借入化しない)。
+   *   body: { user, positionKey, amount(underlying smallest-unit) }
+   */
+  app.post<{
+    Body: { user: string; positionKey: string; amount: string };
+  }>("/protocols/drift/withdraw-tx", async (req, reply) => {
+    const { user, positionKey, amount } = req.body ?? {};
+    if (!user || !positionKey || !amount) {
+      reply.code(400);
+      return {
+        error: "missing_required_field",
+        required: ["user", "positionKey", "amount"],
+      };
+    }
+    if (user.length < 32 || user.length > 44 || /\s/.test(user)) {
+      reply.code(400);
+      return { error: "invalid_wallet_address", user };
+    }
+    const market = findDriftMarketByKey(positionKey);
+    if (!market) {
+      reply.code(400);
+      return {
+        error: "unsupported_market",
+        message: "No Drift spot market registered for this key",
+        positionKey,
+      };
+    }
+    return buildDriftTx(req, reply, { user, market, amount, action: "withdraw" });
+  });
+
+  /**
+   * Phase 8.17: Meteora DLMM single-sided LP deposit-tx。
+   * server が Spot strategy (active bin 片側 20 bins) を決める — range UI 無し。
+   * 返る tx は **position ephemeral keypair の部分署名済み** (user 署名スロットは空)。
+   *   body: { user, poolKey(pool_id), amount(deposit token smallest-unit) }
+   */
+  app.post<{
+    Body: { user: string; poolKey: string; amount: string };
+  }>("/protocols/meteora/deposit-tx", async (req, reply) => {
+    const { user, poolKey, amount } = req.body ?? {};
+    if (!user || !poolKey || !amount) {
+      reply.code(400);
+      return {
+        error: "missing_required_field",
+        required: ["user", "poolKey", "amount"],
+      };
+    }
+    if (user.length < 32 || user.length > 44 || /\s/.test(user)) {
+      reply.code(400);
+      return { error: "invalid_wallet_address", user };
+    }
+    const market = findMeteoraMarketByPool(poolKey);
+    if (!market) {
+      reply.code(400);
+      return {
+        error: "unsupported_pool",
+        message: "No Meteora DLMM pool registered for this key",
+        poolKey,
+      };
+    }
+    if (!isValidTokenAmount(amount)) {
+      reply.code(400);
+      return { error: "invalid_amount", amount };
+    }
+    const oracle = await getOracleResult(market.deposit_mint);
     if (oracle.status === "blocked") {
       reply.code(409);
       return { error: "oracle_blocked", block_reason: oracle.block_reason, oracle };
     }
     try {
-      const quote = await fetchSwapQuote({
-        inputMint,
-        outputMint,
-        amount,
-        slippageBps: slippageBps ?? 50,
+      const { transactions, position } = await buildMeteoraDepositTxns({
+        wallet: user,
+        market,
+        amountSmallest: amount,
       });
-      const tx = await fetchSwapTransaction({
-        quoteResponse: quote,
-        userPublicKey: user,
-        prioritizationFeeLamports: "auto",
-        dynamicComputeUnitLimit: true,
-      });
-      return {
-        swapTransaction: tx.swapTransaction,
-        lastValidBlockHeight: tx.lastValidBlockHeight,
-        outAmount: quote.outAmount,
-        outputMint,
-        quote,
-      };
+      return { transactions, position, poolAddress: market.pool_address };
     } catch (err) {
       req.log.error(
-        { err: (err as Error).message, user, inputMint, amount },
-        "jupiter swap deposit-tx failed"
+        { err: (err as Error).message, poolKey },
+        "meteora deposit tx build failed"
       );
       reply.code(502);
+      return { error: "meteora_tx_failed", message: (err as Error).message };
+    }
+  });
+
+  /**
+   * Phase 8.17: Meteora DLMM withdraw-tx。amount (deposit token 建て smallest) と
+   * 現在総額から bps を計算 (総額以上 → 10000 = 全量 + fee claim + close)。
+   *   body: { user, position(account pubkey), amount }
+   */
+  app.post<{
+    Body: { user: string; position: string; amount: string };
+  }>("/protocols/meteora/withdraw-tx", async (req, reply) => {
+    const { user, position, amount } = req.body ?? {};
+    if (!user || !position || !amount) {
+      reply.code(400);
       return {
-        error: "jupiter_swap_failed",
-        message: (err as Error).message,
+        error: "missing_required_field",
+        required: ["user", "position", "amount"],
       };
+    }
+    if (user.length < 32 || user.length > 44 || /\s/.test(user)) {
+      reply.code(400);
+      return { error: "invalid_wallet_address", user };
+    }
+    if (!isValidTokenAmount(amount)) {
+      reply.code(400);
+      return { error: "invalid_amount", amount };
+    }
+    try {
+      const rawPositions = await fetchMeteoraPositions(user);
+      const raw = rawPositions.find((r) => r.position_address === position);
+      const market: MeteoraDlmmMarket | undefined = raw
+        ? METEORA_MARKETS.find((m) => m.pool_id === raw.pool_id)
+        : undefined;
+      if (!raw || !market) {
+        reply.code(400);
+        return {
+          error: "position_not_found",
+          message: "No Meteora position for this wallet/address",
+          position,
+        };
+      }
+      const oracle = await getOracleResult(market.deposit_mint);
+      if (oracle.status === "blocked") {
+        reply.code(409);
+        return { error: "oracle_blocked", block_reason: oracle.block_reason, oracle };
+      }
+      // bps 計算 (共通 helper): 要求額 / 現在総額 (deposit 建て)。round、1..10000 clamp。
+      const totals = meteoraTotalsInDepositTerms(raw, market.deposit_side);
+      const bps = withdrawBpsFor(toBigInt(amount), totals?.total ?? null);
+      const { transactions } = await buildMeteoraWithdrawTxns({
+        wallet: user,
+        market,
+        positionAddress: position,
+        bps,
+        fromBinId: raw.lower_bin_id,
+        toBinId: raw.upper_bin_id,
+      });
+      return { transactions, bps, poolAddress: market.pool_address };
+    } catch (err) {
+      req.log.error(
+        { err: (err as Error).message, position },
+        "meteora withdraw tx build failed"
+      );
+      reply.code(502);
+      return { error: "meteora_tx_failed", message: (err as Error).message };
+    }
+  });
+
+  /**
+   * Phase 8.18: Orca Whirlpools full-range LP deposit-tx (zap-in)。
+   * 返る transactions は 2 本:
+   *   [0] Jupiter swap (入金 USDC の半分 → 相方 token、user 単独署名)
+   *   [1] full-range open + increase (**position mint ephemeral の部分署名済み**)
+   *   body: { user, poolKey(pool_id), amount(deposit token smallest-unit) }
+   */
+  app.post<{
+    Body: { user: string; poolKey: string; amount: string };
+  }>("/protocols/orca/deposit-tx", async (req, reply) => {
+    const { user, poolKey, amount } = req.body ?? {};
+    if (!user || !poolKey || !amount) {
+      reply.code(400);
+      return {
+        error: "missing_required_field",
+        required: ["user", "poolKey", "amount"],
+      };
+    }
+    if (user.length < 32 || user.length > 44 || /\s/.test(user)) {
+      reply.code(400);
+      return { error: "invalid_wallet_address", user };
+    }
+    const market = findOrcaMarketByPool(poolKey);
+    if (!market) {
+      reply.code(400);
+      return {
+        error: "unsupported_pool",
+        message: "No Orca whirlpool registered for this key",
+        poolKey,
+      };
+    }
+    if (!isValidTokenAmount(amount)) {
+      reply.code(400);
+      return { error: "invalid_amount", amount };
+    }
+    const oracle = await getOracleResult(market.deposit_mint);
+    if (oracle.status === "blocked") {
+      reply.code(409);
+      return { error: "oracle_blocked", block_reason: oracle.block_reason, oracle };
+    }
+    try {
+      const { transactions, position } = await buildOrcaDepositTxns({
+        wallet: user,
+        market,
+        amountSmallest: amount,
+      });
+      return { transactions, position, poolAddress: market.pool_address };
+    } catch (err) {
+      req.log.error(
+        { err: (err as Error).message, poolKey },
+        "orca deposit tx build failed"
+      );
+      reply.code(502);
+      return { error: "orca_tx_failed", message: (err as Error).message };
+    }
+  });
+
+  /**
+   * Phase 8.18: Orca Whirlpools withdraw-tx。amount (deposit token 建て smallest) と
+   * 現在総額から bps を計算 (総額以上 → 10000 = closePosition: fee 回収 + 全量 + NFT burn)。
+   *   body: { user, position(= position mint pubkey), amount }
+   */
+  app.post<{
+    Body: { user: string; position: string; amount: string };
+  }>("/protocols/orca/withdraw-tx", async (req, reply) => {
+    const { user, position, amount } = req.body ?? {};
+    if (!user || !position || !amount) {
+      reply.code(400);
+      return {
+        error: "missing_required_field",
+        required: ["user", "position", "amount"],
+      };
+    }
+    if (user.length < 32 || user.length > 44 || /\s/.test(user)) {
+      reply.code(400);
+      return { error: "invalid_wallet_address", user };
+    }
+    if (!isValidTokenAmount(amount)) {
+      reply.code(400);
+      return { error: "invalid_amount", amount };
+    }
+    try {
+      const rawPositions = await fetchOrcaPositions(user);
+      const raw = rawPositions.find((r) => r.position_mint === position);
+      const market = raw
+        ? ORCA_MARKETS.find((m) => m.pool_id === raw.pool_id)
+        : undefined;
+      if (!raw || !market) {
+        reply.code(400);
+        return {
+          error: "position_not_found",
+          message: "No Orca position for this wallet/mint",
+          position,
+        };
+      }
+      const oracle = await getOracleResult(market.deposit_mint);
+      if (oracle.status === "blocked") {
+        reply.code(409);
+        return { error: "oracle_blocked", block_reason: oracle.block_reason, oracle };
+      }
+      const totals = orcaTotalsInDepositTerms(raw, market.deposit_side);
+      const bps = withdrawBpsFor(toBigInt(amount), totals?.total ?? null);
+      const { transactions } = await buildOrcaWithdrawTxns({
+        wallet: user,
+        market,
+        positionMint: position,
+        bps,
+      });
+      return { transactions, bps, poolAddress: market.pool_address };
+    } catch (err) {
+      req.log.error(
+        { err: (err as Error).message, position },
+        "orca withdraw tx build failed"
+      );
+      reply.code(502);
+      return { error: "orca_tx_failed", message: (err as Error).message };
+    }
+  });
+
+  /** Phase 8.15c: Save reserve 実 rates (supply APY + cToken exchange rate)。失敗時は空。 */
+  app.get("/protocols/save/reserves", async (req) => {
+    try {
+      const rates = await fetchSaveReserveRates(SAVE_MARKETS.map((m) => m.reserve));
+      const bySymbol = new Map(SAVE_MARKETS.map((m) => [m.reserve, m]));
+      return {
+        reserves: rates.map((r) => ({
+          reserve_id: r.reserve,
+          asset_symbol: bySymbol.get(r.reserve)?.underlying_symbol ?? "?",
+          lend_apy: r.supply_apy,
+          ctoken_exchange_rate: r.ctoken_exchange_rate,
+        })),
+      };
+    } catch (err) {
+      req.log.warn(
+        { err: (err as Error).message },
+        "save reserves fetch failed"
+      );
+      return { reserves: [] };
     }
   });
 
@@ -977,16 +4080,23 @@ export async function buildServer(
    * AgentPlan の simulate 経路 (CLAUDE.md §11.7、ApprovalToken 発行前段階)。
    * adapter から estimated_out / fee / route を取得して SimulationResult として返す。
    */
-  app.post<{ Params: { planId: string } }>(
-    "/agent-plans/:planId/simulate",
-    async (req, reply) => {
+  app.post<{
+    Params: { planId: string };
+    Body: { action_spec?: ActionSpec };
+  }>("/agent-plans/:planId/simulate", async (req, reply) => {
       const { planId } = req.params;
-      const found = fixtureAgentPlans.find((p) => p.plan_id === planId);
+      // Phase 8.28: store plan は body.action_spec を selected_action に採用し、
+      // simulation_result を永続 (status→simulated)。bundle_hash は決定的 sha256。
+      const stored = getStoredPlan(planId);
+      const found =
+        stored ?? fixtureAgentPlans.find((p) => p.plan_id === planId);
       if (!found) {
         reply.code(404);
         return { error: "agent_plan_not_found", plan_id: planId };
       }
-      const action = found.selected_action;
+      const action = stored
+        ? (req.body?.action_spec ?? stored.selected_action)
+        : found.selected_action;
       if (!action) {
         reply.code(400);
         return { error: "selected_action_required" };
@@ -1033,7 +4143,8 @@ export async function buildServer(
         estimated_out,
         estimated_fee,
         slippage_bps,
-        bundle_hash: `0x${Math.floor(Math.random() * 0xffffffff).toString(16).padStart(8, "0")}…`,
+        // Phase 8.28: ランダム stub を決定的 hash に置換 (§11.7 改ざんガード実体)
+        bundle_hash: computeBundleHash(action),
         oracle: {
           primary: "pyth" as const,
           primary_age_seconds: Math.floor(Math.random() * 10),
@@ -1042,16 +4153,26 @@ export async function buildServer(
         },
         metadata: meta,
       };
+      // store plan は selected_action + simulation_result を永続 (§11.7)
+      if (stored) {
+        updatePlan(planId, {
+          selected_action: action,
+          simulation_result: sim,
+          status: AgentPlanStatus.Simulated,
+        });
+      }
       return { plan_id: planId, simulation: sim };
     }
   );
 
-  // ── approval tokens ──────────────────────────────────────────────────
+  // ── approval tokens (8.28: store 発行分を優先、fixture は回帰用) ────────
   app.get<{ Params: { tokenId: string } }>(
     "/approval-tokens/:tokenId",
     async (req, reply) => {
       const { tokenId } = req.params;
-      const found = fixtureApprovalTokens.find((t) => t.token_id === tokenId);
+      const found =
+        getStoredToken(tokenId) ??
+        fixtureApprovalTokens.find((t) => t.token_id === tokenId);
       if (!found) {
         reply.code(404);
         return { error: "approval_token_not_found", token_id: tokenId };
@@ -1060,7 +4181,7 @@ export async function buildServer(
     }
   );
 
-  // ── push tokens (no-op mock; 本実装は §17 / §25 で Redis + Postgres) ───
+  // ── push tokens (8.28: in-memory 登録に昇格。永続化は §17/§25) ─────────
   app.post<{ Body: { token: string; device_id?: string } }>(
     "/push-tokens",
     async (req, reply) => {
@@ -1069,9 +4190,87 @@ export async function buildServer(
         reply.code(400);
         return { error: "invalid_push_token" };
       }
+      registerPushToken(body.token);
       return { registered_at: new Date().toISOString() };
     }
   );
 
+  // ── Phase 8.29: 自律実行 (bounded 委任署名 / devnet) ──────────────────────
+  const autonomousDeps = buildAutonomousDeps(app);
+
+  app.post<{ Body: { objective?: string; asset?: string; dry_run?: boolean } }>(
+    "/autonomous/tick",
+    async (req, reply) => {
+      const body = req.body ?? {};
+      if (!isObjective(body.objective)) {
+        reply.code(400);
+        return { error: "invalid_objective", objective: body.objective };
+      }
+      const opts: RunAutonomousOpts = {
+        objective: body.objective,
+        asset: body.asset,
+        dry_run: body.dry_run,
+      };
+      try {
+        return await runAutonomousCycle(opts, autonomousDeps);
+      } catch (err) {
+        if (err instanceof AutonomousDisabledError) {
+          reply.code(
+            err.code === "kill_switch_active"
+              ? 503
+              : err.code === "no_delegate"
+                ? 409
+                : 403
+          );
+          return { error: "autonomous_disabled", reason: err.code };
+        }
+        req.log.error({ err: (err as Error).message }, "autonomous tick failed");
+        reply.code(500);
+        return { error: "autonomous_tick_failed", message: (err as Error).message };
+      }
+    }
+  );
+
+  app.get("/autonomous/log", async () => listExecutionRecords());
+  app.get("/autonomous/status", async () => getAutonomousStatus());
+  app.post("/autonomous/kill", async () => {
+    killAutonomous();
+    return getAutonomousStatus();
+  });
+  app.post("/autonomous/resume", async () => {
+    resumeAutonomous();
+    return getAutonomousStatus();
+  });
+
   return app;
+}
+
+/**
+ * Phase 8.29: 自律サイクルの依存を組み立てる。fetchMenu は app.inject で
+ * live /menu-listings を再利用 (overlay + cache そのまま)。scheduler も同じ deps。
+ */
+export function buildAutonomousDeps(app: FastifyInstance): AutonomousDeps {
+  return {
+    fetchMenu: async () => {
+      const res = await app.inject({ method: "GET", url: "/menu-listings" });
+      return res.json();
+    },
+    getPolicy: () => getCurrentPolicy(),
+    sendExecutionPush: async (payload: ExecutionPushPayload) => {
+      const tokens = listPushTokens();
+      if (tokens.length === 0) return;
+      await fetch("https://exp.host/--/api/v2/push/send", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(
+          tokens.map((to) => ({
+            to,
+            title: "Seasonals — funds moved (devnet)",
+            body: `${payload.protocol} ${payload.action_type} $${payload.amount_usd8} — sig ${(payload.tx_signature ?? "").slice(0, 8)}…`,
+            data: payload,
+          }))
+        ),
+      });
+    },
+  };
 }
