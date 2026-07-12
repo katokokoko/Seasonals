@@ -31,6 +31,12 @@ export interface ProtocolPool {
   tvl_usd: number;
   /** lending market のみ。borrowed amount in USD */
   borrowed_usd?: number;
+  /**
+   * lending market の稼働率 (borrow/supply、0..1、§3 display carve-out。Phase 8.26)。
+   * 1.0 近傍は貸出が満杯 = **withdraw が流動性不足で滞る可能性**を示す —
+   * UI は ≥0.9 を警告色で表示する。ソースが無い protocol は undefined。
+   */
+  utilization?: number;
   /** tap → onStartAction(asset) 用の deposit 通貨。未指定なら `asset` を使う */
   deposit_asset?: string;
 }

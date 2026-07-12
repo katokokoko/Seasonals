@@ -94,9 +94,11 @@ export const kaminoAdapter: LendingAdapter = {
   async fetchPositions(_ctx: AdapterContext): Promise<Position[]> {
     // mock: 任意 wallet に対し fixture の Kamino positions を返す
     // 将来: KaminoMarket.getUserObligation(wallet) で実 obligation account を read
+    // shallow copy で十分 (呼び出し側は read-only 消費、fetchReserves と同 precedent)。
+    // structuredClone は tsconfig lib 非依存にするため使わない (baseline TS2304 回避)。
     return [
-      structuredClone(fixturePositionKaminoLending),
-      structuredClone(fixturePositionKaminoBorrow),
+      { ...fixturePositionKaminoLending },
+      { ...fixturePositionKaminoBorrow },
     ];
   },
 

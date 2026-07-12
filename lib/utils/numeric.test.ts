@@ -20,6 +20,8 @@ import {
   // bigint
   toBigInt,
   fromBigInt,
+  usd8ToBigInt,
+  compareUsd8,
   // human ↔ smallest
   toHumanReadable,
   toSmallestUnit,
@@ -318,5 +320,29 @@ describe("USD constants", () => {
     expect(USD_ZERO).toBe("0.00000000");
     expect(isValidUsdAmount(USD_ONE)).toBe(true);
     expect(isValidUsdAmount(USD_ZERO)).toBe(true);
+  });
+});
+
+describe("usd8ToBigInt / compareUsd8 (§4.5、Phase 8.29)", () => {
+  it("scale-8 bigint に変換 (整数 / 小数 / 端数)", () => {
+    expect(usd8ToBigInt("500.00000001")).toBe(50000000001n);
+    expect(usd8ToBigInt("500")).toBe(50000000000n);
+    expect(usd8ToBigInt("0.00000001")).toBe(1n);
+    expect(usd8ToBigInt("10000000.00000000")).toBe(1000000000000000n);
+  });
+  it("2^53 超も精度落ちしない", () => {
+    // 9,007,199,254,740,993 USD (> Number.MAX_SAFE_INTEGER)
+    expect(usd8ToBigInt("9007199254740993.00000000")).toBe(
+      900719925474099300000000n
+    );
+  });
+  it("不正は throw", () => {
+    expect(() => usd8ToBigInt("1.5.5")).toThrow(InvalidAmountError);
+    expect(() => usd8ToBigInt("-1")).toThrow(InvalidAmountError);
+  });
+  it("compareUsd8: bigint 比較", () => {
+    expect(compareUsd8("500.00000000", "500.00000001")).toBe(-1);
+    expect(compareUsd8("500.00000001", "500.00000000")).toBe(1);
+    expect(compareUsd8("500", "500.00000000")).toBe(0);
   });
 });

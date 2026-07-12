@@ -8,3 +8,4 @@ export * from "./custom-event";
 export * from "./protocol-pool";
 export * from "./earn-position";
 export * from "./oracle";
+export * from "./autonomous";

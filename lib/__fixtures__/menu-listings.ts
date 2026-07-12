@@ -29,15 +29,9 @@ export const fixtureMenuListings: ProtocolMenuEntry[] = [
     supported_assets: ["USDC", "SOL"],
     icon_id: "jupiter",
     icon_bg: ICON_BG_DARK,
+    // 8.27: 旧 "jupiter_jlp_lending" は Jupiter に実体が無く削除 —
+    // JLP lending の実体は kamino entry の kamino_jlp (main market JLP reserve)
     pools: [
-      {
-        pool_id: "jupiter_jlp_lending",
-        name: "JLP Lending",
-        category: PositionCategory.Lending,
-        asset: "JLP",
-        apy: 0.105,
-        tvl_usd: 450_000_000,
-      },
       {
         pool_id: "jupiter_usdc_main",
         name: "USDC Main",
@@ -85,31 +79,32 @@ export const fixtureMenuListings: ProtocolMenuEntry[] = [
         tvl_usd: 850_000_000,
         borrowed_usd: 300_000_000,
       },
+      // 8.27: main market の実 JLP reserve に接続 (KAMINO_MARKETS kamino_jlp)。
+      // supply APY ~0% が実態 (JLP の利回りは価格上昇に内在)。live overlay が実値表示
       {
-        pool_id: "kamino_jlp_market",
-        name: "JLP Market",
+        pool_id: "kamino_jlp",
+        name: "JLP Reserve",
         category: PositionCategory.Lending,
         asset: "JLP",
-        apy: 0.0920,
-        tvl_usd: 400_000_000,
+        apy: 0.0,
+        tvl_usd: 1_900_000,
       },
+      // Phase 8.15d: 実在の kVault に接続 (KAMINO_VAULTS registry と pool_id 一致必須)
       {
         pool_id: "kamino_steakhouse_usdc",
-        name: "Steakhouse USDC High Yield",
+        name: "Steakhouse USDC Vault",
         category: PositionCategory.Vault,
         asset: "USDC",
-        apy: 0.0870,
-        tvl_usd: 220_000_000,
-        borrowed_usd: 199_000_000,
+        apy: 0.0402,
+        tvl_usd: 21_400_000,
       },
       {
-        pool_id: "kamino_jitosol_vault",
-        name: "JitoSOL Vault",
+        pool_id: "kamino_allez_sol_vault",
+        name: "Allez SOL Vault",
         category: PositionCategory.Vault,
-        asset: "JitoSOL",
-        apy: 0.0750,
-        tvl_usd: 180_000_000,
-        deposit_asset: "SOL",
+        asset: "SOL",
+        apy: 0.112,
+        tvl_usd: 6_600_000,
       },
     ],
   },
@@ -122,13 +117,16 @@ export const fixtureMenuListings: ProtocolMenuEntry[] = [
     supported_assets: ["USDC"],
     icon_id: "solstice",
     icon_bg: COLOR.melonDeep,
+    // Phase 8.24: 実トークンは eUSX (staked USX)。sUSD は誤記だった。
+    // APY は Exponent underlyingApy (~3.8%) を /menu-listings が live overlay。
     pools: [
       {
-        pool_id: "solstice_susd",
-        name: "sUSD Stable",
+        pool_id: "solstice_eusx",
+        name: "eUSX Yield",
         category: PositionCategory.Stable,
         asset: "USDC",
-        apy: 0.0620,
+        deposit_asset: "USDC",
+        apy: 0.038,
         tvl_usd: 42_000_000,
       },
     ],
@@ -222,7 +220,7 @@ export const fixtureMenuListings: ProtocolMenuEntry[] = [
         name: "USD* Stable",
         category: PositionCategory.Stable,
         asset: "USDC",
-        apy: 0.0580,
+        apy: 0.093, // 8.25: 実測近似 (live は api.perena.org 7d APY で overlay)
         tvl_usd: 120_000_000,
       },
       {
@@ -372,14 +370,15 @@ export const fixtureMenuListings: ProtocolMenuEntry[] = [
     supported_assets: ["USDC", "SOL"],
     icon_id: "orca",
     icon_bg: COLOR.sodaText,
+    // APY/TVL は Orca pool stats API 実測値ベース (2026-07-10、表示専用 fixture)
     pools: [
       {
         pool_id: "orca_usdc_usdt_whirlpool",
         name: "USDC-USDT Whirlpool",
         category: PositionCategory.LP,
         asset: "USDC-USDT",
-        apy: 0.0750,
-        tvl_usd: 75_000_000,
+        apy: 0.055,
+        tvl_usd: 1_200_000,
         deposit_asset: "USDC",
       },
       {
@@ -387,18 +386,47 @@ export const fixtureMenuListings: ProtocolMenuEntry[] = [
         name: "SOL-USDC Whirlpool",
         category: PositionCategory.LP,
         asset: "SOL-USDC",
-        apy: 0.2430,
-        tvl_usd: 220_000_000,
+        apy: 0.46, // week APR (day は変動が大きい)
+        tvl_usd: 32_500_000,
         deposit_asset: "USDC",
       },
       {
         pool_id: "orca_jitosol_sol_whirlpool",
-        name: "jitoSOL-SOL Whirlpool",
+        name: "JitoSOL-SOL Whirlpool",
         category: PositionCategory.LP,
         asset: "JitoSOL-SOL",
-        apy: 0.0620,
-        tvl_usd: 98_000_000,
+        apy: 0.011,
+        tvl_usd: 31_400_000,
         deposit_asset: "SOL",
+      },
+    ],
+  },
+
+  // ─── 12. Hylo (Phase 8.27 — swap-earn 方式) ────────────────
+  // icon 画像未支給のため icon_id は未登録 → MenuDrawer が頭文字バッジに fallback
+  {
+    protocol_id: "hylo",
+    display_name: "Hylo",
+    primary_category: PositionCategory.Staking,
+    supported_assets: ["SOL", "USDC"],
+    icon_id: "hylo",
+    icon_bg: COLOR.sodaText,
+    pools: [
+      {
+        pool_id: "hylo_hylosol",
+        name: "hyloSOL Staking",
+        category: PositionCategory.Staking,
+        asset: "SOL",
+        apy: 0.061, // live は Exponent underlyingApy で overlay
+        tvl_usd: 8_000_000,
+      },
+      {
+        pool_id: "hylo_shyusd",
+        name: "sHYUSD Stability Pool",
+        category: PositionCategory.Stable,
+        asset: "USDC",
+        apy: 0.10, // 実値ソース未発見 (Exponent hyUSD implied 近似)
+        tvl_usd: 12_000_000,
       },
     ],
   },

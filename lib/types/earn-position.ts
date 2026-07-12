@@ -12,8 +12,12 @@
  */
 
 export interface EarnPosition {
-  /** Seasonals 内 protocol_id ("jupiter_lend" / "kamino") */
-  protocol_id: "jupiter_lend" | "kamino";
+  /**
+   * Seasonals 内 protocol_id ("jupiter_lend" / "kamino" / "jito" / "marinade" /
+   * "sanctum" / "perena" ...)。Phase 8.15 で swap-earn protocol を一般化したため
+   * closed union から string に緩和 (registry の protocol_id と一致させる)。
+   */
+  protocol_id: string;
   /** UI 表示用 protocol 名 */
   protocol_name: string;
   /**
@@ -69,8 +73,31 @@ export interface EarnPositionsResponse {
   /** Jupiter Lend で確定検出された positions (shares > 0 のみ) */
   jupiterLend: EarnPosition[];
   /**
-   * Helius DAS metadata から "Kamino" 系 token を best-effort で検出したもの。
-   * APY / USD 値は不明なため null/0、表示は label-only。
+   * Kamino positions。8.15b で実 obligation、8.15d で kVault 保有も合流
+   * (実データ取得失敗時のみ Helius DAS best-effort 検出に fallback)。
    */
   kaminoBestEffort: EarnPosition[];
+  /**
+   * Phase 8.15.x: LST/USD* (swap-earn、jupiter_lend 除く) の enriched 保有。
+   * underlying/USD は実 rate 換算、earned は cost-basis が取れた場合のみ実値。
+   * undefined = 旧 BFF / fixture (mobile は client 側 fallback を使う)。
+   */
+  swapEarn?: EarnPosition[];
+  /** Phase 8.15.x: Save cToken の enriched 保有 (同上)。 */
+  save?: EarnPosition[];
+  /**
+   * Phase 8.15e: Drift spot lending の保有 (SDK read、share_mint = 合成 position_key
+   * "drift_spot_{index}")。earned は unknown (実値化は follow-up)。
+   */
+  drift?: EarnPosition[];
+  /**
+   * Phase 8.17: Meteora DLMM LP positions (SDK read)。share_mint = position account
+   * の実 pubkey。underlying は deposit token 建て総額、earned = 未請求 swap fee。
+   */
+  meteora?: EarnPosition[];
+  /**
+   * Phase 8.18: Orca Whirlpools full-range LP positions (SDK read)。share_mint =
+   * position mint (NFT) の実 pubkey。underlying は deposit token 建て、earned = feeOwed。
+   */
+  orca?: EarnPosition[];
 }

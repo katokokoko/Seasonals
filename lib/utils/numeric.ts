@@ -104,6 +104,31 @@ export function fromBigInt(amount: bigint): string {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// USD 8-decimals (§4.5) — policy 比較用の bigint 変換 (Phase 8.29)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * USD 8-decimals string ("500.00000001") を scale-8 bigint (50000000001n) に変換。
+ * max_tx_amount / min_tvl 等の policy 比較を Number 精度落ちなしで行うため (§4.5)。
+ * 整数のみ ("500") も許容。不正は InvalidAmountError。
+ */
+export function usd8ToBigInt(value: string): bigint {
+  if (!isValidUsdAmount(value)) {
+    throw new InvalidAmountError("usd_amount", value);
+  }
+  const [intPart, fracPart = ""] = value.split(".");
+  const frac = (fracPart + "00000000").slice(0, 8);
+  return BigInt(intPart!) * 100_000_000n + BigInt(frac);
+}
+
+/** USD 8-dec string 2 値を bigint で比較 (-1 / 0 / 1、Number 不使用)。 */
+export function compareUsd8(a: string, b: string): -1 | 0 | 1 {
+  const av = usd8ToBigInt(a);
+  const bv = usd8ToBigInt(b);
+  return av < bv ? -1 : av > bv ? 1 : 0;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // 表示用: smallest unit ↔ human-readable
 // ─────────────────────────────────────────────────────────────────────────────
 

@@ -59,6 +59,23 @@ export const KNOWN_PROTOCOL_MINTS: Record<string, KnownMint> = {
     decimals: 9,
   },
 
+  // ── Save (旧 Solend) main pool cToken (Phase 8.15c) ──
+  // deposit (reserve liquidity) で wallet に mint される受取 SPL。decimals は underlying と同一。
+  "993dVFL2uXWYeoXuEBFXR4BijeXdTv4s6BzsCjJZuwqk": {
+    mint: "993dVFL2uXWYeoXuEBFXR4BijeXdTv4s6BzsCjJZuwqk",
+    protocol_id: "savefi",
+    category: PositionCategory.Lending,
+    asset_symbol: "cUSDC",
+    decimals: 6,
+  },
+  "5h6ssFpeDeRbzsEHDbTQNH7nVGgsKrZydxdSTnLm6QdV": {
+    mint: "5h6ssFpeDeRbzsEHDbTQNH7nVGgsKrZydxdSTnLm6QdV",
+    protocol_id: "savefi",
+    category: PositionCategory.Lending,
+    asset_symbol: "cSOL",
+    decimals: 9,
+  },
+
   // ── Native SOL ──
   // Helius DAS は wrapped native SOL (WSOL) を mint "So111...1112" として返す。
   // wallet 残高は別途 `getNativeBalance` で取得可能だが本 MVP は wrapped のみ。
