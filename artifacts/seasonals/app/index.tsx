@@ -53,6 +53,7 @@ import {
 import { MonthGrid } from "../components/calendar/MonthGrid";
 import { DailyView } from "../components/calendar/DailyView";
 import { EventDayModal } from "../components/calendar/EventDayModal";
+import { syntheticPlanFromEventAction } from "../components/calendar/event-action";
 import { ActionModal } from "../components/action/ActionModal";
 import { PortfolioSummary } from "../components/portfolio/PortfolioSummary";
 import { SettingsDrawer } from "../components/drawer/SettingsDrawer";
@@ -185,7 +186,8 @@ export default function HomeScreen() {
   const handleStartActionFromServices = (
     protocol: string,
     asset: string,
-    actionType: "deposit"
+    actionType: "deposit",
+    poolId?: string
   ) => {
     // Phase 8.5: synthetic AgentPlan を生成 — fixture からの lookup は廃止し、
     // pool tap context (protocol / asset / actionType) を直接 plan に詰める。
@@ -208,6 +210,8 @@ export default function HomeScreen() {
         asset,
         action_type: actionType,
         amount,
+        // Phase 8.15d: 同一 asset の reserve/vault pool を判別する dispatch キー
+        metadata: poolId ? { pool_id: poolId } : undefined,
       },
       simulation_result: null,
       created_at: new Date().toISOString(),
@@ -235,6 +239,8 @@ export default function HomeScreen() {
           share_mint: position.share_mint,
           share_decimals: position.share_decimals,
           underlying_decimals: position.underlying_decimals,
+          // Phase 8.16: 部分 withdraw の ≈underlying 換算表示用 (display-only)
+          underlying_amount: position.underlying_amount,
         },
       },
       simulation_result: null,
@@ -262,6 +268,16 @@ export default function HomeScreen() {
     event: UnifiedTimeEvent,
     action: ActionDescriptor
   ) => {
+    // Phase 8.20 (§29.1 event-driven action): claim イベント等の metadata から
+    // synthetic plan を組めるなら、カレンダーから直接 ActionModal を起動する。
+    // day modal close → 130ms 遅延は drawer と同じ choreography (Phase 7.7)。
+    const synthetic = syntheticPlanFromEventAction(event, action);
+    if (synthetic) {
+      setDayModalOpen(false);
+      setTimeout(() => setPendingPlan(synthetic), 130);
+      return;
+    }
+    // fallback: fixture plan lookup (旧経路)
     const exact = plans.find(
       (p) =>
         p.selected_action?.protocol === event.protocol &&

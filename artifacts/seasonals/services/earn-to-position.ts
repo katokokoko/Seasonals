@@ -97,9 +97,28 @@ export function mergeEarnPositions(
   earnPositions: EarnPositionsResponse | undefined
 ): Position[] {
   if (!earnPositions) return basePositions;
-  const earnAsPositions: Position[] = [
-    ...earnPositions.jupiterLend.map(earnPositionToPosition),
-    ...earnPositions.kaminoBestEffort.map(earnPositionToPosition),
+  // Phase 8.15.x: swapEarn (LST/USD*) / save (cToken) も合成 → total/donut に反映。
+  const earnAll: EarnPosition[] = [
+    ...earnPositions.jupiterLend,
+    ...earnPositions.kaminoBestEffort,
+    ...(earnPositions.swapEarn ?? []),
+    ...(earnPositions.save ?? []),
+    // Phase 8.15e: Drift spot (position_key は raw mint に現れないため dedup 影響なし)
+    ...(earnPositions.drift ?? []),
+    // Phase 8.17: Meteora DLMM (position pubkey は raw mint に現れない)
+    ...(earnPositions.meteora ?? []),
+    // Phase 8.18: Orca Whirlpools (position mint は NFT — raw SPL 保有行と重複しうるが
+    // dedup ガードが share_mint 一致で置換するため二重計上しない)
+    ...(earnPositions.orca ?? []),
   ];
-  return [...basePositions, ...earnAsPositions];
+  const earnAsPositions: Position[] = earnAll.map(earnPositionToPosition);
+  // 二重計上ガード: earn 行の share_mint (jlToken / jitoSOL / cUSDC 等の wallet SPL)
+  // と同じ mint の raw 保有行は earn 行が置換する (donut 合計を二重にしない)。
+  // Kamino の share_mint (reserve/vault address) は raw mint に現れないため無害。
+  const coveredMints = new Set(earnAll.map((e) => e.share_mint));
+  const filteredBase = basePositions.filter((p) => {
+    const mint = (p.raw_state as { mint?: unknown } | undefined)?.mint;
+    return typeof mint !== "string" || !coveredMints.has(mint);
+  });
+  return [...filteredBase, ...earnAsPositions];
 }

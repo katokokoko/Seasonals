@@ -255,6 +255,8 @@ export async function getEarnPositions(
   walletAddress: string
 ): Promise<EarnPositionsResponse> {
   const path = `/positions/earn?wallet=${encodeURIComponent(walletAddress)}`;
+  // Phase 8.15.x: swapEarn / save は意図的に省略 (undefined)。BFF 不達時は
+  // MenuDrawer が client 側 mint 解決 (heldSwapEarnPositions 等) に fallback する。
   const empty: EarnPositionsResponse = {
     jupiterLend: [],
     kaminoBestEffort: [],
@@ -379,6 +381,274 @@ export async function getJupiterWithdrawTx(input: {
     );
   }
   return (await res.json()) as JupiterDepositTxResponse;
+}
+
+/**
+ * Phase 8.15: protocol 汎用 swap-earn deposit tx (underlying → share)。
+ * shareMint で BFF が SWAP_EARN_MARKETS を解決するので、protocol ごとの分岐不要。
+ * Jupiter Lend を含む全 swap-routable protocol がこの経路に統合される。
+ */
+export async function getSwapEarnDepositTx(input: {
+  user: string;
+  shareMint: string;
+  amount: string;
+  slippageBps?: number;
+}): Promise<JupiterDepositTxResponse> {
+  const res = await fetch(`${BFF_BASE_URL}/protocols/swap-earn/deposit-tx`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as {
+      error?: string;
+      message?: string;
+    };
+    throw new Error(
+      body.message ?? body.error ?? `HTTP ${res.status} ${res.statusText}`
+    );
+  }
+  return (await res.json()) as JupiterDepositTxResponse;
+}
+
+/**
+ * Phase 8.15: protocol 汎用 swap-earn withdraw tx (share → underlying)。
+ */
+export async function getSwapEarnWithdrawTx(input: {
+  user: string;
+  shareMint: string;
+  amount: string;
+  slippageBps?: number;
+}): Promise<JupiterDepositTxResponse> {
+  const res = await fetch(`${BFF_BASE_URL}/protocols/swap-earn/withdraw-tx`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as {
+      error?: string;
+      message?: string;
+    };
+    throw new Error(
+      body.message ?? body.error ?? `HTTP ${res.status} ${res.statusText}`
+    );
+  }
+  return (await res.json()) as JupiterDepositTxResponse;
+}
+
+/** Phase 8.15b: Kamino Lend の unsigned tx (base64)。swap でなく obligation deposit/withdraw。 */
+export interface KaminoTxResponse {
+  transaction: string;
+  reserve: string;
+  market: string;
+  underlyingMint: string;
+}
+
+async function postKaminoTx<T>(
+  path: string,
+  input: Record<string, string>
+): Promise<T> {
+  const res = await fetch(`${BFF_BASE_URL}${path}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as {
+      error?: string;
+      message?: string;
+    };
+    throw new Error(
+      body.message ?? body.error ?? `HTTP ${res.status} ${res.statusText}`
+    );
+  }
+  return (await res.json()) as T;
+}
+
+/** Phase 8.15b: Kamino deposit tx (underlying → reserve、amount = smallest-unit string)。 */
+export function getKaminoDepositTx(input: {
+  user: string;
+  reserve: string;
+  amount: string;
+}): Promise<KaminoTxResponse> {
+  return postKaminoTx<KaminoTxResponse>("/protocols/kamino/deposit-tx", input);
+}
+
+/** Phase 8.15b: Kamino withdraw tx (reserve → underlying、amount = 保有 cToken smallest-unit)。 */
+export function getKaminoWithdrawTx(input: {
+  user: string;
+  reserve: string;
+  amount: string;
+}): Promise<KaminoTxResponse> {
+  return postKaminoTx<KaminoTxResponse>("/protocols/kamino/withdraw-tx", input);
+}
+
+/** Phase 8.15d: Kamino Earn vault (kVault) の unsigned tx。 */
+export interface KaminoVaultTxResponse {
+  transaction: string;
+  vault: string;
+  underlyingMint: string;
+}
+
+/** kVault deposit tx (underlying → vault share、amount = underlying smallest-unit)。 */
+export function getKaminoVaultDepositTx(input: {
+  user: string;
+  vault: string;
+  amount: string;
+}): Promise<KaminoVaultTxResponse> {
+  return postKaminoTx<KaminoVaultTxResponse>(
+    "/protocols/kamino/vault-deposit-tx",
+    input
+  );
+}
+
+/** kVault withdraw tx (share 建て、amount = 保有 share smallest-unit)。 */
+export function getKaminoVaultWithdrawTx(input: {
+  user: string;
+  vault: string;
+  amount: string;
+}): Promise<KaminoVaultTxResponse> {
+  return postKaminoTx<KaminoVaultTxResponse>(
+    "/protocols/kamino/vault-withdraw-tx",
+    input
+  );
+}
+
+/** Phase 8.15e: Drift spot の unsigned v0 tx。初回 deposit は User account 作成込み。 */
+export interface DriftTxResponse {
+  transaction: string;
+  firstDeposit: boolean;
+  positionKey: string;
+  underlyingMint: string;
+}
+
+/** Drift deposit tx (amount = underlying smallest-unit string)。 */
+export function getDriftDepositTx(input: {
+  user: string;
+  positionKey: string;
+  amount: string;
+}): Promise<DriftTxResponse> {
+  return postKaminoTx<DriftTxResponse>("/protocols/drift/deposit-tx", input);
+}
+
+/** Drift withdraw tx (reduceOnly、amount = underlying smallest-unit string)。 */
+export function getDriftWithdrawTx(input: {
+  user: string;
+  positionKey: string;
+  amount: string;
+}): Promise<DriftTxResponse> {
+  return postKaminoTx<DriftTxResponse>("/protocols/drift/withdraw-tx", input);
+}
+
+/**
+ * Phase 8.17: Meteora DLMM LP。deposit の tx は position ephemeral の部分署名済み
+ * (user 署名スロットのみ空 — MWA sign-only で保持される)。
+ */
+export interface MeteoraTxResponse {
+  transactions: string[];
+  position?: string;
+  bps?: number;
+  poolAddress: string;
+}
+
+/** Meteora single-sided deposit txns (amount = deposit token smallest-unit)。 */
+export function getMeteoraDepositTxns(input: {
+  user: string;
+  poolKey: string;
+  amount: string;
+}): Promise<MeteoraTxResponse> {
+  return postKaminoTx<MeteoraTxResponse>("/protocols/meteora/deposit-tx", input);
+}
+
+/** Meteora withdraw txns (amount = deposit token 建て smallest、BFF が bps 換算)。 */
+export function getMeteoraWithdrawTxns(input: {
+  user: string;
+  position: string;
+  amount: string;
+}): Promise<MeteoraTxResponse> {
+  return postKaminoTx<MeteoraTxResponse>("/protocols/meteora/withdraw-tx", input);
+}
+
+/**
+ * Phase 8.18: Orca Whirlpools full-range LP (zap-in)。deposit は 2 tx:
+ * [swap (user 単独), open+increase (position mint ephemeral の部分署名済み —
+ * user 署名スロットのみ空、MWA sign-only で保持される)]。
+ */
+export interface OrcaTxResponse {
+  transactions: string[];
+  /** deposit 時のみ: position mint (NFT) pubkey */
+  position?: string;
+  bps?: number;
+  poolAddress: string;
+}
+
+/** Orca zap-in deposit txns (amount = deposit token smallest-unit、半分 swap)。 */
+export function getOrcaDepositTxns(input: {
+  user: string;
+  poolKey: string;
+  amount: string;
+}): Promise<OrcaTxResponse> {
+  return postKaminoTx<OrcaTxResponse>("/protocols/orca/deposit-tx", input);
+}
+
+/** Orca withdraw txns (amount = deposit token 建て smallest、BFF が bps 換算)。 */
+export function getOrcaWithdrawTxns(input: {
+  user: string;
+  position: string;
+  amount: string;
+}): Promise<OrcaTxResponse> {
+  return postKaminoTx<OrcaTxResponse>("/protocols/orca/withdraw-tx", input);
+}
+
+/**
+ * Phase 8.15c: Save (旧 Solend) の unsigned v0 tx 群 (base64[])。
+ * 複数 tx は MWA 一括署名 → 順次 submit する (ATA 準備 + 本体等)。
+ */
+export interface SaveTxResponse {
+  transactions: string[];
+  reserve: string;
+  ctokenMint: string;
+  underlyingMint: string;
+}
+
+async function postSaveTx(
+  path: string,
+  input: Record<string, string>
+): Promise<SaveTxResponse> {
+  const res = await fetch(`${BFF_BASE_URL}${path}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as {
+      error?: string;
+      message?: string;
+    };
+    throw new Error(
+      body.message ?? body.error ?? `HTTP ${res.status} ${res.statusText}`
+    );
+  }
+  return (await res.json()) as SaveTxResponse;
+}
+
+/** Save deposit txns (underlying → cToken、amount = underlying smallest-unit string)。 */
+export function getSaveDepositTxns(input: {
+  user: string;
+  reserve: string;
+  amount: string;
+}): Promise<SaveTxResponse> {
+  return postSaveTx("/protocols/save/deposit-tx", input);
+}
+
+/** Save withdraw (redeem) txns (cToken → underlying、amount = cToken smallest-unit string)。 */
+export function getSaveWithdrawTxns(input: {
+  user: string;
+  ctokenMint: string;
+  amount: string;
+}): Promise<SaveTxResponse> {
+  return postSaveTx("/protocols/save/withdraw-tx", input);
 }
 
 /**

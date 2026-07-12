@@ -3,27 +3,134 @@
  * RN/React に依存しないので jest で軽量に検証できる。
  */
 import type { AgentPlan, OracleBlockReason } from "@workspace/lib/types";
+import {
+  SWAP_EARN_MARKETS,
+  findMarketByProtocolAsset,
+  findMarketByShareMint,
+} from "@workspace/lib/config/swap-earn-markets";
+import {
+  findKaminoMarketByAsset,
+  findKaminoMarketByPool,
+  findKaminoMarketByReserve,
+  findKaminoVaultByAddress,
+  findKaminoVaultByPool,
+} from "@workspace/lib/config/kamino-markets";
+import {
+  findSaveMarketByAsset,
+  findSaveMarketByCToken,
+  findSaveMarketByPool,
+} from "@workspace/lib/config/save-markets";
+import {
+  findDriftMarketByAsset,
+  findDriftMarketByKey,
+  findDriftMarketByPool,
+} from "@workspace/lib/config/drift-markets";
+import {
+  METEORA_MARKETS,
+  findMeteoraMarketByPool,
+} from "@workspace/lib/config/meteora-markets";
+import {
+  ORCA_MARKETS,
+  findOrcaMarketByPool,
+} from "@workspace/lib/config/orca-markets";
 
-/** Jupiter Lend Earn 7 markets の underlying symbol → mint */
-export const JUPITER_UNDERLYING_MINTS: Record<string, string> = {
-  USDC: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
-  SOL: "So11111111111111111111111111111111111111112",
-  USDT: "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",
-  EURC: "HzwqbKZw8HxMN6bF2yFZNrht3c2iXXzpKcFu7uBEDKtr",
-  USDS: "USDSwr9ApdHk5bvJKMjzff41FfuX8bSxdKcR81vTwcA",
-  USDG: "2u1tszSeqZ3qBWF3uNGPFc8TzMk2tdiwknnRMWGWjGWH",
-  JupUSD: "JuprjznTrTSp2UFa3ZBUFgwdAmtZCq4MQCwysN55USD",
-};
+/**
+ * underlying symbol → mint (SWAP_EARN_MARKETS から導出、§32.2 same source of truth)。
+ * Jupiter Lend 7 markets + Tier A protocol の全 underlying を網羅する。
+ */
+export const JUPITER_UNDERLYING_MINTS: Record<string, string> =
+  Object.fromEntries(
+    SWAP_EARN_MARKETS.map((m) => [m.underlying_symbol, m.underlying_mint])
+  );
 
-/** oracle gate を引く underlying mint (Jupiter Lend action のみ、他は null) */
+/**
+ * Phase 8.15: oracle gate (§4.6) を引く underlying mint を解決する。
+ *   deposit: (protocol_id, asset) で market を引き、その underlying mint。
+ *   withdraw: metadata.share_mint で market を引き、その underlying mint。
+ * registry 外 (Kamino 等 swap-earn 非対象) は null = oracle gate スキップ。
+ */
 export function resolveOracleMint(
   action: AgentPlan["selected_action"] | undefined
 ): string | null {
   if (!action) return null;
-  const isJL =
-    action.protocol === "jupiter_lend" || action.protocol === "jupiter";
-  if (!isJL || !action.asset) return null;
-  return JUPITER_UNDERLYING_MINTS[action.asset] ?? null;
+  // Menu catalog の "jupiter" は registry の "jupiter_lend" に正規化。
+  const protocolId =
+    action.protocol === "jupiter" ? "jupiter_lend" : action.protocol;
+  if (action.action_type === "withdraw") {
+    const shareMint = action.metadata?.share_mint;
+    if (typeof shareMint === "string") {
+      // share_mint の中身: swap-earn = token mint、Kamino = reserve address、
+      // Save = cToken mint、kVault = vault address、Drift = 合成 position_key。
+      // Meteora の position pubkey 等、どれにも hit しない場合は下の protocol
+      // 分岐に fall through する (return しない)。
+      const resolved =
+        findMarketByShareMint(shareMint)?.underlying_mint ??
+        findKaminoMarketByReserve(shareMint)?.underlying_mint ??
+        findSaveMarketByCToken(shareMint)?.underlying_mint ??
+        findKaminoVaultByAddress(shareMint)?.underlying_mint ??
+        findDriftMarketByKey(shareMint)?.underlying_mint;
+      if (resolved) return resolved;
+    }
+  }
+  // Phase 8.15b/8.15d: Kamino deposit は pool_id (vault 優先) / asset で解決。
+  if (protocolId === "kamino") {
+    const poolId = action.metadata?.pool_id;
+    const byVault =
+      typeof poolId === "string" ? findKaminoVaultByPool(poolId) : undefined;
+    if (byVault) return byVault.underlying_mint;
+    const byPool =
+      typeof poolId === "string" ? findKaminoMarketByPool(poolId) : undefined;
+    const mkt =
+      byPool ??
+      (action.asset ? findKaminoMarketByAsset(action.asset) : undefined);
+    return mkt?.underlying_mint ?? null;
+  }
+  // Phase 8.15c: Save deposit も pool_id / asset で解決。
+  if (protocolId === "savefi") {
+    const poolId = action.metadata?.pool_id;
+    const byPool =
+      typeof poolId === "string" ? findSaveMarketByPool(poolId) : undefined;
+    const mkt =
+      byPool ?? (action.asset ? findSaveMarketByAsset(action.asset) : undefined);
+    return mkt?.underlying_mint ?? null;
+  }
+  // Phase 8.15e: Drift deposit も pool_id / asset で解決。
+  if (protocolId === "drift") {
+    const poolId = action.metadata?.pool_id;
+    const byPool =
+      typeof poolId === "string" ? findDriftMarketByPool(poolId) : undefined;
+    const mkt =
+      byPool ?? (action.asset ? findDriftMarketByAsset(action.asset) : undefined);
+    return mkt?.underlying_mint ?? null;
+  }
+  // Phase 8.17: Meteora は deposit token を gate (withdraw は position pubkey が
+  // registry で引けないため asset (= deposit_symbol) で解決)。
+  if (protocolId === "meteora") {
+    const poolId = action.metadata?.pool_id;
+    const byPool =
+      typeof poolId === "string" ? findMeteoraMarketByPool(poolId) : undefined;
+    const mkt =
+      byPool ??
+      METEORA_MARKETS.find((m) => m.deposit_symbol === action.asset);
+    return mkt?.deposit_mint ?? null;
+  }
+  // Phase 8.18: Orca も deposit token を gate (withdraw は position mint が
+  // registry で引けないため asset (= deposit_symbol) で解決)。
+  if (protocolId === "orca") {
+    const poolId = action.metadata?.pool_id;
+    const byPool =
+      typeof poolId === "string" ? findOrcaMarketByPool(poolId) : undefined;
+    const mkt =
+      byPool ?? ORCA_MARKETS.find((m) => m.deposit_symbol === action.asset);
+    return mkt?.deposit_mint ?? null;
+  }
+  if (protocolId && action.asset) {
+    return (
+      findMarketByProtocolAsset(protocolId, action.asset)?.underlying_mint ??
+      null
+    );
+  }
+  return null;
 }
 
 /** block reason (§4.6) の表示ラベル */

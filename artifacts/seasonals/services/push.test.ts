@@ -15,6 +15,7 @@ import {
   getInitialApprovalResponse,
   getPushToken,
   isApprovalPushPayload,
+  isExecutionPushPayload,
   scheduleLocalApprovalNotification,
   setupNotificationHandler,
 } from "./push";
@@ -76,6 +77,26 @@ describe("isApprovalPushPayload", () => {
     expect(isApprovalPushPayload(null)).toBe(false);
     expect(isApprovalPushPayload(undefined)).toBe(false);
     expect(isApprovalPushPayload("approval")).toBe(false);
+  });
+});
+
+describe("isExecutionPushPayload (Phase 8.29)", () => {
+  it("type=execution + record_id で true、approval とは排他", () => {
+    expect(
+      isExecutionPushPayload({
+        type: "execution",
+        record_id: "auto_1",
+        plan_id: "p1",
+        protocol: "kamino",
+        action_type: "deposit",
+        amount_usd8: "20.00000000",
+        tx_signature: "SIG",
+        status: "executed",
+      })
+    ).toBe(true);
+    expect(isExecutionPushPayload({ type: "approval", plan_id: "p" })).toBe(false);
+    expect(isExecutionPushPayload({ type: "execution" })).toBe(false); // record_id 欠落
+    expect(isExecutionPushPayload(null)).toBe(false);
   });
 });
 

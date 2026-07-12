@@ -33,6 +33,7 @@ import { BottomSheetModalProvider } from "@gorhom/bottom-sheet";
 import { createQueryClient } from "../services/queryClient";
 import {
   addApprovalResponseListener,
+  addExecutionResponseListener,
   getInitialApprovalResponse,
   setupNotificationHandler,
   type ApprovalPushPayload,
@@ -86,9 +87,16 @@ export default function RootLayout() {
       router.push(approvalDeepLink(payload));
     });
 
+    // Phase 8.29: 自律実行「資金が動いた」通知 (v1 は log のみ、専用画面は後続)
+    const execSub = addExecutionResponseListener((payload) => {
+      // eslint-disable-next-line no-console
+      console.log("[push] autonomous execution", payload);
+    });
+
     return () => {
       mounted = false;
       sub.remove();
+      execSub.remove();
     };
   }, [router]);
 

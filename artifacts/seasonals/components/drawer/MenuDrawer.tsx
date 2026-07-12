@@ -59,6 +59,19 @@ import {
   type ProtocolPool,
 } from "@workspace/lib/types";
 import { formatUsd } from "@workspace/lib/utils/numeric";
+import {
+  findMarketByShareMint,
+  heldSwapEarnPositions,
+} from "@workspace/lib/config/swap-earn-markets";
+import {
+  findKaminoMarketByReserve,
+  findKaminoVaultByAddress,
+} from "@workspace/lib/config/kamino-markets";
+import {
+  findSaveMarketByCToken,
+  heldSavePositions,
+} from "@workspace/lib/config/save-markets";
+import { findDriftMarketByKey } from "@workspace/lib/config/drift-markets";
 
 import type { JupiterLendMarketDTO } from "../../services/api";
 import {
@@ -184,6 +197,20 @@ function formatTvlUsd(usd: number): string {
 
 function formatBorrowedUsd(usd: number): string {
   return formatTvlUsd(usd);
+}
+
+/**
+ * Phase 8.26: lending market の稼働率表示。≥0.9 は「貸出満杯に近く withdraw が
+ * 流動性不足で滞る可能性」の警告シグナルとして cherryDark、それ未満は textMuted。
+ */
+const UTILIZATION_WARN_THRESHOLD = 0.9;
+function formatUtilization(utilization: number): string {
+  return `Util ${(utilization * 100).toFixed(0)}%`;
+}
+function utilizationColor(utilization: number): string {
+  return utilization >= UTILIZATION_WARN_THRESHOLD
+    ? COLOR.cherryDark
+    : COLOR.textMuted;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -458,11 +485,16 @@ function applyJupiterFilter(
 export interface MenuDrawerProps {
   visible: boolean;
   onClose: () => void;
-  /** pool tap 時 (protocol_id / asset / "deposit") */
+  /**
+   * pool tap 時 (protocol_id / asset / "deposit" / pool_id)。
+   * Phase 8.15d: 同一 asset に reserve 系と vault 系 pool が並ぶ protocol (Kamino) を
+   * 判別するため pool_id を渡す。
+   */
   onStartAction?: (
     protocol: string,
     asset: string,
-    actionType: "deposit"
+    actionType: "deposit",
+    poolId?: string
   ) => void;
   /** Phase 8.9: Your Positions row tap で withdraw */
   onWithdrawPosition?: (position: EarnPosition) => void;
@@ -650,7 +682,7 @@ export function MenuDrawer({
     (entry: ProtocolMenuEntry, pool: ProtocolPool) => {
       onClose();
       const asset = pool.deposit_asset ?? pool.asset;
-      onStartAction?.(entry.protocol_id, asset, "deposit");
+      onStartAction?.(entry.protocol_id, asset, "deposit", pool.pool_id);
     },
     [onClose, onStartAction]
   );
@@ -802,6 +834,7 @@ export function MenuDrawer({
                   onBack={goBackToList}
                   onPoolTap={(pool) => handlePoolTap(selectedEntry, pool)}
                   earnPositions={earnPositions}
+                  positions={positions as Position[]}
                   onWithdrawPosition={onWithdrawPosition}
                   jlMarkets={jlMarkets}
                   testID={testID ? `${testID}-detail` : undefined}
@@ -822,16 +855,34 @@ export function MenuDrawer({
 /** Menu fixture の protocol_id → EarnPosition 配列を解決 */
 function positionsForProtocol(
   protocolId: string,
-  earnPositions: EarnPositionsResponse | undefined
+  earnPositions: EarnPositionsResponse | undefined,
+  positions: Position[]
 ): EarnPosition[] {
-  if (!earnPositions) return [];
   switch (protocolId) {
     case "jupiter":
-      return earnPositions.jupiterLend;
+      return earnPositions?.jupiterLend ?? [];
     case "kamino":
-      return earnPositions.kaminoBestEffort;
+      return earnPositions?.kaminoBestEffort ?? [];
+    case "savefi":
+      // Phase 8.15.x: BFF の enriched 配列を優先 (underlying/USD/earned 実値)。
+      // undefined (旧 BFF / fixture) のみ client 側 mint 解決に fallback。
+      return earnPositions?.save ?? heldSavePositions(positions, protocolId);
+    case "drift":
+      // Phase 8.15e: SPL 受取が無いため BFF (SDK read) の配列のみ。
+      return earnPositions?.drift ?? [];
+    case "meteora":
+      // Phase 8.17: DLMM position は account 型 — BFF (SDK read) の配列のみ。
+      return earnPositions?.meteora ?? [];
+    case "orca":
+      // Phase 8.18: Whirlpool position は NFT — BFF (SDK read) の配列のみ。
+      return earnPositions?.orca ?? [];
     default:
-      return [];
+      // Phase 8.15/8.15.x: swap-earn protocol (jito/marinade/sanctum/perena)。
+      // BFF enriched 配列 (protocol 混載) を protocol_id で絞る。
+      return (
+        earnPositions?.swapEarn?.filter((p) => p.protocol_id === protocolId) ??
+        heldSwapEarnPositions(positions, protocolId)
+      );
   }
 }
 
@@ -873,9 +924,22 @@ function YourPositionRow({
     position.underlying_amount,
     position.underlying_decimals
   );
-  // Phase 8.9: row tap で withdraw 起動 (Jupiter Lend のみ、Kamino best-effort は disable)
+  // Phase 8.15: registry の share_mint に hit する position は withdraw 経路を持つ。
+  //   swap-earn (Jupiter Lend / Jito / Marinade / Sanctum): share_mint = token mint
+  //   Kamino (8.15b): share_mint = reserve address (obligation withdraw)
+  //   Save (8.15c): share_mint = cToken mint (redeem)
+  //   Kamino kVault (8.15d): share_mint = vault address (share 建て withdraw)
+  // いずれにも hit しない (Kamino best-effort 等) は withdraw disable のまま。
   const canWithdraw =
-    position.protocol_id === "jupiter_lend" && onWithdraw !== undefined;
+    (findMarketByShareMint(position.share_mint) !== undefined ||
+      findKaminoMarketByReserve(position.share_mint) !== undefined ||
+      findSaveMarketByCToken(position.share_mint) !== undefined ||
+      findKaminoVaultByAddress(position.share_mint) !== undefined ||
+      findDriftMarketByKey(position.share_mint) !== undefined ||
+      // Meteora (8.17) / Orca (8.18): share_mint = position 実 pubkey — protocol で判定
+      position.protocol_id === "meteora" ||
+      position.protocol_id === "orca") &&
+    onWithdraw !== undefined;
   return (
     <Pressable
       accessibilityRole={canWithdraw ? "button" : "none"}
@@ -885,7 +949,7 @@ function YourPositionRow({
     >
       <View style={styles.earnBadge}>
         <Text style={styles.earnBadgeText}>
-          {position.protocol_id === "jupiter_lend" ? "J" : "K"}
+          {position.protocol_id.charAt(0).toUpperCase()}
         </Text>
       </View>
       <View style={styles.earnBody}>
@@ -896,6 +960,25 @@ function YourPositionRow({
           {amount} {position.asset_symbol}
           {canWithdraw ? " · Tap to withdraw" : ""}
         </Text>
+        {/* Phase 8.15.x: 実 USD + 実 earned (unknown は "—"、フェイク値を出さない)。
+            display 専用 Number 変換 (§4.5 適用外、Jupiter row と同 precedent)。 */}
+        {(() => {
+          const usdNum = Number(position.underlying_usd);
+          const usdKnown = Number.isFinite(usdNum) && usdNum > 0;
+          const earnedKnown = position.accrued_yield_sign !== "unknown";
+          const earnedText = earnedKnown
+            ? `${position.accrued_yield_sign === "loss" ? "−" : "+"}${formatHumanAmount(
+                Number(position.accrued_yield_amount) /
+                  Math.pow(10, position.underlying_decimals)
+              )} ${position.asset_symbol}`
+            : "—";
+          if (!usdKnown && !earnedKnown) return null;
+          return (
+            <Text style={styles.earnSubtitle} numberOfLines={1}>
+              {usdKnown ? `${formatUsdDisplay(usdNum)} · ` : ""}Earned {earnedText}
+            </Text>
+          );
+        })()}
       </View>
       <Text style={styles.earnApy}>{formatApyBps(position.supply_rate_bps)}</Text>
     </Pressable>
@@ -982,6 +1065,8 @@ interface PoolDetailPaneProps {
   onPoolTap: (pool: ProtocolPool) => void;
   /** Phase 8.2.1: drill-down 内に "Your Positions" subsection を出すための data */
   earnPositions?: EarnPositionsResponse;
+  /** Phase 8.15: 保有 LST を protocol 別に解決するための raw positions */
+  positions: Position[];
   /** Phase 8.9: Your Positions row tap で withdraw 起動 */
   onWithdrawPosition?: (position: EarnPosition) => void;
   /** Phase 8.11: Jupiter drill-down で vault rows を構築するための raw markets */
@@ -1002,6 +1087,7 @@ function DefaultPoolDetailPane({
   onBack,
   onPoolTap,
   earnPositions,
+  positions,
   onWithdrawPosition,
   testID,
 }: PoolDetailPaneProps) {
@@ -1063,7 +1149,8 @@ function DefaultPoolDetailPane({
         {(() => {
           const myPositions = positionsForProtocol(
             entry.protocol_id,
-            earnPositions
+            earnPositions,
+            positions
           );
           if (myPositions.length === 0) return null;
           return (
@@ -1122,7 +1209,24 @@ function DefaultPoolDetailPane({
                     {`borrowed ${formatBorrowedUsd(pool.borrowed_usd)}`}
                   </Text>
                 )}
+                {pool.utilization != null && (
+                  <Text
+                    style={[
+                      styles.poolMeta,
+                      { color: utilizationColor(pool.utilization) },
+                    ]}
+                    testID={`pool-util-${pool.pool_id}`}
+                  >
+                    {formatUtilization(pool.utilization)}
+                  </Text>
+                )}
               </View>
+              {/* 8.26: 満杯市場は withdraw が滞る可能性を明示 */}
+              {pool.utilization != null && pool.utilization >= 0.95 && (
+                <Text style={styles.poolUtilWarning}>
+                  High utilization — withdrawals may be limited
+                </Text>
+              )}
             </View>
           </Pressable>
         ))}
@@ -1934,6 +2038,13 @@ const styles = StyleSheet.create({
     fontSize: FONT_SIZE.bodySM,
     fontFamily: FONT.body,
     color: COLOR.textMuted,
+  },
+  // 8.26: 稼働率 ≥95% の withdraw 流動性注意 (pool 行下の小テキスト)
+  poolUtilWarning: {
+    fontSize: FONT_SIZE.bodySM,
+    fontFamily: FONT.body,
+    color: COLOR.cherryDark,
+    marginTop: 2,
   },
   // ─── Phase 8.11 — Jupiter drill-down (unified vault list) ──────────────
   jupAssetLine: {

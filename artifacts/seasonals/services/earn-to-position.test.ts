@@ -5,8 +5,8 @@
  *   - 符号 / 既知性は raw_state (accrued_yield_sign / cost_basis_amount) に載る
  */
 
-import type { EarnPosition } from "@workspace/lib/types";
-import { earnPositionToPosition } from "./earn-to-position";
+import type { EarnPosition, Position } from "@workspace/lib/types";
+import { earnPositionToPosition, mergeEarnPositions } from "./earn-to-position";
 
 function makeEarn(overrides: Partial<EarnPosition> = {}): EarnPosition {
   return {
@@ -77,5 +77,66 @@ describe("earnPositionToPosition — Phase 8.13 accrued yield", () => {
       accrued_yield_sign: "unknown",
       cost_basis_amount: null,
     });
+  });
+});
+
+// ── Phase 8.15.x: mergeEarnPositions (swapEarn/save 合成 + 二重計上ガード) ──
+
+function rawPos(mint: string, protocolId = "jito"): Position {
+  return {
+    position_id: `raw_${mint}`,
+    wallet_id: "w1",
+    protocol_id: protocolId,
+    asset_symbol: "X",
+    principal_amount: "1",
+    current_amount: "1",
+    accrued_yield_amount: "0",
+    unit_price_usd: "0",
+    unit_price_sol: "0",
+    deposited_at: "2026-01-01T00:00:00Z",
+    maturity_at: null,
+    unlock_at: null,
+    health_factor: null,
+    auto_roll_rule: null,
+    risk_score: 0,
+    raw_state: { mint },
+  };
+}
+
+describe("mergeEarnPositions — Phase 8.15.x", () => {
+  const JITOSOL = "J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn";
+
+  it("swapEarn / save 配列も合成される", () => {
+    const merged = mergeEarnPositions([], {
+      jupiterLend: [],
+      kaminoBestEffort: [],
+      swapEarn: [makeEarn({ protocol_id: "jito", share_mint: JITOSOL })],
+      save: [makeEarn({ protocol_id: "savefi", share_mint: "CUSDC_MINT" })],
+    });
+    expect(merged).toHaveLength(2);
+    expect(merged.map((p) => p.protocol_id)).toEqual(["jito", "savefi"]);
+  });
+
+  it("二重計上ガード: earn 行と同じ mint の raw 保有行は置換される", () => {
+    const base = [rawPos(JITOSOL, "jito"), rawPos("OtherMint", "wallet_holding")];
+    const merged = mergeEarnPositions(base, {
+      jupiterLend: [],
+      kaminoBestEffort: [],
+      swapEarn: [makeEarn({ protocol_id: "jito", share_mint: JITOSOL })],
+    });
+    // raw jitoSOL 行は drop、OtherMint 行 + earn 行の 2 件
+    expect(merged).toHaveLength(2);
+    expect(
+      merged.filter((p) => (p.raw_state as { mint?: string }).mint === JITOSOL)
+    ).toHaveLength(0);
+  });
+
+  it("swapEarn/save undefined (旧 BFF) は従来挙動のまま", () => {
+    const base = [rawPos(JITOSOL, "jito")];
+    const merged = mergeEarnPositions(base, {
+      jupiterLend: [makeEarn()],
+      kaminoBestEffort: [],
+    });
+    expect(merged).toHaveLength(2); // raw + jl earn (jl share_mint は raw に無い)
   });
 });

@@ -50,6 +50,7 @@ import type {
 } from "@workspace/lib/types";
 
 import { DropletMarker } from "./DropletMarker";
+import { dropletShapeForEvent, sortEventsByUrgency } from "./event-display";
 import {
   useThemedStyles,
   type ThemeColors,
@@ -219,10 +220,11 @@ export function MonthGrid({
               </Text>
               {(dayEvents.length > 0 || dayCustom.length > 0) && (
                 <View style={styles.markerRow}>
-                  {dayEvents.slice(0, 3).map((e) => (
+                  {/* §5.3: urgency-first — critical が 4 件目以降で隠れないよう sort */}
+                  {sortEventsByUrgency(dayEvents).slice(0, 3).map((e) => (
                     <DropletMarker
                       key={e.id}
-                      category={e.category}
+                      category={dropletShapeForEvent(e)}
                       urgency={e.urgency}
                       size={9}
                     />
