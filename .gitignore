@@ -24,6 +24,10 @@ node_modules/
 # CLAUDE.md の §参照・/spec・/check はローカルの docs/spec.md で機能する
 docs/spec.md
 
+# 作業ステータス doc — local-only (進捗/確認チェックリスト、公開不要)
+docs/confirm.md
+docs/progress.md
+
 # Build and framework output
 .expo/
 .next/

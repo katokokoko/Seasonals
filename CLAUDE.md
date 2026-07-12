@@ -423,6 +423,13 @@ PR を出す前 / コードレビューを依頼する前に、関連する行�
 8. ✅ **Seed Vault 連携確認** — code grep で `Keypair` / `secretKey` / `mnemonic` 等 0 件、Seeker 実機で MWA round-trip (Phantom 経由) 確認済。Seed Vault path も device 設定で同 probe screen から到達可能
 9. ✅ **EAS Build pipeline** — `eas.json` 3 profiles (dev / preview / production)、Android-only / apk / `appVersionSource: remote`、`pnpm build:{dev,preview,prod}` script、`.easignore` 整備
 
+### 後続 backlog (優先度高)
+
+- **依存リフレッシュ phase** (Seeker smoke → phase 別コミット完了後の独立 phase として実施。未コミットが積み上がった状態では着手しない):
+  - BFF の Solana SDK 群は **web3.js v1 系に意図的固定** (2026-07 時点): `@orca-so/whirlpools-sdk` 0.21 (legacy 版。kit/v2 版への一本化動向を監視)、`@drift-labs/sdk` ^2.156、root pnpm override `"rpc-websockets@^7": "7.10.0"` (7.11.x の .cjs-only dist regression 回避 — 上流修正を確認したら override 解除)
+  - `@solendprotocol/solend-sdk` 0.14.x が **isomorphic-fetch で global fetch を node-fetch に上書き** → Orca / Meteora の Cloudflare が 403 で弾くため該当 client は undici を明示利用中 (orca-tx.ts / meteora-tx.ts)。恒久対応 (solend-sdk 更新 or fetch 隔離) を検討
+  - 更新時は §8.1 完了ゲートに加えて **全 protocol 経路の live verify (deposit build 署名検査 / positions / withdraw)** を必須とする — SDK major は挙動が変わり得る
+
 ---
 
 ## 11. Claude Code が新規ファイルを作る/編集する時のチェックリスト

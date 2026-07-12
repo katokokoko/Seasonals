@@ -7,5 +7,10 @@
     "test": "pnpm -r test",
     "typecheck": "pnpm -r typecheck"
   },
-  "packageManager": "pnpm@10.33.4"
+  "packageManager": "pnpm@10.33.4",
+  "pnpm": {
+    "overrides": {
+      "rpc-websockets@^7": "7.10.0"
+    }
+  }
 }
