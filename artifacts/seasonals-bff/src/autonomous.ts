@@ -43,6 +43,7 @@ import {
   evaluatePolicy,
   type PolicyCandidate,
 } from "@workspace/lib/policy/evaluate-policy";
+import { compareUsd8 } from "@workspace/lib/utils/numeric";
 import type {
   AutonomousExecutionRecord,
   Objective,
@@ -245,15 +246,9 @@ export interface RunAutonomousOpts {
   dry_run?: boolean;
 }
 
-/** USD 8-dec の小さい方 (ハードクランプ用、文字列比較でなく bigint) */
+/** USD 8-dec の小さい方 (ハードクランプ用、§4.5 helper で bigint 比較) */
 function minUsd8(a: string, b: string): string {
-  const av = usd8(a);
-  const bv = usd8(b);
-  return av <= bv ? a : b;
-}
-function usd8(v: string): bigint {
-  const [i, f = ""] = v.split(".");
-  return BigInt(i!) * 100_000_000n + BigInt((f + "00000000").slice(0, 8));
+  return compareUsd8(a, b) <= 0 ? a : b;
 }
 
 /** menu の pool を PolicyCandidate に (notional を第1クランプ) */
@@ -306,12 +301,16 @@ function baseRecord(
  * 1 サイクル: fetchMenu → policy filter → (dry_run/reject) or 委任署名+broadcast。
  * throw する例外は AutonomousDisabledError のみ (呼び手が HTTP status にマップ)。
  * それ以外の decision (rejected 含む) は record として返る。
+ *
+ * dry_run の既定は **true** (fail-closed / 誤爆防止)。実 broadcast は呼び手が
+ * dry_run:false を明示した時のみ (MCP tool は .default(true)、scheduler は
+ * AUTONOMOUS_LOOP_DRY_RUN=false で opt-in)。
  */
 export async function runAutonomousCycle(
   opts: RunAutonomousOpts,
   deps: AutonomousDeps
 ): Promise<AutonomousExecutionRecord> {
-  const dryRun = opts.dry_run ?? false;
+  const dryRun = opts.dry_run ?? true;
   assertAutonomousEnabled({ dryRun });
 
   const policy = deps.getPolicy();

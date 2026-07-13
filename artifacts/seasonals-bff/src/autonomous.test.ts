@@ -113,6 +113,16 @@ describe("runAutonomousCycle — decision + guards", () => {
     expect(mockSend).not.toHaveBeenCalled();
   });
 
+  it("dry_run 省略時は既定で dry_run (F1 fail-closed、署名しない)", async () => {
+    const rec = await runAutonomousCycle(
+      { objective: "safety_first", asset: "USDC" }, // dry_run 省略
+      fakeDeps(autoPolicy())
+    );
+    expect(rec.decision).toBe("dry_run");
+    expect(rec.tx_signature).toBeNull();
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
   it("本番: 委任署名 → confirmed devnet 署名 + notify + hard-cap notional", async () => {
     const push = jest.fn();
     const rec = await runAutonomousCycle(
@@ -298,6 +308,45 @@ describe("routes: /autonomous/* + PATCH /user-policy", () => {
       )
     ).toHaveLength(0);
     fetchSpy.mockRestore();
+  });
+
+  it("auto-approve 短絡: policy 外 protocol は短絡せず pending_user (F3 fail-closed)", async () => {
+    await app.inject({
+      method: "PATCH",
+      url: "/user-policy",
+      payload: { approval_mode: "auto" },
+    });
+    const plan = (
+      await app.inject({
+        method: "POST",
+        url: "/agent-plans",
+        payload: { objective: "max_yield", mcp_client_id: "t" },
+      })
+    ).json();
+    // orca は fixture default policy の enabled_protocols 外 → 短絡しない
+    await app.inject({
+      method: "POST",
+      url: `/agent-plans/${plan.plan_id}/simulate`,
+      payload: {
+        action_spec: {
+          wallet_id: "W",
+          action_type: "deposit",
+          protocol: "orca",
+          asset: "SOL",
+          amount: "1000000",
+        },
+      },
+    });
+    const req = await app.inject({
+      method: "POST",
+      url: `/agent-plans/${plan.plan_id}/request-approval`,
+    });
+    expect(req.json().status).toBe("pending_user"); // 人手承認へ fall through
+    const appr = await app.inject({
+      method: "GET",
+      url: `/agent-plans/${plan.plan_id}/approval`,
+    });
+    expect(appr.json().approval_token).toBeNull(); // token 未発行
   });
 
   it("buildAutonomousDeps.fetchMenu が /menu-listings を返す (回帰 smoke)", async () => {

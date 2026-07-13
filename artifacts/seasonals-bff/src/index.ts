@@ -35,12 +35,18 @@ async function main(): Promise<void> {
       const objective = isObjective(process.env.AUTONOMOUS_OBJECTIVE)
         ? process.env.AUTONOMOUS_OBJECTIVE
         : "safety_first";
+      // dry_run 既定は安全側 (fail-closed)。実 broadcast は
+      // AUTONOMOUS_LOOP_DRY_RUN=false を明示した時のみ opt-in。
+      const loopDryRun = process.env.AUTONOMOUS_LOOP_DRY_RUN !== "false";
       startAutonomousLoop(buildAutonomousDeps(app), loopMs, {
         objective,
         asset: process.env.AUTONOMOUS_ASSET,
+        dry_run: loopDryRun,
       });
       // eslint-disable-next-line no-console
-      console.log(`Autonomous loop enabled (${loopMs}ms, ${objective})`);
+      console.log(
+        `Autonomous loop enabled (${loopMs}ms, ${objective}, dry_run=${loopDryRun})`
+      );
     }
   } catch (err) {
     // eslint-disable-next-line no-console

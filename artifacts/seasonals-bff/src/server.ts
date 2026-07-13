@@ -3022,12 +3022,27 @@ export async function buildServer(
       // Phase 8.29: auto-approve 短絡 — approval_mode=auto かつ flag ON かつ
       // kill されていなければ、push/待機なしで即 approved + token 発行
       // (§11.6)。MCP poll (GET /:id/approval) が即 approved+token を観測する。
+      //
+      // Phase 8.29 fix (F3, §32.2 policy-aware execution): selected_action が
+      // policy の enabled_protocols / enabled_assets を満たす時のみ短絡する。
+      // 満たさなければ fall through して通常の人手承認 (pending_user) を要求 =
+      // fail-closed。金額/TVL/risk の厳密 cap は follow-up (ActionSpec に
+      // amount_usd8 / category を持たないため)。自律 /tick 経路は既に full
+      // evaluatePolicy 済 (autonomous.ts) なので穴なし。
+      const autoPolicy = getCurrentPolicy();
+      const autoAct = plan.selected_action;
+      const autoPolicyOk =
+        !!autoAct &&
+        autoPolicy.enabled_protocols.includes(autoAct.protocol) &&
+        (autoAct.asset === undefined ||
+          autoPolicy.enabled_assets.includes(autoAct.asset));
       if (
         plan.status === AgentPlanStatus.Simulated &&
         !isKilled() &&
-        canAutoExecute(getCurrentPolicy(), isAutonomousFeatureEnabled()) &&
+        canAutoExecute(autoPolicy, isAutonomousFeatureEnabled()) &&
         plan.selected_action &&
-        plan.simulation_result
+        plan.simulation_result &&
+        autoPolicyOk
       ) {
         issueApprovalToken({
           user_id: plan.user_id,
