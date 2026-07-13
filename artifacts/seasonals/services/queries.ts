@@ -21,6 +21,8 @@ import {
 import type {
   AgentPlan,
   ApprovalToken,
+  AutonomousExecutionRecord,
+  AutonomousStatus,
   EarnPositionsResponse,
   OracleResult,
   Position,
@@ -56,6 +58,9 @@ export const queryKeys = {
   agentPlans: () => ["agent-plans"] as const,
   approvalToken: (tokenId: string) => ["approval-token", tokenId] as const,
   userPolicy: () => ["user-policy"] as const,
+  /** Phase 8.30: 自律オプションの状態 / 監査ログ */
+  autonomousStatus: () => ["autonomous-status"] as const,
+  autonomousLog: () => ["autonomous-log"] as const,
   wallets: () => ["wallets"] as const,
   protocols: () => ["protocols"] as const,
   menuListings: () => ["menu-listings"] as const,
@@ -314,6 +319,80 @@ export function useRejectAgentPlan(): UseMutationResult<
     mutationFn: api.postRejectAgentPlan,
     onSuccess: (plan) => {
       qc.setQueryData(queryKeys.agentPlan(plan.plan_id), plan);
+    },
+  });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Phase 8.30: 自律管制盤 (status / log / kill-resume / policy 編集)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** 自律オプションの現在状態 (armed / daily_count / hard_caps)。頻繁に変わらないので短め staleTime。 */
+export function useAutonomousStatus(): UseQueryResult<AutonomousStatus, Error> {
+  return useQuery({
+    queryKey: queryKeys.autonomousStatus(),
+    queryFn: api.getAutonomousStatus,
+    staleTime: 10_000,
+  });
+}
+
+/** 自律実行の監査ログ (newest-first)。 */
+export function useAutonomousLog(): UseQueryResult<
+  AutonomousExecutionRecord[],
+  Error
+> {
+  return useQuery({
+    queryKey: queryKeys.autonomousLog(),
+    queryFn: api.getAutonomousLog,
+    staleTime: 10_000,
+  });
+}
+
+/** kill switch — 停止後の status を cache に反映。 */
+export function useKillAutonomous(): UseMutationResult<
+  AutonomousStatus,
+  Error,
+  void
+> {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.killAutonomous(),
+    onSuccess: (status) => {
+      qc.setQueryData(queryKeys.autonomousStatus(), status);
+    },
+  });
+}
+
+/** kill 解除 (resume) — status を cache に反映。 */
+export function useResumeAutonomous(): UseMutationResult<
+  AutonomousStatus,
+  Error,
+  void
+> {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.resumeAutonomous(),
+    onSuccess: (status) => {
+      qc.setQueryData(queryKeys.autonomousStatus(), status);
+    },
+  });
+}
+
+/**
+ * UserPolicy を PATCH で永続更新 (§6.4)。成功で userPolicy cache を更新し、
+ * approval_mode 変更が status の enabled 判定に効くため autonomousStatus も invalidate。
+ */
+export function usePatchUserPolicy(): UseMutationResult<
+  UserPolicy,
+  Error,
+  Partial<UserPolicy>
+> {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (patch: Partial<UserPolicy>) => api.patchUserPolicy(patch),
+    onSuccess: (policy) => {
+      qc.setQueryData(queryKeys.userPolicy(), policy);
+      qc.invalidateQueries({ queryKey: queryKeys.autonomousStatus() });
     },
   });
 }

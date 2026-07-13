@@ -341,6 +341,20 @@ export function SettingsDrawer({
                   <Text style={styles.chevron}>▾</Text>
                 </View>
               </Pressable>
+              <View style={styles.divider} />
+              {/* Phase 8.30: 自律オプションの管制盤 (status/log/kill + 実 policy 編集) */}
+              <Pressable
+                accessibilityRole="button"
+                onPress={() => {
+                  onClose();
+                  router.push("/autonomous");
+                }}
+                style={styles.row}
+                testID={testID ? `${testID}-autonomous` : undefined}
+              >
+                <Text style={styles.rowLabel}>自律オプション</Text>
+                <Text style={styles.chevron}>›</Text>
+              </Pressable>
               <Pressable
                 accessibilityRole="button"
                 accessibilityState={{ disabled: true }}

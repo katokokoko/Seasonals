@@ -28,12 +28,16 @@ import {
   fixtureWallets,
   fixtureProtocols,
   fixtureMenuListings,
+  fixtureAutonomousStatus,
+  fixtureAutonomousLog,
 } from "@workspace/lib/__fixtures__";
 import type { ProtocolMenuEntry } from "@workspace/lib/types";
 import {
   AgentPlanStatus,
   type AgentPlan,
   type ApprovalToken,
+  type AutonomousExecutionRecord,
+  type AutonomousStatus,
   type EarnPositionsResponse,
   type OracleResult,
   type Position,
@@ -87,6 +91,16 @@ async function httpGetJson<T>(path: string): Promise<T> {
 async function httpPostJson<T>(path: string, body?: unknown): Promise<T> {
   const res = await fetch(`${BFF_BASE_URL}${path}`, {
     method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+  });
+  if (!res.ok) throw await bffError(res, path);
+  return (await res.json()) as T;
+}
+
+async function httpPatchJson<T>(path: string, body?: unknown): Promise<T> {
+  const res = await fetch(`${BFF_BASE_URL}${path}`, {
+    method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
@@ -185,6 +199,29 @@ async function fxGetProtocols(): Promise<Protocol[]> {
 async function fxGetMenuListings(): Promise<ProtocolMenuEntry[]> {
   await nextTick();
   return cloned(fixtureMenuListings);
+}
+
+// Phase 8.30: 自律管制盤の fixture (status / log / kill / resume / policy patch)
+async function fxGetAutonomousStatus(): Promise<AutonomousStatus> {
+  await nextTick();
+  return cloned(fixtureAutonomousStatus);
+}
+
+async function fxGetAutonomousLog(): Promise<AutonomousExecutionRecord[]> {
+  await nextTick();
+  return cloned(fixtureAutonomousLog);
+}
+
+async function fxSetAutonomousKilled(killed: boolean): Promise<AutonomousStatus> {
+  await nextTick();
+  return { ...cloned(fixtureAutonomousStatus), killed };
+}
+
+async function fxPatchUserPolicy(
+  patch: Partial<UserPolicy>
+): Promise<UserPolicy> {
+  await nextTick();
+  return { ...cloned(fixtureUserPolicyDefault), ...patch };
 }
 
 async function fxApproveAgentPlan(planId: string): Promise<AgentPlan> {
@@ -803,6 +840,56 @@ export async function getUserPolicy(): Promise<UserPolicy> {
     () => httpGetJson<UserPolicy>("/user-policy"),
     () => fxGetUserPolicy(),
     "/user-policy"
+  );
+}
+
+/**
+ * Phase 8.30: 自律管制盤 — UserPolicy を PATCH で永続更新 (§6.4 editable フィールド)。
+ * §4.5: max_tx_amount / min_tvl は USD string のまま渡す (呼び出し側で検証済み)。
+ */
+export async function patchUserPolicy(
+  patch: Partial<UserPolicy>
+): Promise<UserPolicy> {
+  return tryHttpThenFixture(
+    () => httpPatchJson<UserPolicy>("/user-policy", patch),
+    () => fxPatchUserPolicy(patch),
+    "/user-policy"
+  );
+}
+
+/** Phase 8.30: 自律オプションの現在状態 (armed / daily_count / hard_caps)。 */
+export async function getAutonomousStatus(): Promise<AutonomousStatus> {
+  return tryHttpThenFixture(
+    () => httpGetJson<AutonomousStatus>("/autonomous/status"),
+    () => fxGetAutonomousStatus(),
+    "/autonomous/status"
+  );
+}
+
+/** Phase 8.30: 自律実行の監査ログ (newest-first)。 */
+export async function getAutonomousLog(): Promise<AutonomousExecutionRecord[]> {
+  return tryHttpThenFixture(
+    () => httpGetJson<AutonomousExecutionRecord[]>("/autonomous/log"),
+    () => fxGetAutonomousLog(),
+    "/autonomous/log"
+  );
+}
+
+/** Phase 8.30: kill switch — 自律実行を即時全停止。返り値は更新後 status。 */
+export async function killAutonomous(): Promise<AutonomousStatus> {
+  return tryHttpThenFixture(
+    () => httpPostJson<AutonomousStatus>("/autonomous/kill"),
+    () => fxSetAutonomousKilled(true),
+    "/autonomous/kill"
+  );
+}
+
+/** Phase 8.30: kill 解除 (resume)。返り値は更新後 status。 */
+export async function resumeAutonomous(): Promise<AutonomousStatus> {
+  return tryHttpThenFixture(
+    () => httpPostJson<AutonomousStatus>("/autonomous/resume"),
+    () => fxSetAutonomousKilled(false),
+    "/autonomous/resume"
   );
 }
 
