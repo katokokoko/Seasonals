@@ -47,3 +47,25 @@ export interface AutonomousExecutionRecord {
   /** ISO 8601 */
   created_at: string;
 }
+
+/**
+ * AutonomousStatus — 自律オプションの現在状態 (Phase 8.30)
+ *
+ * `GET /autonomous/status` の response DTO。BFF が算出し、mobile / web の管制盤が
+ * 「AI は今 armed か / 今日いくら動いたか / 絶対上限は」を描画するために読む
+ * (same source of truth: BFF と各クライアントが同じ型を共有、§32.2)。
+ *
+ * §32.2: `delegate_pubkey` は pubkey のみ (secret は含めない)。
+ * `hard_caps` は user policy と独立の絶対上限で、policy が無制限でも超えられない。
+ */
+export interface AutonomousStatus {
+  /** flag ∧ devnet ∧ !killed ∧ delegate あり */
+  enabled: boolean;
+  feature_flag: boolean;
+  devnet: boolean;
+  killed: boolean;
+  delegate_pubkey: string | null;
+  daily_count: number;
+  daily_limit: number;
+  hard_caps: { max_tx_usd8: string; max_daily: number; max_lamports: string };
+}
