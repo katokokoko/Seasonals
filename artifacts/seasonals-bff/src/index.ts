@@ -13,7 +13,8 @@
 import "dotenv/config";
 
 import { buildAutonomousDeps, buildServer } from "./server";
-import { startAutonomousLoop } from "./autonomous";
+import { startAutonomousLoop, loadPersistedRecords } from "./autonomous";
+import { loadPersistedPolicy } from "./policy-store";
 import { isObjective } from "@workspace/lib/types";
 
 // 3000 は Next.js dev server の慣例 port なので 3030 を default に。
@@ -22,6 +23,13 @@ const PORT = Number(process.env.PORT ?? 3030);
 const HOST = process.env.HOST ?? "0.0.0.0";
 
 async function main(): Promise<void> {
+  // Phase 8.30: 最小永続化 — 既定で .data/ に policy override + 監査ログを保存
+  // (再起動後も残す)。SEASONALS_DATA_DIR で場所を上書き可。テストは main() を
+  // 通らず SEASONALS_DATA_DIR も設定しないので、disk に触れず hermetic なまま。
+  if (!process.env.SEASONALS_DATA_DIR) process.env.SEASONALS_DATA_DIR = ".data";
+  loadPersistedPolicy();
+  loadPersistedRecords();
+
   const app = await buildServer({ logger: true });
   try {
     await app.listen({ port: PORT, host: HOST });

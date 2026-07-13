@@ -28,6 +28,10 @@ docs/spec.md
 docs/confirm.md
 docs/progress.md
 
+# Local persistence (Phase 8.30 file-backed policy override + autonomous log)
+.data/
+**/.data/
+
 # Build and framework output
 .expo/
 .next/

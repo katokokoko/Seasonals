@@ -13,11 +13,24 @@ import type { PositionCategory, UserPolicy } from "@workspace/lib/types";
 import { fixtureUserPolicyDefault } from "@workspace/lib/__fixtures__";
 import { isValidUsdAmount } from "@workspace/lib/utils/numeric";
 
+import { loadJson, saveJson } from "./persistence";
+
+const PERSIST_KEY = "policy-override";
+
 let override: Partial<UserPolicy> | null = null;
 
 /** test 用: override クリア */
 export function _resetPolicyForTest(): void {
   override = null;
+}
+
+/**
+ * 起動時に永続化された policy override をロード (Phase 8.30)。
+ * SEASONALS_DATA_DIR 未設定時は no-op (loadJson が null)。index.ts から呼ぶ。
+ */
+export function loadPersistedPolicy(): void {
+  const saved = loadJson<Partial<UserPolicy>>(PERSIST_KEY);
+  if (saved) override = saved;
 }
 
 /** 現在の UserPolicy (fixture + override)。override 無しは fixture と一致。 */
@@ -93,5 +106,6 @@ export function patchCurrentPolicy(patch: Record<string, unknown>): UserPolicy {
     }
   }
   override = next;
+  saveJson(PERSIST_KEY, override); // Phase 8.30: 再起動後も残す (no-op if disabled)
   return getCurrentPolicy();
 }

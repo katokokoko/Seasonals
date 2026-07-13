@@ -46,6 +46,7 @@ import {
 import { compareUsd8 } from "@workspace/lib/utils/numeric";
 import type {
   AutonomousExecutionRecord,
+  AutonomousStatus,
   Objective,
   ProtocolMenuEntry,
   UserPolicy,
@@ -66,6 +67,7 @@ import {
   updatePlan,
   validateAndConsumeToken,
 } from "./plan-store";
+import { loadJson, saveJson } from "./persistence";
 
 // ── ハード上限 (user policy と独立、超えられない) ────────────────────────────
 export const AUTONOMOUS_MAX_TX_USD8 = "20.00000000"; // 決定 notional の絶対上限 $20
@@ -186,16 +188,26 @@ export function listExecutionRecords(): AutonomousExecutionRecord[] {
   return [...records].reverse(); // newest-first
 }
 
-export interface AutonomousStatus {
-  enabled: boolean;
-  feature_flag: boolean;
-  devnet: boolean;
-  killed: boolean;
-  delegate_pubkey: string | null;
-  daily_count: number;
-  daily_limit: number;
-  hard_caps: { max_tx_usd8: string; max_daily: number; max_lamports: string };
+const RECORDS_PERSIST_KEY = "autonomous-log";
+
+/** record を push しつつ永続化 (Phase 8.30、SEASONALS_DATA_DIR 未設定なら no-op) */
+function pushRecord(rec: AutonomousExecutionRecord): void {
+  records.push(rec);
+  saveJson(RECORDS_PERSIST_KEY, records);
 }
+
+/**
+ * 起動時に永続化された監査ログをロード (Phase 8.30)。index.ts から呼ぶ。
+ * SEASONALS_DATA_DIR 未設定時は no-op (loadJson が null)。
+ */
+export function loadPersistedRecords(): void {
+  const saved = loadJson<AutonomousExecutionRecord[]>(RECORDS_PERSIST_KEY);
+  if (saved) {
+    records.length = 0;
+    records.push(...saved);
+  }
+}
+
 export function getAutonomousStatus(): AutonomousStatus {
   let delegatePubkey: string | null = null;
   try {
@@ -348,7 +360,7 @@ export async function runAutonomousCycle(
   if (!chosen) {
     rec.reason = "no_candidate_passed_policy";
     rec.violations = topViolations;
-    records.push(rec);
+    pushRecord(rec);
     return rec;
   }
 
@@ -364,13 +376,13 @@ export async function runAutonomousCycle(
   if (getDailyCount() >= dailyLimit) {
     rec.reason = "daily_execution_cap_reached";
     rec.violations = ["policy_violation_max_daily_executions"];
-    records.push(rec);
+    pushRecord(rec);
     return rec;
   }
   if (!canAutoExecute(policy, isAutonomousFeatureEnabled())) {
     rec.reason = "approval_mode_not_auto";
     rec.violations = ["policy_violation_approval_mode"];
-    records.push(rec);
+    pushRecord(rec);
     return rec;
   }
 
@@ -403,7 +415,7 @@ export async function runAutonomousCycle(
   if (dryRun) {
     rec.decision = "dry_run";
     rec.reason = "dry_run";
-    records.push(rec);
+    pushRecord(rec);
     return rec;
   }
 
@@ -452,7 +464,7 @@ export async function runAutonomousCycle(
     rec.reason = null;
     rec.lamports = lamports.toString();
     rec.tx_signature = signature;
-    records.push(rec);
+    pushRecord(rec);
     // funds-moved 通知 (best-effort)
     try {
       await deps.sendExecutionPush({
@@ -474,7 +486,7 @@ export async function runAutonomousCycle(
     updatePlan(plan.plan_id, { status: "failed" });
     rec.decision = "rejected";
     rec.reason = `broadcast_failed: ${(err as Error).message}`;
-    records.push(rec);
+    pushRecord(rec);
     return rec;
   }
 }
