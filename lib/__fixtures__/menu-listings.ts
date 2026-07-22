@@ -1,7 +1,8 @@
 /**
  * Menu protocol entries (Phase 6.1) — 11 主要 Solana DeFi protocols × 階層 pools
  *
- * 数値は 2025 末ごろの DefiLlama-baseline 実データ似 mock。
+ * 数値は 2026-07 baseline (Phase 8.32 で DefiLlama / 各 protocol API 実測値に refresh。
+ * 2026 年の Solana TVL -56% 局面を反映。live overlay が届く pool は実行時に上書き)。
  * Mobile の Menu drawer で render される。pools[] 内の pool は `protocol_id`
  * (deposited 判定 in MenuDrawer) と独立に持ち、各 pool 単位で APY / TVL / borrowed
  * を表示する。
@@ -96,7 +97,7 @@ export const fixtureMenuListings: ProtocolMenuEntry[] = [
         category: PositionCategory.Vault,
         asset: "USDC",
         apy: 0.0402,
-        tvl_usd: 21_400_000,
+        tvl_usd: 19_800_000,
       },
       {
         pool_id: "kamino_allez_sol_vault",
@@ -104,7 +105,7 @@ export const fixtureMenuListings: ProtocolMenuEntry[] = [
         category: PositionCategory.Vault,
         asset: "SOL",
         apy: 0.112,
-        tvl_usd: 6_600_000,
+        tvl_usd: 6_300_000,
       },
     ],
   },
@@ -147,7 +148,7 @@ export const fixtureMenuListings: ProtocolMenuEntry[] = [
         category: PositionCategory.Staking,
         asset: "SOL",
         apy: 0.0780,
-        tvl_usd: 580_000_000,
+        tvl_usd: 158_000_000,
       },
       {
         pool_id: "sanctum_jitosol",
@@ -155,7 +156,7 @@ export const fixtureMenuListings: ProtocolMenuEntry[] = [
         category: PositionCategory.Staking,
         asset: "SOL",
         apy: 0.0720,
-        tvl_usd: 1_100_000_000,
+        tvl_usd: 780_000_000,
       },
       {
         pool_id: "sanctum_bsol",
@@ -163,7 +164,7 @@ export const fixtureMenuListings: ProtocolMenuEntry[] = [
         category: PositionCategory.Staking,
         asset: "SOL",
         apy: 0.0690,
-        tvl_usd: 180_000_000,
+        tvl_usd: 69_000_000,
       },
     ],
   },
@@ -183,7 +184,7 @@ export const fixtureMenuListings: ProtocolMenuEntry[] = [
         category: PositionCategory.Stable,
         asset: "USDC",
         apy: 0.093, // 8.25: 実測近似 (live は api.perena.org 7d APY で overlay)
-        tvl_usd: 120_000_000,
+        tvl_usd: 5_000_000,
       },
       {
         pool_id: "perena_tri_stable",
@@ -191,7 +192,7 @@ export const fixtureMenuListings: ProtocolMenuEntry[] = [
         category: PositionCategory.LP,
         asset: "USDC-USDT-PYUSD",
         apy: 0.0630,
-        tvl_usd: 90_000_000,
+        tvl_usd: 3_000_000,
         deposit_asset: "USDC",
       },
     ],
@@ -212,8 +213,8 @@ export const fixtureMenuListings: ProtocolMenuEntry[] = [
         category: PositionCategory.Lending,
         asset: "USDC",
         apy: 0.0490,
-        tvl_usd: 180_000_000,
-        borrowed_usd: 110_000_000,
+        tvl_usd: 21_900_000,
+        borrowed_usd: 16_200_000,
       },
       {
         pool_id: "savefi_sol_main",
@@ -221,17 +222,18 @@ export const fixtureMenuListings: ProtocolMenuEntry[] = [
         category: PositionCategory.Lending,
         asset: "SOL",
         apy: 0.0420,
-        tvl_usd: 140_000_000,
-        borrowed_usd: 50_000_000,
+        tvl_usd: 16_100_000,
+        borrowed_usd: 10_500_000,
       },
       {
+        // main market 外の isolated pool — per-reserve API 未登録のため概算 (8.32)
         pool_id: "savefi_turbo_sol",
         name: "Turbo SOL",
         category: PositionCategory.Lending,
         asset: "SOL",
         apy: 0.0680,
-        tvl_usd: 35_000_000,
-        borrowed_usd: 20_000_000,
+        tvl_usd: 3_000_000,
+        borrowed_usd: 2_000_000,
       },
     ],
   },
@@ -251,7 +253,7 @@ export const fixtureMenuListings: ProtocolMenuEntry[] = [
         category: PositionCategory.Staking,
         asset: "SOL",
         apy: 0.0680,
-        tvl_usd: 1_200_000_000,
+        tvl_usd: 187_000_000,
       },
     ],
   },
@@ -265,13 +267,15 @@ export const fixtureMenuListings: ProtocolMenuEntry[] = [
     icon_id: "meteora",
     icon_bg: COLOR.straw,
     pools: [
+      // TVL は datapi 実測 (2026-07-22)。DLMM pool は集中流動性のため
+      // pool 単位の TVL は小さい (protocol 全体 ~$180M とは別物)
       {
         pool_id: "meteora_usdc_usdt_dlmm",
         name: "USDC-USDT DLMM",
         category: PositionCategory.LP,
         asset: "USDC-USDT",
         apy: 0.0920,
-        tvl_usd: 85_000_000,
+        tvl_usd: 270_000,
         deposit_asset: "USDC",
       },
       {
@@ -280,7 +284,7 @@ export const fixtureMenuListings: ProtocolMenuEntry[] = [
         category: PositionCategory.LP,
         asset: "SOL-USDC",
         apy: 0.2850,
-        tvl_usd: 180_000_000,
+        tvl_usd: 4_900_000,
         deposit_asset: "USDC",
       },
       {
@@ -289,7 +293,7 @@ export const fixtureMenuListings: ProtocolMenuEntry[] = [
         category: PositionCategory.LP,
         asset: "JitoSOL-SOL",
         apy: 0.0580,
-        tvl_usd: 120_000_000,
+        tvl_usd: 2_800_000,
         deposit_asset: "SOL",
       },
     ],
@@ -310,7 +314,7 @@ export const fixtureMenuListings: ProtocolMenuEntry[] = [
         category: PositionCategory.Staking,
         asset: "SOL",
         apy: 0.0740,
-        tvl_usd: 2_800_000_000,
+        tvl_usd: 780_000_000,
       },
       {
         pool_id: "jito_restaking_vault",
@@ -318,7 +322,7 @@ export const fixtureMenuListings: ProtocolMenuEntry[] = [
         category: PositionCategory.Restaking,
         asset: "JitoSOL",
         apy: 0.0890,
-        tvl_usd: 420_000_000,
+        tvl_usd: 14_500_000,
         deposit_asset: "SOL",
       },
     ],
@@ -380,7 +384,7 @@ export const fixtureMenuListings: ProtocolMenuEntry[] = [
         category: PositionCategory.Staking,
         asset: "SOL",
         apy: 0.061, // live は Exponent underlyingApy で overlay
-        tvl_usd: 8_000_000,
+        tvl_usd: 20_000_000,
       },
       {
         pool_id: "hylo_shyusd",
@@ -388,7 +392,7 @@ export const fixtureMenuListings: ProtocolMenuEntry[] = [
         category: PositionCategory.Stable,
         asset: "USDC",
         apy: 0.10, // 実値ソース未発見 (Exponent hyUSD implied 近似)
-        tvl_usd: 12_000_000,
+        tvl_usd: 11_000_000,
       },
     ],
   },
