@@ -39,6 +39,7 @@ import {
   type ApprovalPushPayload,
 } from "../services/push";
 import { ComingSoonToast } from "../components/feedback/ComingSoonToast";
+import { usePrefsStore } from "../stores/prefs";
 
 // SplashScreen が消えるタイミングを font load 完了後にする
 SplashScreen.preventAutoHideAsync().catch(() => {
@@ -69,6 +70,11 @@ export default function RootLayout() {
       await SplashScreen.hideAsync().catch(() => undefined);
     }
   }, [fontsLoaded, fontsError]);
+
+  // Phase 8.36: UI 設定 (液体演出 on/off 等) を起動時に復元
+  useEffect(() => {
+    void usePrefsStore.getState().hydrate();
+  }, []);
 
   useEffect(() => {
     setupNotificationHandler();

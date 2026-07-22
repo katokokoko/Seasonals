@@ -64,6 +64,7 @@ import {
   type ThemeColors,
 } from "../../stores/theme";
 import { useComingSoon } from "../../stores/comingSoon";
+import { usePrefsStore } from "../../stores/prefs";
 
 const SCREEN_WIDTH = Dimensions.get("window").width;
 const DRAWER_WIDTH = Math.min(360, SCREEN_WIDTH * 0.85);
@@ -103,6 +104,10 @@ export function SettingsDrawer({
   useEffect(() => {
     themeHydrate();
   }, [themeHydrate]);
+
+  // Phase 8.36: 液体演出 on/off (prefs store — 本 drawer 初の永続化設定)
+  const liquidEffect = usePrefsStore((s) => s.liquidEffect);
+  const setLiquidEffect = usePrefsStore((s) => s.setLiquidEffect);
 
   // Local UI state — 永続化は後続 phase で UserPolicy / preferences API へ
   const [baseCurrency, setBaseCurrency] = useState<"USDC" | "SOL">("SOL");
@@ -254,6 +259,45 @@ export function SettingsDrawer({
                       ]}
                     >
                       SOL
+                    </Text>
+                  </Pressable>
+                </View>
+              </View>
+              <View style={styles.divider} />
+              {/* Phase 8.36: 液体演出 on/off (prefs store で永続化、§2.4) */}
+              <View style={styles.row}>
+                <Text style={styles.rowLabel}>Liquid effect</Text>
+                <View style={styles.toggle}>
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityState={{ selected: liquidEffect }}
+                    onPress={() => setLiquidEffect(true)}
+                    style={[styles.toggleBtn, liquidEffect && styles.toggleBtnActive]}
+                    testID={testID ? `${testID}-liquid-on` : undefined}
+                  >
+                    <Text
+                      style={[
+                        styles.toggleText,
+                        liquidEffect && styles.toggleTextActive,
+                      ]}
+                    >
+                      On
+                    </Text>
+                  </Pressable>
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityState={{ selected: !liquidEffect }}
+                    onPress={() => setLiquidEffect(false)}
+                    style={[styles.toggleBtn, !liquidEffect && styles.toggleBtnActive]}
+                    testID={testID ? `${testID}-liquid-off` : undefined}
+                  >
+                    <Text
+                      style={[
+                        styles.toggleText,
+                        !liquidEffect && styles.toggleTextActive,
+                      ]}
+                    >
+                      Off
                     </Text>
                   </Pressable>
                 </View>
