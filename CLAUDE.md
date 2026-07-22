@@ -425,6 +425,9 @@ PR を出す前 / コードレビューを依頼する前に、関連する行�
 
 ### 後続 backlog (優先度高)
 
+> 詳細 backlog (v2 Integrator Fee / Tier 2-3 プロトコル選定の突合済リスト) は
+> `docs/backlog.md` (local-only)。本節は Claude Code が常時参照する要約。
+
 - **依存リフレッシュ phase** (Seeker smoke → phase 別コミット完了後の独立 phase として実施。未コミットが積み上がった状態では着手しない):
   - BFF の Solana SDK 群は **web3.js v1 系に意図的固定** (2026-07 時点): `@orca-so/whirlpools-sdk` 0.21 (legacy 版。kit/v2 版への一本化動向を監視)、root pnpm override `"rpc-websockets@^7": "7.10.0"` (7.11.x の .cjs-only dist regression 回避 — 上流修正を確認したら override 解除)
   - `@solendprotocol/solend-sdk` 0.14.x が **isomorphic-fetch で global fetch を node-fetch に上書き** → Orca / Meteora の Cloudflare が 403 で弾くため該当 client は undici を明示利用中 (orca-tx.ts / meteora-tx.ts)。恒久対応 (solend-sdk 更新 or fetch 隔離) を検討

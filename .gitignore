@@ -28,6 +28,9 @@ docs/spec.md
 docs/confirm.md
 docs/progress.md
 
+# 統合 backlog doc — local-only (戦略/投資家向け実績づくりの記述を含むため非公開)
+docs/backlog.md
+
 # Local persistence (Phase 8.30 file-backed policy override + autonomous log)
 .data/
 **/.data/
