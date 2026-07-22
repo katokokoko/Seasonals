@@ -24,7 +24,6 @@ import {
   fetchMeteoraPositions,
   type MeteoraRawPosition,
 } from "./clients/meteora-tx";
-import { fetchDriftSpotPositions } from "./clients/drift-tx";
 import { fetchOrcaPoolStats, fetchOrcaPositions } from "./clients/orca-tx";
 import {
   fetchKaminoObligations,
@@ -52,9 +51,8 @@ jest.mock("./clients/meteora-tx", () => ({
   fetchMeteoraPoolStats: jest.fn(),
 }));
 jest.mock("./clients/oracle");
-// /positions/earn が実 network (drift websocket / kamino REST / sanctum / helius) を
+// /positions/earn が実 network (kamino REST / sanctum / helius) を
 // 掴まないよう全 client を mock (並列 worker 下での timeout 防止)
-jest.mock("./clients/drift-tx");
 jest.mock("./clients/orca-tx", () => ({
   ...jest.requireActual("./clients/orca-tx"),
   fetchOrcaPositions: jest.fn(),
@@ -120,8 +118,6 @@ beforeEach(async () => {
   mockDeposit.mockResolvedValue({ transactions: ["MET_DEP_TX"], position: POSITION });
   mockWithdraw.mockResolvedValue({ transactions: ["MET_WD_TX"] });
   mockPositions.mockResolvedValue([]);
-  (fetchDriftSpotPositions as jest.MockedFunction<typeof fetchDriftSpotPositions>)
-    .mockResolvedValue([]);
   (fetchOrcaPositions as jest.MockedFunction<typeof fetchOrcaPositions>)
     .mockResolvedValue([]);
   (fetchOrcaPoolStats as jest.MockedFunction<typeof fetchOrcaPoolStats>)

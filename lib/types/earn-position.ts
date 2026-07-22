@@ -86,11 +86,6 @@ export interface EarnPositionsResponse {
   /** Phase 8.15.x: Save cToken の enriched 保有 (同上)。 */
   save?: EarnPosition[];
   /**
-   * Phase 8.15e: Drift spot lending の保有 (SDK read、share_mint = 合成 position_key
-   * "drift_spot_{index}")。earned は unknown (実値化は follow-up)。
-   */
-  drift?: EarnPosition[];
-  /**
    * Phase 8.17: Meteora DLMM LP positions (SDK read)。share_mint = position account
    * の実 pubkey。underlying は deposit token 建て総額、earned = 未請求 swap fee。
    */

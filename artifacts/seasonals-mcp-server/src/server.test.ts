@@ -61,16 +61,16 @@ const MENU = [
     ],
   },
   {
-    protocol_id: "drift",
-    display_name: "Drift",
+    protocol_id: "savefi",
+    display_name: "Save",
     primary_category: "lending",
     supported_assets: ["USDC"],
-    icon_id: "drift",
+    icon_id: "savefi",
     icon_bg: "#000",
     pools: [
       {
-        pool_id: "drift_usdc_spot",
-        name: "USDC Spot",
+        pool_id: "savefi_usdc_main",
+        name: "USDC Main",
         category: "lending",
         asset: "USDC",
         apy: 0.81,
@@ -124,7 +124,7 @@ describe("Seasonals MCP server", () => {
       ranked_candidates: { market_id: string; reasoning: string[] }[];
     };
     expect(out.plan_id).toBe("plan_mcp_test");
-    expect(out.ranked_candidates[0]!.market_id).toBe("drift_usdc_spot"); // apy 順
+    expect(out.ranked_candidates[0]!.market_id).toBe("savefi_usdc_main"); // apy 順
     expect(
       out.ranked_candidates[0]!.reasoning.some((r) => r.includes("WARNING"))
     ).toBe(true); // utilization 100%

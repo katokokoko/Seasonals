@@ -175,7 +175,7 @@ describe("services/queries", () => {
       });
       await waitFor(() => expect(result.current.isSuccess).toBe(true));
       const listings = result.current.data!;
-      expect(listings.length).toBe(12); // 8.27: hylo entry 追加
+      expect(listings.length).toBe(11); // 8.31: drift entry 撤去 (Velocity fork 化)
       const orca = listings.find((e) => e.protocol_id === "orca")!;
       expect(orca.pools.length).toBe(3);
       expect(queryKeys.menuListings()).toEqual(["menu-listings"]);

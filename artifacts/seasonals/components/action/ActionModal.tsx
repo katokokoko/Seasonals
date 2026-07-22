@@ -79,11 +79,6 @@ import {
   findSaveMarketByCToken,
   findSaveMarketByPool,
 } from "@workspace/lib/config/save-markets";
-import {
-  findDriftMarketByAsset,
-  findDriftMarketByKey,
-  findDriftMarketByPool,
-} from "@workspace/lib/config/drift-markets";
 import { findMeteoraMarketByPool } from "@workspace/lib/config/meteora-markets";
 import { findOrcaMarketByPool } from "@workspace/lib/config/orca-markets";
 import { useWallet } from "../../services/useWallet";
@@ -279,17 +274,6 @@ export function ActionModal({
       ? findSaveMarketByCToken(withdrawShareMint)
       : undefined;
 
-    // Phase 8.15e: Drift spot。deposit は pool_id → market、withdraw は
-    // share_mint (= 合成 position_key "drift_spot_N") で解決。
-    const driftDepositMarket =
-      protocolId === "drift"
-        ? (poolId ? findDriftMarketByPool(poolId) : undefined) ??
-          (action?.asset ? findDriftMarketByAsset(action.asset) : undefined)
-        : undefined;
-    const driftWithdrawMarket = withdrawShareMint
-      ? findDriftMarketByKey(withdrawShareMint)
-      : undefined;
-
     // Phase 8.17: Meteora DLMM。deposit は pool_id のみ (asset fallback 無し —
     // LP は pool 特定が必須)。withdraw は protocol=meteora + share_mint (= position
     // account の実 pubkey) で判定 (静的 registry では引けない)。
@@ -348,16 +332,6 @@ export function ActionModal({
       action?.action_type === "withdraw" &&
       Boolean(action?.amount) &&
       Boolean(saveWithdrawMarket);
-    const isOnchainDriftDeposit =
-      canOnchain &&
-      action?.action_type === "deposit" &&
-      Boolean(action?.amount) &&
-      Boolean(driftDepositMarket);
-    const isOnchainDriftWithdraw =
-      canOnchain &&
-      action?.action_type === "withdraw" &&
-      Boolean(action?.amount) &&
-      Boolean(driftWithdrawMarket);
     const isOnchainMeteoraDeposit =
       canOnchain &&
       action?.action_type === "deposit" &&
@@ -580,36 +554,6 @@ export function ActionModal({
               amount: execAmount!,
             })
           ).transactions
-      );
-      return;
-    }
-
-    // ── Phase 8.15e: onchain Drift spot deposit (初回は User account 作成込み 1 tx) ──
-    if (isOnchainDriftDeposit) {
-      await runOnchainTx(
-        async () =>
-          (
-            await api.getDriftDepositTx({
-              user: authorization!.address,
-              positionKey: driftDepositMarket!.position_key,
-              amount: execAmount!,
-            })
-          ).transaction
-      );
-      return;
-    }
-
-    // ── Phase 8.15e: onchain Drift spot withdraw (reduceOnly) ──
-    if (isOnchainDriftWithdraw) {
-      await runOnchainTx(
-        async () =>
-          (
-            await api.getDriftWithdrawTx({
-              user: authorization!.address,
-              positionKey: driftWithdrawMarket!.position_key,
-              amount: execAmount!,
-            })
-          ).transaction
       );
       return;
     }

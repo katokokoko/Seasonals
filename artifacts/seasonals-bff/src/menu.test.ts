@@ -20,7 +20,6 @@ import {
 } from "./clients/kamino-tx";
 import { fetchSaveReserveRates } from "./clients/save-tx";
 import { fetchOrcaPoolStats } from "./clients/orca-tx";
-import { fetchDriftSpotMarketRates } from "./clients/drift-tx";
 import {
   fetchExponentApys,
   fetchExponentSyRates,
@@ -38,7 +37,6 @@ jest.mock("./clients/orca-tx", () => ({
   ...jest.requireActual("./clients/orca-tx"),
   fetchOrcaPoolStats: jest.fn(),
 }));
-jest.mock("./clients/drift-tx");
 jest.mock("./clients/rates");
 jest.mock("./clients/meteora-tx", () => ({
   ...jest.requireActual("./clients/meteora-tx"),
@@ -58,9 +56,6 @@ const mockSave = fetchSaveReserveRates as jest.MockedFunction<
 >;
 const mockOrca = fetchOrcaPoolStats as jest.MockedFunction<
   typeof fetchOrcaPoolStats
->;
-const mockDrift = fetchDriftSpotMarketRates as jest.MockedFunction<
-  typeof fetchDriftSpotMarketRates
 >;
 const mockLst = fetchLstApys as jest.MockedFunction<typeof fetchLstApys>;
 const mockExponent = fetchExponentApys as jest.MockedFunction<
@@ -137,7 +132,6 @@ beforeEach(async () => {
   mockOrca.mockResolvedValue(
     new Map([[ORCA_USDC_USDT.pool_address, { tvl_usd: 1200000, apr_day_bps: 549 }]])
   );
-  mockDrift.mockResolvedValue(new Map([[0, { apy: 0.08, utilization: 1 }]]));
   mockLst.mockResolvedValue(
     new Map([
       ["jitoSOL", 0.0681],
@@ -209,7 +203,7 @@ describe("GET /menu-listings — live overlay", () => {
     expect(menu.find((e) => e.protocol_id === "jupiter")!.pools).toHaveLength(2);
   });
 
-  it("orca / savefi / drift の overlay", async () => {
+  it("orca / savefi の overlay", async () => {
     const menu = await getMenu();
     const orca = pool(menu, "orca", "orca_usdc_usdt_whirlpool");
     expect(orca.apy).toBeCloseTo(0.0549, 6);
@@ -219,8 +213,6 @@ describe("GET /menu-listings — live overlay", () => {
     expect(save.tvl_usd).toBe(
       pool(fixtureMenuListings, "savefi", "savefi_usdc_main").tvl_usd
     ); // TVL は fixture 維持
-    const drift = pool(menu, "drift", "drift_usdc_spot");
-    expect(drift.apy).toBeCloseTo(0.08, 6);
   });
 
   it("ソース失敗 → 該当 protocol は fixture 値のまま、他は live (degrade)", async () => {
@@ -282,9 +274,8 @@ describe("GET /menu-listings — live overlay", () => {
     expect(sol.tvl_usd).toBeCloseTo(40_000_000 * 1.0377, 0);
   });
 
-  it("8.26: utilization — drift = calculateUtilization、kamino = borrow/supply", async () => {
+  it("8.26: utilization — kamino = borrow/supply", async () => {
     const menu = await getMenu();
-    expect(pool(menu, "drift", "drift_usdc_spot").utilization).toBe(1);
     const kamino = pool(menu, "kamino", "kamino_usdc_main");
     expect(kamino.utilization).toBeCloseTo(1_000_000 / 12_345_678.9, 6);
     // utilization ソース無し protocol は undefined のまま

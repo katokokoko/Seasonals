@@ -1,7 +1,7 @@
 /**
  * meteora-tx — Meteora DLMM LP client (Phase 8.17)
  *
- * @meteora-ag/dlmm v1.9.12 を lazy require で bundle (drift と同型 — SDK は BFF 内に
+ * @meteora-ag/dlmm v1.9.12 を lazy require で bundle (save と同型 — SDK は BFF 内に
  * 閉じ、base64 / string だけ返す)。module export は DLMM class そのもの
  * (`module.exports = DLMM`、statics に create / StrategyType 等)。
  *

@@ -9,7 +9,7 @@
  * - mint pubkey は base58 string。Solana mainnet の canonical mint を使う。
  * - decimals は Helius からも返るが、registry に持っておく方が早い (BFF / mobile
  *   どちらでも参照されるため lib に置く)。
- * - 将来 Kamino kToken / Jupiter JLP / Drift Insurance Fund 等を追加する場合は
+ * - 将来 Kamino kToken / Jupiter JLP 等を追加する場合は
  *   ここに entry を増やすだけで OK (BFF / mobile の差分なし)。
  *
  * @see CLAUDE.md §11.3 Position

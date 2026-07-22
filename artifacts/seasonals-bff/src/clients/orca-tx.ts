@@ -2,7 +2,7 @@
  * orca-tx — Orca Whirlpools full-range LP client (Phase 8.18)
  *
  * legacy @orca-so/whirlpools-sdk v0.21.0 (web3.js v1) を lazy require で bundle
- * (drift / meteora と同型 — SDK は BFF 内に閉じ、base64 / string だけ返す)。
+ * (save / meteora と同型 — SDK は BFF 内に閉じ、base64 / string だけ返す)。
  *
  * deposit は **zap-in の 2 tx**:
  *   tx1 = Jupiter swap (入金 USDC の半分 → 相方 token、user 単独署名)

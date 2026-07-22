@@ -161,31 +161,6 @@ describe("resolveOracleMint", () => {
     ).toBeNull();
   });
 
-  // ── Phase 8.15e: Drift ──
-  it("Drift deposit (asset USDC) → USDC underlying mint", () => {
-    expect(
-      resolveOracleMint(action({ protocol: "drift", asset: "USDC" }))
-    ).toBe(KAMINO_USDC_MINT); // USDC mint は共通
-  });
-
-  it("Drift withdraw (share_mint = position_key) → underlying mint", () => {
-    expect(
-      resolveOracleMint(
-        action({
-          protocol: "drift",
-          action_type: "withdraw",
-          metadata: { share_mint: "drift_spot_1" },
-        } as never)
-      )
-    ).toBe(KAMINO_SOL_MINT); // SOL mint は共通
-  });
-
-  it("Drift 未対応 asset (JLP) は null", () => {
-    expect(
-      resolveOracleMint(action({ protocol: "drift", asset: "JLP" }))
-    ).toBeNull();
-  });
-
   // ── Phase 8.17: Meteora ──
   it("Meteora deposit (pool_id) → deposit token mint (USDC)", () => {
     expect(

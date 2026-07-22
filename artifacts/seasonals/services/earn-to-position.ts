@@ -103,8 +103,6 @@ export function mergeEarnPositions(
     ...earnPositions.kaminoBestEffort,
     ...(earnPositions.swapEarn ?? []),
     ...(earnPositions.save ?? []),
-    // Phase 8.15e: Drift spot (position_key は raw mint に現れないため dedup 影響なし)
-    ...(earnPositions.drift ?? []),
     // Phase 8.17: Meteora DLMM (position pubkey は raw mint に現れない)
     ...(earnPositions.meteora ?? []),
     // Phase 8.18: Orca Whirlpools (position mint は NFT — raw SPL 保有行と重複しうるが

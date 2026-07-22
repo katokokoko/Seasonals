@@ -87,20 +87,6 @@ describe("resolveAmountUnit", () => {
     expect(u).toEqual({ decimals: 6, unitSymbol: "shares" });
   });
 
-  it("withdraw Drift: underlying 建て (position_key 経由)", () => {
-    const u = resolveAmountUnit(
-      action({
-        action_type: "withdraw",
-        metadata: {
-          share_mint: "drift_spot_1",
-          share_decimals: 9,
-          underlying_decimals: 9,
-        },
-      } as never)
-    );
-    expect(u).toEqual({ decimals: 9, unitSymbol: "SOL" });
-  });
-
   it("action null は安全な default", () => {
     expect(resolveAmountUnit(null)).toEqual({ decimals: 6, unitSymbol: "" });
   });

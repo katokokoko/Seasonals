@@ -552,32 +552,6 @@ export function getKaminoVaultWithdrawTx(input: {
   );
 }
 
-/** Phase 8.15e: Drift spot の unsigned v0 tx。初回 deposit は User account 作成込み。 */
-export interface DriftTxResponse {
-  transaction: string;
-  firstDeposit: boolean;
-  positionKey: string;
-  underlyingMint: string;
-}
-
-/** Drift deposit tx (amount = underlying smallest-unit string)。 */
-export function getDriftDepositTx(input: {
-  user: string;
-  positionKey: string;
-  amount: string;
-}): Promise<DriftTxResponse> {
-  return postKaminoTx<DriftTxResponse>("/protocols/drift/deposit-tx", input);
-}
-
-/** Drift withdraw tx (reduceOnly、amount = underlying smallest-unit string)。 */
-export function getDriftWithdrawTx(input: {
-  user: string;
-  positionKey: string;
-  amount: string;
-}): Promise<DriftTxResponse> {
-  return postKaminoTx<DriftTxResponse>("/protocols/drift/withdraw-tx", input);
-}
-
 /**
  * Phase 8.17: Meteora DLMM LP。deposit の tx は position ephemeral の部分署名済み
  * (user 署名スロットのみ空 — MWA sign-only で保持される)。

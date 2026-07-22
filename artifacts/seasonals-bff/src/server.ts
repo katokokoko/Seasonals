@@ -127,18 +127,6 @@ import {
   fetchSanctumSolValues,
 } from "./clients/rates";
 import {
-  DRIFT_MARKETS,
-  findDriftMarketByKey,
-  type DriftMarket,
-} from "@workspace/lib/config/drift-markets";
-import {
-  buildDriftDepositTx,
-  buildDriftWithdrawTx,
-  fetchDriftSpotMarketRates,
-  fetchDriftSpotPositions,
-  type DriftMarketRate,
-} from "./clients/drift-tx";
-import {
   METEORA_MARKETS,
   findMeteoraMarketByPool,
   type MeteoraDlmmMarket,
@@ -1352,94 +1340,6 @@ async function buildSaveTx(
   }
 }
 
-/**
- * Phase 8.15e: Drift spot deposit/withdraw の共通処理。oracle fail-closed gate (§4.6)
- * → drift-sdk (BFF 内) で unsigned v0 tx を構築。amount は smallest-unit string を
- * BN で passthrough (§4.5)。withdraw は reduceOnly (client 側で固定)。
- */
-async function buildDriftTx(
-  req: FastifyRequest,
-  reply: FastifyReply,
-  p: {
-    user: string;
-    market: DriftMarket;
-    amount: string;
-    action: "deposit" | "withdraw";
-  }
-): Promise<Record<string, unknown>> {
-  if (!isValidTokenAmount(p.amount)) {
-    reply.code(400);
-    return { error: "invalid_amount", amount: p.amount };
-  }
-  const oracle = await getOracleResult(p.market.underlying_mint);
-  if (oracle.status === "blocked") {
-    reply.code(409);
-    return { error: "oracle_blocked", block_reason: oracle.block_reason, oracle };
-  }
-  try {
-    const fn = p.action === "deposit" ? buildDriftDepositTx : buildDriftWithdrawTx;
-    const { transaction, firstDeposit } = await fn({
-      wallet: p.user,
-      market: p.market,
-      amountSmallest: p.amount,
-    });
-    return {
-      transaction,
-      firstDeposit,
-      positionKey: p.market.position_key,
-      underlyingMint: p.market.underlying_mint,
-    };
-  } catch (err) {
-    req.log.error(
-      { err: (err as Error).message, market: p.market.position_key, action: p.action },
-      "drift tx build failed"
-    );
-    reply.code(502);
-    return { error: "drift_tx_failed", message: (err as Error).message };
-  }
-}
-
-/**
- * Phase 8.15e: Drift spot 保有 → EarnPosition[]。share_mint には合成 position_key
- * ("drift_spot_{index}") を流用 (SPL 受取が無いため)。earned は unknown (follow-up)。
- */
-export function mapDriftHoldingsToEarnPositions(
-  holdings: { market_index: number; token_amount: string; supply_apy: number | null }[],
-  priceUsd8ByMint: Map<string, bigint>
-): EarnPosition[] {
-  const out: EarnPosition[] = [];
-  for (const h of holdings) {
-    const m = DRIFT_MARKETS.find((d) => d.market_index === h.market_index);
-    if (!m || !/^[0-9]+$/.test(h.token_amount) || h.token_amount === "0") continue;
-    const underlying = toBigInt(h.token_amount);
-    const price8 = priceUsd8ByMint.get(m.underlying_mint);
-    const usd8 =
-      price8 !== undefined
-        ? formatUsd8((underlying * price8) / 10n ** BigInt(m.underlying_decimals))
-        : "0";
-    out.push({
-      protocol_id: "drift",
-      protocol_name: "Drift",
-      market_symbol: `${m.underlying_symbol} Spot`,
-      share_mint: m.position_key,
-      shares: h.token_amount,
-      share_decimals: m.underlying_decimals,
-      asset_symbol: m.underlying_symbol,
-      underlying_amount: h.token_amount,
-      underlying_decimals: m.underlying_decimals,
-      underlying_usd: usd8,
-      supply_rate_bps:
-        h.supply_apy !== null && Number.isFinite(h.supply_apy)
-          ? Math.round(h.supply_apy * 10000)
-          : null,
-      accrued_yield_amount: "0",
-      accrued_yield_sign: "unknown",
-      cost_basis_amount: null,
-    });
-  }
-  return out;
-}
-
 // ── Phase 8.17: Meteora DLMM ─────────────────────────────────────────────────
 
 /** SDK の amount 文字列 (integer / decimal 揺れあり) → 整数 smallest bigint。不正は null。 */
@@ -2161,8 +2061,6 @@ export interface MenuLiveSources {
   saveRates?: SaveReserveRate[];
   /** whirlpool address → stats */
   orcaStats?: Map<string, OrcaPoolStats>;
-  /** market_index → deposit APY + utilization (Phase 8.26 で拡張) */
-  driftRates?: Map<number, DriftMarketRate>;
   /**
    * yield token symbol → APY (0..1)。Sanctum LST (8.23) + Exponent underlyingApy
    * (8.24、eUSX 等) の merge 済み Map。
@@ -2199,7 +2097,7 @@ function finite(n: number): number | null {
  * fixture menu listing に live APY/TVL を pool 単位で overlay する純関数。
  * apy (0..1 fraction) / tvl_usd / borrowed_usd (USD number) は ProtocolPool の
  * documented display carve-out (§3) — smallest-unit string 規約の適用外。
- * 対応 protocol: jupiter / kamino (reserve + kVault) / savefi / orca / drift。
+ * 対応 protocol: jupiter / kamino (reserve + kVault) / savefi / orca。
  * それ以外 (LST / meteora / perena / solstice) は live ソースが無く fixture 値。
  */
 export function applyMenuLiveOverlays(
@@ -2266,17 +2164,6 @@ export function applyMenuLiveOverlays(
           const tvl = finite(stats.tvl_usd);
           if (apy !== null) out.apy = apy;
           if (tvl !== null) out.tvl_usd = tvl;
-        }
-      } else if (entry.protocol_id === "drift" && s.driftRates) {
-        const mkt = DRIFT_MARKETS.find((mk) => mk.pool_id === pool.pool_id);
-        const rate =
-          mkt !== undefined ? s.driftRates.get(mkt.market_index) : undefined;
-        if (rate) {
-          if (finite(rate.apy) !== null) out.apy = rate.apy;
-          // Phase 8.26: 稼働率 (1.0 近傍 = withdraw 流動性リスク) を可視化
-          if (finite(rate.utilization) !== null) {
-            out.utilization = Math.min(1, rate.utilization);
-          }
         }
       } else if (
         (entry.protocol_id === "jito" ||
@@ -2528,7 +2415,6 @@ export async function buildServer(
       kvaultR,
       saveR,
       orcaR,
-      driftR,
       lstR,
       expR,
       metR,
@@ -2544,7 +2430,6 @@ export async function buildServer(
         ),
         fetchSaveReserveRates(SAVE_MARKETS.map((m) => m.reserve)),
         fetchOrcaPoolStats(),
-        fetchDriftSpotMarketRates(),
         fetchLstApys([...new Set(Object.values(LST_POOL_SYMBOLS))]),
         fetchExponentApys(),
         fetchMeteoraPoolStats(),
@@ -2569,7 +2454,6 @@ export async function buildServer(
       [kaminoR, "kamino reserves"],
       [saveR, "save rates"],
       [orcaR, "orca stats"],
-      [driftR, "drift rates"],
       [lstR, "lst apys"],
       [expR, "exponent apys"],
       [metR, "meteora stats"],
@@ -2608,7 +2492,6 @@ export async function buildServer(
       kaminoVaults,
       saveRates: saveR.status === "fulfilled" ? saveR.value : undefined,
       orcaStats: orcaR.status === "fulfilled" ? orcaR.value : undefined,
-      driftRates: driftR.status === "fulfilled" ? driftR.value : undefined,
       lstApys: yieldApys.size > 0 ? yieldApys : undefined,
       meteoraStats: metR.status === "fulfilled" ? metR.value : undefined,
       solsticeTvlUsd: solTvlR.status === "fulfilled" ? solTvlR.value : undefined,
@@ -2653,16 +2536,6 @@ export async function buildServer(
         KAMINO_VAULTS.map(async (v) => [v.vault, await fetchKaminoVaultMetrics(v.vault)] as const)
       );
 
-      // Phase 8.15e: Drift spot 保有 (SDK read、失敗は空 = graceful degrade)
-      const driftPositionsPromise = fetchDriftSpotPositions(wallet).catch(
-        (err) => {
-          req.log.warn(
-            { err: (err as Error).message },
-            "drift positions fetch failed"
-          );
-          return [] as Awaited<ReturnType<typeof fetchDriftSpotPositions>>;
-        }
-      );
       // Phase 8.17: Meteora DLMM positions (SDK read、失敗は空)
       const meteoraPositionsPromise = fetchMeteoraPositions(wallet).catch(
         (err) => {
@@ -2865,11 +2738,6 @@ export async function buildServer(
         priceUsd8ByMint,
         costBasisByShareMint
       );
-      // Phase 8.15e: Drift spot 保有 (SDK read)
-      const drift = mapDriftHoldingsToEarnPositions(
-        await driftPositionsPromise,
-        priceUsd8ByMint
-      );
       // Phase 8.19: LP cost-basis (IL 込み earned) — tx 履歴は既存 txRes を再利用
       const meteoraRaws = await meteoraPositionsPromise;
       const orcaRaws = await orcaPositionsPromise;
@@ -2935,7 +2803,6 @@ export async function buildServer(
         kaminoBestEffort,
         swapEarn,
         save,
-        drift,
         meteora,
         orca,
       };
@@ -3733,69 +3600,6 @@ export async function buildServer(
       };
     }
     return buildSaveTx(req, reply, { user, market, amount, action: "withdraw" });
-  });
-
-  /**
-   * Phase 8.15e: Drift spot deposit-tx。drift-sdk (BFF 内) で unsigned v0 tx を構築。
-   * 初回 deposit は User account 作成込み 1 tx (response の firstDeposit=true)。
-   *   body: { user, positionKey ("drift_spot_0" 等), amount(underlying smallest-unit) }
-   */
-  app.post<{
-    Body: { user: string; positionKey: string; amount: string };
-  }>("/protocols/drift/deposit-tx", async (req, reply) => {
-    const { user, positionKey, amount } = req.body ?? {};
-    if (!user || !positionKey || !amount) {
-      reply.code(400);
-      return {
-        error: "missing_required_field",
-        required: ["user", "positionKey", "amount"],
-      };
-    }
-    if (user.length < 32 || user.length > 44 || /\s/.test(user)) {
-      reply.code(400);
-      return { error: "invalid_wallet_address", user };
-    }
-    const market = findDriftMarketByKey(positionKey);
-    if (!market) {
-      reply.code(400);
-      return {
-        error: "unsupported_market",
-        message: "No Drift spot market registered for this key",
-        positionKey,
-      };
-    }
-    return buildDriftTx(req, reply, { user, market, amount, action: "deposit" });
-  });
-
-  /**
-   * Phase 8.15e: Drift spot withdraw-tx (reduceOnly — 預金超は cap、借入化しない)。
-   *   body: { user, positionKey, amount(underlying smallest-unit) }
-   */
-  app.post<{
-    Body: { user: string; positionKey: string; amount: string };
-  }>("/protocols/drift/withdraw-tx", async (req, reply) => {
-    const { user, positionKey, amount } = req.body ?? {};
-    if (!user || !positionKey || !amount) {
-      reply.code(400);
-      return {
-        error: "missing_required_field",
-        required: ["user", "positionKey", "amount"],
-      };
-    }
-    if (user.length < 32 || user.length > 44 || /\s/.test(user)) {
-      reply.code(400);
-      return { error: "invalid_wallet_address", user };
-    }
-    const market = findDriftMarketByKey(positionKey);
-    if (!market) {
-      reply.code(400);
-      return {
-        error: "unsupported_market",
-        message: "No Drift spot market registered for this key",
-        positionKey,
-      };
-    }
-    return buildDriftTx(req, reply, { user, market, amount, action: "withdraw" });
   });
 
   /**

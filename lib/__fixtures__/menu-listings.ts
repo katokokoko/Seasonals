@@ -168,45 +168,7 @@ export const fixtureMenuListings: ProtocolMenuEntry[] = [
     ],
   },
 
-  // ─── 5. DRIFT ──────────────────────────────────────────────
-  {
-    protocol_id: "drift",
-    display_name: "Drift",
-    primary_category: PositionCategory.Lending,
-    supported_assets: ["USDC", "SOL"],
-    icon_id: "drift",
-    icon_bg: ICON_BG_DARK,
-    pools: [
-      {
-        pool_id: "drift_usdc_spot",
-        name: "USDC Spot Lending",
-        category: PositionCategory.Lending,
-        asset: "USDC",
-        apy: 0.0540,
-        tvl_usd: 320_000_000,
-        borrowed_usd: 190_000_000,
-      },
-      {
-        pool_id: "drift_sol_spot",
-        name: "SOL Spot Lending",
-        category: PositionCategory.Lending,
-        asset: "SOL",
-        apy: 0.0410,
-        tvl_usd: 260_000_000,
-        borrowed_usd: 80_000_000,
-      },
-      {
-        pool_id: "drift_insurance_fund",
-        name: "Insurance Fund",
-        category: PositionCategory.Vault,
-        asset: "USDC",
-        apy: 0.1250,
-        tvl_usd: 48_000_000,
-      },
-    ],
-  },
-
-  // ─── 6. Perena ─────────────────────────────────────────────
+  // ─── 5. Perena ─────────────────────────────────────────────
   {
     protocol_id: "perena",
     display_name: "Perena",
@@ -235,7 +197,7 @@ export const fixtureMenuListings: ProtocolMenuEntry[] = [
     ],
   },
 
-  // ─── 7. SaveFi (Save Finance) ──────────────────────────────
+  // ─── 6. SaveFi (Save Finance) ──────────────────────────────
   {
     protocol_id: "savefi",
     display_name: "Save",
@@ -274,7 +236,7 @@ export const fixtureMenuListings: ProtocolMenuEntry[] = [
     ],
   },
 
-  // ─── 8. Marinade ───────────────────────────────────────────
+  // ─── 7. Marinade ───────────────────────────────────────────
   {
     protocol_id: "marinade",
     display_name: "Marinade",
@@ -294,7 +256,7 @@ export const fixtureMenuListings: ProtocolMenuEntry[] = [
     ],
   },
 
-  // ─── 9. Meteora ────────────────────────────────────────────
+  // ─── 8. Meteora ────────────────────────────────────────────
   {
     protocol_id: "meteora",
     display_name: "Meteora",
@@ -333,7 +295,7 @@ export const fixtureMenuListings: ProtocolMenuEntry[] = [
     ],
   },
 
-  // ─── 10. Jito ──────────────────────────────────────────────
+  // ─── 9. Jito ──────────────────────────────────────────────
   {
     protocol_id: "jito",
     display_name: "Jito",
@@ -362,7 +324,7 @@ export const fixtureMenuListings: ProtocolMenuEntry[] = [
     ],
   },
 
-  // ─── 11. Orca ──────────────────────────────────────────────
+  // ─── 10. Orca ──────────────────────────────────────────────
   {
     protocol_id: "orca",
     display_name: "Orca",
@@ -402,7 +364,7 @@ export const fixtureMenuListings: ProtocolMenuEntry[] = [
     ],
   },
 
-  // ─── 12. Hylo (Phase 8.27 — swap-earn 方式) ────────────────
+  // ─── 11. Hylo (Phase 8.27 — swap-earn 方式) ────────────────
   // icon 画像未支給のため icon_id は未登録 → MenuDrawer が頭文字バッジに fallback
   {
     protocol_id: "hylo",

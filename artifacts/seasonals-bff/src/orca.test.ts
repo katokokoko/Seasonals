@@ -26,7 +26,6 @@ import {
   type OrcaPoolStats,
   type OrcaRawPosition,
 } from "./clients/orca-tx";
-import { fetchDriftSpotPositions } from "./clients/drift-tx";
 import {
   fetchMeteoraPoolStats,
   fetchMeteoraPositions,
@@ -57,9 +56,8 @@ jest.mock("./clients/orca-tx", () => ({
   fetchOrcaPoolStats: jest.fn(),
 }));
 jest.mock("./clients/oracle");
-// /positions/earn が実 network (drift websocket / kamino REST / sanctum / helius /
+// /positions/earn が実 network (kamino REST / sanctum / helius /
 // meteora) を掴まないよう全 client を mock (並列 worker 下での timeout 防止)
-jest.mock("./clients/drift-tx");
 jest.mock("./clients/meteora-tx", () => ({
   ...jest.requireActual("./clients/meteora-tx"),
   fetchMeteoraPositions: jest.fn(),
@@ -139,8 +137,6 @@ beforeEach(async () => {
   mockPositions.mockResolvedValue([]);
   mockStats.mockResolvedValue(new Map());
   // .catch/.then が直接付く client は resolved default が必須 (automock は undefined を返す)
-  (fetchDriftSpotPositions as jest.MockedFunction<typeof fetchDriftSpotPositions>)
-    .mockResolvedValue([]);
   (fetchMeteoraPositions as jest.MockedFunction<typeof fetchMeteoraPositions>)
     .mockResolvedValue([]);
   (fetchKaminoVaultUserPositions as jest.MockedFunction<typeof fetchKaminoVaultUserPositions>)

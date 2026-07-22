@@ -71,7 +71,6 @@ import {
   findSaveMarketByCToken,
   heldSavePositions,
 } from "@workspace/lib/config/save-markets";
-import { findDriftMarketByKey } from "@workspace/lib/config/drift-markets";
 
 import type { JupiterLendMarketDTO } from "../../services/api";
 import {
@@ -89,7 +88,6 @@ const ICON_BY_ID: Record<string, ImageRequireSource> = {
   kamino: require("../../assets/brands/kamino.png"),
   solstice: require("../../assets/brands/solstice.png"),
   sanctum: require("../../assets/brands/sanctum.png"),
-  drift: require("../../assets/brands/drift.png"),
   perena: require("../../assets/brands/perena.png"),
   savefi: require("../../assets/brands/savefi.png"),
   marinade: require("../../assets/brands/marinade.png"),
@@ -103,7 +101,6 @@ const ICON_BY_ID: Record<string, ImageRequireSource> = {
 // 他 protocol は default 1.0。
 const ICON_SCALE_BY_ID: Record<string, number> = {
   jupiter: 1.5,
-  drift: 0.9,
   sanctum: 1.2,
 };
 
@@ -867,9 +864,6 @@ function positionsForProtocol(
       // Phase 8.15.x: BFF の enriched 配列を優先 (underlying/USD/earned 実値)。
       // undefined (旧 BFF / fixture) のみ client 側 mint 解決に fallback。
       return earnPositions?.save ?? heldSavePositions(positions, protocolId);
-    case "drift":
-      // Phase 8.15e: SPL 受取が無いため BFF (SDK read) の配列のみ。
-      return earnPositions?.drift ?? [];
     case "meteora":
       // Phase 8.17: DLMM position は account 型 — BFF (SDK read) の配列のみ。
       return earnPositions?.meteora ?? [];
@@ -935,7 +929,6 @@ function YourPositionRow({
       findKaminoMarketByReserve(position.share_mint) !== undefined ||
       findSaveMarketByCToken(position.share_mint) !== undefined ||
       findKaminoVaultByAddress(position.share_mint) !== undefined ||
-      findDriftMarketByKey(position.share_mint) !== undefined ||
       // Meteora (8.17) / Orca (8.18): share_mint = position 実 pubkey — protocol で判定
       position.protocol_id === "meteora" ||
       position.protocol_id === "orca") &&

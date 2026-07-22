@@ -18,7 +18,6 @@ import {
   findKaminoVaultByAddress,
 } from "@workspace/lib/config/kamino-markets";
 import { findSaveMarketByCToken } from "@workspace/lib/config/save-markets";
-import { findDriftMarketByKey } from "@workspace/lib/config/drift-markets";
 
 type Action = NonNullable<AgentPlan["selected_action"]>;
 
@@ -81,14 +80,6 @@ export function resolveAmountUnit(
         return {
           decimals: shareDecimals ?? vault.shares_decimals,
           unitSymbol: "shares",
-        };
-      }
-      // Drift (8.15e): position_key 経由、underlying 建て (SPL 受取なし)
-      const drift = findDriftMarketByKey(shareMint);
-      if (drift) {
-        return {
-          decimals: underlyingDecimals ?? drift.underlying_decimals,
-          unitSymbol: drift.underlying_symbol,
         };
       }
     }

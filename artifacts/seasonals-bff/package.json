@@ -12,7 +12,6 @@
   },
   "dependencies": {
     "@coral-xyz/anchor": "0.32.1",
-    "@drift-labs/sdk": "^2.156.0",
     "@fastify/cors": "^9.0.1",
     "@meteora-ag/dlmm": "1.9.12",
     "@orca-so/whirlpools-sdk": "0.21.0",

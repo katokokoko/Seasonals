@@ -21,11 +21,6 @@ import {
   findSaveMarketByPool,
 } from "@workspace/lib/config/save-markets";
 import {
-  findDriftMarketByAsset,
-  findDriftMarketByKey,
-  findDriftMarketByPool,
-} from "@workspace/lib/config/drift-markets";
-import {
   METEORA_MARKETS,
   findMeteoraMarketByPool,
 } from "@workspace/lib/config/meteora-markets";
@@ -60,15 +55,14 @@ export function resolveOracleMint(
     const shareMint = action.metadata?.share_mint;
     if (typeof shareMint === "string") {
       // share_mint の中身: swap-earn = token mint、Kamino = reserve address、
-      // Save = cToken mint、kVault = vault address、Drift = 合成 position_key。
+      // Save = cToken mint、kVault = vault address。
       // Meteora の position pubkey 等、どれにも hit しない場合は下の protocol
       // 分岐に fall through する (return しない)。
       const resolved =
         findMarketByShareMint(shareMint)?.underlying_mint ??
         findKaminoMarketByReserve(shareMint)?.underlying_mint ??
         findSaveMarketByCToken(shareMint)?.underlying_mint ??
-        findKaminoVaultByAddress(shareMint)?.underlying_mint ??
-        findDriftMarketByKey(shareMint)?.underlying_mint;
+        findKaminoVaultByAddress(shareMint)?.underlying_mint;
       if (resolved) return resolved;
     }
   }
@@ -92,15 +86,6 @@ export function resolveOracleMint(
       typeof poolId === "string" ? findSaveMarketByPool(poolId) : undefined;
     const mkt =
       byPool ?? (action.asset ? findSaveMarketByAsset(action.asset) : undefined);
-    return mkt?.underlying_mint ?? null;
-  }
-  // Phase 8.15e: Drift deposit も pool_id / asset で解決。
-  if (protocolId === "drift") {
-    const poolId = action.metadata?.pool_id;
-    const byPool =
-      typeof poolId === "string" ? findDriftMarketByPool(poolId) : undefined;
-    const mkt =
-      byPool ?? (action.asset ? findDriftMarketByAsset(action.asset) : undefined);
     return mkt?.underlying_mint ?? null;
   }
   // Phase 8.17: Meteora は deposit token を gate (withdraw は position pubkey が
