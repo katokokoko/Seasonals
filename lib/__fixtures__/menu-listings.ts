@@ -1,5 +1,5 @@
 /**
- * Menu protocol entries (Phase 6.1) — 11 主要 Solana DeFi protocols × 階層 pools
+ * Menu protocol entries (Phase 6.1) — 12 主要 Solana DeFi protocols × 階層 pools
  *
  * 数値は 2026-07 baseline (Phase 8.32 で DefiLlama / 各 protocol API 実測値に refresh。
  * 2026 年の Solana TVL -56% 局面を反映。live overlay が届く pool は実行時に上書き)。
@@ -393,6 +393,59 @@ export const fixtureMenuListings: ProtocolMenuEntry[] = [
         asset: "USDC",
         apy: 0.10, // 実値ソース未発見 (Exponent hyUSD implied 近似)
         tvl_usd: 11_000_000,
+      },
+    ],
+  },
+
+  // ─── 12. Exponent (Phase 8.33 — read-only PT 一覧) ─────────
+  // pools は BFF /menu-listings が live markets (api.exponent.finance) で置換する。
+  // 本 fixture は offline/test 用 snapshot (2026-07-22 実測、lib/config/exponent-markets.ts
+  // と同期)。PT market は 1〜4 ヶ月で世代交代するため満期を過ぎた pool は
+  // buildExponentMenuPools の maturity filter で除外される (menu に腐った pool は出ない)。
+  // icon 画像未支給 → icon_id 未登録で頭文字バッジに fallback。
+  {
+    protocol_id: "exponent",
+    display_name: "Exponent",
+    primary_category: PositionCategory.PTYT,
+    supported_assets: ["USX", "ONyc", "xSOL", "eUSX"],
+    icon_id: "exponent",
+    icon_bg: ICON_BG_DARK,
+    pools: [
+      {
+        pool_id: "exponent_pt_usx_20260916",
+        name: "PT USX · 2026-09-16",
+        category: PositionCategory.PTYT,
+        asset: "USX",
+        apy: 0.056, // implied APY = PT 固定利回り
+        tvl_usd: 47_600_000,
+        display_only: true,
+      },
+      {
+        pool_id: "exponent_pt_onyc_20260910",
+        name: "PT ONyc · 2026-09-10",
+        category: PositionCategory.PTYT,
+        asset: "ONyc",
+        apy: 0.1403,
+        tvl_usd: 28_500_000,
+        display_only: true,
+      },
+      {
+        pool_id: "exponent_pt_xsol_20260812",
+        name: "PT xSOL · 2026-08-12",
+        category: PositionCategory.PTYT,
+        asset: "xSOL",
+        apy: 0.3503,
+        tvl_usd: 0, // quote が xSOL 建てで USD 換算不能 (偽 USD を出さない)
+        display_only: true,
+      },
+      {
+        pool_id: "exponent_pt_eusx_20260916",
+        name: "PT eUSX · 2026-09-16",
+        category: PositionCategory.PTYT,
+        asset: "eUSX",
+        apy: 0.0634,
+        tvl_usd: 5_900_000,
+        display_only: true,
       },
     ],
   },

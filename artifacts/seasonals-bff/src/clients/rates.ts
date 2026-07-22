@@ -141,9 +141,23 @@ const EXPONENT_MARKETS_URL = "https://api.exponent.finance/markets";
 const EXPONENT_TTL_MS = 10 * 60_000;
 
 interface ExponentMarketEntry {
-  underlyingAsset?: { ticker?: string };
+  underlyingAsset?: {
+    ticker?: string;
+    mint?: string;
+    decimals?: number;
+  };
+  quoteAsset?: { ticker?: string };
   underlyingApy?: number;
   syExchangeRate?: number;
+  // Phase 8.33: PT market data (read-only 統合用)
+  ptMint?: string;
+  ytMint?: string;
+  decimals?: number;
+  maturityDateUnixTs?: number;
+  impliedApy?: number;
+  totalMarketSize?: number;
+  ptPriceInAsset?: number;
+  marketStatus?: string;
 }
 
 let exponentCache: { at: number; markets: ExponentMarketEntry[] } | null = null;
@@ -185,6 +199,89 @@ export async function fetchExponentApys(): Promise<Map<string, number>> {
     ) {
       out.set(ticker, apy);
     }
+  }
+  return out;
+}
+
+/**
+ * Phase 8.33: PT market の検証済み full entry (read-only 統合用)。
+ * implied_apy / total_market_size / pt_price_in_asset は §3 display carve-out。
+ */
+export interface ExponentFullMarket {
+  ticker: string;
+  underlying_mint: string;
+  underlying_decimals: number;
+  pt_mint: string;
+  yt_mint: string;
+  pt_decimals: number;
+  /** maturity unix 秒 (整数) */
+  maturity_ts: number;
+  implied_apy: number;
+  underlying_apy: number | null;
+  /** API totalMarketSize (quote_ticker 建て — USD ではない market あり) */
+  total_market_size: number;
+  /** totalMarketSize の建て資産 (quoteAsset.ticker、"USD" / "SOL" / token 名) */
+  quote_ticker: string;
+  pt_price_in_asset: number;
+  market_status: string;
+}
+
+/**
+ * Phase 8.33: PT market 一覧 (10min cache 共有)。フィールド欠落/不正 entry は
+ * skip (fail-closed — API shape drift 耐性)。menu / positions / time-events が
+ * 消費し、live 取得失敗時は呼び手が lib registry snapshot へ degrade する。
+ */
+export async function fetchExponentFullMarkets(): Promise<ExponentFullMarket[]> {
+  const markets = await fetchExponentMarkets();
+  const out: ExponentFullMarket[] = [];
+  for (const m of markets) {
+    const u = m.underlyingAsset;
+    if (
+      typeof u?.ticker !== "string" ||
+      typeof u.mint !== "string" ||
+      u.mint.length === 0 ||
+      !Number.isInteger(u.decimals) ||
+      typeof m.ptMint !== "string" ||
+      m.ptMint.length === 0 ||
+      typeof m.ytMint !== "string" ||
+      m.ytMint.length === 0 ||
+      !Number.isInteger(m.decimals) ||
+      typeof m.maturityDateUnixTs !== "number" ||
+      !Number.isFinite(m.maturityDateUnixTs) ||
+      m.maturityDateUnixTs <= 0 ||
+      typeof m.impliedApy !== "number" ||
+      !Number.isFinite(m.impliedApy)
+    ) {
+      continue;
+    }
+    out.push({
+      ticker: u.ticker,
+      underlying_mint: u.mint,
+      underlying_decimals: u.decimals as number,
+      pt_mint: m.ptMint,
+      yt_mint: m.ytMint,
+      pt_decimals: m.decimals as number,
+      maturity_ts: Math.floor(m.maturityDateUnixTs),
+      implied_apy: m.impliedApy,
+      underlying_apy:
+        typeof m.underlyingApy === "number" && Number.isFinite(m.underlyingApy)
+          ? m.underlyingApy
+          : null,
+      total_market_size:
+        typeof m.totalMarketSize === "number" &&
+        Number.isFinite(m.totalMarketSize)
+          ? m.totalMarketSize
+          : 0,
+      quote_ticker:
+        typeof m.quoteAsset?.ticker === "string" ? m.quoteAsset.ticker : "",
+      pt_price_in_asset:
+        typeof m.ptPriceInAsset === "number" &&
+        Number.isFinite(m.ptPriceInAsset) &&
+        m.ptPriceInAsset > 0
+          ? m.ptPriceInAsset
+          : 1,
+      market_status: typeof m.marketStatus === "string" ? m.marketStatus : "",
+    });
   }
   return out;
 }

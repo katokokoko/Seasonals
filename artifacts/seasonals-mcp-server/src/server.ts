@@ -127,6 +127,10 @@ export function buildMcpServer(
         const menu = await bff.get<ProtocolMenuEntry[]>("/menu-listings");
         const pools = menu.flatMap((entry) =>
           entry.pools
+            // Phase 8.33: read-only listing (Exponent PT 等) は simulate/execute 経路が
+            // 無いため候補から除外 (fail-closed — stub simulate が「実行可能」に見える
+            // 事故を防ぐ)。PT の maturity 情報は calendar resource 経由で agent に届く
+            .filter((p) => !p.display_only)
             .filter((p) => (p.deposit_asset ?? p.asset) === asset)
             .filter((p) =>
               constraints?.min_tvl !== undefined

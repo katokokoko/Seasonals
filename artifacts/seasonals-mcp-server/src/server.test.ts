@@ -151,6 +151,46 @@ describe("Seasonals MCP server", () => {
     expect(out.ranked_candidates[0]!.market_id).toBe("kamino_usdc_main");
   });
 
+  it("compare: display_only pool (8.33 read-only) は最高 APY でも候補から除外", async () => {
+    const menuWithDisplayOnly = [
+      ...MENU,
+      {
+        protocol_id: "exponent",
+        display_name: "Exponent",
+        primary_category: "pt_yt",
+        supported_assets: ["USDC"],
+        icon_id: "exponent",
+        icon_bg: "#000",
+        pools: [
+          {
+            pool_id: "exponent_pt_usdc_20991231",
+            name: "PT USDC · 2099-12-31",
+            category: "pt_yt",
+            asset: "USDC",
+            apy: 0.99, // 全 pool 中最高だが実行経路なし
+            tvl_usd: 9_000_000_000,
+            display_only: true,
+          },
+        ],
+      },
+    ];
+    const { client } = await connect(
+      fakeBff({
+        "/menu-listings": () => menuWithDisplayOnly,
+        "/agent-plans": () => ({ plan_id: "p3" }),
+      })
+    );
+    const res = await client.callTool({
+      name: "compare_opportunities",
+      arguments: { objective: "max_yield", asset: "USDC" },
+    });
+    const out = textOf(res) as { ranked_candidates: { market_id: string }[] };
+    expect(
+      out.ranked_candidates.some((c) => c.market_id.startsWith("exponent_"))
+    ).toBe(false);
+    expect(out.ranked_candidates[0]!.market_id).toBe("savefi_usdc_main");
+  });
+
   it("simulate_action: BFF へ透過し bundle_hash を返す / 不正 amount は zod 拒否", async () => {
     const { client } = await connect(
       fakeBff({

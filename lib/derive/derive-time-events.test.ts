@@ -50,6 +50,17 @@ const SNAPSHOTS: PositionSnapshot[] = [
     position_ref: "Loan111",
     maturity_at: "2026-07-20T00:00:00.000Z", // +10d → info
   },
+  // Phase 8.33: Exponent PT (maturity の実データ源 — BFF mapPtHoldingsToMaturityEvents 相当)
+  {
+    protocol: "exponent",
+    position_ref: "PtMint111",
+    maturity_at: "2026-09-16T00:00:00.000Z", // +68d → info
+    metadata: {
+      source: "exponent_pt",
+      side: "PT",
+      headline: "PT USX matures — redeemable 1:1 for USX",
+    },
+  },
   {
     protocol: "solana",
     position_ref: "Stake111",
@@ -85,7 +96,7 @@ describe("deriveAllTimeEvents — golden (§29.1)", () => {
     for (const c of TIME_EVENT_CATEGORIES) {
       expect(categories.has(c)).toBe(true); // 8 種すべて
     }
-    expect(a).toHaveLength(8);
+    expect(a).toHaveLength(9); // 8 カテゴリ + maturity 2 件目 (exponent PT、8.33)
   });
 
   it("golden: 各イベントの id / urgency / triggerAt / headline", () => {
@@ -118,6 +129,17 @@ describe("deriveAllTimeEvents — golden (§29.1)", () => {
     expect(claim.metadata.shares).toBe("350831");
 
     expect(byId.get("maturity_Loan111")!.urgency).toBe(Urgency.Info); // +10d
+
+    // Phase 8.33: Exponent PT maturity (metadata spread が headline を上書きする)
+    const ptMaturity = byId.get("maturity_PtMint111")!;
+    expect(ptMaturity.category).toBe(TimeEventCategory.Maturity);
+    expect(ptMaturity.urgency).toBe(Urgency.Info); // +68d
+    expect(ptMaturity.metadata.source).toBe("exponent_pt");
+    expect(ptMaturity.metadata.headline).toBe(
+      "PT USX matures — redeemable 1:1 for USX"
+    );
+    expect(ptMaturity.actions).toHaveLength(0); // read-only v1
+
     expect(byId.get("lockup_end_Stake111")!.urgency).toBe(Urgency.Watch); // +2d
     expect(byId.get("vesting_cliff_Stream111")!.urgency).toBe(Urgency.Critical); // +12h
     expect(byId.get("vote_deadline_Prop111")!.urgency).toBe(Urgency.Watch); // +3d

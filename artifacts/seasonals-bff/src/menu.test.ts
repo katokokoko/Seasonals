@@ -22,13 +22,17 @@ import { fetchSaveReserveRates } from "./clients/save-tx";
 import { fetchOrcaPoolStats } from "./clients/orca-tx";
 import {
   fetchExponentApys,
+  fetchExponentFullMarkets,
   fetchExponentSyRates,
   fetchLstApys,
   fetchPerenaUsdStarApy,
+  type ExponentFullMarket,
 } from "./clients/rates";
 import { fetchMeteoraPoolStats } from "./clients/meteora-tx";
 import { getTokenSupplyUi } from "./clients/helius-rpc";
+import { getOracleResult } from "./clients/oracle";
 import { METEORA_MARKETS } from "@workspace/lib/config/meteora-markets";
+import { exponentPoolId } from "@workspace/lib/config/exponent-markets";
 
 jest.mock("./clients/jupiter-lend");
 jest.mock("./clients/kamino-tx");
@@ -43,6 +47,8 @@ jest.mock("./clients/meteora-tx", () => ({
   fetchMeteoraPoolStats: jest.fn(),
 }));
 jest.mock("./clients/helius-rpc");
+// Phase 8.33: /menu-listings が SOL oracle 価格 (exponent TVL 換算) を引くため mock
+jest.mock("./clients/oracle");
 
 const mockJup = fetchEarnMarkets as jest.MockedFunction<typeof fetchEarnMarkets>;
 const mockKamino = fetchKaminoReserveMetrics as jest.MockedFunction<
@@ -67,6 +73,35 @@ const mockMeteoraStats = fetchMeteoraPoolStats as jest.MockedFunction<
 const METEORA_USDC_USDT = METEORA_MARKETS.find(
   (m) => m.pool_id === "meteora_usdc_usdt_dlmm"
 )!;
+
+// Phase 8.33: exponent live markets mock。maturity は実行時 now+90d/+30d で組む
+// (wall-clock 固定値を置かない = 永続 deterministic)。
+const NOW_SEC = Math.floor(Date.now() / 1000);
+const EXP_MKT_A: ExponentFullMarket = {
+  ticker: "USX",
+  underlying_mint: "6FrrzDk5mQARGc1TDYoyVnSyRdds1t4PbtohCD6p3tgG",
+  underlying_decimals: 6,
+  pt_mint: "PtUsx111111111111111111111111111111111111111",
+  yt_mint: "YtUsx111111111111111111111111111111111111111",
+  pt_decimals: 6,
+  maturity_ts: NOW_SEC + 30 * 86400,
+  implied_apy: 0.061,
+  underlying_apy: 0.05,
+  total_market_size: 40_000_000,
+  quote_ticker: "USD",
+  pt_price_in_asset: 0.98,
+  market_status: "active",
+};
+const EXP_MKT_B: ExponentFullMarket = {
+  ...EXP_MKT_A,
+  ticker: "fragSOL",
+  pt_mint: "PtFrag11111111111111111111111111111111111111",
+  yt_mint: "YtFrag11111111111111111111111111111111111111",
+  maturity_ts: NOW_SEC + 90 * 86400,
+  implied_apy: 0.072,
+  total_market_size: 1_000, // SOL 建て → ×SOL 価格
+  quote_ticker: "SOL",
+};
 
 const KAMINO_USDC = KAMINO_MARKETS.find((m) => m.pool_id === "kamino_usdc_main")!;
 const KVAULT = KAMINO_VAULTS[0]!;
@@ -141,6 +176,13 @@ beforeEach(async () => {
     ])
   );
   mockExponent.mockResolvedValue(new Map([["eUSX", 0.0376]]));
+  // Phase 8.33: exponent PT markets + SOL oracle 価格 ($80)
+  (fetchExponentFullMarkets as jest.MockedFunction<typeof fetchExponentFullMarkets>)
+    .mockResolvedValue([EXP_MKT_A, EXP_MKT_B]);
+  (getOracleResult as jest.MockedFunction<typeof getOracleResult>)
+    .mockResolvedValue({ price_usd: "80.00000000" } as Awaited<
+      ReturnType<typeof getOracleResult>
+    >);
   (fetchPerenaUsdStarApy as jest.MockedFunction<typeof fetchPerenaUsdStarApy>)
     .mockResolvedValue(0.093);
   // 8.26: Solstice TVL = eUSX 供給 × syExchangeRate
@@ -170,16 +212,52 @@ function pool(menu: ProtocolMenuEntry[], protocolId: string, poolId: string) {
 }
 
 describe("GET /menu-listings — live overlay", () => {
-  it("shape 不変: 全 protocol / pool_id が fixture と同一", async () => {
+  it("shape 不変: 全 protocol / pool_id が fixture と同一 (exponent は live 置換)", async () => {
     const menu = await getMenu();
     expect(menu.map((e) => e.protocol_id)).toEqual(
       fixtureMenuListings.map((e) => e.protocol_id)
     );
     for (let i = 0; i < menu.length; i++) {
+      // Phase 8.33: exponent entry のみ pools を live markets から作り直す
+      if (menu[i]!.protocol_id === "exponent") {
+        expect(menu[i]!.pools.map((p) => p.pool_id)).toEqual([
+          exponentPoolId(EXP_MKT_A.ticker, EXP_MKT_A.maturity_ts),
+          exponentPoolId(EXP_MKT_B.ticker, EXP_MKT_B.maturity_ts),
+        ]);
+        continue;
+      }
       expect(menu[i]!.pools.map((p) => p.pool_id)).toEqual(
         fixtureMenuListings[i]!.pools.map((p) => p.pool_id)
       );
     }
+  });
+
+  it("8.33: exponent pools は live 置換 (maturity 昇順 / display_only / TVL 換算)", async () => {
+    const menu = await getMenu();
+    const exp = menu.find((e) => e.protocol_id === "exponent")!;
+    expect(exp.pools).toHaveLength(2);
+    expect(exp.pools.every((p) => p.display_only === true)).toBe(true);
+    const usx = exp.pools[0]!; // +30d が先 (昇順)
+    expect(usx.asset).toBe("USX");
+    expect(usx.apy).toBeCloseTo(0.061, 6);
+    expect(usx.tvl_usd).toBe(40_000_000); // USD quote ×1
+    const frag = exp.pools[1]!;
+    expect(frag.tvl_usd).toBe(80_000); // 1000 SOL × $80 (oracle mock)
+  });
+
+  it("8.33: exponent live 失敗 → registry snapshot へ degrade (maturity filter 込み)", async () => {
+    (fetchExponentFullMarkets as jest.MockedFunction<typeof fetchExponentFullMarkets>)
+      .mockRejectedValue(new Error("exponent down"));
+    const menu = await getMenu();
+    const exp = menu.find((e) => e.protocol_id === "exponent")!;
+    // registry の未満期 market のみ (test 実行時刻依存だが「registry 由来 id である」
+    // ことだけを assert — 満期通過で件数が減っても壊れない)
+    for (const p of exp.pools) {
+      expect(p.pool_id.startsWith("exponent_pt_")).toBe(true);
+      expect(p.display_only).toBe(true);
+    }
+    // 他 protocol は live のまま
+    expect(pool(menu, "orca", "orca_usdc_usdt_whirlpool").apy).toBeCloseTo(0.0549, 6);
   });
 
   it("kamino reserve: apy/tvl/borrowed を overlay、kVault は apy のみ", async () => {

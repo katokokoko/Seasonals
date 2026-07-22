@@ -677,6 +677,8 @@ export function MenuDrawer({
 
   const handlePoolTap = useCallback(
     (entry: ProtocolMenuEntry, pool: ProtocolPool) => {
+      // Phase 8.33: read-only listing (Exponent PT 等) は deposit 経路なし — tap 無効
+      if (pool.display_only) return;
       onClose();
       const asset = pool.deposit_asset ?? pool.asset;
       onStartAction?.(entry.protocol_id, asset, "deposit", pool.pool_id);
@@ -864,6 +866,9 @@ function positionsForProtocol(
       // Phase 8.15.x: BFF の enriched 配列を優先 (underlying/USD/earned 実値)。
       // undefined (旧 BFF / fixture) のみ client 側 mint 解決に fallback。
       return earnPositions?.save ?? heldSavePositions(positions, protocolId);
+    case "exponent":
+      // Phase 8.33: PT 保有 (read-only) — BFF (DAS + registry) の配列のみ。
+      return earnPositions?.exponent ?? [];
     case "meteora":
       // Phase 8.17: DLMM position は account 型 — BFF (SDK read) の配列のみ。
       return earnPositions?.meteora ?? [];
@@ -1171,7 +1176,9 @@ function DefaultPoolDetailPane({
         {entry.pools.map((pool, idx) => (
           <Pressable
             key={pool.pool_id}
-            accessibilityRole="button"
+            // Phase 8.33: read-only pool (Exponent PT 等) は tap 無効 (deposit 経路なし)
+            accessibilityRole={pool.display_only ? "none" : "button"}
+            disabled={pool.display_only === true}
             onPress={() => onPoolTap(pool)}
             style={[
               styles.detailPoolRow,
@@ -1211,6 +1218,15 @@ function DefaultPoolDetailPane({
                     testID={`pool-util-${pool.pool_id}`}
                   >
                     {formatUtilization(pool.utilization)}
+                  </Text>
+                )}
+                {/* Phase 8.33: read-only pool (deposit 経路なし) の明示 */}
+                {pool.display_only === true && (
+                  <Text
+                    style={styles.poolMeta}
+                    testID={`pool-viewonly-${pool.pool_id}`}
+                  >
+                    View only
                   </Text>
                 )}
               </View>

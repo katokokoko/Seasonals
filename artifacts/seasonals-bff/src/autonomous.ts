@@ -335,6 +335,9 @@ export async function runAutonomousCycle(
     [];
   for (const entry of menu) {
     for (const pool of entry.pools) {
+      // Phase 8.33: read-only listing (Exponent PT 等) は実行経路が無い —
+      // 自律候補から fail-closed で除外 (§32.2 policy-aware execution)
+      if (pool.display_only) continue;
       const asset = pool.deposit_asset ?? pool.asset;
       if (opts.asset && asset !== opts.asset) continue;
       candidates.push({ entry, pool, c: toCandidate(entry, pool, policy.max_tx_amount) });

@@ -120,12 +120,21 @@ import {
 } from "./clients/kamino-tx";
 import {
   fetchExponentApys,
+  fetchExponentFullMarkets,
   fetchExponentSyRates,
   fetchJupiterRateOut,
   fetchLstApys,
   fetchPerenaUsdStarApy,
   fetchSanctumSolValues,
+  type ExponentFullMarket,
 } from "./clients/rates";
+import {
+  EXPONENT_MARKETS,
+  exponentMaturityIso,
+  exponentPoolId,
+  exponentPoolName,
+  activeExponentMarkets,
+} from "@workspace/lib/config/exponent-markets";
 import {
   METEORA_MARKETS,
   findMeteoraMarketByPool,
@@ -189,7 +198,9 @@ import type {
   ActionSpec,
   CandidateAction,
   ProtocolMenuEntry,
+  ProtocolPool,
 } from "@workspace/lib/types";
+import { PositionCategory } from "@workspace/lib/types";
 import {
   computeBundleHash,
   createPlan,
@@ -2047,6 +2058,189 @@ export function mapStakeAccountsToLockupEvents(
   return snapshots.flatMap((s) => deriveTimeEvents(s, ctx).map(timeEventToDTO));
 }
 
+// ── Phase 8.33: Exponent PT (read-only 統合、§11.4 maturity) ─────────────────
+
+/** lib registry snapshot を ExponentFullMarket 形へ正規化 (degrade / backstop 用)。 */
+function registryAsFullMarkets(): ExponentFullMarket[] {
+  return EXPONENT_MARKETS.map((m) => ({
+    ticker: m.underlying_symbol,
+    underlying_mint: m.underlying_mint,
+    underlying_decimals: m.underlying_decimals,
+    pt_mint: m.pt_mint,
+    yt_mint: m.yt_mint,
+    pt_decimals: m.pt_decimals,
+    maturity_ts: m.maturity_ts,
+    implied_apy: m.implied_apy,
+    underlying_apy: null,
+    total_market_size: m.total_market_size,
+    quote_ticker: m.quote_ticker,
+    pt_price_in_asset: 1,
+    market_status: "registry",
+  }));
+}
+
+/**
+ * live markets ∪ registry snapshot (pt_mint キー、live 優先)。
+ * 満期後に live の active 一覧から消えた PT も registry で解決し続ける
+ * (過去日 maturity → critical は「満期を過ぎている」正しい通知)。
+ */
+export function exponentMarketUnion(
+  live: ExponentFullMarket[] | undefined
+): ExponentFullMarket[] {
+  const byPt = new Map<string, ExponentFullMarket>();
+  for (const m of registryAsFullMarkets()) byPt.set(m.pt_mint, m);
+  for (const m of live ?? []) byPt.set(m.pt_mint, m);
+  return [...byPt.values()];
+}
+
+/**
+ * 保有 PT/YT (Exponent) → maturity イベント (§11.4)。read-only v1 のため actions 空
+ * (deriveTimeEvents の maturity 分岐が空 actions で emit する)。
+ * YT も出す — YT は満期で価値 0 になるため締切通知の価値が最大。
+ */
+export function mapPtHoldingsToMaturityEvents(
+  assets: HeliusAsset[],
+  markets: ExponentFullMarket[],
+  walletAddress: string,
+  now: Date
+): UnifiedTimeEventDTO[] {
+  const byPt = new Map(markets.map((m) => [m.pt_mint, m] as const));
+  const byYt = new Map(markets.map((m) => [m.yt_mint, m] as const));
+  const snapshots: PositionSnapshot[] = [];
+  for (const asset of assets) {
+    const pt = byPt.get(asset.id);
+    const yt = pt === undefined ? byYt.get(asset.id) : undefined;
+    const m = pt ?? yt;
+    if (!m) continue;
+    const side = pt !== undefined ? "PT" : "YT";
+    const balance = assetBalanceSmallest(asset);
+    if (balance === null || balance === 0n) continue;
+    snapshots.push({
+      protocol: "exponent",
+      position_ref: asset.id,
+      maturity_at: exponentMaturityIso(m.maturity_ts),
+      metadata: {
+        source: "exponent_pt",
+        side,
+        underlying_symbol: m.ticker,
+        pt_amount: fromBigInt(balance), // smallest-unit string (§4.5)
+        pt_decimals: m.pt_decimals,
+        headline:
+          side === "PT"
+            ? `PT ${m.ticker} matures — redeemable 1:1 for ${m.ticker}`
+            : `YT ${m.ticker} expires — yield accrual ends`,
+      },
+    });
+  }
+  const ctx = { now, wallet: walletAddress };
+  return snapshots.flatMap((s) => deriveTimeEvents(s, ctx).map(timeEventToDTO));
+}
+
+/**
+ * 保有 PT (Exponent) → EarnPosition (read-only、maturity_at 付き)。YT は v1 対象外
+ * (評価軸が別物)。underlying_amount は「満期で 1 PT = 1 underlying」前提の
+ * decimals 変換 (満期前は ptPriceInAsset 分だけ割引されるが、それは USD 側に反映)。
+ *
+ * USD 換算 (§4.5 note): 上流 float の pt_price_in_asset は **境界で 1 回だけ**
+ * ×1e8 の bigint に変換し、以後 bigint 演算のみ。表示・概算専用で実行入力には
+ * 使わない (v1 に実行経路なし)。oracle 価格が無い stable 系 ticker は 1.0 と
+ * みなし、それ以外の不明 underlying は "0" (偽 USD を出さない)。
+ */
+const EXPONENT_STABLE_TICKERS = new Set(["USX", "eUSX", "hyUSD", "ONyc"]);
+
+export function mapExponentHoldingsToEarnPositions(
+  assets: HeliusAsset[],
+  markets: ExponentFullMarket[],
+  priceUsd8ByMint: Map<string, bigint>
+): EarnPosition[] {
+  const byPt = new Map(markets.map((m) => [m.pt_mint, m] as const));
+  const out: EarnPosition[] = [];
+  for (const asset of assets) {
+    const m = byPt.get(asset.id);
+    if (!m) continue;
+    const shares = assetBalanceSmallest(asset);
+    if (shares === null || shares === 0n) continue;
+
+    // PT smallest → underlying smallest (decimals 差の pow10 変換のみ、bigint)
+    const dDiff = m.underlying_decimals - m.pt_decimals;
+    const underlying =
+      dDiff >= 0
+        ? shares * 10n ** BigInt(dDiff)
+        : shares / 10n ** BigInt(-dDiff);
+
+    // USD: shares × ptPrice8 × underlyingPrice8 / 10^(pt_dec + 8)
+    const ptPrice8 = BigInt(Math.round(m.pt_price_in_asset * 1e8));
+    const underlyingPrice8 =
+      priceUsd8ByMint.get(m.underlying_mint) ??
+      (EXPONENT_STABLE_TICKERS.has(m.ticker) ? 100_000_000n : undefined);
+    const usd8 =
+      underlyingPrice8 !== undefined && underlyingPrice8 > 0n
+        ? formatUsd8(
+            (shares * ptPrice8 * underlyingPrice8) /
+              10n ** BigInt(m.pt_decimals + 8)
+          )
+        : "0";
+
+    out.push({
+      protocol_id: "exponent",
+      protocol_name: "Exponent",
+      market_symbol: m.ticker,
+      share_mint: m.pt_mint,
+      shares: fromBigInt(shares),
+      share_decimals: m.pt_decimals,
+      asset_symbol: `PT-${m.ticker}`,
+      underlying_amount: fromBigInt(underlying),
+      underlying_decimals: m.underlying_decimals,
+      underlying_usd: usd8,
+      supply_rate_bps: Number.isFinite(m.implied_apy)
+        ? Math.round(m.implied_apy * 10000)
+        : null,
+      accrued_yield_amount: "0",
+      accrued_yield_sign: "unknown",
+      cost_basis_amount: null,
+      maturity_at: exponentMaturityIso(m.maturity_ts),
+    });
+  }
+  return out;
+}
+
+/**
+ * live/registry markets → menu pools (§3 display carve-out)。
+ * 満期 (`maturity_ts <= nowSec`) は live/degrade どちらの経路でも除外 —
+ * 世代交代で腐った snapshot pool が menu に出ることはない。
+ * tvl_usd は totalMarketSize (**quote 資産建て**) の USD 近似:
+ *   quote "USD" / stable 系 → ×1、quote "SOL" → × SOL oracle 価格、
+ *   それ以外 (xSOL / SLX 等の変動 token quote) → 換算不能として 0
+ *   (偽 USD を出さない。SOL 換算の LST premium ~0-20% 誤差は表示バッジ用途で許容)。
+ */
+const EXPONENT_USD_QUOTES = new Set(["USD", "USX", "eUSX", "hyUSD", "USDC"]);
+
+export function buildExponentMenuPools(
+  markets: ExponentFullMarket[],
+  nowSec: number,
+  solPriceUsd: number | undefined
+): ProtocolPool[] {
+  return activeExponentMarkets(markets, nowSec)
+    .filter((m) => m.market_status === "active" || m.market_status === "registry")
+    .sort((a, b) => a.maturity_ts - b.maturity_ts)
+    .map((m) => {
+      const unitUsd = EXPONENT_USD_QUOTES.has(m.quote_ticker)
+        ? 1
+        : m.quote_ticker === "SOL"
+          ? solPriceUsd ?? 0
+          : 0;
+      return {
+        pool_id: exponentPoolId(m.ticker, m.maturity_ts),
+        name: exponentPoolName(m.ticker, m.maturity_ts),
+        category: PositionCategory.PTYT,
+        asset: m.ticker,
+        apy: m.implied_apy, // implied APY = PT 固定利回り
+        tvl_usd: m.total_market_size * unitUsd,
+        display_only: true, // v1 は read-only (deposit 経路なし)
+      };
+    });
+}
+
 // ── Phase 8.22: /menu-listings (live APY/TVL overlay) ────────────────────────
 
 /**
@@ -2070,6 +2264,15 @@ export interface MenuLiveSources {
   meteoraStats?: Map<string, MeteoraPoolStats>;
   /** Phase 8.26: eUSX 総供給 × syExchangeRate (表示専用 USD) */
   solsticeTvlUsd?: number;
+  /**
+   * Phase 8.33: Exponent PT markets (live)。undefined = fetch 失敗 → lib registry
+   * snapshot へ degrade (どちらも buildExponentMenuPools が maturity filter する)。
+   */
+  exponentMarkets?: ExponentFullMarket[];
+  /** Phase 8.33: SOL quote market の TVL 換算用 (表示専用 Number) */
+  solPriceUsd?: number;
+  /** Phase 8.33: maturity filter 基準時刻 (unix 秒)。未指定は実時刻 */
+  nowSec?: number;
 }
 
 /**
@@ -2099,12 +2302,26 @@ function finite(n: number): number | null {
  * documented display carve-out (§3) — smallest-unit string 規約の適用外。
  * 対応 protocol: jupiter / kamino (reserve + kVault) / savefi / orca。
  * それ以外 (LST / meteora / perena / solstice) は live ソースが無く fixture 値。
+ * Phase 8.33: exponent entry のみ patch でなく pools **置換** (market 世代交代対応)。
  */
 export function applyMenuLiveOverlays(
   listings: ProtocolMenuEntry[],
   s: MenuLiveSources
 ): ProtocolMenuEntry[] {
-  return listings.map((entry) => ({
+  return listings.map((entry) => {
+    // Phase 8.33: Exponent は live markets から pools を作り直す (degrade は registry)。
+    if (entry.protocol_id === "exponent") {
+      const nowSec = s.nowSec ?? Math.floor(Date.now() / 1000);
+      return {
+        ...entry,
+        pools: buildExponentMenuPools(
+          s.exponentMarkets ?? registryAsFullMarkets(),
+          nowSec,
+          s.solPriceUsd
+        ),
+      };
+    }
+    return {
     ...entry,
     pools: entry.pools.map((pool) => {
       const out = { ...pool };
@@ -2200,7 +2417,8 @@ export function applyMenuLiveOverlays(
       }
       return out;
     }),
-  }));
+    };
+  });
 }
 
 export interface ServerOptions {
@@ -2310,7 +2528,7 @@ export async function buildServer(
       // Phase 8.16: tx 履歴 (入出金イベント) + epoch (LST 保有時) + Kamino health を
       // 並列取得。source 単位で graceful degrade (全滅でも 200 + 部分結果)。
       // Phase 8.20: LP fee (claim) + native stake (lockup_end) を追加。
-      const [txsR, assetsR, epochR, obligR, orcaR, meteoraR, stakeR] =
+      const [txsR, assetsR, epochR, obligR, orcaR, meteoraR, stakeR, expMktR] =
         await Promise.allSettled([
           fetchEnhancedTransactions(wallet),
           fetchAssetsByOwner(wallet),
@@ -2319,6 +2537,8 @@ export async function buildServer(
           fetchOrcaPositions(wallet),
           fetchMeteoraPositions(wallet),
           fetchStakeAccounts(wallet),
+          // Phase 8.33: PT maturity 解決用 (失敗しても registry backstop がある)
+          fetchExponentFullMarkets(),
         ]);
       for (const [r, label] of [
         [txsR, "helius tx"],
@@ -2328,6 +2548,7 @@ export async function buildServer(
         [orcaR, "orca positions"],
         [meteoraR, "meteora positions"],
         [stakeR, "stake accounts"],
+        [expMktR, "exponent pt markets"],
       ] as const) {
         if (r.status === "rejected") {
           req.log.warn(
@@ -2393,6 +2614,20 @@ export async function buildServer(
         );
       }
 
+      // Phase 8.33: 保有 PT/YT (Exponent) → maturity イベント (§11.4 の実データ源)
+      if (assetsR.status === "fulfilled") {
+        events.push(
+          ...mapPtHoldingsToMaturityEvents(
+            assetsR.value,
+            exponentMarketUnion(
+              expMktR.status === "fulfilled" ? expMktR.value : undefined
+            ),
+            wallet,
+            new Date()
+          )
+        );
+      }
+
       return events;
     }
   );
@@ -2420,6 +2655,8 @@ export async function buildServer(
       metR,
       perenaR,
       solTvlR,
+      expMktR,
+      solPriceR,
     ] = await Promise.allSettled([
         fetchEarnMarkets(),
         fetchKaminoReserveMetrics(KAMINO_MAIN_MARKET),
@@ -2448,6 +2685,9 @@ export async function buildServer(
           if (rate === undefined) throw new Error("no eUSX syExchangeRate");
           return supply * rate;
         })(),
+        // Phase 8.33: Exponent PT markets + SOL 価格 (SOL quote market の TVL 換算用)
+        fetchExponentFullMarkets(),
+        getOracleResult("So11111111111111111111111111111111111111112"),
       ]);
     for (const [r, label] of [
       [jupR, "jupiter lend markets"],
@@ -2459,6 +2699,8 @@ export async function buildServer(
       [metR, "meteora stats"],
       [perenaR, "perena apy"],
       [solTvlR, "solstice tvl"],
+      [expMktR, "exponent pt markets"],
+      [solPriceR, "sol oracle price"],
     ] as const) {
       if (r.status === "rejected") {
         req.log.warn(
@@ -2495,6 +2737,14 @@ export async function buildServer(
       lstApys: yieldApys.size > 0 ? yieldApys : undefined,
       meteoraStats: metR.status === "fulfilled" ? metR.value : undefined,
       solsticeTvlUsd: solTvlR.status === "fulfilled" ? solTvlR.value : undefined,
+      // Phase 8.33: Exponent (失敗時は undefined → registry snapshot へ degrade)
+      exponentMarkets: expMktR.status === "fulfilled" ? expMktR.value : undefined,
+      solPriceUsd:
+        solPriceR.status === "fulfilled" &&
+        typeof solPriceR.value?.price_usd === "string" &&
+        Number.isFinite(Number(solPriceR.value.price_usd))
+          ? Number(solPriceR.value.price_usd) // §3 display carve-out (menu TVL 換算のみ)
+          : undefined,
     });
     menuCache = { at: Date.now(), data };
     return data;
@@ -2622,6 +2872,11 @@ export async function buildServer(
       ).catch(() => [] as Awaited<ReturnType<typeof fetchSaveReserveRates>>);
       const solPricePromise = getOracleResult(SOL_MINT).catch(() => null);
       const usdcPricePromise = getOracleResult(USDC_MINT).catch(() => null);
+      // Phase 8.33: Exponent PT markets (失敗は undefined → registry backstop)。
+      // Promise.resolve 包みは test automock (非 Promise 戻り) への防御
+      const exponentMarketsPromise = Promise.resolve()
+        .then(() => fetchExponentFullMarkets())
+        .catch(() => undefined);
 
       const [jupRes, heliusRes, txRes, kaminoObRes, kaminoResRes] =
         await Promise.allSettled([
@@ -2738,6 +2993,12 @@ export async function buildServer(
         priceUsd8ByMint,
         costBasisByShareMint
       );
+      // Phase 8.33: Exponent PT 保有 (read-only、maturity_at 付き)
+      const exponent = mapExponentHoldingsToEarnPositions(
+        heliusAssets,
+        exponentMarketUnion(await exponentMarketsPromise),
+        priceUsd8ByMint
+      );
       // Phase 8.19: LP cost-basis (IL 込み earned) — tx 履歴は既存 txRes を再利用
       const meteoraRaws = await meteoraPositionsPromise;
       const orcaRaws = await orcaPositionsPromise;
@@ -2803,6 +3064,7 @@ export async function buildServer(
         kaminoBestEffort,
         swapEarn,
         save,
+        exponent,
         meteora,
         orca,
       };

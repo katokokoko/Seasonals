@@ -39,6 +39,12 @@ export interface ProtocolPool {
   utilization?: number;
   /** tap → onStartAction(asset) 用の deposit 通貨。未指定なら `asset` を使う */
   deposit_asset?: string;
+  /**
+   * read-only listing (Phase 8.33)。true の pool は deposit 経路を持たない —
+   * MenuDrawer は tap を無効化し、autonomous / MCP compare の候補からも除外する
+   * (実行不能な候補を agent に見せない fail-closed、§32.2)。
+   */
+  display_only?: boolean;
 }
 
 /**

@@ -73,7 +73,8 @@ export function earnPositionToPosition(earn: EarnPosition): Position {
     unit_price_usd: earn.underlying_usd,
     unit_price_sol,
     deposited_at: new Date().toISOString(),
-    maturity_at: null,
+    // Phase 8.33: 満期付き protocol (Exponent PT) は BFF の maturity_at をそのまま通す
+    maturity_at: earn.maturity_at ?? null,
     unlock_at: null,
     health_factor: null,
     auto_roll_rule: null,
@@ -103,6 +104,8 @@ export function mergeEarnPositions(
     ...earnPositions.kaminoBestEffort,
     ...(earnPositions.swapEarn ?? []),
     ...(earnPositions.save ?? []),
+    // Phase 8.33: Exponent PT (share_mint = pt_mint。raw SPL 保有行は dedup ガードが置換)
+    ...(earnPositions.exponent ?? []),
     // Phase 8.17: Meteora DLMM (position pubkey は raw mint に現れない)
     ...(earnPositions.meteora ?? []),
     // Phase 8.18: Orca Whirlpools (position mint は NFT — raw SPL 保有行と重複しうるが

@@ -63,6 +63,19 @@ describe("earnPositionToPosition — Phase 8.13 accrued yield", () => {
     );
   });
 
+  it("8.33: maturity_at (Exponent PT) は Position.maturity_at へそのまま通る", () => {
+    const withMaturity = earnPositionToPosition(
+      makeEarn({
+        protocol_id: "exponent",
+        asset_symbol: "PT-USX",
+        maturity_at: "2026-09-16T09:58:20.000Z",
+      })
+    );
+    expect(withMaturity.maturity_at).toBe("2026-09-16T09:58:20.000Z");
+    // maturity を持たない protocol は従来通り null
+    expect(earnPositionToPosition(makeEarn()).maturity_at).toBeNull();
+  });
+
   it("unknown: cost_basis 不明なら principal は underlying_amount に fallback", () => {
     const pos = earnPositionToPosition(
       makeEarn({
@@ -129,6 +142,24 @@ describe("mergeEarnPositions — Phase 8.15.x", () => {
     expect(
       merged.filter((p) => (p.raw_state as { mint?: string }).mint === JITOSOL)
     ).toHaveLength(0);
+  });
+
+  it("8.33: exponent 配列も合成され maturity_at が donut 側 Position に残る", () => {
+    const merged = mergeEarnPositions([], {
+      jupiterLend: [],
+      kaminoBestEffort: [],
+      exponent: [
+        makeEarn({
+          protocol_id: "exponent",
+          share_mint: "PT_USX_MINT",
+          asset_symbol: "PT-USX",
+          maturity_at: "2026-09-16T09:58:20.000Z",
+        }),
+      ],
+    });
+    expect(merged).toHaveLength(1);
+    expect(merged[0]!.protocol_id).toBe("exponent");
+    expect(merged[0]!.maturity_at).toBe("2026-09-16T09:58:20.000Z");
   });
 
   it("swapEarn/save undefined (旧 BFF) は従来挙動のまま", () => {

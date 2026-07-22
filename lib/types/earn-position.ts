@@ -66,6 +66,12 @@ export interface EarnPosition {
    * 既知なら Position.principal_amount の実元本として使う。
    */
   cost_basis_amount: string | null;
+  /**
+   * Phase 8.33: 固定 maturity (ISO 8601)。Exponent PT のような満期付き position のみ。
+   * mobile の earn-to-position が Position.maturity_at へそのまま通す。
+   * 満期を持たない protocol は undefined / null。
+   */
+  maturity_at?: string | null;
 }
 
 /** BFF /positions/earn のレスポンス shape */
@@ -85,6 +91,11 @@ export interface EarnPositionsResponse {
   swapEarn?: EarnPosition[];
   /** Phase 8.15.x: Save cToken の enriched 保有 (同上)。 */
   save?: EarnPosition[];
+  /**
+   * Phase 8.33: Exponent PT の保有 (read-only、share_mint = pt_mint)。
+   * maturity_at が必ず入る (カレンダーの maturity event は /time-events/wallet 側で導出)。
+   */
+  exponent?: EarnPosition[];
   /**
    * Phase 8.17: Meteora DLMM LP positions (SDK read)。share_mint = position account
    * の実 pubkey。underlying は deposit token 建て総額、earned = 未請求 swap fee。

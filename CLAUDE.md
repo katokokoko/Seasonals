@@ -429,12 +429,15 @@ PR を出す前 / コードレビューを依頼する前に、関連する行�
   - BFF の Solana SDK 群は **web3.js v1 系に意図的固定** (2026-07 時点): `@orca-so/whirlpools-sdk` 0.21 (legacy 版。kit/v2 版への一本化動向を監視)、root pnpm override `"rpc-websockets@^7": "7.10.0"` (7.11.x の .cjs-only dist regression 回避 — 上流修正を確認したら override 解除)
   - `@solendprotocol/solend-sdk` 0.14.x が **isomorphic-fetch で global fetch を node-fetch に上書き** → Orca / Meteora の Cloudflare が 403 で弾くため該当 client は undici を明示利用中 (orca-tx.ts / meteora-tx.ts)。恒久対応 (solend-sdk 更新 or fetch 隔離) を検討
   - 更新時は §8.1 完了ゲートに加えて **全 protocol 経路の live verify (deposit build 署名検査 / positions / withdraw)** を必須とする — SDK major は挙動が変わり得る
-- **Exponent PT adapter** (新規 protocol 候補、優先度中): Exponent Finance ($120M 規模、
-  2025-11 OSS 化済) の PT (principal token) は **固定 maturity を持つ** — §11.4 の
-  maturity time event と製品的に直結する唯一の未採用候補。API は既に接続済
-  (`clients/rates.ts` の `fetchExponentApys` / `api.exponent.finance/markets`)。
-  adapter 実装は menu entry + PT market registry + maturity event 導出 + swap 経路を
-  含む独立 phase 規模
+- ✅ **Exponent PT read-only v1 (Phase 8.33 実装済)**: menu に PT 一覧 (implied APY +
+  満期日、`display_only`) / wallet の PT・YT 保有検出 / **maturity time event の初の
+  実データ源** (`mapPtHoldingsToMaturityEvents` → `deriveTimeEvents`)。registry は
+  `lib/config/exponent-markets.ts` (live API 優先、snapshot は degrade + 満期後解決用)
+- **Exponent PT 実行系** (backlog、優先度中): PT の売買・満期 redeem。着手条件は
+  (a) Jupiter が PT mint を route し始める (2026-07-22 時点 "not tradable" 実測) か、
+  (b) Exponent の TS SDK が npm 公開される (docs は Core/CLMM/Orderbook SDK に言及
+  するが未公開、GitHub exponent-core は Rust program のみ)。それまで menu は
+  `display_only` で agent 候補からも除外 (fail-closed)
 - **Velocity spot-lend adapter** (Phase 8.31 で Drift adapter を撤去した後継、優先度中):
   - 旧 Drift は 2026-04-01 の exploit 以降 deposit/withdraw 停止のまま **Velocity DEX として fork 再デプロイ** (2026-07-01 リブランド)。program ID `vELoC1audYbSYVRXn1vPaV8Axoa9oU6BYmNGZZBDZ1P` / SDK `@velocity-exchange/sdk` (`VelocityClient`) / **quote 資産は USDT** / spot は collateral + borrow-lend のみ存続
   - 再実装の着手条件: **公開 relaunch 済** (private beta 解除) + SDK が v0.x churn を抜けて安定 + spot market index / mint 構成を実 SDK で再調査 (旧 Drift の market_index=USDC:0/SOL:1 は引き継がれない前提で確認)

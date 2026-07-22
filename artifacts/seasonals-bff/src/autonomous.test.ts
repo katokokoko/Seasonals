@@ -123,6 +123,44 @@ describe("runAutonomousCycle — decision + guards", () => {
     expect(mockSend).not.toHaveBeenCalled();
   });
 
+  it("8.33: display_only pool は最高 APY/TVL でも候補にならない (fail-closed)", async () => {
+    const menuWithDisplayOnly: ProtocolMenuEntry[] = [
+      ...MENU,
+      {
+        protocol_id: "exponent",
+        display_name: "Exponent",
+        primary_category: "pt_yt" as never,
+        supported_assets: ["USDC"],
+        icon_id: "exponent",
+        icon_bg: "#000",
+        pools: [
+          {
+            // APY も TVL も kamino pool を圧倒するが display_only = 実行経路なし
+            pool_id: "exponent_pt_usdc_20991231",
+            name: "PT USDC · 2099-12-31",
+            category: "pt_yt" as never,
+            asset: "USDC",
+            apy: 0.99,
+            tvl_usd: 9_000_000_000,
+            display_only: true,
+          },
+        ],
+      },
+    ];
+    const deps: AutonomousDeps = {
+      fetchMenu: async () => menuWithDisplayOnly,
+      getPolicy: () => autoPolicy(),
+      sendExecutionPush: jest.fn(),
+    };
+    for (const objective of ["safety_first", "max_yield"] as const) {
+      const rec = await runAutonomousCycle(
+        { objective, asset: "USDC", dry_run: true },
+        deps
+      );
+      expect(rec.protocol).toBe("kamino"); // exponent は選ばれない
+    }
+  });
+
   it("本番: 委任署名 → confirmed devnet 署名 + notify + hard-cap notional", async () => {
     const push = jest.fn();
     const rec = await runAutonomousCycle(
