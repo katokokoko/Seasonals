@@ -71,6 +71,7 @@ import {
   findSaveMarketByCToken,
   heldSavePositions,
 } from "@workspace/lib/config/save-markets";
+import { findExponentMarketByPtMint } from "@workspace/lib/config/exponent-markets";
 
 import type { JupiterLendMarketDTO } from "../../services/api";
 import {
@@ -934,6 +935,10 @@ function YourPositionRow({
       findKaminoMarketByReserve(position.share_mint) !== undefined ||
       findSaveMarketByCToken(position.share_mint) !== undefined ||
       findKaminoVaultByAddress(position.share_mint) !== undefined ||
+      // Exponent PT (8.34): 満期済のみ redeem 可 (満期前は server も 400 で拒否)
+      (findExponentMarketByPtMint(position.share_mint) !== undefined &&
+        position.maturity_at != null &&
+        new Date(position.maturity_at).getTime() <= Date.now()) ||
       // Meteora (8.17) / Orca (8.18): share_mint = position 実 pubkey — protocol で判定
       position.protocol_id === "meteora" ||
       position.protocol_id === "orca") &&

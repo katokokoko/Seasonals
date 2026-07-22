@@ -83,6 +83,7 @@ const EXP_MKT_A: ExponentFullMarket = {
   underlying_decimals: 6,
   pt_mint: "PtUsx111111111111111111111111111111111111111",
   yt_mint: "YtUsx111111111111111111111111111111111111111",
+  vault_address: "VaultUsx111111111111111111111111111111111111",
   pt_decimals: 6,
   maturity_ts: NOW_SEC + 30 * 86400,
   implied_apy: 0.061,

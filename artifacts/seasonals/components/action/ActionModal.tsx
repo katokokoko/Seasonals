@@ -80,6 +80,7 @@ import {
   findSaveMarketByPool,
 } from "@workspace/lib/config/save-markets";
 import { findMeteoraMarketByPool } from "@workspace/lib/config/meteora-markets";
+import { findExponentMarketByPtMint } from "@workspace/lib/config/exponent-markets";
 import { findOrcaMarketByPool } from "@workspace/lib/config/orca-markets";
 import { useWallet } from "../../services/useWallet";
 import {
@@ -274,6 +275,12 @@ export function ActionModal({
       ? findSaveMarketByCToken(withdrawShareMint)
       : undefined;
 
+    // Phase 8.34: Exponent PT redeem。share_mint = pt_mint で解決 (withdraw として
+    // モデル化。満期前は server が 400 not_matured で fail-closed)。
+    const exponentRedeemMarket = withdrawShareMint
+      ? findExponentMarketByPtMint(withdrawShareMint)
+      : undefined;
+
     // Phase 8.17: Meteora DLMM。deposit は pool_id のみ (asset fallback 無し —
     // LP は pool 特定が必須)。withdraw は protocol=meteora + share_mint (= position
     // account の実 pubkey) で判定 (静的 registry では引けない)。
@@ -332,6 +339,11 @@ export function ActionModal({
       action?.action_type === "withdraw" &&
       Boolean(action?.amount) &&
       Boolean(saveWithdrawMarket);
+    const isOnchainExponentRedeem =
+      canOnchain &&
+      action?.action_type === "withdraw" &&
+      Boolean(action?.amount) &&
+      Boolean(exponentRedeemMarket);
     const isOnchainMeteoraDeposit =
       canOnchain &&
       action?.action_type === "deposit" &&
@@ -584,6 +596,21 @@ export function ActionModal({
               amount: execAmount!,
             })
           ).transactions
+      );
+      return;
+    }
+
+    // ── Phase 8.34: onchain Exponent PT redeem (満期後 wrapper_merge、単発 tx) ──
+    if (isOnchainExponentRedeem) {
+      await runOnchainTx(
+        async () =>
+          (
+            await api.getExponentRedeemTx({
+              user: authorization!.address,
+              ptMint: exponentRedeemMarket!.pt_mint,
+              amount: execAmount!,
+            })
+          ).transaction
       );
       return;
     }

@@ -32,6 +32,7 @@ describe("EXPONENT_MARKETS registry", () => {
       expect(m.underlying_mint.length).toBeGreaterThanOrEqual(32);
       expect(m.pt_mint.length).toBeGreaterThanOrEqual(32);
       expect(m.yt_mint.length).toBeGreaterThanOrEqual(32);
+      expect(m.vault_address.length).toBeGreaterThanOrEqual(32); // 8.34 redeem 用
       expect(Number.isInteger(m.underlying_decimals)).toBe(true);
       expect(Number.isInteger(m.pt_decimals)).toBe(true);
       expect(Number.isInteger(m.maturity_ts)).toBe(true);

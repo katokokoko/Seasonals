@@ -24,6 +24,7 @@ import {
   METEORA_MARKETS,
   findMeteoraMarketByPool,
 } from "@workspace/lib/config/meteora-markets";
+import { findExponentMarketByPtMint } from "@workspace/lib/config/exponent-markets";
 import {
   ORCA_MARKETS,
   findOrcaMarketByPool,
@@ -62,7 +63,10 @@ export function resolveOracleMint(
         findMarketByShareMint(shareMint)?.underlying_mint ??
         findKaminoMarketByReserve(shareMint)?.underlying_mint ??
         findSaveMarketByCToken(shareMint)?.underlying_mint ??
-        findKaminoVaultByAddress(shareMint)?.underlying_mint;
+        findKaminoVaultByAddress(shareMint)?.underlying_mint ??
+        // Phase 8.34: Exponent PT redeem (share_mint = pt_mint)。underlying に
+        // oracle feed が無い場合は下流で not_configured 通過 (既存設計)
+        findExponentMarketByPtMint(shareMint)?.underlying_mint;
       if (resolved) return resolved;
     }
   }

@@ -61,6 +61,20 @@ const SNAPSHOTS: PositionSnapshot[] = [
       headline: "PT USX matures — redeemable 1:1 for USX",
     },
   },
+  // Phase 8.34: 満期済 PT + maturity_redeem → Redeem action (claim 分岐と同型)
+  {
+    protocol: "exponent",
+    position_ref: "PtMature111",
+    maturity_at: "2026-07-01T00:00:00.000Z", // 過去 → critical
+    maturity_redeem: {
+      share_mint: "PtMature111",
+      share_decimals: 6,
+      underlying_decimals: 6,
+      underlying_amount: "5000000",
+      shares: "5000000",
+      asset_symbol: "PT-USX",
+    },
+  },
   {
     protocol: "solana",
     position_ref: "Stake111",
@@ -96,7 +110,7 @@ describe("deriveAllTimeEvents — golden (§29.1)", () => {
     for (const c of TIME_EVENT_CATEGORIES) {
       expect(categories.has(c)).toBe(true); // 8 種すべて
     }
-    expect(a).toHaveLength(9); // 8 カテゴリ + maturity 2 件目 (exponent PT、8.33)
+    expect(a).toHaveLength(10); // 8 カテゴリ + exponent PT maturity ×2 (8.33/8.34)
   });
 
   it("golden: 各イベントの id / urgency / triggerAt / headline", () => {
@@ -138,7 +152,23 @@ describe("deriveAllTimeEvents — golden (§29.1)", () => {
     expect(ptMaturity.metadata.headline).toBe(
       "PT USX matures — redeemable 1:1 for USX"
     );
-    expect(ptMaturity.actions).toHaveLength(0); // read-only v1
+    expect(ptMaturity.actions).toHaveLength(0); // 満期前は action なし (8.34 でも不変)
+
+    // Phase 8.34: 満期済 + maturity_redeem → Redeem action + synthetic plan metadata
+    const ptMatured = byId.get("maturity_PtMature111")!;
+    expect(ptMatured.urgency).toBe(Urgency.Critical); // 過去日
+    expect(ptMatured.actions).toEqual([
+      {
+        actionType: "withdraw",
+        label: "Redeem",
+        requiresApproval: true,
+        riskLevel: "medium",
+      },
+    ]);
+    expect(ptMatured.metadata.protocol_id).toBe("exponent");
+    expect(ptMatured.metadata.share_mint).toBe("PtMature111");
+    expect(ptMatured.metadata.shares).toBe("5000000");
+    expect(ptMatured.metadata.asset_symbol).toBe("PT-USX");
 
     expect(byId.get("lockup_end_Stake111")!.urgency).toBe(Urgency.Watch); // +2d
     expect(byId.get("vesting_cliff_Stream111")!.urgency).toBe(Urgency.Critical); // +12h

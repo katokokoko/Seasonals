@@ -152,6 +152,8 @@ interface ExponentMarketEntry {
   // Phase 8.33: PT market data (read-only 統合用)
   ptMint?: string;
   ytMint?: string;
+  // Phase 8.34: redeem tx 構築用
+  vaultAddress?: string;
   decimals?: number;
   maturityDateUnixTs?: number;
   impliedApy?: number;
@@ -213,6 +215,8 @@ export interface ExponentFullMarket {
   underlying_decimals: number;
   pt_mint: string;
   yt_mint: string;
+  /** Exponent vault account (redeem tx 構築 8.34 で使用。旧 API 形なら "") */
+  vault_address: string;
   pt_decimals: number;
   /** maturity unix 秒 (整数) */
   maturity_ts: number;
@@ -260,6 +264,7 @@ export async function fetchExponentFullMarkets(): Promise<ExponentFullMarket[]> 
       underlying_decimals: u.decimals as number,
       pt_mint: m.ptMint,
       yt_mint: m.ytMint,
+      vault_address: typeof m.vaultAddress === "string" ? m.vaultAddress : "",
       pt_decimals: m.decimals as number,
       maturity_ts: Math.floor(m.maturityDateUnixTs),
       implied_apy: m.impliedApy,

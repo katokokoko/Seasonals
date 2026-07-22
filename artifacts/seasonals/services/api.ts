@@ -552,6 +552,25 @@ export function getKaminoVaultWithdrawTx(input: {
   );
 }
 
+/** Phase 8.34: Exponent PT 満期 redeem (wrapper_merge) の unsigned v0 tx。 */
+export interface ExponentRedeemTxResponse {
+  transaction: string;
+  ptMint: string;
+  underlyingMint: string;
+}
+
+/** Exponent PT redeem tx (amount = PT smallest-unit string、満期後のみ 200)。 */
+export function getExponentRedeemTx(input: {
+  user: string;
+  ptMint: string;
+  amount: string;
+}): Promise<ExponentRedeemTxResponse> {
+  return postKaminoTx<ExponentRedeemTxResponse>(
+    "/protocols/exponent/redeem-tx",
+    input
+  );
+}
+
 /**
  * Phase 8.17: Meteora DLMM LP。deposit の tx は position ephemeral の部分署名済み
  * (user 署名スロットのみ空 — MWA sign-only で保持される)。

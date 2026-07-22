@@ -135,6 +135,7 @@ import {
   exponentPoolName,
   activeExponentMarkets,
 } from "@workspace/lib/config/exponent-markets";
+import { buildExponentRedeemTx } from "./clients/exponent-tx";
 import {
   METEORA_MARKETS,
   findMeteoraMarketByPool,
@@ -2068,6 +2069,7 @@ function registryAsFullMarkets(): ExponentFullMarket[] {
     underlying_decimals: m.underlying_decimals,
     pt_mint: m.pt_mint,
     yt_mint: m.yt_mint,
+    vault_address: m.vault_address,
     pt_decimals: m.pt_decimals,
     maturity_ts: m.maturity_ts,
     implied_apy: m.implied_apy,
@@ -2115,10 +2117,30 @@ export function mapPtHoldingsToMaturityEvents(
     const side = pt !== undefined ? "PT" : "YT";
     const balance = assetBalanceSmallest(asset);
     if (balance === null || balance === 0n) continue;
+    // Phase 8.34: 満期済 PT には Redeem action 用の maturity_redeem を付与
+    // (lib derive が満期済 + maturity_redeem の時だけ action を積む。YT は対象外)
+    const matured = m.maturity_ts * 1000 <= now.getTime();
+    const dDiff = m.underlying_decimals - m.pt_decimals;
+    const underlying =
+      dDiff >= 0
+        ? balance * 10n ** BigInt(dDiff)
+        : balance / 10n ** BigInt(-dDiff);
     snapshots.push({
       protocol: "exponent",
       position_ref: asset.id,
       maturity_at: exponentMaturityIso(m.maturity_ts),
+      ...(side === "PT" && matured
+        ? {
+            maturity_redeem: {
+              share_mint: m.pt_mint,
+              share_decimals: m.pt_decimals,
+              underlying_decimals: m.underlying_decimals,
+              underlying_amount: fromBigInt(underlying),
+              shares: fromBigInt(balance),
+              asset_symbol: `PT-${m.ticker}`,
+            },
+          }
+        : {}),
       metadata: {
         source: "exponent_pt",
         side,
@@ -3862,6 +3884,88 @@ export async function buildServer(
       };
     }
     return buildSaveTx(req, reply, { user, market, amount, action: "withdraw" });
+  });
+
+  /**
+   * Phase 8.34: Exponent PT 満期 redeem tx (wrapper_merge)。read-only 統合 (8.33)
+   * への実行系第一弾 — 満期済 PT のみ。満期前は 400 not_matured (fail-closed、
+   * builder 側でも on-chain maturity を再検査する二重化)。
+   *   body: { user, ptMint, amount (PT smallest-unit string §4.5) }
+   */
+  app.post<{
+    Body: { user: string; ptMint: string; amount: string };
+  }>("/protocols/exponent/redeem-tx", async (req, reply) => {
+    const { user, ptMint, amount } = req.body ?? {};
+    if (!user || !ptMint || !amount) {
+      reply.code(400);
+      return {
+        error: "missing_required_field",
+        required: ["user", "ptMint", "amount"],
+      };
+    }
+    if (user.length < 32 || user.length > 44 || /\s/.test(user)) {
+      reply.code(400);
+      return { error: "invalid_wallet_address", user };
+    }
+    if (!isValidTokenAmount(amount)) {
+      reply.code(400);
+      return { error: "invalid_amount", amount };
+    }
+    // live ∪ registry で解決 (満期後に live から消えた PT も registry が引く)
+    const markets = exponentMarketUnion(
+      await Promise.resolve()
+        .then(() => fetchExponentFullMarkets())
+        .catch(() => undefined)
+    );
+    const market = markets.find((m) => m.pt_mint === ptMint);
+    if (!market || market.vault_address.length === 0) {
+      reply.code(400);
+      return {
+        error: "unsupported_market",
+        message: "No Exponent PT market registered for this mint",
+        ptMint,
+      };
+    }
+    // fast-path 満期チェック (authoritative は builder の on-chain 検査)
+    if (market.maturity_ts * 1000 > Date.now()) {
+      reply.code(400);
+      return {
+        error: "not_matured",
+        maturity_at: exponentMaturityIso(market.maturity_ts),
+      };
+    }
+    const oracle = await getOracleResult(market.underlying_mint);
+    if (oracle.status === "blocked") {
+      reply.code(409);
+      return { error: "oracle_blocked", block_reason: oracle.block_reason, oracle };
+    }
+    try {
+      const { transaction } = await buildExponentRedeemTx({
+        wallet: user,
+        market: {
+          pt_mint: market.pt_mint,
+          yt_mint: market.yt_mint,
+          vault_address: market.vault_address,
+          underlying_mint: market.underlying_mint,
+        },
+        amountSmallest: amount,
+      });
+      return { transaction, ptMint, underlyingMint: market.underlying_mint };
+    } catch (err) {
+      const msg = (err as Error).message;
+      if (msg === "not_matured") {
+        reply.code(400);
+        return { error: "not_matured" };
+      }
+      if (msg === "redeem_template_unavailable") {
+        // 当該 vault にまだ誰も redeem していない (新満期直後など) — fail-closed
+        reply.code(409);
+        return { error: "redeem_template_unavailable", ptMint };
+      }
+      req.log.error({ err: msg, ptMint }, "exponent redeem tx build failed");
+      reply.code(502);
+      return { error: "exponent_tx_failed", message: msg };
+    }
   });
 
   /**

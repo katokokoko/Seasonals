@@ -4,6 +4,7 @@
 import type { AgentPlan } from "@workspace/lib/types";
 import { findKaminoMarketByAsset } from "@workspace/lib/config/kamino-markets";
 import { findSaveMarketByAsset } from "@workspace/lib/config/save-markets";
+import { EXPONENT_MARKETS } from "@workspace/lib/config/exponent-markets";
 import {
   JUPITER_UNDERLYING_MINTS,
   oracleBlockLabel,
@@ -162,6 +163,20 @@ describe("resolveOracleMint", () => {
   });
 
   // ── Phase 8.17: Meteora ──
+  // ── Phase 8.34: Exponent PT redeem ──
+  it("Exponent PT withdraw (share_mint = pt_mint) → underlying mint", () => {
+    const usx = EXPONENT_MARKETS.find((m) => m.underlying_symbol === "USX")!;
+    expect(
+      resolveOracleMint(
+        action({
+          protocol: "exponent",
+          action_type: "withdraw",
+          metadata: { share_mint: usx.pt_mint },
+        } as never)
+      )
+    ).toBe(usx.underlying_mint);
+  });
+
   it("Meteora deposit (pool_id) → deposit token mint (USDC)", () => {
     expect(
       resolveOracleMint(

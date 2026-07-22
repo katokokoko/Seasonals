@@ -23,6 +23,8 @@ export interface ExponentMarket {
   underlying_decimals: number;
   pt_mint: string;
   yt_mint: string;
+  /** Exponent vault account (API `vaultAddress`。redeem tx 構築 8.34 で使用) */
+  vault_address: string;
   /** PT/YT token の decimals (API top-level `decimals`) */
   pt_decimals: number;
   /** maturity unix 秒 (整数)。ISO 化は exponentMaturityIso */
@@ -72,6 +74,7 @@ const mk = (
   underlyingDecimals: number,
   ptMint: string,
   ytMint: string,
+  vaultAddress: string,
   ptDecimals: number,
   maturityTs: number,
   impliedApy: number,
@@ -85,6 +88,7 @@ const mk = (
   underlying_decimals: underlyingDecimals,
   pt_mint: ptMint,
   yt_mint: ytMint,
+  vault_address: vaultAddress,
   pt_decimals: ptDecimals,
   maturity_ts: maturityTs,
   implied_apy: impliedApy,
@@ -101,6 +105,7 @@ export const EXPONENT_MARKETS: ExponentMarket[] = [
     6,
     "6gUU7UXtGgJ3tmeb2gXxQcVeM2L82bg9MzRYxu2YUspu",
     "47gQiyWpVd13mmAFXemW1wVTd2e2GYKq5bLrdRXUfxsS",
+    "CdUviheAUJaXUryT7JCRDUoNdPXdVvkxNQY1okC6uY8S",
     6,
     1789552700,
     0.056,
@@ -114,6 +119,7 @@ export const EXPONENT_MARKETS: ExponentMarket[] = [
     9,
     "2W5zZccVq8AMdrg7P4b3NvBKJyzbdnytRy2CKEDHvhiJ",
     "HYHEZZ7GsPZbBfh2JVBxxSmqcqSPtPXPRqp5HJvhwh9Y",
+    "66R3TcKjaUqxQwYV31BS4nD2s7YH4V7ENuvdwYbQMXCm",
     9,
     1789034299,
     0.1403,
@@ -127,6 +133,7 @@ export const EXPONENT_MARKETS: ExponentMarket[] = [
     6,
     "Af4kuyVwhoWK91YcsaoRQE4YbSknuWjwVM4xet7hRHB6",
     "7oWJhDLjFWoLA1v2gXj1EN6VnzqbmYNw8skdGTKh71U5",
+    "FwhwvRNJRVAEG22dTveRuXkPsQjATTeWvYXmnxokSK8t",
     6,
     1786535900,
     0.3503,
@@ -140,6 +147,7 @@ export const EXPONENT_MARKETS: ExponentMarket[] = [
     6,
     "2wZkuwSiDyHZuuZfS9C9kFkZNsgwHGjKtCxX3B6Ck6EX",
     "BKvVBAWWLB77yAbhm2Ctd62ewZ8yEvGXsZowBhDLKM6F",
+    "B78XAMSpB5KQqykw9oEec1nFSPeRqYtbTmsxo9EPwAUW",
     6,
     1789552700,
     0.0634,

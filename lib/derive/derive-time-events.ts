@@ -59,6 +59,19 @@ export interface PositionSnapshot {
   };
   /** 固定満期 (ISO 8601) */
   maturity_at?: string;
+  /**
+   * Phase 8.34: 満期到達後に redeem (withdraw) できる場合の synthetic plan 用
+   * フィールド (claimable.withdraw と同形、mobile が使う)。指定時のみ maturity
+   * イベントに Redeem action が付く (未指定 = read-only、fail-closed)。
+   */
+  maturity_redeem?: {
+    share_mint: string;
+    share_decimals: number;
+    underlying_decimals: number;
+    underlying_amount: string;
+    shares: string;
+    asset_symbol: string;
+  };
   /** lock 解除 / stake deactivation 完了 (ISO 8601)。過去日 = 解除済 (withdrawable) */
   unlock_at?: string;
   /** vesting cliff (ISO 8601) */
@@ -203,6 +216,20 @@ export function deriveTimeEvents(
   // 期日系 4 カテゴリ — ISO 日付 → proximity urgency
   if (p.maturity_at) {
     const at = new Date(p.maturity_at);
+    // Phase 8.34: 満期済 + redeem 情報があれば Redeem action (claim 分岐と同型、
+    // actionType は canonical "withdraw" — enum 追加はしない §32.2)
+    const matured = at.getTime() <= ctx.now.getTime();
+    const actions: ActionDescriptor[] =
+      matured && p.maturity_redeem
+        ? [
+            {
+              actionType: "withdraw",
+              label: "Redeem",
+              requiresApproval: true,
+              riskLevel: "medium",
+            },
+          ]
+        : [];
     out.push(
       baseEvent(
         `maturity_${ref}`,
@@ -212,7 +239,14 @@ export function deriveTimeEvents(
         at,
         proximityUrgency(at, ctx.now),
         `${capitalize(p.protocol)} position matures`,
-        { source: "maturity" }
+        {
+          source: "maturity",
+          // synthetic plan 用 metadata (mobile syntheticPlanFromEventAction が読む)
+          ...(matured && p.maturity_redeem
+            ? { protocol_id: p.protocol, ...p.maturity_redeem }
+            : {}),
+        },
+        actions
       )
     );
   }

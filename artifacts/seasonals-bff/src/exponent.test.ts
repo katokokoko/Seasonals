@@ -7,19 +7,32 @@
  * (4) buildExponentMenuPools — maturity filter / quote 建て TVL 換算 / display_only
  * 全て pure — network / server 起動なし。maturity は now 注入で時限爆弾なし。
  */
+import type { FastifyInstance } from "fastify";
+
 import {
   EXPONENT_MARKETS,
   exponentMaturityIso,
   exponentPoolId,
 } from "@workspace/lib/config/exponent-markets";
-import type { ExponentFullMarket } from "./clients/rates";
+import { fetchExponentFullMarkets, type ExponentFullMarket } from "./clients/rates";
 import {
   buildExponentMenuPools,
+  buildServer,
   exponentMarketUnion,
   mapExponentHoldingsToEarnPositions,
   mapPtHoldingsToMaturityEvents,
 } from "./server";
 import type { HeliusAsset } from "./clients/helius";
+import { buildExponentRedeemTx } from "./clients/exponent-tx";
+import { getOracleResult } from "./clients/oracle";
+
+// Phase 8.34: /protocols/exponent/redeem-tx 用 mock (pure function テストには影響なし)
+jest.mock("./clients/rates");
+jest.mock("./clients/oracle");
+jest.mock("./clients/exponent-tx", () => ({
+  ...jest.requireActual("./clients/exponent-tx"),
+  buildExponentRedeemTx: jest.fn(),
+}));
 
 const WALLET = "WaLLet1111111111111111111111111111111111111";
 // snapshot と衝突しない合成 market。maturity は NOW から相対で組む (deterministic)。
@@ -33,6 +46,7 @@ function liveMarket(p: Partial<ExponentFullMarket> = {}): ExponentFullMarket {
     underlying_decimals: 6,
     pt_mint: "Pt111111111111111111111111111111111111111111",
     yt_mint: "Yt111111111111111111111111111111111111111111",
+    vault_address: "Vault111111111111111111111111111111111111111",
     pt_decimals: 6,
     maturity_ts: NOW_SEC + 68 * 86400, // +68d → info
     implied_apy: 0.08,
@@ -246,5 +260,124 @@ describe("buildExponentMenuPools", () => {
     const sol = liveMarket({ ticker: "rkuSOL", quote_ticker: "SOL" });
     const pools = buildExponentMenuPools([sol], NOW_SEC, undefined);
     expect(pools[0]!.tvl_usd).toBe(0);
+  });
+});
+
+// ── Phase 8.34: POST /protocols/exponent/redeem-tx ───────────────────────────
+
+describe("POST /protocols/exponent/redeem-tx", () => {
+  const VALID_USER = "8sN5e1Qm9bYz2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7r";
+  // 実行時 now 相対で組む (wall-clock 時限爆弾なし)
+  const nowSec = Math.floor(Date.now() / 1000);
+  const MATURED = liveMarket({
+    ticker: "mUSD",
+    pt_mint: "PtMat111111111111111111111111111111111111111",
+    yt_mint: "YtMat111111111111111111111111111111111111111",
+    vault_address: "VaultMat111111111111111111111111111111111111",
+    maturity_ts: nowSec - 86400,
+  });
+  const NOT_MATURED = liveMarket({
+    ticker: "fUSD",
+    pt_mint: "PtFut111111111111111111111111111111111111111",
+    yt_mint: "YtFut111111111111111111111111111111111111111",
+    vault_address: "VaultFut111111111111111111111111111111111111",
+    maturity_ts: nowSec + 90 * 86400,
+  });
+
+  const mockMarkets = fetchExponentFullMarkets as jest.MockedFunction<
+    typeof fetchExponentFullMarkets
+  >;
+  const mockOracle = getOracleResult as jest.MockedFunction<typeof getOracleResult>;
+  const mockBuild = buildExponentRedeemTx as jest.MockedFunction<
+    typeof buildExponentRedeemTx
+  >;
+
+  let app: FastifyInstance;
+  beforeEach(async () => {
+    jest.clearAllMocks();
+    mockMarkets.mockResolvedValue([MATURED, NOT_MATURED]);
+    mockOracle.mockResolvedValue({ status: "ok" } as Awaited<
+      ReturnType<typeof getOracleResult>
+    >);
+    mockBuild.mockResolvedValue({ transaction: "REDEEM_TX_B64" });
+    app = await buildServer({ logger: false });
+  });
+  afterEach(async () => {
+    await app.close();
+  });
+
+  function post(body: Record<string, unknown>) {
+    return app.inject({
+      method: "POST",
+      url: "/protocols/exponent/redeem-tx",
+      payload: body,
+    });
+  }
+
+  it("満期済 PT → 200 + unsigned tx (builder へ market を渡す)", async () => {
+    const res = await post({ user: VALID_USER, ptMint: MATURED.pt_mint, amount: "5000000" });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toMatchObject({
+      transaction: "REDEEM_TX_B64",
+      ptMint: MATURED.pt_mint,
+      underlyingMint: MATURED.underlying_mint,
+    });
+    expect(mockBuild).toHaveBeenCalledWith({
+      wallet: VALID_USER,
+      market: {
+        pt_mint: MATURED.pt_mint,
+        yt_mint: MATURED.yt_mint,
+        vault_address: MATURED.vault_address,
+        underlying_mint: MATURED.underlying_mint,
+      },
+      amountSmallest: "5000000",
+    });
+  });
+
+  it("満期前 PT → 400 not_matured (fail-closed、builder を呼ばない)", async () => {
+    const res = await post({ user: VALID_USER, ptMint: NOT_MATURED.pt_mint, amount: "1" });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toBe("not_matured");
+    expect(mockBuild).not.toHaveBeenCalled();
+  });
+
+  it("未知 ptMint → 400 unsupported_market", async () => {
+    const res = await post({ user: VALID_USER, ptMint: "Unknown111111111111111111111111111111111111", amount: "1" });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toBe("unsupported_market");
+  });
+
+  it("バリデーション: missing / 不正 wallet / 不正 amount は 400 (§4.5)", async () => {
+    expect((await post({ user: VALID_USER, ptMint: MATURED.pt_mint })).statusCode).toBe(400);
+    expect(
+      (await post({ user: "bad wallet", ptMint: MATURED.pt_mint, amount: "1" })).statusCode
+    ).toBe(400);
+    const bad = await post({ user: VALID_USER, ptMint: MATURED.pt_mint, amount: "1.5" });
+    expect(bad.statusCode).toBe(400);
+    expect(bad.json().error).toBe("invalid_amount");
+  });
+
+  it("oracle blocked → 409 (§4.6 fail-closed)", async () => {
+    mockOracle.mockResolvedValue({
+      status: "blocked",
+      block_reason: "oracle_both_stale",
+    } as Awaited<ReturnType<typeof getOracleResult>>);
+    const res = await post({ user: VALID_USER, ptMint: MATURED.pt_mint, amount: "1" });
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error).toBe("oracle_blocked");
+  });
+
+  it("template 不在 (新満期直後) → 409 redeem_template_unavailable", async () => {
+    mockBuild.mockRejectedValue(new Error("redeem_template_unavailable"));
+    const res = await post({ user: VALID_USER, ptMint: MATURED.pt_mint, amount: "1" });
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error).toBe("redeem_template_unavailable");
+  });
+
+  it("builder の他エラー → 502 exponent_tx_failed", async () => {
+    mockBuild.mockRejectedValue(new Error("vault_pt_mint_mismatch"));
+    const res = await post({ user: VALID_USER, ptMint: MATURED.pt_mint, amount: "1" });
+    expect(res.statusCode).toBe(502);
+    expect(res.json().error).toBe("exponent_tx_failed");
   });
 });

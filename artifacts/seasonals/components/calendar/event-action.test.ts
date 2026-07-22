@@ -40,6 +40,48 @@ const FULL_METADATA = {
 };
 
 describe("syntheticPlanFromEventAction", () => {
+  it("8.34: maturity イベントの Redeem action → exponent withdraw synthetic plan", () => {
+    const redeemAction: ActionDescriptor = {
+      actionType: "withdraw",
+      label: "Redeem",
+      requiresApproval: true,
+      riskLevel: "medium",
+    };
+    const event: UnifiedTimeEvent = {
+      id: "maturity_PtMint111",
+      protocol: "exponent",
+      category: TimeEventCategory.Maturity,
+      triggerAt: new Date("2026-07-01T00:00:00.000Z"),
+      urgency: Urgency.Critical,
+      walletAddress: "WaLLet111",
+      positionRef: "PtMint111",
+      actions: [redeemAction],
+      agentReadable: true,
+      metadata: {
+        source: "exponent_pt",
+        protocol_id: "exponent",
+        asset_symbol: "PT-USX",
+        shares: "5000000",
+        share_mint: "PtMint111",
+        share_decimals: 6,
+        underlying_decimals: 6,
+        underlying_amount: "5000000",
+      },
+    };
+    const plan = syntheticPlanFromEventAction(event, redeemAction)!;
+    expect(plan).not.toBeNull();
+    const sel = plan.selected_action as unknown as {
+      protocol: string;
+      action_type: string;
+      amount: string;
+      metadata: Record<string, unknown>;
+    };
+    expect(sel.protocol).toBe("exponent");
+    expect(sel.action_type).toBe("withdraw");
+    expect(sel.amount).toBe("5000000");
+    expect(sel.metadata.share_mint).toBe("PtMint111"); // ActionModal が PT redeem に解決
+  });
+
   it("claim イベント → withdraw synthetic plan (handleWithdrawPosition と同形)", () => {
     const plan = syntheticPlanFromEventAction(claimEvent(FULL_METADATA), WITHDRAW_ACTION)!;
     expect(plan).not.toBeNull();

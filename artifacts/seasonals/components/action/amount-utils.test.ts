@@ -8,6 +8,7 @@ import {
   KAMINO_MARKETS,
   KAMINO_VAULTS,
 } from "@workspace/lib/config/kamino-markets";
+import { EXPONENT_MARKETS } from "@workspace/lib/config/exponent-markets";
 import {
   depositMaxSmallest,
   resolveAmountUnit,
@@ -85,6 +86,17 @@ describe("resolveAmountUnit", () => {
       } as never)
     );
     expect(u).toEqual({ decimals: 6, unitSymbol: "shares" });
+  });
+
+  it("8.34 withdraw Exponent PT: PT 建て (pt_mint 経由)", () => {
+    const usx = EXPONENT_MARKETS.find((m) => m.underlying_symbol === "USX")!;
+    const u = resolveAmountUnit(
+      action({
+        action_type: "withdraw",
+        metadata: { share_mint: usx.pt_mint },
+      } as never)
+    );
+    expect(u).toEqual({ decimals: usx.pt_decimals, unitSymbol: "PT-USX" });
   });
 
   it("action null は安全な default", () => {

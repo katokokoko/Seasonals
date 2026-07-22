@@ -18,6 +18,7 @@ import {
   findKaminoVaultByAddress,
 } from "@workspace/lib/config/kamino-markets";
 import { findSaveMarketByCToken } from "@workspace/lib/config/save-markets";
+import { findExponentMarketByPtMint } from "@workspace/lib/config/exponent-markets";
 
 type Action = NonNullable<AgentPlan["selected_action"]>;
 
@@ -80,6 +81,14 @@ export function resolveAmountUnit(
         return {
           decimals: shareDecimals ?? vault.shares_decimals,
           unitSymbol: "shares",
+        };
+      }
+      // Exponent PT redeem (8.34): PT 建て入力 (share_mint = pt_mint)
+      const exponentPt = findExponentMarketByPtMint(shareMint);
+      if (exponentPt) {
+        return {
+          decimals: shareDecimals ?? exponentPt.pt_decimals,
+          unitSymbol: `PT-${exponentPt.underlying_symbol}`,
         };
       }
     }

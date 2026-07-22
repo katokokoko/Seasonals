@@ -433,11 +433,16 @@ PR を出す前 / コードレビューを依頼する前に、関連する行�
   満期日、`display_only`) / wallet の PT・YT 保有検出 / **maturity time event の初の
   実データ源** (`mapPtHoldingsToMaturityEvents` → `deriveTimeEvents`)。registry は
   `lib/config/exponent-markets.ts` (live API 優先、snapshot は degrade + 満期後解決用)
-- **Exponent PT 実行系** (backlog、優先度中): PT の売買・満期 redeem。着手条件は
-  (a) Jupiter が PT mint を route し始める (2026-07-22 時点 "not tradable" 実測) か、
-  (b) Exponent の TS SDK が npm 公開される (docs は Core/CLMM/Orderbook SDK に言及
-  するが未公開、GitHub exponent-core は Rust program のみ)。それまで menu は
-  `display_only` で agent 候補からも除外 (fail-closed)
+- ✅ **Exponent PT 満期 redeem (Phase 8.34 実装済)**: maturity イベント → Redeem
+  action → `POST /protocols/exponent/redeem-tx` (wrapper_merge、discriminator [39]
+  手組み)。account 構成は同 vault の直近成功 tx を template に user スロット置換 +
+  vault state cross-check。満期前は server 400 + client disabled の二重 fail-closed。
+  実機での実 redeem 確認は 2026-08-12 (PT xSOL 満期) 以降 (docs/confirm.md)
+- **Exponent PT 売買 (buy)** (backlog、優先度中): 着手条件は (a) Jupiter が PT mint
+  を route し始める (2026-07-22 時点 "not tradable" 実測) か、(b) Exponent の TS SDK
+  が npm 公開される (docs は Core/CLMM/Orderbook SDK に言及するが未公開、GitHub
+  exponent-core は Rust program のみ)。それまで menu は `display_only` で agent
+  候補からも除外 (fail-closed)
 - **Velocity spot-lend adapter** (Phase 8.31 で Drift adapter を撤去した後継、優先度中):
   - 旧 Drift は 2026-04-01 の exploit 以降 deposit/withdraw 停止のまま **Velocity DEX として fork 再デプロイ** (2026-07-01 リブランド)。program ID `vELoC1audYbSYVRXn1vPaV8Axoa9oU6BYmNGZZBDZ1P` / SDK `@velocity-exchange/sdk` (`VelocityClient`) / **quote 資産は USDT** / spot は collateral + borrow-lend のみ存続
   - 再実装の着手条件: **公開 relaunch 済** (private beta 解除) + SDK が v0.x churn を抜けて安定 + spot market index / mint 構成を実 SDK で再調査 (旧 Drift の market_index=USDC:0/SOL:1 は引き継がれない前提で確認)

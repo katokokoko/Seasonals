@@ -14,6 +14,7 @@ const VALID_ENTRY = {
   quoteAsset: { ticker: "USD" },
   ptMint: "6gUU7UXtGgJ3tmeb2gXxQcVeM2L82bg9MzRYxu2YUspu",
   ytMint: "47gQiyWpVd13mmAFXemW1wVTd2e2GYKq5bLrdRXUfxsS",
+  vaultAddress: "CdUviheAUJaXUryT7JCRDUoNdPXdVvkxNQY1okC6uY8S",
   decimals: 6,
   maturityDateUnixTs: 1789552700,
   impliedApy: 0.056,
@@ -47,6 +48,7 @@ describe("fetchExponentFullMarkets (Phase 8.33)", () => {
       underlying_decimals: 6,
       pt_mint: VALID_ENTRY.ptMint,
       yt_mint: VALID_ENTRY.ytMint,
+      vault_address: VALID_ENTRY.vaultAddress,
       pt_decimals: 6,
       maturity_ts: 1789552700,
       implied_apy: 0.056,
@@ -75,13 +77,19 @@ describe("fetchExponentFullMarkets (Phase 8.33)", () => {
     expect(await fetchExponentFullMarkets()).toEqual([]);
   });
 
-  it("optional な pt_price_in_asset / quote_ticker は安全 default に落ちる", async () => {
+  it("optional な pt_price_in_asset / quote_ticker / vault_address は安全 default に落ちる", async () => {
     mockFetchJson([
-      { ...VALID_ENTRY, ptPriceInAsset: undefined, quoteAsset: undefined },
+      {
+        ...VALID_ENTRY,
+        ptPriceInAsset: undefined,
+        quoteAsset: undefined,
+        vaultAddress: undefined,
+      },
     ]);
     const out = await fetchExponentFullMarkets();
     expect(out[0]!.pt_price_in_asset).toBe(1);
     expect(out[0]!.quote_ticker).toBe("");
+    expect(out[0]!.vault_address).toBe(""); // 空 = redeem endpoint が unsupported 扱い
   });
 
   it("HTTP エラーは throw (呼び手の allSettled が degrade)", async () => {
