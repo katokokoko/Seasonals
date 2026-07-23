@@ -17,7 +17,7 @@
  * - 液体は theme の 5-stop palette + 深度 overlay + 透過で「液越しの UI」感
  */
 
-import React, { useCallback, useMemo } from "react";
+import React, { useCallback, useEffect, useMemo } from "react";
 import { Dimensions, StyleSheet, View } from "react-native";
 import {
   BlurMask,
@@ -77,13 +77,16 @@ export function GlassLayer() {
   const { roll, available } = useTiltRoll(liquidEnabled && !reduced);
   const flavor = useGlassFlavor();
 
-  const active = liquidEnabled && !reduced && available;
+  // available === true になるまで静的退避 (未判定中に液体を一瞬出さない — F3)
+  const active = liquidEnabled && !reduced && available === true;
 
-  // 物理 state (worklet から in-place 変異。再レンダーには関与しない)
-  const state = useSharedValue(
-    // 初期化は JS thread で 1 回だけ (Math.random 使用可)
-    useMemo(() => createGlassState(W, H, GLASS_TUNING.bubbleCount), [])
+  // 物理 state — 初期化は JS thread で 1 回だけ (Math.random 使用可)。
+  // worklet から in-place 変異し、再レンダーには関与しない
+  const initialState = useMemo(
+    () => createGlassState(W, H, GLASS_TUNING.bubbleCount),
+    []
   );
+  const state = useSharedValue(initialState);
 
   // 描画出力 (Skia props に直結する sharedValue 群)
   const liquidPath = useSharedValue(Skia.Path.Make());
@@ -97,9 +100,11 @@ export function GlassLayer() {
   const foamRingPath = useSharedValue(Skia.Path.Make());
   const foamAlpha = useSharedValue(0);
 
-  useFrameCallback((info) => {
+  // F1: callback は useCallback で安定化し (毎レンダー再登録を防ぐ)、active の
+  // 変化は返り値の setActive で追従する — useFrameCallback の第 2 引数 autostart
+  // は reanimated 3.10 では初回登録時にしか効かないため (実装確認済)
+  const frameWorklet = useCallback((info: { timeSincePreviousFrame: number | null }) => {
     "worklet";
-    if (!active) return;
     const dtMs = info.timeSincePreviousFrame ?? 16.7;
     const dt = Math.min(0.033, dtMs / 1000);
     const st = state.value;
@@ -203,7 +208,14 @@ export function GlassLayer() {
       }
       foamRingPath.value = rings;
     }
-  }, active);
+    // 依存は全て安定参照 (sharedValue / module const) — callback は 1 回だけ登録される
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const frameCb = useFrameCallback(frameWorklet, false);
+  useEffect(() => {
+    frameCb.setActive(active);
+  }, [active, frameCb]);
 
   // 退避: 設定 off / reduce-motion / センサー不可 → 既存背景の静的版 (§2.4)
   if (!active) {

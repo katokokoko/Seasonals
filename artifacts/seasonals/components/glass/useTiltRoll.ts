@@ -25,13 +25,16 @@ const SENSOR_INTERVAL_MS = 33; // ~30Hz (ばね補間があるので 60Hz は不
 export interface TiltRoll {
   /** 目標傾き (rad、±maxTilt clamp 済)。物理側の targetA に毎フレーム読ませる */
   roll: SharedValue<number>;
-  /** false = センサー利用不可 (エミュレータ等) → 静的退避 */
-  available: boolean;
+  /**
+   * null = 未判定 (isAvailableAsync 待ち) / false = 利用不可。
+   * 呼び手は true になるまで静的退避を出す (未判定中に液体を一瞬出さない — F3)
+   */
+  available: boolean | null;
 }
 
 export function useTiltRoll(enabled: boolean): TiltRoll {
   const roll = useSharedValue(0);
-  const [available, setAvailable] = useState(true);
+  const [available, setAvailable] = useState<boolean | null>(null);
   const [focused, setFocused] = useState(false);
   const [foreground, setForeground] = useState(true);
 
