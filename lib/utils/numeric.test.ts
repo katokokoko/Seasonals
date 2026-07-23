@@ -276,6 +276,18 @@ describe("formatTokenAmount", () => {
   });
 });
 
+describe("formatTokenAmount — 8.38 (F8) >2^53 guard", () => {
+  it("整数部 16 桁以上は Number を通さず plain string (末尾桁が化けない)", () => {
+    // 2^53+1 相当 (9007199254740993) — Number() だと …992 に化ける値
+    const out = formatTokenAmount("9007199254740993000000", 6);
+    expect(out).toBe("9007199254740993"); // plain human string、桁化けなし
+  });
+
+  it("15 桁以下は従来通り桁区切り", () => {
+    expect(formatTokenAmount("1500000000", 6)).toBe("1,500");
+  });
+});
+
 describe("formatUsd", () => {
   it("$1,234.57 形式", () => {
     expect(formatUsd("1234.56789012")).toBe("$1,234.57");

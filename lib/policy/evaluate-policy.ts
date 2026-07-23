@@ -27,6 +27,12 @@ export interface PolicyCandidate {
   /** pool TVL (USD number、§3 display carve-out) */
   tvl_usd: number;
   /** 0..1 risk score */
+  /**
+   * 0..1。**高いほど安全** (TrustLevel S→0.9 … Untrusted→0.2 のマッピング —
+   * autonomous.ts TRUST_RISK 参照)。名前に反して "risk" の高低ではない点に注意:
+   * `risk_score < min_risk_score` で除外する現行ゲートはこの極性が前提。
+   * 逆極性 (高い=危険) で produce すると安全ゲートが静かに反転する (8.38 F9)。
+   */
   risk_score: number;
   /** lockup 日数 (0 = open-ended) */
   lock_days: number;

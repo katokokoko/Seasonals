@@ -16,7 +16,13 @@
  * best-effort: 保存失敗はリクエスト/サイクルを壊さない (warn せず握りつぶす)。
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  renameSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 
 function dataDir(): string | null {
@@ -29,7 +35,7 @@ export function isPersistenceEnabled(): boolean {
   return dataDir() !== null;
 }
 
-/** `<dataDir>/<name>.json` を読む。無効/不在/壊れは null。 */
+/** `<dataDir>/<name>.json` を読む。無効/不在は null。 */
 export function loadJson<T>(name: string): T | null {
   const dir = dataDir();
   if (!dir) return null;
@@ -37,18 +43,32 @@ export function loadJson<T>(name: string): T | null {
   if (!existsSync(file)) return null;
   try {
     return JSON.parse(readFileSync(file, "utf8")) as T;
-  } catch {
-    return null; // 壊れたファイルは無視 (fresh start)
+  } catch (err) {
+    // Phase 8.38 (B7): 破損は無言 fresh-start にしない — policy override が
+    // 黙って permissive default に戻ると危険なので、必ず起動ログに残す
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[persistence] ${name}.json is corrupt — falling back to defaults`,
+      (err as Error).message
+    );
+    return null;
   }
 }
 
-/** `<dataDir>/<name>.json` へ書く。無効時は no-op、失敗は握りつぶす。 */
+/**
+ * `<dataDir>/<name>.json` へ書く。無効時は no-op、失敗は握りつぶす。
+ * Phase 8.38 (B7): tmp file + rename の atomic 書込 — 書込中クラッシュで
+ * 途中まで書かれた JSON が残らない (rename は同一 FS 内で atomic)。
+ */
 export function saveJson(name: string, value: unknown): void {
   const dir = dataDir();
   if (!dir) return;
   try {
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, `${name}.json`), JSON.stringify(value, null, 2));
+    const file = join(dir, `${name}.json`);
+    const tmp = `${file}.tmp`;
+    writeFileSync(tmp, JSON.stringify(value, null, 2));
+    renameSync(tmp, file);
   } catch {
     // best-effort: 永続化失敗はサイクル/リクエストを壊さない
   }

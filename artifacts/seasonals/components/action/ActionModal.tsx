@@ -1111,7 +1111,8 @@ function SuccessBody({
       {signature ? (
         <>
           <View style={styles.signatureCard}>
-            <Text style={styles.signatureLabel}>Devnet Signature</Text>
+            {/* 8.38 (L5): onchain build は mainnet — "Devnet" 固定表記は誤り */}
+            <Text style={styles.signatureLabel}>Transaction Signature</Text>
             <Text
               style={styles.signatureValue}
               selectable
@@ -1278,12 +1279,6 @@ function makeStyles(c: ThemeColors) {
       color: c.textMuted,
       textTransform: "uppercase",
       letterSpacing: 0.5,
-    },
-    summaryAmount: {
-      fontSize: FONT_SIZE.displaySM,
-      fontFamily: FONT.heading,
-      fontWeight: WEIGHT.bold,
-      color: c.textPrimary,
     },
     // ── Phase 8.16: 金額入力 ──
     amountInputRow: {

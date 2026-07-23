@@ -96,7 +96,7 @@ describe("mapPtHoldingsToMaturityEvents (§11.4 実データ源)", () => {
     );
     expect(events).toHaveLength(1);
     const e = events[0]!;
-    expect(e.id).toBe(`maturity_${m.pt_mint}`);
+    expect(e.id).toBe(`maturity_exponent_${m.pt_mint}`); // 8.38 (F4): protocol 付き id
     expect(e.category).toBe("maturity");
     expect(e.triggerAt).toBe(exponentMaturityIso(m.maturity_ts));
     expect(e.urgency).toBe("info"); // +68d

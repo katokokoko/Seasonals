@@ -13,6 +13,7 @@
  *   - HELIUS_API_KEY env が必須
  */
 
+import { fetchWithTimeout } from "./http"; // Phase 8.38 (B9): 共通 timeout
 const HELIUS_BASE = "https://api.helius.xyz/v0";
 const CACHE_TTL_MS = 60_000;
 
@@ -73,6 +74,18 @@ interface CacheEntry {
 
 const cache = new Map<string, CacheEntry>();
 
+// Phase 8.38 (B10): wallet キー cache の上限 — TTL は read 時にしか効かず、
+// 多数 wallet で無制限成長していた。挿入順 (Map) で古い方から落とす
+const CACHE_MAX_ENTRIES = 200;
+function evictOldest(m: Map<string, unknown>): void {
+  while (m.size > CACHE_MAX_ENTRIES) {
+    const oldest = m.keys().next().value;
+    if (oldest === undefined) break;
+    m.delete(oldest);
+  }
+}
+
+
 export function _clearHeliusTxCacheForTest(): void {
   cache.clear();
 }
@@ -100,7 +113,7 @@ export async function fetchEnhancedTransactions(
     return cached.data;
   }
 
-  const res = await fetch(buildUrl(walletAddress, limit), {
+  const res = await fetchWithTimeout(buildUrl(walletAddress, limit), {
     method: "GET",
     headers: { accept: "application/json" },
   });
@@ -117,5 +130,6 @@ export async function fetchEnhancedTransactions(
   }
 
   cache.set(walletAddress, { data: json, ts: Date.now() });
+  evictOldest(cache);
   return json;
 }

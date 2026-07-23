@@ -21,6 +21,7 @@
  * @see https://docs.helius.dev/compression-and-das-api/digital-asset-standard-das-api/get-assets-by-owner
  */
 
+import { fetchWithTimeout } from "./http"; // Phase 8.38 (B9): 共通 timeout
 const HELIUS_MAINNET_URL = "https://mainnet.helius-rpc.com";
 
 const CACHE_TTL_MS = 30_000;
@@ -62,6 +63,18 @@ interface CacheEntry {
 
 const cache = new Map<string, CacheEntry>();
 
+// Phase 8.38 (B10): wallet キー cache の上限 — TTL は read 時にしか効かず、
+// 多数 wallet で無制限成長していた。挿入順 (Map) で古い方から落とす
+const CACHE_MAX_ENTRIES = 200;
+function evictOldest(m: Map<string, unknown>): void {
+  while (m.size > CACHE_MAX_ENTRIES) {
+    const oldest = m.keys().next().value;
+    if (oldest === undefined) break;
+    m.delete(oldest);
+  }
+}
+
+
 /** test 用 cache クリア (本番では使われない) */
 export function _clearHeliusCacheForTest(): void {
   cache.clear();
@@ -93,7 +106,7 @@ export async function fetchAssetsByOwner(
   }
 
   const url = buildUrl();
-  const res = await fetch(url, {
+  const res = await fetchWithTimeout(url, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
@@ -155,5 +168,6 @@ export async function fetchAssetsByOwner(
   }
 
   cache.set(address, { data: items, ts: Date.now() });
+  evictOldest(cache);
   return items;
 }

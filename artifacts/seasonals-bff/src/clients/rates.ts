@@ -8,6 +8,7 @@
  * 失敗は throw → 呼び出し側 (positions/earn) が graceful degrade する。60s cache。
  */
 
+import { fetchWithTimeout } from "./http"; // Phase 8.38 (B9): 共通 timeout
 const SANCTUM_BASE = "https://extra-api.sanctum.so";
 const JUP_BASE = "https://lite-api.jup.ag";
 
@@ -28,7 +29,7 @@ export async function fetchSanctumSolValues(
     return sanctumCache.values;
   }
   const qs = symbols.map((s) => `lst=${encodeURIComponent(s)}`).join("&");
-  const res = await fetch(`${SANCTUM_BASE}/v1/sol-value/current?${qs}`, {
+  const res = await fetchWithTimeout(`${SANCTUM_BASE}/v1/sol-value/current?${qs}`, {
     headers: { accept: "application/json" },
   });
   if (!res.ok) {
@@ -65,7 +66,7 @@ export async function fetchJupiterRateOut(
     `${JUP_BASE}/swap/v1/quote?inputMint=${encodeURIComponent(inputMint)}` +
     `&outputMint=${encodeURIComponent(outputMint)}` +
     `&amount=${encodeURIComponent(probeSmallest)}&slippageBps=50`;
-  const res = await fetch(url, { headers: { accept: "application/json" } });
+  const res = await fetchWithTimeout(url, { headers: { accept: "application/json" } });
   if (!res.ok) {
     throw new Error(`Jupiter rate quote HTTP ${res.status}`);
   }
@@ -88,7 +89,7 @@ async function fetchSanctumApyEndpoint(
   symbols: string[]
 ): Promise<Record<string, number>> {
   const qs = symbols.map((s) => `lst=${encodeURIComponent(s)}`).join("&");
-  const res = await fetch(`${SANCTUM_BASE}/v1/apy/${path}?${qs}`, {
+  const res = await fetchWithTimeout(`${SANCTUM_BASE}/v1/apy/${path}?${qs}`, {
     headers: { accept: "application/json" },
   });
   if (!res.ok) {
@@ -169,7 +170,7 @@ async function fetchExponentMarkets(): Promise<ExponentMarketEntry[]> {
   if (exponentCache && Date.now() - exponentCache.at < EXPONENT_TTL_MS) {
     return exponentCache.markets;
   }
-  const res = await fetch(EXPONENT_MARKETS_URL, {
+  const res = await fetchWithTimeout(EXPONENT_MARKETS_URL, {
     headers: { accept: "application/json" },
   });
   if (!res.ok) {
@@ -333,7 +334,7 @@ export async function fetchPerenaUsdStarApy(): Promise<number> {
   if (perenaApyCache && Date.now() - perenaApyCache.at < PERENA_APY_TTL_MS) {
     return perenaApyCache.apy;
   }
-  const res = await fetch(PERENA_APY_URL, {
+  const res = await fetchWithTimeout(PERENA_APY_URL, {
     headers: { accept: "application/json" },
   });
   if (!res.ok) {

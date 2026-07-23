@@ -23,6 +23,7 @@ import { Connection, PublicKey } from "@solana/web3.js";
 import { SolendActionCore } from "@solendprotocol/solend-sdk";
 
 import type { SaveMarket } from "@workspace/lib/config/save-markets";
+import { fetchWithTimeout } from "./http"; // Phase 8.38 (B9): 共通 timeout
 
 const SAVE_API_BASE = "https://api.save.finance";
 const HELIUS_MAINNET_URL = "https://mainnet.helius-rpc.com";
@@ -72,7 +73,7 @@ async function fetchMarketConfigs(): Promise<RawConfigMarket[]> {
   if (configCache && Date.now() - configCache.at < CONFIG_TTL_MS) {
     return configCache.markets;
   }
-  const res = await fetch(
+  const res = await fetchWithTimeout(
     `${SAVE_API_BASE}/v1/markets/configs?scope=solend&deployment=production`,
     { headers: { accept: "application/json" } }
   );
@@ -208,7 +209,7 @@ export async function fetchSaveReserveRates(
   reserveIds: string[]
 ): Promise<SaveReserveRate[]> {
   if (reserveIds.length === 0) return [];
-  const res = await fetch(
+  const res = await fetchWithTimeout(
     `${SAVE_API_BASE}/v1/reserves?ids=${reserveIds.join(",")}`,
     { headers: { accept: "application/json" } }
   );

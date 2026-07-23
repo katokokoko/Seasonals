@@ -93,6 +93,18 @@ export interface DeriveContext {
   epoch?: { epoch: number; endsAtIso: string; holdsLst: boolean };
 }
 
+/**
+ * Phase 8.38 (F5): ISO 8601 の決定的 parse。tz 指定の無い datetime
+ * ("2026-08-12T00:00:00") は JS ではローカル時刻で解釈され、実行マシンの
+ * timezone で urgency / matured 判定が変わってしまう — UTC ("Z") とみなす。
+ * date-only ("2026-08-12") は仕様上 UTC なのでそのまま。
+ */
+function parseIsoUtc(s: string): Date {
+  const hasTz = /([zZ]|[+-]\d{2}:?\d{2})$/.test(s);
+  const hasTime = s.includes("T");
+  return new Date(hasTime && !hasTz ? `${s}Z` : s);
+}
+
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 /** 期日イベントの draft urgency: ≤1日 (過去含む) critical / ≤7日 watch / info */
@@ -142,7 +154,10 @@ export function deriveTimeEvents(
   ctx: DeriveContext
 ): UnifiedTimeEvent[] {
   const out: UnifiedTimeEvent[] = [];
-  const ref = p.position_ref ?? p.protocol;
+  // Phase 8.38 (F4): event id は `<category>_<protocol>_<ref>`。protocol を含まない
+  // 旧体系では (a) 別 protocol 間の ref 値衝突、(b) position_ref null の snapshot
+  // 同士、で id が重複し React key / Map dedup で片方が消え得た
+  const ref = `${p.protocol}_${p.position_ref ?? "pos"}`;
 
   // health — 既存 BFF 閾値を継承: ratio ≥0.9 critical / ≥0.7 watch / 未満は出さない
   if (p.health && p.health.liquidation_ltv > 0) {
@@ -215,7 +230,7 @@ export function deriveTimeEvents(
 
   // 期日系 4 カテゴリ — ISO 日付 → proximity urgency
   if (p.maturity_at) {
-    const at = new Date(p.maturity_at);
+    const at = parseIsoUtc(p.maturity_at);
     // Phase 8.34: 満期済 + redeem 情報があれば Redeem action (claim 分岐と同型、
     // actionType は canonical "withdraw" — enum 追加はしない §32.2)
     const matured = at.getTime() <= ctx.now.getTime();
@@ -251,7 +266,7 @@ export function deriveTimeEvents(
     );
   }
   if (p.unlock_at) {
-    const at = new Date(p.unlock_at);
+    const at = parseIsoUtc(p.unlock_at);
     const unlocked = at.getTime() <= ctx.now.getTime();
     out.push(
       baseEvent(
@@ -270,7 +285,7 @@ export function deriveTimeEvents(
     );
   }
   if (p.vesting_cliff_at) {
-    const at = new Date(p.vesting_cliff_at);
+    const at = parseIsoUtc(p.vesting_cliff_at);
     out.push(
       baseEvent(
         `vesting_cliff_${ref}`,
@@ -285,7 +300,7 @@ export function deriveTimeEvents(
     );
   }
   if (p.vote_deadline_at) {
-    const at = new Date(p.vote_deadline_at);
+    const at = parseIsoUtc(p.vote_deadline_at);
     out.push(
       baseEvent(
         `vote_deadline_${ref}`,
@@ -308,7 +323,7 @@ export function deriveTimeEvents(
         TimeEventCategory.ForecastMarker,
         p,
         ctx,
-        new Date(p.forecast.at),
+        parseIsoUtc(p.forecast.at),
         Urgency.Info,
         p.forecast.headline,
         { source: "forecast" }

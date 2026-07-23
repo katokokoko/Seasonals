@@ -206,7 +206,7 @@ describe("mapLpPositionsToClaimEvents — Phase 8.20", () => {
     const events = mapLpPositionsToClaimEvents([orcaPos], [meteoraPos], WALLET, now);
     expect(events).toHaveLength(2);
 
-    const orca = events.find((e) => e.id === "claim_Mint111")!;
+    const orca = events.find((e) => e.id === "claim_orca_Mint111")!;
     expect(orca.category).toBe(TimeEventCategory.Claim);
     expect(orca.protocol).toBe("orca");
     expect(orca.urgency).toBe(Urgency.Info);
@@ -227,7 +227,7 @@ describe("mapLpPositionsToClaimEvents — Phase 8.20", () => {
     expect(orca.metadata.asset_symbol).toBe("USDC");
     expect(orca.metadata.pool_id).toBe("orca_usdc_usdt_whirlpool");
 
-    const met = events.find((e) => e.id === "claim_MetPos111")!;
+    const met = events.find((e) => e.id === "claim_meteora_MetPos111")!;
     expect(met.protocol).toBe("meteora");
     expect(met.metadata.share_mint).toBe("MetPos111");
     expect(met.metadata.headline).toBe("0.05 USDC fees claimable on Meteora");
@@ -261,7 +261,7 @@ describe("mapStakeAccountsToLockupEvents — Phase 8.20", () => {
     );
     expect(events).toHaveLength(1);
     const e = events[0]!;
-    expect(e.id).toBe("lockup_end_Stake111");
+    expect(e.id).toBe("lockup_end_solana_Stake111");
     expect(e.category).toBe(TimeEventCategory.LockupEnd);
     // 境界 = now + (432000-100000)×400ms → 未来日 (critical: ≤1d... 332000*400ms ≈ 1.54d → watch)
     expect(e.urgency).toBe(Urgency.Watch);

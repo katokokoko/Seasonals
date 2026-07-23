@@ -117,7 +117,7 @@ describe("deriveAllTimeEvents — golden (§29.1)", () => {
     const events = deriveAllTimeEvents(SNAPSHOTS, ctx);
     const byId = new Map(events.map((e) => [e.id, e]));
 
-    const health = byId.get("health_Oblig111")!;
+    const health = byId.get("health_kamino_Oblig111")!;
     expect(health.urgency).toBe(Urgency.Watch); // 0.58/0.8 = 0.725
     expect(health.metadata.source).toBe("kamino_obligation"); // snapshot が上書き
     expect(health.metadata.headline).toBe(
@@ -125,7 +125,7 @@ describe("deriveAllTimeEvents — golden (§29.1)", () => {
     );
     expect(health.actions).toHaveLength(0); // fail-closed
 
-    const claim = byId.get("claim_Mint111")!;
+    const claim = byId.get("claim_orca_Mint111")!;
     expect(claim.urgency).toBe(Urgency.Info);
     expect(claim.triggerAt).toEqual(NOW);
     expect(claim.metadata.headline).toBe("0.15716 USDC fees claimable on Orca");
@@ -142,10 +142,10 @@ describe("deriveAllTimeEvents — golden (§29.1)", () => {
     expect(claim.metadata.share_mint).toBe("Mint111");
     expect(claim.metadata.shares).toBe("350831");
 
-    expect(byId.get("maturity_Loan111")!.urgency).toBe(Urgency.Info); // +10d
+    expect(byId.get("maturity_loopscale_Loan111")!.urgency).toBe(Urgency.Info); // +10d
 
     // Phase 8.33: Exponent PT maturity (metadata spread が headline を上書きする)
-    const ptMaturity = byId.get("maturity_PtMint111")!;
+    const ptMaturity = byId.get("maturity_exponent_PtMint111")!;
     expect(ptMaturity.category).toBe(TimeEventCategory.Maturity);
     expect(ptMaturity.urgency).toBe(Urgency.Info); // +68d
     expect(ptMaturity.metadata.source).toBe("exponent_pt");
@@ -155,7 +155,7 @@ describe("deriveAllTimeEvents — golden (§29.1)", () => {
     expect(ptMaturity.actions).toHaveLength(0); // 満期前は action なし (8.34 でも不変)
 
     // Phase 8.34: 満期済 + maturity_redeem → Redeem action + synthetic plan metadata
-    const ptMatured = byId.get("maturity_PtMature111")!;
+    const ptMatured = byId.get("maturity_exponent_PtMature111")!;
     expect(ptMatured.urgency).toBe(Urgency.Critical); // 過去日
     expect(ptMatured.actions).toEqual([
       {
@@ -170,10 +170,10 @@ describe("deriveAllTimeEvents — golden (§29.1)", () => {
     expect(ptMatured.metadata.shares).toBe("5000000");
     expect(ptMatured.metadata.asset_symbol).toBe("PT-USX");
 
-    expect(byId.get("lockup_end_Stake111")!.urgency).toBe(Urgency.Watch); // +2d
-    expect(byId.get("vesting_cliff_Stream111")!.urgency).toBe(Urgency.Critical); // +12h
-    expect(byId.get("vote_deadline_Prop111")!.urgency).toBe(Urgency.Watch); // +3d
-    expect(byId.get("forecast_Oblig111")!.metadata.headline).toBe(
+    expect(byId.get("lockup_end_solana_Stake111")!.urgency).toBe(Urgency.Watch); // +2d
+    expect(byId.get("vesting_cliff_streamflow_Stream111")!.urgency).toBe(Urgency.Critical); // +12h
+    expect(byId.get("vote_deadline_realms_Prop111")!.urgency).toBe(Urgency.Watch); // +3d
+    expect(byId.get("forecast_kamino_Oblig111")!.metadata.headline).toBe(
       "Accrued interest reaches 1 USDC"
     );
 

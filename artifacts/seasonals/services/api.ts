@@ -512,7 +512,7 @@ export function getKaminoDepositTx(input: {
   return postKaminoTx<KaminoTxResponse>("/protocols/kamino/deposit-tx", input);
 }
 
-/** Phase 8.15b: Kamino withdraw tx (reserve → underlying、amount = 保有 cToken smallest-unit)。 */
+/** Phase 8.15b: Kamino withdraw tx。amount は **underlying smallest-unit** (BFF が underlying_decimals で変換 — 8.38 L9 訂正)。 */
 export function getKaminoWithdrawTx(input: {
   user: string;
   reserve: string;

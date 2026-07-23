@@ -17,6 +17,7 @@
  *     受け取った amount 文字列を passthrough する (parse しない)。
  */
 
+import { fetchWithTimeout } from "./http"; // Phase 8.38 (B9): 共通 timeout
 const KAMINO_BASE = "https://api.kamino.finance";
 
 /** reserves/metrics の 1 reserve 分 (raw)。APY 系は fraction string。 */
@@ -36,7 +37,7 @@ export interface KaminoReserveMetric {
 export type KaminoRawObligation = Record<string, unknown>;
 
 async function kaminoGet<T>(path: string): Promise<T> {
-  const res = await fetch(`${KAMINO_BASE}${path}`, {
+  const res = await fetchWithTimeout(`${KAMINO_BASE}${path}`, {
     method: "GET",
     headers: { accept: "application/json" },
   });
@@ -73,7 +74,7 @@ async function kaminoTx(
   action: "deposit" | "withdraw",
   body: { wallet: string; market: string; reserve: string; amount: string }
 ): Promise<{ transaction: string }> {
-  const res = await fetch(`${KAMINO_BASE}/ktx/klend/${action}`, {
+  const res = await fetchWithTimeout(`${KAMINO_BASE}/ktx/klend/${action}`, {
     method: "POST",
     headers: { accept: "application/json", "content-type": "application/json" },
     body: JSON.stringify(body),
@@ -118,7 +119,7 @@ async function kaminoVaultTx(
   action: "deposit" | "withdraw",
   body: { wallet: string; kvault: string; amount: string }
 ): Promise<{ transaction: string }> {
-  const res = await fetch(`${KAMINO_BASE}/ktx/kvault/${action}`, {
+  const res = await fetchWithTimeout(`${KAMINO_BASE}/ktx/kvault/${action}`, {
     method: "POST",
     headers: { accept: "application/json", "content-type": "application/json" },
     body: JSON.stringify(body),

@@ -10,6 +10,7 @@
  *   https://mainnet.helius-rpc.com/?api-key=<key>
  */
 
+import { fetchWithTimeout } from "./http"; // Phase 8.38 (B9): 共通 timeout
 const HELIUS_MAINNET_URL = "https://mainnet.helius-rpc.com";
 
 function buildUrl(): string {
@@ -32,7 +33,7 @@ export async function sendTransactionViaHelius(
   } = {}
 ): Promise<string> {
   const url = buildUrl();
-  const res = await fetch(url, {
+  const res = await fetchWithTimeout(url, {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
@@ -87,7 +88,7 @@ export async function getEpochInfo(): Promise<EpochInfo> {
   if (epochCache && Date.now() - epochCache.at < EPOCH_CACHE_TTL_MS) {
     return epochCache.info;
   }
-  const res = await fetch(buildUrl(), {
+  const res = await fetchWithTimeout(buildUrl(), {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
@@ -125,7 +126,7 @@ const SUPPLY_TTL_MS = 10 * 60_000;
 export async function getTokenSupplyUi(mint: string): Promise<number> {
   const hit = supplyCache.get(mint);
   if (hit && Date.now() - hit.at < SUPPLY_TTL_MS) return hit.ui;
-  const res = await fetch(buildUrl(), {
+  const res = await fetchWithTimeout(buildUrl(), {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({
@@ -175,7 +176,7 @@ export interface StakeAccountInfo {
 export async function fetchStakeAccounts(
   wallet: string
 ): Promise<StakeAccountInfo[]> {
-  const res = await fetch(buildUrl(), {
+  const res = await fetchWithTimeout(buildUrl(), {
     method: "POST",
     headers: { "content-type": "application/json" },
     body: JSON.stringify({

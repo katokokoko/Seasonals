@@ -200,22 +200,37 @@ export function listExecutionRecords(): AutonomousExecutionRecord[] {
 }
 
 const RECORDS_PERSIST_KEY = "autonomous-log";
+/** Phase 8.38 (B8): 監査ログの保持上限 (超過は古い方から破棄。無制限成長の防止) */
+const RECORDS_MAX = 500;
 
 /** record を push しつつ永続化 (Phase 8.30、SEASONALS_DATA_DIR 未設定なら no-op) */
 function pushRecord(rec: AutonomousExecutionRecord): void {
   records.push(rec);
+  while (records.length > RECORDS_MAX) records.shift();
   saveJson(RECORDS_PERSIST_KEY, records);
 }
 
 /**
  * 起動時に永続化された監査ログをロード (Phase 8.30)。index.ts から呼ぶ。
  * SEASONALS_DATA_DIR 未設定時は no-op (loadJson が null)。
+ *
+ * Phase 8.38 (B5): 当日 (UTC) の executed 件数から daily counter を復元する —
+ * これが無いと再起動で hard cap (5 回/日) がリセットされ、restart 連打で
+ * 上限を超えられた。
  */
 export function loadPersistedRecords(): void {
   const saved = loadJson<AutonomousExecutionRecord[]>(RECORDS_PERSIST_KEY);
   if (saved) {
     records.length = 0;
-    records.push(...saved);
+    records.push(...saved.slice(-RECORDS_MAX));
+    const d = today();
+    const executedToday = records.filter(
+      (r) => r.decision === "executed" && r.created_at.slice(0, 10) === d
+    ).length;
+    if (executedToday > 0) {
+      dailyDate = d;
+      dailyCount = executedToday;
+    }
   }
 }
 
@@ -468,8 +483,11 @@ export async function runAutonomousCycle(
       );
     // touch connection early to surface devnet errors
     getDevnetConnection();
-    const signature = await sendAndConfirmDevnetTx(tx, delegate.keypair);
+    // Phase 8.38 (B6): 日次枠は broadcast **前** に予約 (increment) する —
+    // await 中に並行 cycle が同じ残枠を読む TOCTOU で hard cap を超えないため。
+    // broadcast 失敗でも枠は返さない (保守側 = cap は実行「試行」に対する上限)
     incrementDaily();
+    const signature = await sendAndConfirmDevnetTx(tx, delegate.keypair);
     updatePlan(plan.plan_id, { status: "executing" });
     rec.decision = "executed";
     rec.reason = null;

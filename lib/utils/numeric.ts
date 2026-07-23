@@ -211,11 +211,13 @@ export function formatTokenAmount(
   options: { locale?: string; minFractionDigits?: number; maxFractionDigits?: number } = {}
 ): string {
   const human = toHumanReadable(amount, decimals);
-  // human は decimal string なので Number() で表示用に変換 (precision loss 許容)
-  // ただし amount が極端に大きい (>2^53) と Number() で正確に表示できないため、
-  // その場合は plain string を返す
+  // human は decimal string なので Number() で表示用に変換 (precision loss 許容)。
+  // Phase 8.38 (F8): 整数部 16 桁以上 (2^53 ≈ 9.0e15 超) は Number() で末尾桁が
+  // 化けるため plain string を返す — 旧実装の isFinite guard は Infinity (1.8e308)
+  // でしか発動せず、コメントの約束が実装されていなかった
+  const intDigits = human.split(".")[0]!.length;
   const numericValue = Number(human);
-  if (!Number.isFinite(numericValue)) return human;
+  if (intDigits > 15 || !Number.isFinite(numericValue)) return human;
 
   const { locale = "en-US", minFractionDigits = 0, maxFractionDigits = 6 } = options;
   return new Intl.NumberFormat(locale, {
@@ -234,8 +236,10 @@ export function formatUsd(
   if (!isValidUsdAmount(amount)) {
     throw new InvalidAmountError("usd_amount", amount);
   }
+  // Phase 8.38 (F8): formatTokenAmount と同じ >2^53 guard
+  const usdIntDigits = amount.split(".")[0]!.length;
   const numericValue = Number(amount);
-  if (!Number.isFinite(numericValue)) return amount;
+  if (usdIntDigits > 15 || !Number.isFinite(numericValue)) return amount;
 
   const { locale = "en-US", minFractionDigits = 2, maxFractionDigits = 2 } = options;
   return new Intl.NumberFormat(locale, {

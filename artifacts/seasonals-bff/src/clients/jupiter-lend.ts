@@ -17,6 +17,7 @@
  *   - 取得時は string で受けて Number 変換しない (mapper 層で boundary 経由)
  */
 
+import { fetchWithTimeout } from "./http"; // Phase 8.38 (B9): 共通 timeout
 const JUPITER_LEND_BASE = "https://lite-api.jup.ag/lend/v1";
 const CACHE_TTL_MS = 30_000;
 
@@ -57,6 +58,18 @@ interface CacheEntry {
 }
 
 const positionsCache = new Map<string, CacheEntry>();
+
+// Phase 8.38 (B10): wallet キー cache の上限 — TTL は read 時にしか効かず、
+// 多数 wallet で無制限成長していた。挿入順 (Map) で古い方から落とす
+const CACHE_MAX_ENTRIES = 200;
+function evictOldest(m: Map<string, unknown>): void {
+  while (m.size > CACHE_MAX_ENTRIES) {
+    const oldest = m.keys().next().value;
+    if (oldest === undefined) break;
+    m.delete(oldest);
+  }
+}
+
 
 /** Phase 8.6: market catalog cache (single global、 wallet 非依存) */
 let marketsCache: { data: JupiterLendMarket[]; ts: number } | null = null;
@@ -112,7 +125,7 @@ export async function fetchEarnMarkets(): Promise<JupiterLendMarket[]> {
   if (marketsCache && Date.now() - marketsCache.ts < CACHE_TTL_MS) {
     return marketsCache.data;
   }
-  const res = await fetch(`${JUPITER_LEND_BASE}/earn/tokens`, {
+  const res = await fetchWithTimeout(`${JUPITER_LEND_BASE}/earn/tokens`, {
     method: "GET",
     headers: { accept: "application/json" },
   });
@@ -162,7 +175,7 @@ export async function fetchEarnPositions(
   }
 
   const url = `${JUPITER_LEND_BASE}/earn/positions?users=${encodeURIComponent(walletAddress)}`;
-  const res = await fetch(url, {
+  const res = await fetchWithTimeout(url, {
     method: "GET",
     headers: { accept: "application/json" },
   });
@@ -179,5 +192,6 @@ export async function fetchEarnPositions(
   }
 
   positionsCache.set(walletAddress, { data: json, ts: Date.now() });
+  evictOldest(positionsCache);
   return json;
 }

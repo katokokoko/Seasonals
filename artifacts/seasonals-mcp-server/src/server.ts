@@ -30,30 +30,15 @@ import type {
 
 import type { BffClient } from "./bff-client";
 
-const OBJECTIVES = [
-  "safety_first",
-  "max_yield",
-  "stable_only",
-  "sol_accumulation",
-  "liquidity_priority",
-  "duration_limited",
-  "liquidation_avoidance",
-] as const;
+// Phase 8.38 (F3): enum は lib/types/enums.ts が canonical (§2)。手書き複製は
+// enum 追加時に MCP 境界だけ zod が新値を拒否する drift を生むため、lib から導出
+import {
+  ACTION_TYPES as LIB_ACTION_TYPES,
+  OBJECTIVES as LIB_OBJECTIVES,
+} from "@workspace/lib/types";
 
-const ACTION_TYPES = [
-  "deposit",
-  "withdraw",
-  "re_deposit",
-  "re_deposit_include_yield",
-  "re_deposit_exclude_yield",
-  "rotate",
-  "claim",
-  "vote",
-  "repay",
-  "add_collateral",
-  "unstake",
-  "cancel",
-] as const;
+const OBJECTIVES = LIB_OBJECTIVES as unknown as [string, ...string[]];
+const ACTION_TYPES = LIB_ACTION_TYPES as unknown as [string, ...string[]];
 
 /** tool 応答は JSON text content (MCP の標準形) */
 function jsonContent(value: unknown) {
@@ -248,12 +233,27 @@ export function buildMcpServer(
           timeout_seconds,
         });
         const deadline = Date.now() + timeout_seconds * 1000;
-        // §10.3: long-running response — approved/rejected/timeout まで poll
+        // §10.3: long-running response — approved/rejected/timeout まで poll。
+        // Phase 8.38 (F7): 一過性の BFF エラー (deploy 中の 502 等) で承認待ち全体を
+        // abort しない — deadline 内なら次の poll で継続する (fail 側は timeout が拾う)
         for (;;) {
-          const res = await bff.get<{
+          let res: {
             status: AgentPlan["status"];
             approval_token: ApprovalToken | null;
-          }>(`/agent-plans/${plan_id}/approval`);
+          };
+          try {
+            res = await bff.get<{
+              status: AgentPlan["status"];
+              approval_token: ApprovalToken | null;
+            }>(`/agent-plans/${plan_id}/approval`);
+          } catch {
+            if (Date.now() >= deadline) {
+              audit("request_user_approval", plan_id, "rejected", t0);
+              return jsonContent({ status: "timeout" });
+            }
+            await sleep(pollIntervalMs);
+            continue;
+          }
           if (res.status === "approved" && res.approval_token) {
             audit("request_user_approval", plan_id, "ok", t0);
             return jsonContent({

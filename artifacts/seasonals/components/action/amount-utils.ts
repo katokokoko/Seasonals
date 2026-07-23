@@ -12,7 +12,10 @@
  */
 import type { AgentPlan } from "@workspace/lib/types";
 import { TOKEN_DECIMALS, toSmallestUnit } from "@workspace/lib/utils/numeric";
-import { findMarketByShareMint } from "@workspace/lib/config/swap-earn-markets";
+import {
+  findMarketByProtocolAsset,
+  findMarketByShareMint,
+} from "@workspace/lib/config/swap-earn-markets";
 import {
   findKaminoMarketByReserve,
   findKaminoVaultByAddress,
@@ -54,19 +57,23 @@ export function resolveAmountUnit(
         ? (action.metadata.underlying_decimals as number)
         : undefined;
     if (typeof shareMint === "string") {
+      // 8.38 (L6): 解決順は ActionModal の dispatch cascade
+      // (swap-earn → kamino reserve → kVault → save → exponent) と同一に揃える。
+      // registry 間で pubkey は disjoint (レビュー検証済) だが、将来の重複時に
+      // 「入力単位の出所」と「tx を送る先」が食い違わないための順序統一
+      const swap = findMarketByShareMint(shareMint);
+      if (swap) {
+        return {
+          decimals: shareDecimals ?? swap.share_decimals,
+          unitSymbol: swap.share_symbol,
+        };
+      }
       // kamino reserve: BFF が underlying_decimals で human 変換する underlying 建て
       const kaminoReserve = findKaminoMarketByReserve(shareMint);
       if (kaminoReserve) {
         return {
           decimals: underlyingDecimals ?? kaminoReserve.underlying_decimals,
           unitSymbol: kaminoReserve.underlying_symbol,
-        };
-      }
-      const swap = findMarketByShareMint(shareMint);
-      if (swap) {
-        return {
-          decimals: shareDecimals ?? swap.share_decimals,
-          unitSymbol: swap.share_symbol,
         };
       }
       const save = findSaveMarketByCToken(shareMint);
@@ -99,8 +106,15 @@ export function resolveAmountUnit(
     };
   }
 
+  // 8.38 (L7): deposit の decimals は解決できるなら market の underlying_decimals を
+  // 優先する (グローバル TOKEN_DECIMALS 表との乖離で桁ズレしないため)。
+  const depositProtocol =
+    action.protocol === "jupiter" ? "jupiter_lend" : action.protocol;
+  const market = action.asset
+    ? findMarketByProtocolAsset(depositProtocol, action.asset)
+    : undefined;
   return {
-    decimals: depositDecimals(action.asset),
+    decimals: market?.underlying_decimals ?? depositDecimals(action.asset),
     unitSymbol: action.asset ?? "",
   };
 }
