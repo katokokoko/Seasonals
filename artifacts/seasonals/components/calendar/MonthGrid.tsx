@@ -218,29 +218,40 @@ export function MonthGrid({
               >
                 {format(day, "d")}
               </Text>
-              {(dayEvents.length > 0 || dayCustom.length > 0) && (
-                <View style={styles.markerRow}>
-                  {/* §5.3: urgency-first — critical が 4 件目以降で隠れないよう sort */}
-                  {sortEventsByUrgency(dayEvents).slice(0, 3).map((e) => (
-                    <DropletMarker
-                      key={e.id}
-                      category={dropletShapeForEvent(e)}
-                      urgency={e.urgency}
-                      size={9}
-                    />
-                  ))}
-                  {dayCustom.slice(0, 2).map((ce) => (
-                    <Text key={ce.id} style={styles.customMarker}>
-                      {ce.marker === "emoji" && ce.emoji ? ce.emoji : "★"}
-                    </Text>
-                  ))}
-                  {dayEvents.length + dayCustom.length > 5 && (
-                    <Text style={styles.moreCount}>
-                      +{dayEvents.length + dayCustom.length - 5}
-                    </Text>
-                  )}
-                </View>
-              )}
+              {/* Phase 8.39: マーカー行は **常時描画の固定高さスロット** —
+                  条件付き描画だとセルの content 高さがアイコン有無で変わり、
+                  flexWrap 行の高さ (= 行内最大セル) が月の行ごとに揺れていた。
+                  空でも同高を占有することで全セル同高 = 行高さ均一を保証する */}
+              <View
+                style={styles.markerSlot}
+                testID={
+                  testID
+                    ? `${testID}-day-${format(day, "yyyy-MM-dd")}-markers`
+                    : undefined
+                }
+              >
+                {/* §5.3: urgency-first — critical が 4 件目以降で隠れないよう sort */}
+                {sortEventsByUrgency(dayEvents).slice(0, 3).map((e) => (
+                  <DropletMarker
+                    key={e.id}
+                    category={dropletShapeForEvent(e)}
+                    urgency={e.urgency}
+                    size={9}
+                    testID={`droplet-${e.id}`}
+                  />
+                ))}
+                {/* 8.39: 1 行 (折返しなし) に収める — custom は 1 個まで */}
+                {dayCustom.slice(0, 1).map((ce) => (
+                  <Text key={ce.id} style={styles.customMarker}>
+                    {ce.marker === "emoji" && ce.emoji ? ce.emoji : "★"}
+                  </Text>
+                ))}
+                {dayEvents.length + dayCustom.length > 4 && (
+                  <Text style={styles.moreCount}>
+                    +{dayEvents.length + dayCustom.length - 4}
+                  </Text>
+                )}
+              </View>
             </Pressable>
           );
         })}
@@ -329,13 +340,17 @@ function makeStyles(c: ThemeColors) {
       color: c.sodaText,
       fontWeight: WEIGHT.bold,
     },
-    markerRow: {
+    // Phase 8.39: 固定高さの常時スロット (旧 markerRow)。
+    // 折返し (flexWrap) は廃止 — 2 行目が content 高さを押し上げて行高さが
+    // 揺れる原因だった。上限超過は "+N" で表現し、はみ出しは clip する
+    markerSlot: {
+      height: 13,
+      alignSelf: "stretch",
       flexDirection: "row",
       alignItems: "center",
-      gap: 1,
-      flexWrap: "wrap",
       justifyContent: "center",
-      maxWidth: "100%",
+      gap: 1,
+      overflow: "hidden",
     },
     moreCount: {
       fontSize: 8,
