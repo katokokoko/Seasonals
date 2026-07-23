@@ -73,6 +73,27 @@ describe("MCPApprovalPushCard", () => {
       expect(screen.getByText("有効期限 残 4:23")).toBeTruthy();
     });
 
+    it("8.37 (M3): expires_at 不正 (NaN) は expired 扱い = CTA disabled (fail-closed)", () => {
+      render(
+        wrap(
+          <MCPApprovalPushCard
+            plan={fixtureAgentPlanSimulated}
+            token={{ ...fixtureApprovalTokenActive, expires_at: "not-a-date" }}
+            now={() => Date.now()}
+            warningGrayoutMs={0}
+            hapticsEnabled={false}
+            testID="push"
+          />
+        )
+      );
+      const cta = screen.getByTestId("push-approve");
+      expect(
+        cta.props.accessibilityState?.disabled ?? cta.props.disabled
+      ).toBeTruthy();
+      // "NaN:NaN" が表示されない
+      expect(screen.queryByText(/NaN/)).toBeNull();
+    });
+
     it("expires_at 経過後は CTA disabled + '有効期限切れ' 表示", () => {
       render(
         wrap(

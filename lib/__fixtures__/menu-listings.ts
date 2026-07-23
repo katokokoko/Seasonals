@@ -157,6 +157,8 @@ export const fixtureMenuListings: ProtocolMenuEntry[] = [
         asset: "SOL",
         apy: 0.0720,
         tvl_usd: 780_000_000,
+        // Phase 8.37 (レビュー L-F1): swap-earn registry に sanctum/jitoSOL 実体なし (asset fallback だと INF に化ける) — 実装まで view-only
+        display_only: true,
       },
       {
         pool_id: "sanctum_bsol",
@@ -165,6 +167,8 @@ export const fixtureMenuListings: ProtocolMenuEntry[] = [
         asset: "SOL",
         apy: 0.0690,
         tvl_usd: 69_000_000,
+        // Phase 8.37 (レビュー L-F1): swap-earn registry に sanctum/bSOL 実体なし (同上) — 実装まで view-only
+        display_only: true,
       },
     ],
   },
@@ -194,6 +198,8 @@ export const fixtureMenuListings: ProtocolMenuEntry[] = [
         apy: 0.0630,
         tvl_usd: 3_000_000,
         deposit_asset: "USDC",
+        // Phase 8.37 (レビュー L-F1): tri-pool の実 adapter 未実装 (fallback だと USD* 単独になる) — 実装まで view-only
+        display_only: true,
       },
     ],
   },
@@ -234,6 +240,8 @@ export const fixtureMenuListings: ProtocolMenuEntry[] = [
         apy: 0.0680,
         tvl_usd: 3_000_000,
         borrowed_usd: 2_000_000,
+        // Phase 8.37 (レビュー L-F1): SAVE_MARKETS に未登録 (fallback だと sol_main に入金される) — 実装まで view-only
+        display_only: true,
       },
     ],
   },
@@ -324,6 +332,8 @@ export const fixtureMenuListings: ProtocolMenuEntry[] = [
         apy: 0.0890,
         tvl_usd: 14_500_000,
         deposit_asset: "SOL",
+        // Phase 8.37 (レビュー L-F1): restaking の実 adapter 未実装 (fallback だと jitoSOL swap になる) — 実装まで view-only
+        display_only: true,
       },
     ],
   },

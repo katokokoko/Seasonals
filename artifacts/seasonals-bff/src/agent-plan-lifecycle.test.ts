@@ -14,13 +14,44 @@ import {
   validateAndConsumeToken,
 } from "./plan-store";
 import { fetchSwapQuote, fetchSwapTransaction } from "./clients/jupiter-swap";
+import { getOracleResult } from "./clients/oracle";
 
 jest.mock("./clients/jupiter-swap");
+// Phase 8.37: simulate / execute が実 oracle gate を通るようになったため mock
+// (無 mock だと live Pyth を叩く = テストが hermetic でなくなる)
+jest.mock("./clients/oracle");
 
 const mockQuote = fetchSwapQuote as jest.MockedFunction<typeof fetchSwapQuote>;
 const mockSwapTx = fetchSwapTransaction as jest.MockedFunction<
   typeof fetchSwapTransaction
 >;
+const mockOracle = getOracleResult as jest.MockedFunction<typeof getOracleResult>;
+
+function okOracle(): Awaited<ReturnType<typeof getOracleResult>> {
+  return {
+    asset_symbol: "SOL",
+    status: "ok",
+    primary: "pyth",
+    price_usd: "80.00000000",
+    pyth: { available: true, price_usd: "80.00000000", age_seconds: 2 },
+    switchboard: { available: true, price_usd: "80.10000000", age_seconds: 3 },
+    divergence_pct: 0.12,
+    warnings: [],
+    block_reason: null,
+  } as Awaited<ReturnType<typeof getOracleResult>>;
+}
+
+function blockedOracle(
+  reason: string
+): Awaited<ReturnType<typeof getOracleResult>> {
+  return {
+    ...okOracle(),
+    status: "blocked",
+    primary: null,
+    price_usd: null,
+    block_reason: reason,
+  } as Awaited<ReturnType<typeof getOracleResult>>;
+}
 
 const WALLET = "WaLLet1111111111111111111111111111111111111";
 const ACTION: ActionSpec = {
@@ -36,6 +67,7 @@ let app: FastifyInstance;
 beforeEach(async () => {
   jest.clearAllMocks();
   _clearPlanStoreForTest();
+  mockOracle.mockResolvedValue(okOracle());
   mockQuote.mockResolvedValue({
     inputMint: "in",
     outputMint: "out",
@@ -85,6 +117,24 @@ describe("plan lifecycle (compare → simulate → approve → execute)", () => 
     expect(plan.simulation_result.bundle_hash).toBe(computeBundleHash(ACTION));
   });
 
+  it("8.37 (B11): bundle_hash はネスト field も含み、キー順に依らない", () => {
+    const a = {
+      ...ACTION,
+      metadata: { share_mint: "M1", pool_id: "P1" },
+    } as ActionSpec;
+    const b = {
+      ...ACTION,
+      metadata: { pool_id: "P1", share_mint: "M1" }, // 同値・順序違い
+    } as ActionSpec;
+    const c = {
+      ...ACTION,
+      metadata: { share_mint: "M2", pool_id: "P1" }, // ネスト値の改ざん
+    } as ActionSpec;
+    expect(computeBundleHash(a)).toBe(computeBundleHash(b));
+    // 旧実装 (replacer 配列) はネスト field を落とすため a と c が同 hash になっていた
+    expect(computeBundleHash(a)).not.toBe(computeBundleHash(c));
+  });
+
   it("bundle_hash は決定的 (同じ action → 同じ hash)", async () => {
     const a = await createSimulatedPlan();
     const b = await createSimulatedPlan();
@@ -122,6 +172,61 @@ describe("plan lifecycle (compare → simulate → approve → execute)", () => 
     expect(body.status).toBe("pushed_to_mobile");
     expect(body.unsigned_transactions[0].tx_base64).toBe("UNSIGNED_TX_B64");
     expect(body.plan.status).toBe("executing");
+  });
+
+  it("8.37 (B2): simulate の oracle は実 getOracleResult の値を透過する", async () => {
+    const planId = await createSimulatedPlan();
+    const got = await app.inject({ method: "GET", url: `/agent-plans/${planId}` });
+    const oracle = got.json().simulation_result.oracle;
+    expect(oracle).toEqual({
+      primary: "pyth",
+      primary_age_seconds: 2, // mock の age をそのまま反映 (捏造 stub でない)
+      divergence_pct: 0.12,
+      warnings: [],
+    });
+  });
+
+  it("8.37 (B2): 両 stale は simulate も 409 oracle_blocked (§4.6 表)", async () => {
+    mockOracle.mockResolvedValue(blockedOracle("oracle_both_stale"));
+    const created = await post("/agent-plans", { objective: "max_yield" });
+    const planId = created.json().plan_id as string;
+    const sim = await post(`/agent-plans/${planId}/simulate`, {
+      action_spec: ACTION,
+    });
+    expect(sim.statusCode).toBe(409);
+    expect(sim.json().error).toBe("oracle_blocked");
+  });
+
+  it("8.37 (B2): >5% 乖離は simulate 通過 + 強警告 (execute 側で拒否する)", async () => {
+    mockOracle.mockResolvedValue(blockedOracle("oracle_divergence_too_large"));
+    const created = await post("/agent-plans", { objective: "max_yield" });
+    const planId = created.json().plan_id as string;
+    const sim = await post(`/agent-plans/${planId}/simulate`, {
+      action_spec: ACTION,
+    });
+    expect(sim.statusCode).toBe(200);
+  });
+
+  it("8.37 (B1): execute は oracle blocked で 409、token は消費されない", async () => {
+    const planId = await createSimulatedPlan();
+    await post(`/agent-plans/${planId}/request-approval`);
+    const token = (await post(`/agent-plans/${planId}/approve`)).json()
+      .approval_token;
+
+    mockOracle.mockResolvedValue(blockedOracle("oracle_both_stale"));
+    const exec = await post(`/agent-plans/${planId}/execute`, {
+      approval_token: token.token_id,
+    });
+    expect(exec.statusCode).toBe(409);
+    expect(exec.json().error).toBe("oracle_blocked");
+    expect(mockSwapTx).not.toHaveBeenCalled(); // 署名可能 tx を作らない
+
+    // token は未消費 — oracle 回復後に同じ token で execute できる (§29.3)
+    mockOracle.mockResolvedValue(okOracle());
+    const retry = await post(`/agent-plans/${planId}/execute`, {
+      approval_token: token.token_id,
+    });
+    expect(retry.statusCode).toBe(200);
   });
 
   it("§29.3: token 再利用は already_consumed で拒否", async () => {

@@ -185,6 +185,9 @@ import {
 import {
   AutonomousDisabledError,
   getAutonomousStatus,
+  dailyLimitFor,
+  getDailyCount,
+  incrementDaily,
   isAutonomousFeatureEnabled,
   isKilled,
   kill as killAutonomous,
@@ -515,6 +518,12 @@ async function buildSwapEarnTx(
     slippageBps?: number;
   }
 ): Promise<Record<string, unknown>> {
+  // Phase 8.37 (B3): §4.5 API boundary — 他の全 tx-build family と同じ検証。
+  // これが無いと "1.5" / "-100" 等が Jupiter へ素通しだった (drift 修正)
+  if (!isValidTokenAmount(p.amount)) {
+    reply.code(400);
+    return { error: "invalid_amount", amount: p.amount };
+  }
   const oracle = await getOracleResult(p.oracleMint);
   if (oracle.status === "blocked") {
     reply.code(409);
@@ -3187,13 +3196,17 @@ export async function buildServer(
         autoPolicy.enabled_protocols.includes(autoAct.protocol) &&
         (autoAct.asset === undefined ||
           autoPolicy.enabled_assets.includes(autoAct.asset));
+      // Phase 8.37 (B4): 日次上限は自律 /tick 経路と共有 (min(policy, hard cap))。
+      // 超過時は短絡せず pending_user へ fall through = 人手承認要求 (fail-closed)
+      const autoDailyOk = getDailyCount() < dailyLimitFor(autoPolicy);
       if (
         plan.status === AgentPlanStatus.Simulated &&
         !isKilled() &&
         canAutoExecute(autoPolicy, isAutonomousFeatureEnabled()) &&
         plan.selected_action &&
         plan.simulation_result &&
-        autoPolicyOk
+        autoPolicyOk &&
+        autoDailyOk
       ) {
         issueApprovalToken({
           user_id: plan.user_id,
@@ -3201,6 +3214,7 @@ export async function buildServer(
           mcp_client_id: plan.mcp_client_id,
           bundle_hash: plan.simulation_result.bundle_hash,
         });
+        incrementDaily(); // auto 承認も日次枠を消費 (自律実行と合算の保守側運用)
         return updatePlan(planId, { status: AgentPlanStatus.Approved })!;
       }
       // idempotent (§10.3): pending_user なら push を再送しない
@@ -3390,16 +3404,10 @@ export async function buildServer(
       reply.code(409);
       return { error: "selected_action_required", plan_id: planId };
     }
-    const validation = validateAndConsumeToken(tokenId, {
-      plan_id: planId,
-      bundle_hash: computeBundleHash(action),
-    });
-    if (!validation.valid) {
-      reply.code(403);
-      return { error: "approval_token_invalid", reason: validation.reason };
-    }
 
-    // v1: swap-earn (Jupiter routable) の deposit / withdraw のみ
+    // v1: swap-earn (Jupiter routable) の deposit / withdraw のみ。
+    // Phase 8.37: 実行可否と oracle gate を **token 消費より前** に判定する —
+    // 単発 token を oracle block / 非対応 action で無駄に消費させない (§29.3)
     const market = action.asset
       ? findMarketByProtocolAsset(action.protocol, action.asset)
       : undefined;
@@ -3415,6 +3423,28 @@ export async function buildServer(
         message:
           "v1 executes swap-earn deposit/withdraw only (valid amount required)",
       };
+    }
+
+    // Phase 8.37 (B1): execute にも §4.6 fail-closed gate — 直接 tx-build endpoint
+    // (buildSwapEarnTx 等) と同一の判定。agent 経路だけ oracle 無検査で署名可能
+    // tx を返していた drift の修正
+    const oracle = await getOracleResult(market.underlying_mint);
+    if (oracle.status === "blocked") {
+      req.log.warn(
+        { planId, block_reason: oracle.block_reason },
+        "execute blocked by oracle gate"
+      );
+      reply.code(409);
+      return { error: "oracle_blocked", block_reason: oracle.block_reason, oracle };
+    }
+
+    const validation = validateAndConsumeToken(tokenId, {
+      plan_id: planId,
+      bundle_hash: computeBundleHash(action),
+    });
+    if (!validation.valid) {
+      reply.code(403);
+      return { error: "approval_token_invalid", reason: validation.reason };
     }
     const isDeposit = action.action_type === "deposit";
     try {
@@ -4323,6 +4353,54 @@ export async function buildServer(
         Object.assign(meta, { jupiter_quote: quote });
       }
 
+      // Phase 8.37 (B2): oracle 健全性は捏造 stub でなく **実 getOracleResult** を
+      // 反映する (§4.6)。simulate の decision table: 両 stale / 両未取得は 409 拒否、
+      // >5% 乖離は「通す + warning」(execute 側 8.37-B1 が拒否する)。
+      // swap-earn registry で解決できない asset は oracle field を **省略** する
+      // (偽の健全表示をしない — optional field の正直な不在)
+      let simOracle:
+        | {
+            primary: "pyth" | "switchboard";
+            primary_age_seconds: number;
+            divergence_pct?: number;
+            warnings: string[];
+          }
+        | undefined;
+      const oracleMarket = action.asset
+        ? findMarketByProtocolAsset(action.protocol, action.asset)
+        : undefined;
+      if (oracleMarket) {
+        const oracle = await getOracleResult(oracleMarket.underlying_mint);
+        if (
+          oracle.status === "blocked" &&
+          oracle.block_reason !== "oracle_divergence_too_large"
+        ) {
+          // oracle_both_stale / oracle_unavailable — simulate も拒否 (§4.6 表)
+          reply.code(409);
+          return {
+            error: "oracle_blocked",
+            block_reason: oracle.block_reason,
+            oracle,
+          };
+        }
+        // SimulationResult.oracle.warnings は string[] (§11.7) — block_reason の
+        // 強警告も混載するため WarningKind union より広い型で持つ
+        const warnings: string[] = oracle.warnings.map((w) => w.kind);
+        if (oracle.block_reason === "oracle_divergence_too_large") {
+          warnings.push("oracle_divergence_too_large"); // simulate は通すが強警告
+        }
+        if (oracle.primary) {
+          simOracle = {
+            primary: oracle.primary,
+            primary_age_seconds: oracle[oracle.primary].age_seconds ?? 0,
+            divergence_pct: oracle.divergence_pct ?? undefined,
+            warnings,
+          };
+        } else if (warnings.length > 0) {
+          Object.assign(meta, { oracle_warnings: warnings });
+        }
+      }
+
       const sim = {
         simulation_id: `sim_${planId}_${Date.now()}`,
         estimated_out,
@@ -4330,12 +4408,7 @@ export async function buildServer(
         slippage_bps,
         // Phase 8.28: ランダム stub を決定的 hash に置換 (§11.7 改ざんガード実体)
         bundle_hash: computeBundleHash(action),
-        oracle: {
-          primary: "pyth" as const,
-          primary_age_seconds: Math.floor(Math.random() * 10),
-          divergence_pct: 0.3,
-          warnings: [] as string[],
-        },
+        ...(simOracle ? { oracle: simOracle } : {}),
         metadata: meta,
       };
       // store plan は selected_action + simulation_result を永続 (§11.7)

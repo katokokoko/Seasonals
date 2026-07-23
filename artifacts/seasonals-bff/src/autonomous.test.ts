@@ -19,12 +19,28 @@ import {
   _resetAutonomousForTest,
   getAutonomousStatus,
   AUTONOMOUS_MAX_TX_USD8,
+  AUTONOMOUS_MAX_DAILY,
+  incrementDaily,
   type AutonomousDeps,
 } from "./autonomous";
 import { _clearPlanStoreForTest } from "./plan-store";
 import { _resetPolicyForTest } from "./policy-store";
 import { sendAndConfirmDevnetTx, getDevnetConnection } from "./clients/solana-devnet";
 
+// Phase 8.37: /simulate が実 oracle gate を通るため mock (hermetic 維持)
+jest.mock("./clients/oracle", () => ({
+  getOracleResult: jest.fn(async () => ({
+    asset_symbol: "SOL",
+    status: "ok",
+    primary: "pyth",
+    price_usd: "80.00000000",
+    pyth: { available: true, price_usd: "80.00000000", age_seconds: 2 },
+    switchboard: { available: false, price_usd: null, age_seconds: null },
+    divergence_pct: null,
+    warnings: [],
+    block_reason: null,
+  })),
+}));
 jest.mock("./clients/solana-devnet", () => ({
   ...jest.requireActual("./clients/solana-devnet"),
   sendAndConfirmDevnetTx: jest.fn(),
@@ -346,6 +362,46 @@ describe("routes: /autonomous/* + PATCH /user-policy", () => {
       )
     ).toHaveLength(0);
     fetchSpy.mockRestore();
+  });
+
+  it("8.37 (B4): 日次上限到達後の auto-approve は短絡せず pending_user", async () => {
+    await app.inject({
+      method: "PATCH",
+      url: "/user-policy",
+      payload: { approval_mode: "auto" },
+    });
+    // 日次枠を hard cap まで消費 (自律実行と共有カウンタ)
+    for (let i = 0; i < AUTONOMOUS_MAX_DAILY; i++) incrementDaily();
+    const plan = (
+      await app.inject({
+        method: "POST",
+        url: "/agent-plans",
+        payload: { objective: "max_yield", mcp_client_id: "t" },
+      })
+    ).json();
+    await app.inject({
+      method: "POST",
+      url: `/agent-plans/${plan.plan_id}/simulate`,
+      payload: {
+        action_spec: {
+          wallet_id: "W",
+          action_type: "deposit",
+          protocol: "jito", // policy 内 — cap だけが理由で fall through する
+          asset: "SOL",
+          amount: "1000000",
+        },
+      },
+    });
+    const req = await app.inject({
+      method: "POST",
+      url: `/agent-plans/${plan.plan_id}/request-approval`,
+    });
+    expect(req.json().status).toBe("pending_user"); // 人手承認へ (fail-closed)
+    const appr = await app.inject({
+      method: "GET",
+      url: `/agent-plans/${plan.plan_id}/approval`,
+    });
+    expect(appr.json().approval_token).toBeNull();
   });
 
   it("auto-approve 短絡: policy 外 protocol は短絡せず pending_user (F3 fail-closed)", async () => {

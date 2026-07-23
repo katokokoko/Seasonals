@@ -129,8 +129,11 @@ export function MCPApprovalPushCard({
 
   const [currentMs, setCurrentMs] = useState<number>(() => now());
 
+  // Phase 8.37 (M3): expires_at が不正/欠落だと getTime() が NaN になり
+  // 「NaN <= 0 === false」で TTL が無効化されていた — 不正は expired 扱い
+  // (fail-closed。TTL は §29.3 のセキュリティ制御)
   const expiresMs = new Date(token.expires_at).getTime();
-  const remainingMs = expiresMs - currentMs;
+  const remainingMs = Number.isFinite(expiresMs) ? expiresMs - currentMs : 0;
   const isExpired = remainingMs <= 0;
 
   useEffect(() => {

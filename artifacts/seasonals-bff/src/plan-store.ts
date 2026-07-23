@@ -97,12 +97,35 @@ export function updatePlan(
 // ── bundle hash (§11.7) ──────────────────────────────────────────────────────
 
 /**
- * selected_action の canonical JSON (キーをソート) の sha256。
+ * 全階層のキーを再帰ソートした canonical JSON (Phase 8.37 B11)。
+ * 旧実装の `JSON.stringify(obj, Object.keys(obj).sort())` は **replacer 配列が
+ * 全ネスト階層のキーを許可リストとして絞る**ため、トップレベルに無い名前の
+ * ネスト field が hash から抜け落ちる改ざん検出穴があった。
+ */
+function canonicalJson(value: unknown): string {
+  if (value === null || typeof value !== "object") {
+    return JSON.stringify(value);
+  }
+  if (Array.isArray(value)) {
+    return `[${value.map((v) => canonicalJson(v)).join(",")}]`;
+  }
+  const keys = Object.keys(value as Record<string, unknown>).sort();
+  const body = keys
+    .filter((k) => (value as Record<string, unknown>)[k] !== undefined)
+    .map(
+      (k) =>
+        `${JSON.stringify(k)}:${canonicalJson((value as Record<string, unknown>)[k])}`
+    )
+    .join(",");
+  return `{${body}}`;
+}
+
+/**
+ * selected_action の canonical JSON (再帰キーソート) の sha256。
  * 同じ action には常に同じ hash (決定的) — 改ざん検出の実体。
  */
 export function computeBundleHash(action: ActionSpec): string {
-  const canonical = JSON.stringify(action, Object.keys(action).sort());
-  return `0x${createHash("sha256").update(canonical).digest("hex")}`;
+  return `0x${createHash("sha256").update(canonicalJson(action)).digest("hex")}`;
 }
 
 // ── approval tokens (§11.8 / §29.3) ─────────────────────────────────────────

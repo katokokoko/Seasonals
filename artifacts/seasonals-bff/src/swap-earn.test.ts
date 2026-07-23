@@ -165,6 +165,42 @@ describe("POST /protocols/swap-earn/deposit-tx", () => {
   });
 });
 
+describe("8.37 (B3): §4.5 amount 境界検証 (swap-earn family)", () => {
+  const cases: Array<[string, Record<string, unknown>]> = [
+    ["/protocols/swap-earn/deposit-tx", { user: "", shareMint: "" }],
+    ["/protocols/swap-earn/withdraw-tx", { user: "", shareMint: "" }],
+    ["/protocols/jupiter-lend/deposit-tx", { user: "", inputMint: "" }],
+    ["/protocols/jupiter-lend/withdraw-tx", { user: "", shareMint: "" }],
+  ];
+  const jlUsdcMint = "9BEcn9aPEmhSPbPQeFGjidRiEKki46fVQDyPpSQXPA2D"; // jlUSDC (registry 値)
+  for (const [url] of cases) {
+    it(`${url}: 不正 amount ("1.5") は 400 invalid_amount`, async () => {
+      const body: Record<string, unknown> = {
+        user: VALID_USER,
+        amount: "1.5", // 小数 — smallest-unit string 規約違反
+        shareMint: jito.share_mint,
+        inputMint: jito.underlying_mint,
+        jlMint: jlUsdcMint, // jupiter-lend/withdraw-tx は jl mint 解決が先
+      };
+      const res = await post(url, body);
+      expect(res.statusCode).toBe(400);
+      expect(res.json().error).toBe("invalid_amount");
+      expect(mockQuote).not.toHaveBeenCalled(); // Jupiter へ素通ししない
+    });
+  }
+
+  it("負数 / 指数表記も 400 (deposit-tx 代表)", async () => {
+    for (const bad of ["-100", "1e6", ""]) {
+      const res = await post("/protocols/swap-earn/deposit-tx", {
+        user: VALID_USER,
+        shareMint: jito.share_mint,
+        amount: bad,
+      });
+      expect(res.statusCode).toBe(400);
+    }
+  });
+});
+
 describe("POST /protocols/swap-earn/withdraw-tx", () => {
   it("既知 shareMint を解決し share→underlying でルートする", async () => {
     const res = await post("/protocols/swap-earn/withdraw-tx", {

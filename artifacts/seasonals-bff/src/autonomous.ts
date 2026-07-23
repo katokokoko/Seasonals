@@ -162,13 +162,24 @@ function today(): string {
 export function getDailyCount(): number {
   return dailyDate === today() ? dailyCount : 0;
 }
-function incrementDaily(): void {
+export function incrementDaily(): void {
   const d = today();
   if (dailyDate !== d) {
     dailyDate = d;
     dailyCount = 0;
   }
   dailyCount += 1;
+}
+
+/**
+ * Phase 8.37 (B4): 自律実行と MCP 個別 auto-approve が共有する日次上限。
+ * policy 値と AUTONOMOUS_MAX_DAILY の小さい方 (hard cap は policy と独立 §11.6)。
+ */
+export function dailyLimitFor(policy: { max_daily_executions: number | null }): number {
+  return Math.min(
+    policy.max_daily_executions ?? AUTONOMOUS_MAX_DAILY,
+    AUTONOMOUS_MAX_DAILY
+  );
 }
 
 // ── risk score (fixtureProtocols trust_level 由来) ───────────────────────────
@@ -372,10 +383,7 @@ export async function runAutonomousCycle(
   rec.amount_usd8 = chosen.c.amount_usd8;
 
   // runtime gate: daily (policy ∧ hard) / approval_mode
-  const dailyLimit = Math.min(
-    policy.max_daily_executions ?? AUTONOMOUS_MAX_DAILY,
-    AUTONOMOUS_MAX_DAILY
-  );
+  const dailyLimit = dailyLimitFor(policy);
   if (getDailyCount() >= dailyLimit) {
     rec.reason = "daily_execution_cap_reached";
     rec.violations = ["policy_violation_max_daily_executions"];

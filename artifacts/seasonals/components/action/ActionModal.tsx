@@ -615,6 +615,22 @@ export function ActionModal({
       return;
     }
 
+    // ── Phase 8.37 (M-H1): onchain 対象なのに market 未解決 → fail-closed ──
+    // ここに到達した deposit/withdraw は全 onchain 分岐が解決しなかったもの。
+    // memo fallback に落とすと「Approved & executed」の偽成功表示になるため、
+    // canOnchain (onchain build + wallet 接続) の間はエラーで止める。
+    // fallback は fixture/デモ (非 onchain) のときだけの経路にする。
+    if (
+      canOnchain &&
+      (action?.action_type === "deposit" || action?.action_type === "withdraw")
+    ) {
+      setErrorMsg(
+        "Unsupported market — no onchain route resolved for this pool"
+      );
+      setPhase("error");
+      return;
+    }
+
     // ── Fallback path: BFF memo tx (Phase 5 / 8 までの動作) ──
     const feePayer =
       isConnected && authorization ? authorization.address : undefined;
