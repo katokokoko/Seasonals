@@ -49,7 +49,7 @@ import {
 } from "./glass-physics";
 import { useGlassFlavor } from "./glass-flavor";
 import { useReduceMotion } from "./useReduceMotion";
-import { useTiltRoll } from "./useTiltRoll";
+import { TiltSensorBridge, useTiltRoll } from "./useTiltRoll";
 
 const W = Dimensions.get("window").width;
 const H = Dimensions.get("window").height;
@@ -78,7 +78,11 @@ export function GlassLayer() {
   const mode = usePrefsStore((s) => s.backgroundMode);
   const liquidEnabled = mode === "liquid";
   const reduced = useReduceMotion();
-  const { roll, available } = useTiltRoll(liquidEnabled && !reduced);
+  // 8.46: センサーは UI スレッド直結 (TiltSensorBridge)。senseActive の間だけ
+  // mount してフォーカス外 / background で購読を止める
+  const { roll, available, senseActive, reportAvailable } = useTiltRoll(
+    liquidEnabled && !reduced
+  );
   const flavor = useGlassFlavor();
 
   // available === true になるまで静的退避 (未判定中に液体を一瞬出さない — F3)
@@ -221,15 +225,28 @@ export function GlassLayer() {
     frameCb.setActive(active);
   }, [active, frameCb]);
 
+  // 8.46: センサー購読 (null render)。退避分岐より前に置き、available 未判定の
+  // うちから登録を進める。senseActive=false なら mount されない = 購読停止
+  const bridge = senseActive ? (
+    <TiltSensorBridge roll={roll} onAvailable={reportAvailable} />
+  ) : null;
+
   // 退避 (8.41): none = 背景装飾を一切描かない (うす緑も出さない)。
   // static / (liquid だが reduce-motion・センサー不可) → 静的ソーダ背景 (§2.4)
   if (!active) {
-    if (mode === "none") return null;
-    return <MelonSodaBackground static />;
+    if (mode === "none") return bridge;
+    return (
+      <>
+        {bridge}
+        <MelonSodaBackground static />
+      </>
+    );
   }
 
   return (
-    <View pointerEvents="none" style={StyleSheet.absoluteFill} testID="glass-layer">
+    <>
+      {bridge}
+      <View pointerEvents="none" style={StyleSheet.absoluteFill} testID="glass-layer">
       <Canvas style={StyleSheet.absoluteFill}>
         {/* 1. 液体本体 (5-stop palette 由来 3 stop、背後の UI を透かす) */}
         <Path path={liquidPath}>
@@ -281,6 +298,7 @@ export function GlassLayer() {
           />
         </Group>
       </Canvas>
-    </View>
+      </View>
+    </>
   );
 }

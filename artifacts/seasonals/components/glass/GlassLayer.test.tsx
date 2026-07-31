@@ -1,6 +1,10 @@
 /**
  * GlassLayer — 退避ロジックのテスト (Phase 8.36、§2.4)。
  * Skia canvas の絵は assert しない (jest.setup の View pass-through mock)。
+ *
+ * 8.46: センサーは reanimated の useAnimatedSensor (UI スレッド直結) に移行した
+ * ため、mock 対象を DeviceMotion から useAnimatedSensor へ変更。spread-actual で
+ * useAnimatedSensor だけ差し替える (useSharedValue / useFrameCallback 等は実物)。
  */
 import React from "react";
 import { AccessibilityInfo } from "react-native";
@@ -8,7 +12,6 @@ import { render, waitFor } from "@testing-library/react-native";
 
 import { GlassLayer } from "./GlassLayer";
 import { usePrefsStore } from "../../stores/prefs";
-import { DeviceMotion } from "expo-sensors";
 
 // useFocusEffect は navigation context 必須のため noop に (購読 gating は
 // useTiltRoll の focus state — テストでは「フォーカス中」として扱う)
@@ -19,13 +22,25 @@ jest.mock("expo-router", () => ({
   },
 }));
 
-const mockAvailable = DeviceMotion.isAvailableAsync as jest.MockedFunction<
-  typeof DeviceMotion.isAvailableAsync
->;
+// センサー可用性をテストごとに切り替える (名前は jest の out-of-scope 規約で mock*)。
+// reanimated 本体の spread mock は default export (Animated.View) を壊すため、
+// useTiltRoll モジュールを mock する。本テストの対象は GlassLayer の退避 gating
+// であり、useTiltRoll 内部 (focus / AppState) はここでは対象外
+let mockSensorAvailable = true;
+jest.mock("./useTiltRoll", () => ({
+  useTiltRoll: (enabled: boolean) => ({
+    roll: { value: 0 },
+    available: enabled ? mockSensorAvailable : null,
+    senseActive: enabled,
+    reportAvailable: () => undefined,
+  }),
+  TiltSensorBridge: () => null,
+}));
 
 describe("GlassLayer — 退避 (§2.4)", () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockSensorAvailable = true;
     usePrefsStore.setState({ backgroundMode: "liquid" });
     jest
       .spyOn(AccessibilityInfo, "isReduceMotionEnabled")
@@ -50,7 +65,6 @@ describe("GlassLayer — 退避 (§2.4)", () => {
     jest
       .spyOn(AccessibilityInfo, "isReduceMotionEnabled")
       .mockResolvedValue(true);
-    mockAvailable.mockResolvedValue(true);
     const { queryByTestId } = render(<GlassLayer />);
     await waitFor(() => {
       expect(queryByTestId("glass-layer")).toBeNull();
@@ -58,7 +72,7 @@ describe("GlassLayer — 退避 (§2.4)", () => {
   });
 
   it("センサー不可 → 静的背景へ退避", async () => {
-    mockAvailable.mockResolvedValue(false);
+    mockSensorAvailable = false;
     const { queryByTestId } = render(<GlassLayer />);
     await waitFor(() => {
       expect(queryByTestId("glass-layer")).toBeNull();
@@ -66,7 +80,6 @@ describe("GlassLayer — 退避 (§2.4)", () => {
   });
 
   it("on + reduce-motion off + センサー可 → 液体レイヤを描画", async () => {
-    mockAvailable.mockResolvedValue(true);
     const { queryByTestId, queryAllByTestId } = render(<GlassLayer />);
     await waitFor(() => {
       expect(queryByTestId("glass-layer")).not.toBeNull();
