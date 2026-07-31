@@ -7,8 +7,12 @@
  * 同 worklet で毎フレーム構築して sharedValue へ代入する (UI thread 完結)。
  *
  * 装飾であって機能ではない (§1): pointerEvents="none" で touch 透過、
- * カレンダー可読性優先で液体 alpha は透過寄り。設定 off / reduce-motion /
- * センサー不可のときは既存の MelonSodaBackground (static) へ退避する (§2.4)。
+ * カレンダー可読性優先で液体 alpha は透過寄り。設定 Still / reduce-motion /
+ * センサー不可のときは既存の MelonSodaBackground (static) へ、設定 Off なら
+ * 何も描かずに退避する (§2.4 / 8.41 の backgroundMode 3 択)。
+ *
+ * 8.42/8.43: 全画面の薄緑 sky グラデとガラスのハイライト (白い縦筋) は撤去済。
+ * 液面より上と半透明の液体越しに、アプリ本来の背景がそのまま見える。
  *
  * プロトタイプとの差分 (洗練、§5 への回答):
  * - ストロー / アイス浮きは v1 見送り (カレンダー UI と競合する具象物)
@@ -25,7 +29,6 @@ import {
   Group,
   LinearGradient,
   Path,
-  RoundedRect,
   Skia,
   vec,
 } from "@shopify/react-native-skia";
@@ -73,7 +76,6 @@ function fireFizzHaptic(): void {
 export function GlassLayer() {
   // 8.41: 背景 3 択 — liquid (本レイヤ) / static (静的ソーダ) / none (装飾なし)
   const mode = usePrefsStore((s) => s.backgroundMode);
-  const glassHighlights = usePrefsStore((s) => s.glassHighlights);
   const liquidEnabled = mode === "liquid";
   const reduced = useReduceMotion();
   const { roll, available } = useTiltRoll(liquidEnabled && !reduced);
@@ -229,30 +231,7 @@ export function GlassLayer() {
   return (
     <View pointerEvents="none" style={StyleSheet.absoluteFill} testID="glass-layer">
       <Canvas style={StyleSheet.absoluteFill}>
-        {/* 1. (8.42 撤去) グラス上部の薄緑 sky グラデ — 液面より上はアプリ本来の
-            バニラ背景をそのまま見せる (Still モードの下地と同一) */}
-        {/* 2. ガラスのハイライト (静的、控えめ)。8.40: 設定で個別に消せる */}
-        {glassHighlights && (
-          <>
-            <RoundedRect
-              x={W * 0.1}
-              y={-20}
-              width={W * 0.045}
-              height={H + 40}
-              r={24}
-              color="rgba(255,255,255,0.20)"
-            />
-            <RoundedRect
-              x={W * 0.17}
-              y={-20}
-              width={W * 0.016}
-              height={H + 40}
-              r={16}
-              color="rgba(255,255,255,0.14)"
-            />
-          </>
-        )}
-        {/* 3. 液体本体 (5-stop palette 由来 3 stop、背後の UI を透かす) */}
+        {/* 1. 液体本体 (5-stop palette 由来 3 stop、背後の UI を透かす) */}
         <Path path={liquidPath}>
           <LinearGradient
             start={vec(0, H * 0.25)}
@@ -261,7 +240,7 @@ export function GlassLayer() {
             positions={[0, 0.45, 1]}
           />
         </Path>
-        {/* 4. 底の深み (下層ほど暗い) */}
+        {/* 2. 底の深み (下層ほど暗い) */}
         <Path path={liquidPath}>
           <LinearGradient
             start={vec(0, H * 0.55)}
@@ -269,7 +248,7 @@ export function GlassLayer() {
             colors={["transparent", flavor.deepShadow]}
           />
         </Path>
-        {/* 5. 炭酸の泡 (§2.2 — 世界座標上向き) */}
+        {/* 3. 炭酸の泡 (§2.2 — 世界座標上向き) */}
         <Path
           path={bubblePath}
           style="stroke"
@@ -277,12 +256,12 @@ export function GlassLayer() {
           color={flavor.bubbleStroke}
         />
         <Path path={bubbleHiPath} color={flavor.bubbleFill} />
-        {/* 6. 液面のクリーム帯 */}
+        {/* 4. 液面のクリーム帯 */}
         <Path path={creamPath} color={flavor.cream} />
         <Path path={creamDotsPath} color={flavor.creamBubble} />
-        {/* 7. 壁際の飛沫 */}
+        {/* 5. 壁際の飛沫 */}
         <Path path={dropletPath} color={flavor.droplet} />
-        {/* 8. あふれ覆い (§2.3 — 前線 + 疑似メタボール前縁 + 内部テクスチャ) */}
+        {/* 6. あふれ覆い (§2.3 — 前線 + 疑似メタボール前縁 + 内部テクスチャ) */}
         <Group opacity={foamAlpha}>
           <Path path={foamBodyPath}>
             <LinearGradient

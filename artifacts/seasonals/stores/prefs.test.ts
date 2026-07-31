@@ -9,7 +9,7 @@ import { usePrefsStore } from "./prefs";
 describe("usePrefsStore", () => {
   beforeEach(async () => {
     await AsyncStorage.clear();
-    usePrefsStore.setState({ backgroundMode: "liquid", glassHighlights: true });
+    usePrefsStore.setState({ backgroundMode: "liquid" });
   });
 
   it("default は liquid", () => {
@@ -53,22 +53,5 @@ describe("usePrefsStore", () => {
     await AsyncStorage.setItem("prefs:backgroundMode", "liquid");
     await usePrefsStore.getState().hydrate();
     expect(usePrefsStore.getState().backgroundMode).toBe("liquid");
-  });
-
-  // 8.40: glassHighlights (グラスのハイライト個別 on/off)
-  it("glassHighlights: default on / set が state + AsyncStorage に反映", async () => {
-    expect(usePrefsStore.getState().glassHighlights).toBe(true);
-    usePrefsStore.getState().setGlassHighlights(false);
-    expect(usePrefsStore.getState().glassHighlights).toBe(false);
-    await new Promise((r) => setTimeout(r, 0));
-    expect(await AsyncStorage.getItem("prefs:glassHighlights")).toBe("0");
-  });
-
-  it("glassHighlights: hydrate が両キーを独立に復元する", async () => {
-    await AsyncStorage.setItem("prefs:glassHighlights", "0");
-    // backgroundMode 側は未保存 → default 維持のまま glassHighlights だけ off
-    await usePrefsStore.getState().hydrate();
-    expect(usePrefsStore.getState().backgroundMode).toBe("liquid");
-    expect(usePrefsStore.getState().glassHighlights).toBe(false);
   });
 });
