@@ -1,5 +1,5 @@
 /**
- * useTiltRoll — 端末のロール角 (rad) を sharedValue へ (Phase 8.36 → 8.46)
+ * useTiltRoll — 端末の傾き (rad) を sharedValue へ (Phase 8.36 → 8.46 → 8.49)
  *
  * 8.46: expo-sensors の DeviceMotion (JS スレッド listener) から Reanimated の
  * useAnimatedSensor (**UI スレッド直結**) へ移行。旧経路は
@@ -9,15 +9,16 @@
  * 急に動く」症状になっていた。新経路はセンサー値が UI スレッドの sharedValue に
  * 直接届くため、JS スレッドの状態に一切影響されない。
  *
- * - Android の SensorType.ROTATION は SensorManager.getOrientation() の
- *   orientation[2] を roll としてそのまま渡す (yaw/pitch は iOS 合わせで反転、
- *   roll は無反転 — ReanimatedSensorListener.java)。DeviceMotion の gamma と同じ
- *   Y 軸まわりの回転なので、旧実装の -gamma に合わせて -roll を使う。
- *   実機で逆なら TiltSensorBridge の符号を反転する
+ * 8.49: 傾きの取得元を Euler の roll から **重力ベクトル** (SensorType.GRAVITY) へ
+ * 変更。roll は端末を立てて持つとジンバルロック近傍で暴れ、手を 5° 動かしただけで
+ * 90° 振れて maxTilt に張り付いていた (「ちょっと傾けただけで大きく揺れる」)。
+ * 変換は glass-physics.ts の `tiltFromGravity` (姿勢に依らず手の動きと 1:1)。
+ *
  * - 購読の gating (画面フォーカス中 かつ foreground のみ、電池) は
  *   **TiltSensorBridge の mount/unmount** で表現する — useAnimatedSensor は
  *   unmount 時に unregister するため、離脱 / background で確実に止まる
- * - rotation vector はランタイム権限不要 (旧 DeviceMotion の permission 処理は撤去)
+ * - gravity / linear acceleration はランタイム権限不要 (旧 DeviceMotion の
+ *   permission 処理は撤去)
  */
 
 import { useCallback, useEffect, useState } from "react";
@@ -31,7 +32,7 @@ import {
   type SharedValue,
 } from "react-native-reanimated";
 
-import { GLASS_TUNING } from "./glass-physics";
+import { tiltFromGravity } from "./glass-physics";
 
 /** UI スレッドなので 60Hz でも安い (旧 33ms → 16ms) */
 const SENSOR_INTERVAL_MS = 16;
@@ -68,7 +69,10 @@ export function TiltSensorBridge({
   shake: SharedValue<number>;
   onAvailable: (ok: boolean) => void;
 }): null {
-  const rotation = useAnimatedSensor(SensorType.ROTATION, {
+  // 8.49: ROTATION (Euler roll) から GRAVITY へ変更。roll は端末を立てて持つと
+  // ジンバルロック近傍で暴れ、手を 5° 動かしただけで 90° 振れて maxTilt に張り付いて
+  // いた (「ちょっと傾けただけで大きく揺れる」の原因)。詳細は tiltFromGravity の doc
+  const gravity = useAnimatedSensor(SensorType.GRAVITY, {
     interval: SENSOR_INTERVAL_MS,
   });
   // 8.47: 2 本目。reanimated の ACCELEROMETER は Android の
@@ -89,20 +93,18 @@ export function TiltSensorBridge({
   }, []);
 
   useEffect(() => {
-    if (ready) onAvailable(rotation.isAvailable);
+    if (ready) onAvailable(gravity.isAvailable);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready]);
 
   // sensor sharedValue を**直接ローカルに掴む** — useDerivedValue の依存とマッパー
   // 入力は worklet closure から抽出されるため、re-render 後の実体 (S2) を closure に
   // 直接入れることで、マッパーが正しい sharedValue に付き直る
-  const sensorSV = rotation.sensor;
+  const gravitySV = gravity.sensor;
   useDerivedValue(() => {
-    const raw = -sensorSV.value.roll; // 旧 -gamma と同一の向き
-    roll.value = Math.max(
-      -GLASS_TUNING.maxTilt,
-      Math.min(GLASS_TUNING.maxTilt, raw)
-    );
+    const g = gravitySV.value;
+    // clamp は tiltFromGravity 内 (±maxTilt)
+    roll.value = tiltFromGravity(g.x, g.y, g.z);
   });
 
   // 8.47: 揺さぶりの強さ = 並進加速度の大きさ。向きは問わないので |a| だけ見る

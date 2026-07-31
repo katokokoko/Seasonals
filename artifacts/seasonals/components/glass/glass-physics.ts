@@ -211,6 +211,41 @@ export function createGlassState(
 }
 
 /**
+ * 8.49: 重力ベクトル (端末座標) → 液面の目標傾き (rad)。
+ *
+ * 8.48 まで使っていた Euler の roll (`SensorManager.getOrientation()[2]`) は、
+ * **端末を立てて持つとジンバルロック近傍**に入り破綻する。数値実験の実測:
+ *
+ *   端末の姿勢   手を 5° 動かした時の roll
+ *   平置き       0°     (全く反応しない)
+ *   45°          5°     (ほぼ 1:1)
+ *   85°         45°     (9 倍)
+ *   直立        90°     (即飽和 → maxTilt に張り付く)
+ *
+ * カレンダーを見る姿勢 = ほぼ直立なので、「ちょっと傾けただけで液体が大きく揺れる」
+ * のはこれが原因だった。重力を画面平面に射影して向きを取れば特異点が無く、
+ * どの姿勢でも手の動きと 1:1 になる。
+ *
+ * 引数は reanimated の GRAVITY センサー値 (= Android TYPE_GRAVITY を符号反転した
+ * もの = **実際の重力の向き**)。画面座標は x=右 / y=下 なので、画面平面での重力は
+ * (x, -y)。液面はそれに直交するので傾き角は atan2(-x, -y)。
+ *
+ * `lean` は「端末がどれだけ立っているか」(平置き 0 / 直立 1)。平置きのグラスは
+ * 傾かないのが物理的に正しく、射影が縮退する領域を同時に無害化できる。
+ */
+export function tiltFromGravity(x: number, y: number, z: number): number {
+  "worklet";
+  const T = GLASS_TUNING;
+  const mag = Math.sqrt(x * x + y * y + z * z);
+  if (mag < 1e-6) return 0;
+  const planar = Math.sqrt(x * x + y * y);
+  const angle = Math.atan2(-x, -y);
+  const lean = planar / mag;
+  const t = angle * lean;
+  return Math.max(-T.maxTilt, Math.min(T.maxTilt, t));
+}
+
+/**
  * 8.48: 傾き角 → 液面の傾き (dy/dx)。膝 (slopeKnee) までは `tan` そのままで、
  * それ以上を `slopeMax` へ向けて滑らかに飽和させる。
  *

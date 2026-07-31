@@ -7,6 +7,7 @@ import {
   createGlassState,
   stepGlass,
   surfaceSlope,
+  tiltFromGravity,
   surfaceYAt,
   type GlassState,
 } from "./glass-physics";
@@ -380,5 +381,55 @@ describe("surfaceSlope (8.48 — 大傾斜のサチュレーション)", () => {
       expect(s).toBeGreaterThan(prev);
       prev = s;
     }
+  });
+});
+
+// 8.49: 傾きの取得元。Euler の roll は端末を立てるとジンバルロックで暴れたため、
+// 重力ベクトルの画面平面への射影から求める (姿勢に依らず手の動きと 1:1)
+describe("tiltFromGravity (8.49 — 姿勢に依らない傾き)", () => {
+  /** 直立姿勢で画面法線まわりに theta 回した時の重力ベクトル (端末座標、下向き) */
+  function uprightTilted(theta: number): [number, number, number] {
+    return [-Math.sin(theta), -Math.cos(theta), 0];
+  }
+
+  it("直立・無傾斜では 0", () => {
+    expect(tiltFromGravity(...uprightTilted(0))).toBeCloseTo(0, 10);
+  });
+
+  it("直立ではどの角度でも手の動きと 1:1 (roll の飽和が起きない)", () => {
+    for (const deg of [5, 10, 20, 30]) {
+      const rad = (deg * Math.PI) / 180;
+      expect(tiltFromGravity(...uprightTilted(rad))).toBeCloseTo(rad, 6);
+      expect(tiltFromGravity(...uprightTilted(-rad))).toBeCloseTo(-rad, 6);
+    }
+  });
+
+  it("平置き (重力が画面法線方向) では傾かない", () => {
+    // z 成分のみ = 画面が真上を向いている
+    expect(Math.abs(tiltFromGravity(0, 0, -1))).toBeLessThan(1e-9);
+    // わずかに傾いた平置きでも応答は小さい
+    expect(Math.abs(tiltFromGravity(-0.05, -0.02, -0.998))).toBeLessThan(0.1);
+  });
+
+  it("姿勢が寝ているほど応答が穏やかになる (直立 > 45° > 平置き)", () => {
+    const rad = (20 * Math.PI) / 180;
+    const at = (leanDeg: number) => {
+      const l = (leanDeg * Math.PI) / 180; // 0=平置き, 90=直立
+      const planar = Math.sin(l);
+      return tiltFromGravity(
+        -Math.sin(rad) * planar,
+        -Math.cos(rad) * planar,
+        -Math.cos(l)
+      );
+    };
+    expect(at(90)).toBeGreaterThan(at(45));
+    expect(at(45)).toBeGreaterThan(at(10));
+    expect(at(10)).toBeGreaterThan(0);
+  });
+
+  it("maxTilt で clamp され、ゼロベクトルでも壊れない", () => {
+    const big = tiltFromGravity(...uprightTilted(1.5)); // 86°
+    expect(big).toBeLessThanOrEqual(GLASS_TUNING.maxTilt + 1e-9);
+    expect(tiltFromGravity(0, 0, 0)).toBe(0);
   });
 });
