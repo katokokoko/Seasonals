@@ -72,8 +72,10 @@ function fireFizzHaptic(): void {
 }
 
 export function GlassLayer() {
-  const liquidEnabled = usePrefsStore((s) => s.liquidEffect);
+  // 8.41: 背景 3 択 — liquid (本レイヤ) / static (静的ソーダ) / none (装飾なし)
+  const mode = usePrefsStore((s) => s.backgroundMode);
   const glassHighlights = usePrefsStore((s) => s.glassHighlights);
+  const liquidEnabled = mode === "liquid";
   const reduced = useReduceMotion();
   const { roll, available } = useTiltRoll(liquidEnabled && !reduced);
   const flavor = useGlassFlavor();
@@ -218,8 +220,10 @@ export function GlassLayer() {
     frameCb.setActive(active);
   }, [active, frameCb]);
 
-  // 退避: 設定 off / reduce-motion / センサー不可 → 既存背景の静的版 (§2.4)
+  // 退避 (8.41): none = 背景装飾を一切描かない (うす緑も出さない)。
+  // static / (liquid だが reduce-motion・センサー不可) → 静的ソーダ背景 (§2.4)
   if (!active) {
+    if (mode === "none") return null;
     return <MelonSodaBackground static />;
   }
 

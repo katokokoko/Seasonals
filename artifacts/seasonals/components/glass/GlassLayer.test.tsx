@@ -26,16 +26,24 @@ const mockAvailable = DeviceMotion.isAvailableAsync as jest.MockedFunction<
 describe("GlassLayer — 退避 (§2.4)", () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    usePrefsStore.setState({ liquidEffect: true, glassHighlights: true });
+    usePrefsStore.setState({ backgroundMode: "liquid", glassHighlights: true });
     jest
       .spyOn(AccessibilityInfo, "isReduceMotionEnabled")
       .mockResolvedValue(false);
   });
 
-  it("設定 off → Skia canvas を出さず静的背景へ退避", () => {
-    usePrefsStore.setState({ liquidEffect: false });
-    const { queryByTestId } = render(<GlassLayer />);
+  it("static → Skia canvas を出さず静的背景へ退避", () => {
+    usePrefsStore.setState({ backgroundMode: "static" });
+    const { queryByTestId, toJSON } = render(<GlassLayer />);
     expect(queryByTestId("glass-layer")).toBeNull();
+    expect(toJSON()).not.toBeNull(); // MelonSodaBackground static は描く
+  });
+
+  // 8.41: none = うす緑の静的背景すら描かない
+  it("none → 背景装飾を一切描かない", () => {
+    usePrefsStore.setState({ backgroundMode: "none" });
+    const { toJSON } = render(<GlassLayer />);
+    expect(toJSON()).toBeNull();
   });
 
   it("reduce-motion 有効 → 静的背景へ退避", async () => {

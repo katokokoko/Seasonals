@@ -105,10 +105,10 @@ export function SettingsDrawer({
     themeHydrate();
   }, [themeHydrate]);
 
-  // Phase 8.36: 液体演出 on/off (prefs store — 本 drawer 初の永続化設定)
-  const liquidEffect = usePrefsStore((s) => s.liquidEffect);
-  const setLiquidEffect = usePrefsStore((s) => s.setLiquidEffect);
-  // 8.40: グラスのハイライト (白い縦筋) だけの個別 on/off。液体演出 off 中は不活性
+  // Phase 8.36 → 8.41: 背景装飾 3 択 (liquid / static / none、prefs store で永続化)
+  const backgroundMode = usePrefsStore((s) => s.backgroundMode);
+  const setBackgroundMode = usePrefsStore((s) => s.setBackgroundMode);
+  // 8.40: グラスのハイライト (白い縦筋) だけの個別 on/off。liquid 以外では不活性
   const glassHighlights = usePrefsStore((s) => s.glassHighlights);
   const setGlassHighlights = usePrefsStore((s) => s.setGlassHighlights);
 
@@ -267,56 +267,53 @@ export function SettingsDrawer({
                 </View>
               </View>
               <View style={styles.divider} />
-              {/* Phase 8.36: 液体演出 on/off (prefs store で永続化、§2.4) */}
+              {/* Phase 8.36 → 8.41: 背景装飾 3 択 (Liquid = 傾き液体演出 /
+                  Still = 静的ソーダ / Off = うす緑含め装飾なし) */}
               <View style={styles.row}>
-                <Text style={styles.rowLabel}>Liquid effect</Text>
+                <Text style={styles.rowLabel}>Background</Text>
                 <View style={styles.toggle}>
-                  <Pressable
-                    accessibilityRole="button"
-                    accessibilityState={{ selected: liquidEffect }}
-                    onPress={() => setLiquidEffect(true)}
-                    style={[styles.toggleBtn, liquidEffect && styles.toggleBtnActive]}
-                    testID={testID ? `${testID}-liquid-on` : undefined}
-                  >
-                    <Text
+                  {(
+                    [
+                      { mode: "liquid", label: "Liquid" },
+                      { mode: "static", label: "Still" },
+                      { mode: "none", label: "Off" },
+                    ] as const
+                  ).map(({ mode, label }) => (
+                    <Pressable
+                      key={mode}
+                      accessibilityRole="button"
+                      accessibilityState={{ selected: backgroundMode === mode }}
+                      onPress={() => setBackgroundMode(mode)}
                       style={[
-                        styles.toggleText,
-                        liquidEffect && styles.toggleTextActive,
+                        styles.toggleBtn,
+                        backgroundMode === mode && styles.toggleBtnActive,
                       ]}
+                      testID={testID ? `${testID}-bg-${mode}` : undefined}
                     >
-                      On
-                    </Text>
-                  </Pressable>
-                  <Pressable
-                    accessibilityRole="button"
-                    accessibilityState={{ selected: !liquidEffect }}
-                    onPress={() => setLiquidEffect(false)}
-                    style={[styles.toggleBtn, !liquidEffect && styles.toggleBtnActive]}
-                    testID={testID ? `${testID}-liquid-off` : undefined}
-                  >
-                    <Text
-                      style={[
-                        styles.toggleText,
-                        !liquidEffect && styles.toggleTextActive,
-                      ]}
-                    >
-                      Off
-                    </Text>
-                  </Pressable>
+                      <Text
+                        style={[
+                          styles.toggleText,
+                          backgroundMode === mode && styles.toggleTextActive,
+                        ]}
+                      >
+                        {label}
+                      </Text>
+                    </Pressable>
+                  ))}
                 </View>
               </View>
               <View style={styles.divider} />
               {/* 8.40: グラスのハイライトだけの個別 on/off (液体演出 off 中は不活性) */}
-              <View style={[styles.row, !liquidEffect && styles.rowDisabled]}>
+              <View style={[styles.row, backgroundMode !== "liquid" && styles.rowDisabled]}>
                 <Text style={styles.rowLabel}>Glass highlights</Text>
                 <View style={styles.toggle}>
                   <Pressable
                     accessibilityRole="button"
                     accessibilityState={{
                       selected: glassHighlights,
-                      disabled: !liquidEffect,
+                      disabled: backgroundMode !== "liquid",
                     }}
-                    disabled={!liquidEffect}
+                    disabled={backgroundMode !== "liquid"}
                     onPress={() => setGlassHighlights(true)}
                     style={[
                       styles.toggleBtn,
@@ -337,9 +334,9 @@ export function SettingsDrawer({
                     accessibilityRole="button"
                     accessibilityState={{
                       selected: !glassHighlights,
-                      disabled: !liquidEffect,
+                      disabled: backgroundMode !== "liquid",
                     }}
-                    disabled={!liquidEffect}
+                    disabled={backgroundMode !== "liquid"}
                     onPress={() => setGlassHighlights(false)}
                     style={[
                       styles.toggleBtn,
