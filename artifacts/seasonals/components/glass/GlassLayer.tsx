@@ -73,6 +73,7 @@ function fireFizzHaptic(): void {
 
 export function GlassLayer() {
   const liquidEnabled = usePrefsStore((s) => s.liquidEffect);
+  const glassHighlights = usePrefsStore((s) => s.glassHighlights);
   const reduced = useReduceMotion();
   const { roll, available } = useTiltRoll(liquidEnabled && !reduced);
   const flavor = useGlassFlavor();
@@ -233,23 +234,27 @@ export function GlassLayer() {
             colors={[flavor.skyTop, flavor.skyBottom]}
           />
         </Rect>
-        {/* 2. ガラスのハイライト (静的、控えめ) */}
-        <RoundedRect
-          x={W * 0.1}
-          y={-20}
-          width={W * 0.045}
-          height={H + 40}
-          r={24}
-          color="rgba(255,255,255,0.20)"
-        />
-        <RoundedRect
-          x={W * 0.17}
-          y={-20}
-          width={W * 0.016}
-          height={H + 40}
-          r={16}
-          color="rgba(255,255,255,0.14)"
-        />
+        {/* 2. ガラスのハイライト (静的、控えめ)。8.40: 設定で個別に消せる */}
+        {glassHighlights && (
+          <>
+            <RoundedRect
+              x={W * 0.1}
+              y={-20}
+              width={W * 0.045}
+              height={H + 40}
+              r={24}
+              color="rgba(255,255,255,0.20)"
+            />
+            <RoundedRect
+              x={W * 0.17}
+              y={-20}
+              width={W * 0.016}
+              height={H + 40}
+              r={16}
+              color="rgba(255,255,255,0.14)"
+            />
+          </>
+        )}
         {/* 3. 液体本体 (5-stop palette 由来 3 stop、背後の UI を透かす) */}
         <Path path={liquidPath}>
           <LinearGradient

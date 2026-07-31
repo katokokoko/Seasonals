@@ -108,6 +108,9 @@ export function SettingsDrawer({
   // Phase 8.36: 液体演出 on/off (prefs store — 本 drawer 初の永続化設定)
   const liquidEffect = usePrefsStore((s) => s.liquidEffect);
   const setLiquidEffect = usePrefsStore((s) => s.setLiquidEffect);
+  // 8.40: グラスのハイライト (白い縦筋) だけの個別 on/off。液体演出 off 中は不活性
+  const glassHighlights = usePrefsStore((s) => s.glassHighlights);
+  const setGlassHighlights = usePrefsStore((s) => s.setGlassHighlights);
 
   // Local UI state — 永続化は後続 phase で UserPolicy / preferences API へ
   const [baseCurrency, setBaseCurrency] = useState<"USDC" | "SOL">("SOL");
@@ -295,6 +298,59 @@ export function SettingsDrawer({
                       style={[
                         styles.toggleText,
                         !liquidEffect && styles.toggleTextActive,
+                      ]}
+                    >
+                      Off
+                    </Text>
+                  </Pressable>
+                </View>
+              </View>
+              <View style={styles.divider} />
+              {/* 8.40: グラスのハイライトだけの個別 on/off (液体演出 off 中は不活性) */}
+              <View style={[styles.row, !liquidEffect && styles.rowDisabled]}>
+                <Text style={styles.rowLabel}>Glass highlights</Text>
+                <View style={styles.toggle}>
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityState={{
+                      selected: glassHighlights,
+                      disabled: !liquidEffect,
+                    }}
+                    disabled={!liquidEffect}
+                    onPress={() => setGlassHighlights(true)}
+                    style={[
+                      styles.toggleBtn,
+                      glassHighlights && styles.toggleBtnActive,
+                    ]}
+                    testID={testID ? `${testID}-glasshi-on` : undefined}
+                  >
+                    <Text
+                      style={[
+                        styles.toggleText,
+                        glassHighlights && styles.toggleTextActive,
+                      ]}
+                    >
+                      On
+                    </Text>
+                  </Pressable>
+                  <Pressable
+                    accessibilityRole="button"
+                    accessibilityState={{
+                      selected: !glassHighlights,
+                      disabled: !liquidEffect,
+                    }}
+                    disabled={!liquidEffect}
+                    onPress={() => setGlassHighlights(false)}
+                    style={[
+                      styles.toggleBtn,
+                      !glassHighlights && styles.toggleBtnActive,
+                    ]}
+                    testID={testID ? `${testID}-glasshi-off` : undefined}
+                  >
+                    <Text
+                      style={[
+                        styles.toggleText,
+                        !glassHighlights && styles.toggleTextActive,
                       ]}
                     >
                       Off
@@ -598,6 +654,10 @@ function makeStyles(c: ThemeColors) {
       justifyContent: "space-between",
       paddingHorizontal: SPACE.md,
       paddingVertical: SPACE.md - 2,
+    },
+    // 8.40: 依存元 (Liquid effect) が off の行を不活性表示
+    rowDisabled: {
+      opacity: 0.4,
     },
     rowLabel: {
       fontSize: FONT_SIZE.bodyMD,

@@ -26,7 +26,7 @@ const mockAvailable = DeviceMotion.isAvailableAsync as jest.MockedFunction<
 describe("GlassLayer — 退避 (§2.4)", () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    usePrefsStore.setState({ liquidEffect: true });
+    usePrefsStore.setState({ liquidEffect: true, glassHighlights: true });
     jest
       .spyOn(AccessibilityInfo, "isReduceMotionEnabled")
       .mockResolvedValue(false);
@@ -63,5 +63,25 @@ describe("GlassLayer — 退避 (§2.4)", () => {
     await waitFor(() => {
       expect(queryByTestId("glass-layer")).not.toBeNull();
     });
+  });
+
+  // 8.40: グラスのハイライト個別 on/off (ハイライトは唯一の RoundedRect ×2)
+  it("glassHighlights on → ハイライト (RoundedRect ×2) を描画", async () => {
+    mockAvailable.mockResolvedValue(true);
+    const { queryByTestId, queryAllByTestId } = render(<GlassLayer />);
+    await waitFor(() => {
+      expect(queryByTestId("glass-layer")).not.toBeNull();
+    });
+    expect(queryAllByTestId("skia-RoundedRect")).toHaveLength(2);
+  });
+
+  it("glassHighlights off → 液体レイヤは維持しつつハイライトだけ消える", async () => {
+    usePrefsStore.setState({ glassHighlights: false });
+    mockAvailable.mockResolvedValue(true);
+    const { queryByTestId, queryAllByTestId } = render(<GlassLayer />);
+    await waitFor(() => {
+      expect(queryByTestId("glass-layer")).not.toBeNull();
+    });
+    expect(queryAllByTestId("skia-RoundedRect")).toHaveLength(0);
   });
 });
