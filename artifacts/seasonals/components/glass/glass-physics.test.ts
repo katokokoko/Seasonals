@@ -6,6 +6,7 @@ import {
   GLASS_TUNING,
   createGlassState,
   stepGlass,
+  surfaceSlope,
   surfaceYAt,
   type GlassState,
 } from "./glass-physics";
@@ -290,6 +291,54 @@ describe("スロッシュ / メニスカス / reduce-motion", () => {
     expect(spread(true)).toBeLessThan(spread(false) * 0.5);
   });
 
+  it("8.48: 大きく左右に揺らすと液面が直線でなくなる (シーソー解消の実体)", () => {
+    const { st, rng } = fresh();
+    // 左右に大きく振る
+    let maxBow = 0;
+    for (let i = 0; i < Math.round(2.0 / DT); i++) {
+      st.targetA = Math.sin(i * DT * 5) * 0.7;
+      stepGlass(st, DT, W, H, false, 8, 8, rng);
+      // 両端を結ぶ直線と、実際の液面の中央とのズレ (= 面のたわみ)
+      const left = surfaceYAt(st, 0, W, H, false);
+      const right = surfaceYAt(st, W, W, H, false);
+      const mid = surfaceYAt(st, W / 2, W, H, false);
+      maxBow = Math.max(maxBow, Math.abs(mid - (left + right) / 2));
+    }
+    // さざ波の最大振幅 (rippleBase + rippleEnergy) を明確に超えるたわみが出る。
+    // 第 2 モードが無い実装では ~さざ波程度にしかならない
+    const ripple = GLASS_TUNING.rippleBase + GLASS_TUNING.rippleEnergy;
+    expect(maxBow).toBeGreaterThan(ripple);
+  });
+
+  it("8.48: 第 2 モードは上限内に収まり、静止すれば減衰して消える", () => {
+    const { st, rng } = fresh();
+    for (let i = 0; i < Math.round(2.0 / DT); i++) {
+      st.targetA = Math.sin(i * DT * 5) * 0.7;
+      stepGlass(st, DT, W, H, false, 8, 8, rng);
+      expect(Math.abs(st.s2)).toBeLessThanOrEqual(
+        H * GLASS_TUNING.slosh2MaxRatio + 1e-6
+      );
+    }
+    // 入力を止めて放置 → 減衰
+    st.targetA = 0;
+    step(st, rng, 4);
+    expect(Math.abs(st.s2)).toBeLessThan(0.5);
+  });
+
+  it("8.48: reduce-motion では第 2 モードが縮退する", () => {
+    const run = (reduced: boolean) => {
+      const { st, rng } = fresh();
+      let peak = 0;
+      for (let i = 0; i < Math.round(2.0 / DT); i++) {
+        st.targetA = Math.sin(i * DT * 5) * 0.7;
+        stepGlass(st, DT, W, H, reduced, 8, 8, rng);
+        peak = Math.max(peak, Math.abs(st.s2));
+      }
+      return peak;
+    };
+    expect(run(true)).toBeLessThan(run(false));
+  });
+
   it("揺り戻しの頂点で hapticSlosh が 1 回立つ (cooldown 付き)", () => {
     const { st, rng } = fresh();
     st.targetA = 0.6;
@@ -300,5 +349,36 @@ describe("スロッシュ / メニスカス / reduce-motion", () => {
     }
     expect(count).toBeGreaterThanOrEqual(1);
     expect(count).toBeLessThanOrEqual(2); // cooldown で連打しない
+  });
+});
+
+// 8.48: 大傾斜での「定規」化を抑える傾き飽和
+describe("surfaceSlope (8.48 — 大傾斜のサチュレーション)", () => {
+  it("膝以下は tan と完全に一致する (通常の傾け操作の手触りを変えない)", () => {
+    for (const a of [0, 0.1, 0.3, 0.4, 0.5]) {
+      expect(surfaceSlope(a)).toBe(Math.tan(a));
+      expect(surfaceSlope(-a)).toBe(Math.tan(-a));
+    }
+    // 膝ちょうど
+    const knee = Math.atan(GLASS_TUNING.slopeKnee);
+    expect(surfaceSlope(knee)).toBeCloseTo(GLASS_TUNING.slopeKnee, 10);
+  });
+
+  it("maxTilt では tan より明確に緩く、上限を超えない", () => {
+    const a = GLASS_TUNING.maxTilt;
+    const raw = Math.tan(a);
+    const slope = surfaceSlope(a);
+    expect(slope).toBeLessThan(raw * 0.8); // 2 割以上圧縮
+    expect(slope).toBeLessThan(GLASS_TUNING.slopeMax);
+  });
+
+  it("奇関数かつ単調増加 (反転や折り返しが起きない)", () => {
+    let prev = -Infinity;
+    for (let a = -1.2; a <= 1.2; a += 0.05) {
+      const s = surfaceSlope(a);
+      expect(s).toBeCloseTo(-surfaceSlope(-a), 10);
+      expect(s).toBeGreaterThan(prev);
+      prev = s;
+    }
   });
 });

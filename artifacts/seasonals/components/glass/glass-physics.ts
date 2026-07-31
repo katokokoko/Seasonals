@@ -39,6 +39,22 @@ export const GLASS_TUNING = {
   /** 定在波振幅の上限 (画面高比) */
   sloshMaxRatio: 0.055,
 
+  // 8.48: 第 2 モード (対称、中央が腹)。第 1 モードと傾き項はどちらも中央が
+  // 節なので、これが無いと液面は「中点を支点にした板」= シーソーにしか見えない
+  /** ω₂/ω₁。2.0 に置くと非線形結合項 (2ω₁ で振動) と共鳴し、大きく振った時だけ立つ */
+  slosh2Ratio: 2.0,
+  /** 高次ほど早く収まる (第 1 モードの 0.1 より強い減衰) */
+  slosh2Zeta: 0.16,
+  /** 第 1 モードからの非線形結合の強さ (大きいほど、揺らすと面が曲がる) */
+  slosh2Couple: 9,
+  /** 振幅上限 (画面高比)。第 1 モードより控えめに */
+  slosh2MaxRatio: 0.03,
+
+  // 8.48: 大傾斜の傾き飽和。maxTilt 55° の tan=1.43 は幅 1200px で壁際 ±857px に
+  // なり「画面を横切る定規」に見える。膝 (slopeKnee) 以下は tan のまま
+  slopeKnee: 0.6, // ≈31° まで恒等
+  slopeMax: 1.0, // これに向けて飽和
+
   // メニスカス (壁際の持ち上がり)
   meniscusLen: 24,
   meniscusBase: 14,
@@ -111,8 +127,10 @@ export interface GlassState {
   /** 8.47: 端末の揺さぶりの強さ m/s² (重力除去済み。targetA と同じく呼び手が毎フレーム書く) */
   shake: number;
   energy: number; // 揺れエネルギー (0..1)
-  s1: number; // スロッシュ定在波の振幅
+  s1: number; // スロッシュ定在波の振幅 (第 1 モード、反対称: 壁が腹・中央が節)
   s1v: number;
+  s2: number; // 8.48: 第 2 モード (対称: 壁と中央が腹)。面を曲げてシーソー感を消す
+  s2v: number;
   fizzMeter: number;
   fizzState: FizzState;
   foamEdge: number; // あふれ前線の y
@@ -174,6 +192,8 @@ export function createGlassState(
     energy: 0,
     s1: 0,
     s1v: 0,
+    s2: 0,
+    s2v: 0,
     fizzMeter: 0,
     fizzState: 0,
     foamEdge: 0,
@@ -191,8 +211,26 @@ export function createGlassState(
 }
 
 /**
- * 液面の y 座標 (画面座標)。base (傾き) + さざ波 + 定在波 + メニスカス。
- * プロトタイプの surface() と同型。
+ * 8.48: 傾き角 → 液面の傾き (dy/dx)。膝 (slopeKnee) までは `tan` そのままで、
+ * それ以上を `slopeMax` へ向けて滑らかに飽和させる。
+ *
+ * 素の `tan` だと maxTilt 55° で 1.43 になり、幅 1200px の画面では壁際が ±857px
+ * ずれて「画面を横切る定規」に見える。膝以下を恒等にしてあるので、通常の傾け操作
+ * (〜31°) の手触りは一切変わらない。
+ */
+export function surfaceSlope(angle: number): number {
+  "worklet";
+  const T = GLASS_TUNING;
+  const t = Math.tan(Math.max(-1.2, Math.min(1.2, angle)));
+  const a = Math.abs(t);
+  if (a <= T.slopeKnee) return t;
+  const span = T.slopeMax - T.slopeKnee;
+  const sat = T.slopeKnee + span * Math.tanh((a - T.slopeKnee) / span);
+  return t < 0 ? -sat : sat;
+}
+
+/**
+ * 液面の y 座標 (画面座標)。base (傾き) + さざ波 + 定在波 (1 次/2 次) + メニスカス。
  */
 export function surfaceYAt(
   st: GlassState,
@@ -203,8 +241,7 @@ export function surfaceYAt(
 ): number {
   "worklet";
   const T = GLASS_TUNING;
-  const tan = Math.tan(Math.max(-1.2, Math.min(1.2, st.angle)));
-  let y = H * T.fill + tan * (x - W / 2);
+  let y = H * T.fill + surfaceSlope(st.angle) * (x - W / 2);
   const amp = reduced
     ? T.rippleBaseReduced + st.energy * T.rippleEnergyReduced
     : T.rippleBase + st.energy * T.rippleEnergy;
@@ -212,8 +249,11 @@ export function surfaceYAt(
     amp *
     (0.6 * Math.sin(x * 0.018 + st.t * 3.1) +
       0.4 * Math.sin(x * 0.031 - st.t * 4.3));
-  // スロッシュ定在波: cos(πx/W) — 両端の壁が腹
+  // スロッシュ定在波 (1 次): cos(πx/W) — 両端の壁が腹、中央は節
   y += st.s1 * Math.cos((Math.PI * x) / W);
+  // 8.48 (2 次): cos(2πx/W) — 壁で +1・中央で −1。**中央が動く唯一の項**で、
+  // これが面を曲げてシーソー (中点を支点にした板) の見え方を壊す
+  y += st.s2 * Math.cos((2 * Math.PI * x) / W);
   // メニスカス: 液が押し付けられている側の壁を這い上がる
   const piled = st.angle > 0 ? 0 : W;
   const d = Math.abs(x - piled);
@@ -341,6 +381,32 @@ export function stepGlass(
   if (st.s1 < -s1max) {
     st.s1 = -s1max;
     st.s1v = Math.max(st.s1v, 0);
+  }
+
+  // ── 8.48: 第 2 モード (対称、中央が腹) ──
+  // 励起は 1 次モードとの非線形結合 s1*s1v のみ。この積は **2ω₁ で振動**するので、
+  // ω₂ = 2ω₁ に置くと「大きく左右に振った時だけ」共鳴して立つ (浅水スロッシングの
+  // 2:1 内部共鳴と同じ理屈)。狙いどおり、大振幅時に面が曲がりシーソー感が消える。
+  //
+  // NOTE: st.shake (8.47) は励起に使わない。|a| は常に非負なので定常力になり、
+  // 定在波を立てずに中央を静的にずらすだけで物理的に誤り (振れば結局 s1 が立ち、
+  // この結合経由で 2 次モードも立つので実害もない)。
+  const w2 = T.sloshOmega * T.slosh2Ratio;
+  const excite = reduced ? 0.35 : 1;
+  const s2acc =
+    -w2 * w2 * st.s2 -
+    2 * T.slosh2Zeta * w2 * st.s2v -
+    ((T.slosh2Couple * st.s1 * st.s1v) / H) * excite;
+  st.s2v += s2acc * dt;
+  st.s2 += st.s2v * dt;
+  const s2max = H * T.slosh2MaxRatio;
+  if (st.s2 > s2max) {
+    st.s2 = s2max;
+    st.s2v = Math.min(st.s2v, 0);
+  }
+  if (st.s2 < -s2max) {
+    st.s2 = -s2max;
+    st.s2v = Math.max(st.s2v, 0);
   }
 
   // 揺り戻しの頂点 (s1v の符号反転) で「ちゃぷん」ハプティクス (cooldown 付き)
