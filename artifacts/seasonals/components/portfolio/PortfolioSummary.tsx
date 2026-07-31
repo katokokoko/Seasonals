@@ -37,6 +37,7 @@ import {
   withAlpha,
 } from "@workspace/lib/design-system";
 import type { Position, Protocol } from "@workspace/lib/types";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import {
   useThemeColors,
@@ -95,6 +96,8 @@ export function PortfolioSummary({
 }: PortfolioSummaryProps) {
   // Phase 7.9: theme 連動 styles
   const styles = useThemedStyles(makeStyles);
+  // 8.45: edge-to-edge の下端 inset (ジェスチャーバー分)
+  const insets = useSafeAreaInsets();
 
   const sheetRef = useRef<BottomSheetMethods>(null);
   // Phase 5B.1: 3 snap points
@@ -236,7 +239,12 @@ export function PortfolioSummary({
       testID={testID}
     >
       <BottomSheetScrollView
-        contentContainerStyle={styles.body}
+        // 8.45 (edge-to-edge): 下端がジェスチャーバーの裏まで伸びるので、
+        // 最下段が潜らないよう inset を足す
+        contentContainerStyle={[
+          styles.body,
+          { paddingBottom: SPACE.xxl + insets.bottom },
+        ]}
         showsVerticalScrollIndicator={false}
       >
         {/* Top row: PORTFOLIO label + USDC↔SOL toggle */}

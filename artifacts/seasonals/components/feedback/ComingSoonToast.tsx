@@ -32,11 +32,15 @@ import {
   withAlpha,
 } from "@workspace/lib/design-system";
 
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+
 import { useComingSoon } from "../../stores/comingSoon";
 
 export function ComingSoonToast({ testID }: { testID?: string }) {
   const visible = useComingSoon((s) => s.visible);
   const message = useComingSoon((s) => s.message);
+  // 8.45: edge-to-edge の下端 inset
+  const insets = useSafeAreaInsets();
 
   // Modal を使わず常時 mount。`render` で entry/exit lifecycle を制御。
   const [render, setRender] = useState(visible);
@@ -75,7 +79,11 @@ export function ComingSoonToast({ testID }: { testID?: string }) {
   if (!render) return null;
 
   return (
-    <View pointerEvents="none" style={styles.host}>
+    // 8.45 (edge-to-edge): SafeArea 外に置かれる global トーストなので inset を自前で足す
+    <View
+      pointerEvents="none"
+      style={[styles.host, { bottom: SPACE.xl + SPACE.lg + insets.bottom }]}
+    >
       <Animated.View style={[styles.pill, anim]} testID={testID}>
         <BlurView
           intensity={40}

@@ -310,7 +310,11 @@ export default function HomeScreen() {
   const styles = useThemedStyles(makeStyles);
 
   return (
-    <SafeAreaView style={styles.safe} edges={["bottom"]}>
+    // 8.45 (edge-to-edge): edges=[] で全面表示にする。bottom padding があると
+    // GlassLayer / MelonSodaBackground (中の absoluteFill) が下端 inset 分だけ
+    // クリップされ、液面キャンバスがジェスチャーバー手前で切れてしまう。
+    // 下端 inset は各サーフェス側 (シート・トースト等) で個別に消化する
+    <SafeAreaView style={styles.safe} edges={[]}>
       {/* Phase 7.1: melon-soda gravity-aware ambient bg (touch 透過、最背面) */}
       {/* Phase 8.36: 液体演出 (off/reduce-motion 時は内部で MelonSodaBackground static へ退避) */}
       <GlassLayer />

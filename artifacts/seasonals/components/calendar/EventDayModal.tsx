@@ -54,6 +54,7 @@ import {
   useThemedStyles,
   type ThemeColors,
 } from "../../stores/theme";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 const CATEGORY_LABELS: Record<TimeEventCategory, string> = {
   [TimeEventCategory.Maturity]: "Maturity",
@@ -119,6 +120,8 @@ export function EventDayModal({
 }: EventDayModalProps) {
   // Phase 8.0: theme 連動 styles
   const styles = useThemedStyles(makeStyles);
+  // 8.45: edge-to-edge の下端 inset
+  const insets = useSafeAreaInsets();
 
   const ref = useRef<BottomSheetModalMethods>(null);
   const snapPoints = useMemo(() => ["55%", "90%"], []);
@@ -166,7 +169,14 @@ export function EventDayModal({
         </Pressable>
       </View>
 
-      <BottomSheetScrollView contentContainerStyle={styles.bodyInner}>
+      {/* 8.45 (edge-to-edge): この sheet は SafeArea 外の BottomSheetModalProvider が
+          宿主なので、下端 inset を自前で足さないとジェスチャーバーに潜る */}
+      <BottomSheetScrollView
+        contentContainerStyle={[
+          styles.bodyInner,
+          { paddingBottom: SPACE.xl + insets.bottom },
+        ]}
+      >
         {events.length === 0 ? (
           <Text style={styles.emptyText}>No protocol events</Text>
         ) : (

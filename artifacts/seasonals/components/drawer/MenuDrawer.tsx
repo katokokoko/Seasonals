@@ -81,6 +81,7 @@ import {
 } from "../../services/queries";
 // 8.44: protocol ロゴの require マップは登録漏れをテストで防ぐため別モジュールへ
 import { ICON_BY_ID, scaleOf } from "./protocol-icons";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 const SCREEN_WIDTH = Dimensions.get("window").width;
 const DRAWER_WIDTH = Math.min(360, SCREEN_WIDTH * 0.86);
@@ -489,6 +490,8 @@ export function MenuDrawer({
   earnPositions,
   testID,
 }: MenuDrawerProps) {
+  // 8.45: edge-to-edge の inset (drawer は絶対配置で SafeAreaView の padding が効かない)
+  const insets = useSafeAreaInsets();
   const translateX = useSharedValue(DRAWER_WIDTH);
   const backdropOpacity = useSharedValue(0);
 
@@ -681,7 +684,15 @@ export function MenuDrawer({
       </Pressable>
 
       <GestureDetector gesture={swipeGesture}>
-        <Animated.View style={[styles.drawer, drawerStyle]}>
+        {/* 8.45: drawer は top:0 の絶対配置。edge-to-edge でステータスバーの裏まで
+            伸びるので、固定 56 ではなく inset を基準にタイトルを逃がす */}
+        <Animated.View
+          style={[
+            styles.drawer,
+            { paddingTop: insets.top + SPACE.md, paddingBottom: insets.bottom },
+            drawerStyle,
+          ]}
+        >
           {/* 2-pane horizontal strip (Phase 6.2) */}
           <Animated.View style={[styles.pageStrip, paneStripStyle]}>
             {/* ─── Pane 0: Protocol list ─────────────────────────── */}

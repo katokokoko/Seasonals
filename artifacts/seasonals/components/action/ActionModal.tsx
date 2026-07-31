@@ -99,6 +99,7 @@ import {
   useThemedStyles,
   type ThemeColors,
 } from "../../stores/theme";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 type Phase = "review" | "approving" | "signing" | "success" | "error";
 
@@ -130,6 +131,8 @@ export function ActionModal({
 }: ActionModalProps) {
   // Phase 8.0: theme 連動 styles
   const styles = useThemedStyles(makeStyles);
+  // 8.45: edge-to-edge の下端 inset
+  const insets = useSafeAreaInsets();
 
   const [phase, setPhase] = useState<Phase>("review");
   const [signature, setSignature] = useState<string | null>(null);
@@ -719,7 +722,16 @@ export function ActionModal({
 
       {/* Sheet wrap: 画面下端に固定、sheet 自体だけ translateY で下から上昇 */}
       <View style={styles.sheetWrap} pointerEvents="box-none">
-        <Animated.View style={[styles.sheet, sheetAnimStyle]} testID={testID}>
+        {/* 8.45 (edge-to-edge): statusBarTranslucent の全画面 window なので、
+            CTA がジェスチャーバーに重ならないよう下端 inset を足す */}
+        <Animated.View
+          style={[
+            styles.sheet,
+            { paddingBottom: SPACE.xl + insets.bottom },
+            sheetAnimStyle,
+          ]}
+          testID={testID}
+        >
         <View style={styles.header}>
           <View>
             <Text style={styles.headerLabel}>Approve & Execute</Text>

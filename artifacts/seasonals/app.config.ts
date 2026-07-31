@@ -31,6 +31,23 @@ const config: ExpoConfig = {
   userInterfaceStyle: "automatic",
   newArchEnabled: false,
   icon: "./assets/images/icon.png",
+  // Phase 8.45: edge-to-edge。バーを透明にしてアプリ描画領域を画面全体へ広げる。
+  // translucent:true → styles.xml の android:statusBarColor = @android:color/transparent
+  // barStyle:"dark-content" → windowLight{Status,Navigation}Bar = true (バニラ地に暗色アイコン)
+  androidStatusBar: {
+    translucent: true,
+    barStyle: "dark-content",
+  },
+  androidNavigationBar: {
+    backgroundColor: "#00000000",
+    barStyle: "dark-content",
+  },
+  // splash 未指定だと Expo の splash プラグインが既定の #ffffff を
+  // androidStatusBar.backgroundColor に注入する (これが白帯の根)。明示して断つ
+  splash: {
+    backgroundColor: "#FFF8E7",
+    resizeMode: "contain",
+  },
   android: {
     package: isOnchain ? "app.seasonals.onchain" : "app.seasonals.mobile",
     adaptiveIcon: {
@@ -47,7 +64,14 @@ const config: ExpoConfig = {
   web: {
     favicon: "./assets/images/favicon.png",
   },
-  plugins: ["expo-router", "expo-secure-store", "expo-notifications"],
+  plugins: [
+    "expo-router",
+    "expo-secure-store",
+    "expo-notifications",
+    // Phase 8.45: prebuild が書けない edge-to-edge 設定 (contrast scrim / cutout /
+    // decorFitsSystemWindows / values-night) を再現可能にする
+    "./plugins/with-edge-to-edge",
+  ],
   experiments: {
     typedRoutes: false,
   },

@@ -10,6 +10,7 @@
     "android": "expo run:android",
     "android:onchain": "APP_VARIANT=onchain EXPO_PUBLIC_USE_ONCHAIN=true expo run:android",
     "prebuild": "expo prebuild --platform android",
+    "prebuild:onchain": "APP_VARIANT=onchain expo prebuild --platform android",
     "ios": "expo run:ios",
     "build:dev": "eas build --platform android --profile development",
     "build:preview": "eas build --platform android --profile preview",

@@ -65,6 +65,7 @@ import {
 } from "../../stores/theme";
 import { useComingSoon } from "../../stores/comingSoon";
 import { usePrefsStore } from "../../stores/prefs";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 const SCREEN_WIDTH = Dimensions.get("window").width;
 const DRAWER_WIDTH = Math.min(360, SCREEN_WIDTH * 0.85);
@@ -83,6 +84,8 @@ export function SettingsDrawer({
 }: SettingsDrawerProps) {
   // Phase 7.9: theme 連動 styles
   const styles = useThemedStyles(makeStyles);
+  // 8.45: edge-to-edge の inset (drawer は絶対配置で SafeAreaView の padding が効かない)
+  const insets = useSafeAreaInsets();
 
   const translateX = useSharedValue(-DRAWER_WIDTH);
   const backdropOpacity = useSharedValue(0);
@@ -184,7 +187,14 @@ export function SettingsDrawer({
 
       {/* Drawer */}
       <GestureDetector gesture={swipeGesture}>
-        <Animated.View style={[styles.drawer, drawerStyle]}>
+        {/* 8.45: edge-to-edge — 固定 56 ではなく inset でステータスバーを逃がす */}
+        <Animated.View
+          style={[
+            styles.drawer,
+            { paddingTop: insets.top + SPACE.md, paddingBottom: insets.bottom },
+            drawerStyle,
+          ]}
+        >
           {/* Header — Pacifico melonText */}
           <View style={styles.header}>
             <Text style={styles.title}>Settings</Text>
