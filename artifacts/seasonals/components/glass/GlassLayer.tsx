@@ -25,7 +25,6 @@ import {
   Group,
   LinearGradient,
   Path,
-  Rect,
   RoundedRect,
   Skia,
   vec,
@@ -230,14 +229,8 @@ export function GlassLayer() {
   return (
     <View pointerEvents="none" style={StyleSheet.absoluteFill} testID="glass-layer">
       <Canvas style={StyleSheet.absoluteFill}>
-        {/* 1. グラス上部 (液面より上) — ごく薄いソーダ色 */}
-        <Rect x={0} y={0} width={W} height={H}>
-          <LinearGradient
-            start={vec(0, 0)}
-            end={vec(0, H)}
-            colors={[flavor.skyTop, flavor.skyBottom]}
-          />
-        </Rect>
+        {/* 1. (8.42 撤去) グラス上部の薄緑 sky グラデ — 液面より上はアプリ本来の
+            バニラ背景をそのまま見せる (Still モードの下地と同一) */}
         {/* 2. ガラスのハイライト (静的、控えめ)。8.40: 設定で個別に消せる */}
         {glassHighlights && (
           <>

@@ -13,9 +13,6 @@ import { withAlpha } from "@workspace/lib/design-system";
 import { useActiveTheme, type ThemeBgPalette } from "../../stores/theme";
 
 export interface GlassFlavor {
-  /** グラス上部 (液面より上) のグラデ 2 stop */
-  skyTop: string;
-  skyBottom: string;
   /** 液体本体 3 stop (上→下、背後の UI がわずかに透ける alpha) */
   liquidTop: string;
   liquidMid: string;
@@ -39,9 +36,6 @@ export interface GlassFlavor {
 /** ThemeBgPalette → GlassFlavor (純関数、テスト可能) */
 export function flavorFromPalette(p: ThemeBgPalette): GlassFlavor {
   return {
-    // グラス上部はごく薄く (カレンダー可読性優先 — 液面より上はほぼ紙色)
-    skyTop: withAlpha(p.top, 0.16),
-    skyBottom: withAlpha(p.mid, 0.28),
     // 液体は下層ほど濃く・彩度高く。~0.55-0.7 alpha で背後の bgPrimary を透かす
     // (「液越しに UI が見える」ハンドオフ §6 の深度表現)
     liquidTop: withAlpha(p.mid, 0.5),

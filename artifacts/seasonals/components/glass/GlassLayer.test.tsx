@@ -67,10 +67,12 @@ describe("GlassLayer — 退避 (§2.4)", () => {
 
   it("on + reduce-motion off + センサー可 → 液体レイヤを描画", async () => {
     mockAvailable.mockResolvedValue(true);
-    const { queryByTestId } = render(<GlassLayer />);
+    const { queryByTestId, queryAllByTestId } = render(<GlassLayer />);
     await waitFor(() => {
       expect(queryByTestId("glass-layer")).not.toBeNull();
     });
+    // 8.42: 全画面 sky Rect (薄緑) は撤去済 — 液面より上はバニラ背景が透ける
+    expect(queryAllByTestId("skia-Rect")).toHaveLength(0);
   });
 
   // 8.40: グラスのハイライト個別 on/off (ハイライトは唯一の RoundedRect ×2)
