@@ -91,9 +91,6 @@ import { useWallet } from "../services/useWallet";
 import { USE_ONCHAIN } from "../services/config";
 import { mergeEarnPositions } from "../services/earn-to-position";
 
-// MVP fixed reference date (CLAUDE.md auto-memory currentDate と整合)。
-const MOCK_TODAY = new Date("2026-05-09T00:00:00.000Z");
-
 function localDayKey(day: Date): string {
   return `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, "0")}-${String(day.getDate()).padStart(2, "0")}`;
 }
@@ -419,10 +416,11 @@ export default function HomeScreen() {
       </Animated.View>
 
       {/* Bottom portfolio panel (glass + chart) */}
+      {/* 8.55: today は実時刻 (旧 MOCK_TODAY=2026-05-09 は chart 右端が 5/9 で止まっていた) */}
       <PortfolioSummary
         positions={positions}
         protocols={protocols}
-        today={MOCK_TODAY}
+        today={new Date()}
         animatedPosition={sheetPosition}
         testID="home-portfolio"
       />

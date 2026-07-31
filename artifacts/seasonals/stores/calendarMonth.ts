@@ -33,7 +33,8 @@ export function dateToYm(d: Date): YearMonth {
   return fmt(d);
 }
 
-const initialMonth = fmt(new Date("2026-05-09T00:00:00.000Z")); // MOCK_TODAY 整合
+// 8.55: 初期表示は実時刻の月 (旧 MOCK_TODAY=2026-05 固定はリアルタイム性を壊していた)
+const initialMonth = fmt(new Date());
 
 export const useCalendarMonthStore = create<CalendarMonthState>()((set) => ({
   currentMonth: initialMonth,

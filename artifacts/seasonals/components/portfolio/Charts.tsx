@@ -25,13 +25,17 @@ import {
   WEIGHT,
 } from "@workspace/lib/design-system";
 
+import type { CurrencyUnit } from "./allocation";
 import {
   chartBounds,
+  formatAxisValue,
   type PortfolioPoint,
 } from "./portfolioTimeSeries";
 
 export interface ChartsProps {
   data: PortfolioPoint[];
+  /** 8.55: y 軸ラベルの通貨単位 (USDC ↔ SOL トグルに追従、data と同じ建て) */
+  unit: CurrencyUnit;
   width: number;
   height: number;
   testID?: string;
@@ -42,22 +46,22 @@ const PADDING_RIGHT = 12;
 const PADDING_TOP = 16;
 const PADDING_BOTTOM = 28;
 
-export function Charts({ data, width, height, testID }: ChartsProps) {
+export function Charts({ data, unit, width, height, testID }: ChartsProps) {
   const { paths, yLabels, xLabels } = useMemo(() => {
     if (data.length === 0) {
       return { paths: null, yLabels: [], xLabels: [] };
     }
 
-    const { minSol, maxSol } = chartBounds(data);
+    const { minValue, maxValue } = chartBounds(data);
     const innerW = width - PADDING_LEFT - PADDING_RIGHT;
     const innerH = height - PADDING_TOP - PADDING_BOTTOM;
 
     const xOf = (idx: number) =>
       PADDING_LEFT + (idx / (data.length - 1)) * innerW;
-    const yOf = (sol: number) =>
+    const yOf = (value: number) =>
       PADDING_TOP +
       innerH -
-      ((sol - minSol) / (maxSol - minSol)) * innerH;
+      ((value - minValue) / (maxValue - minValue)) * innerH;
 
     const past: PortfolioPoint[] = [];
     const future: PortfolioPoint[] = [];
@@ -80,7 +84,7 @@ export function Charts({ data, width, height, testID }: ChartsProps) {
         .map((p, i) => {
           const idx = offset + i;
           const x = xOf(idx);
-          const y = yOf(p.sol);
+          const y = yOf(p.value);
           return `${i === 0 ? "M" : "L"} ${x.toFixed(1)} ${y.toFixed(1)}`;
         })
         .join(" ");
@@ -105,9 +109,10 @@ export function Charts({ data, width, height, testID }: ChartsProps) {
     // y 軸 label (4 段)
     const yTicks = 4;
     const yLabels = Array.from({ length: yTicks }, (_, i) => {
-      const sol = minSol + ((maxSol - minSol) * (yTicks - 1 - i)) / (yTicks - 1);
-      const y = yOf(sol);
-      return { sol, y };
+      const value =
+        minValue + ((maxValue - minValue) * (yTicks - 1 - i)) / (yTicks - 1);
+      const y = yOf(value);
+      return { value, y };
     });
 
     // x 軸 label (5-7 個間引き)
@@ -215,8 +220,9 @@ export function Charts({ data, width, height, testID }: ChartsProps) {
             { top: tick.y - 8, left: 4 },
           ]}
         >
-          {tick.sol.toFixed(2)}
-          {"\n"}SOL
+          {formatAxisValue(tick.value)}
+          {"\n"}
+          {unit}
         </Text>
       ))}
 

@@ -51,12 +51,13 @@ import { SponsoredCard } from "./SponsoredCard";
 import {
   aggregateAllocation,
   positionUsdValue,
-  positionSolValue,
   totalUsdValue,
   SOL_USD_PRICE,
   type AllocationSegment,
   type CurrencyUnit,
 } from "./allocation";
+// 8.55: holdings 行の表示モデル (純関数、単体テスト済)
+import { conversionLine, holdingView, rateLine } from "./holding-view";
 import {
   buildPortfolioTimeSeries,
   totalSolValue,
@@ -192,9 +193,10 @@ export function PortfolioSummary({
     };
   }, [positions, range, bpsByJlMint]);
 
+  // 8.55: 系列はトグル通貨建てで生成 (chart 縦軸をトグルと一致させる)
   const series: PortfolioPoint[] = useMemo(
-    () => buildPortfolioTimeSeries(positions, range, today),
-    [positions, range, today]
+    () => buildPortfolioTimeSeries(positions, range, today, currency),
+    [positions, range, today, currency]
   );
 
   // Phase 8.4.1: currency 駆動で donut value も切替
@@ -214,6 +216,19 @@ export function PortfolioSummary({
       ),
     [positions]
   );
+
+  // 8.55: 展開中の holdings 行 (position_id の Set、複数展開可)
+  const [expandedHoldings, setExpandedHoldings] = useState<Set<string>>(
+    () => new Set()
+  );
+  const toggleHolding = useCallback((positionId: string) => {
+    setExpandedHoldings((prev) => {
+      const next = new Set(prev);
+      if (next.has(positionId)) next.delete(positionId);
+      else next.add(positionId);
+      return next;
+    });
+  }, []);
 
   const screenWidth = Dimensions.get("window").width;
   const chartWidth = screenWidth - SPACE.md * 2;
@@ -347,6 +362,7 @@ export function PortfolioSummary({
         {series.length > 0 ? (
           <Charts
             data={series}
+            unit={currency}
             width={chartWidth}
             height={chartHeight}
             testID={testID ? `${testID}-chart` : undefined}
@@ -407,7 +423,9 @@ export function PortfolioSummary({
           </View>
         )}
 
-        {/* Phase 8.7: Wallet holdings — Allocation section の下に individual token list */}
+        {/* Phase 8.7 → 8.55: Wallet holdings — 行はトークンそのものの量 (ネイティブ
+            単位)。トグル通貨換算だと SOL の行に USDC が並ぶ不整合があった。
+            タップで USDC / SOL 両換算 + 固定レート注記を展開する */}
         {walletHoldings.length > 0 && (
           <View
             style={styles.section}
@@ -415,36 +433,71 @@ export function PortfolioSummary({
           >
             <Text style={styles.sectionLabel}>Wallet holdings</Text>
             <View style={styles.legend}>
-              {walletHoldings.map((h) => (
-                <View key={h.position_id} style={styles.legendRow}>
-                  <View style={styles.legendLeft}>
-                    <View
-                      style={[
-                        styles.holdingBadge,
-                        {
-                          backgroundColor:
-                            h.asset_symbol === "SOL" ||
-                            h.asset_symbol === "WSOL"
-                              ? styles.holdingBadgeSol.backgroundColor
-                              : styles.holdingBadgeStable.backgroundColor,
-                        },
-                      ]}
+              {walletHoldings.map((h) => {
+                const view = holdingView(h);
+                const expanded = expandedHoldings.has(h.position_id);
+                return (
+                  <View key={h.position_id}>
+                    <Pressable
+                      accessibilityRole={view.priced ? "button" : "none"}
+                      accessibilityState={{ expanded }}
+                      onPress={
+                        view.priced
+                          ? () => toggleHolding(h.position_id)
+                          : undefined
+                      }
+                      style={styles.legendRow}
+                      testID={
+                        testID
+                          ? `${testID}-holding-${view.symbol}`
+                          : undefined
+                      }
                     >
-                      <Text style={styles.holdingBadgeText}>
-                        {h.asset_symbol.charAt(0)}
+                      <View style={styles.legendLeft}>
+                        <View
+                          style={[
+                            styles.holdingBadge,
+                            {
+                              backgroundColor:
+                                view.symbol === "SOL"
+                                  ? styles.holdingBadgeSol.backgroundColor
+                                  : styles.holdingBadgeStable.backgroundColor,
+                            },
+                          ]}
+                        >
+                          <Text style={styles.holdingBadgeText}>
+                            {view.symbol.charAt(0)}
+                          </Text>
+                        </View>
+                        <Text style={styles.legendLabel} numberOfLines={1}>
+                          {view.symbol}
+                        </Text>
+                      </View>
+                      <Text style={styles.legendValue}>
+                        {`${view.nativeAmount} ${view.symbol}`}
+                        {view.priced ? (expanded ? "  ⌄" : "  ›") : ""}
                       </Text>
-                    </View>
-                    <Text style={styles.legendLabel} numberOfLines={1}>
-                      {h.asset_symbol === "WSOL" ? "SOL" : h.asset_symbol}
-                    </Text>
+                    </Pressable>
+                    {expanded && view.priced && (
+                      <View
+                        style={styles.holdingDetail}
+                        testID={
+                          testID
+                            ? `${testID}-holding-${view.symbol}-detail`
+                            : undefined
+                        }
+                      >
+                        <Text style={styles.holdingDetailText}>
+                          {conversionLine(view)}
+                        </Text>
+                        <Text style={styles.holdingDetailRate}>
+                          {rateLine()}
+                        </Text>
+                      </View>
+                    )}
                   </View>
-                  <Text style={styles.legendValue}>
-                    {currency === "SOL"
-                      ? `${positionSolValue(h).toFixed(4)} SOL`
-                      : `${positionUsdValue(h).toLocaleString("en-US", { maximumFractionDigits: 2, minimumFractionDigits: 2 })} USDC`}
-                  </Text>
-                </View>
-              ))}
+                );
+              })}
             </View>
           </View>
         )}
@@ -700,6 +753,23 @@ function makeStyles(c: ThemeColors) {
       fontFamily: FONT.heading,
       fontWeight: WEIGHT.bold,
       color: c.textOnColor,
+    },
+    // 8.55: holdings 行タップで出す換算の展開行 (badge 幅 + gap 分 indent)
+    holdingDetail: {
+      paddingLeft: 24 + SPACE.sm,
+      paddingTop: 2,
+      paddingBottom: SPACE.xs,
+      gap: 2,
+    },
+    holdingDetailText: {
+      fontSize: FONT_SIZE.bodySM,
+      fontFamily: FONT.body,
+      color: c.textSubtitle,
+    },
+    holdingDetailRate: {
+      fontSize: FONT_SIZE.bodySM,
+      fontFamily: FONT.body,
+      color: c.textMuted,
     },
   });
 }

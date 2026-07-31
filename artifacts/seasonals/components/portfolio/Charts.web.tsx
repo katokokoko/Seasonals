@@ -23,13 +23,17 @@ import {
 
 import { COLOR } from "@workspace/lib/design-system";
 
+import type { CurrencyUnit } from "./allocation";
 import {
   chartBounds,
+  formatAxisValue,
   type PortfolioPoint,
 } from "./portfolioTimeSeries";
 
 export interface ChartsProps {
   data: PortfolioPoint[];
+  /** 8.55: y 軸ラベルの通貨単位 (USDC ↔ SOL トグルに追従、data と同じ建て) */
+  unit: CurrencyUnit;
   width: number;
   height: number;
   testID?: string;
@@ -37,24 +41,24 @@ export interface ChartsProps {
 
 interface RechartsRow {
   date: string;
-  sol: number;
-  pastSol: number | null;
-  futureSol: number | null;
+  value: number;
+  pastValue: number | null;
+  futureValue: number | null;
 }
 
-export function Charts({ data, width, height, testID }: ChartsProps) {
+export function Charts({ data, unit, width, height, testID }: ChartsProps) {
   const { rows, todayLabel, bounds } = useMemo(() => {
     const todayIndex = data.findIndex((p) => p.isFuture) - 1;
     const pivot = todayIndex >= 0 ? data[todayIndex] : null;
 
     const rows: RechartsRow[] = data.map((p) => ({
       date: format(p.date, "M/d"),
-      sol: p.sol,
-      pastSol: p.isFuture ? null : p.sol,
-      futureSol: p.isFuture
-        ? p.sol
+      value: p.value,
+      pastValue: p.isFuture ? null : p.value,
+      futureValue: p.isFuture
+        ? p.value
         : pivot && p === pivot
-          ? p.sol // pivot は past / future 両方に乗せて line を連続させる
+          ? p.value // pivot は past / future 両方に乗せて line を連続させる
           : null,
     }));
     return {
@@ -80,10 +84,10 @@ export function Charts({ data, width, height, testID }: ChartsProps) {
           />
           <YAxis
             stroke={COLOR.textMuted}
-            domain={[bounds.minSol, bounds.maxSol]}
+            domain={[bounds.minValue, bounds.maxValue]}
             tick={{ fontSize: 9 }}
-            tickFormatter={(v: number) => `${v.toFixed(2)}`}
-            width={42}
+            tickFormatter={(v: number) => `${formatAxisValue(v)} ${unit}`}
+            width={54}
           />
           {todayLabel && (
             <ReferenceLine
@@ -94,7 +98,7 @@ export function Charts({ data, width, height, testID }: ChartsProps) {
           )}
           <Line
             type="monotone"
-            dataKey="pastSol"
+            dataKey="pastValue"
             stroke={COLOR.sodaText}
             strokeWidth={3.5}
             dot={false}
@@ -103,7 +107,7 @@ export function Charts({ data, width, height, testID }: ChartsProps) {
           />
           <Line
             type="monotone"
-            dataKey="futureSol"
+            dataKey="futureValue"
             stroke={COLOR.melonText}
             strokeWidth={3.5}
             strokeDasharray="6 4"
