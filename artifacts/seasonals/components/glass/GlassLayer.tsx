@@ -80,7 +80,7 @@ export function GlassLayer() {
   const reduced = useReduceMotion();
   // 8.46: センサーは UI スレッド直結 (TiltSensorBridge)。senseActive の間だけ
   // mount してフォーカス外 / background で購読を止める
-  const { roll, available, senseActive, reportAvailable } = useTiltRoll(
+  const { roll, shake, available, senseActive, reportAvailable } = useTiltRoll(
     liquidEnabled && !reduced
   );
   const flavor = useGlassFlavor();
@@ -118,6 +118,7 @@ export function GlassLayer() {
     const st = state.value;
 
     st.targetA = roll.value;
+    st.shake = shake.value; // 8.47: 端末の揺さぶり → 泡あふれメーターの 2 系統目
     stepGlass(st, dt, W, H, false);
 
     if (st.hapticSlosh) runOnJS(fireSloshHaptic)();
@@ -228,7 +229,11 @@ export function GlassLayer() {
   // 8.46: センサー購読 (null render)。退避分岐より前に置き、available 未判定の
   // うちから登録を進める。senseActive=false なら mount されない = 購読停止
   const bridge = senseActive ? (
-    <TiltSensorBridge roll={roll} onAvailable={reportAvailable} />
+    <TiltSensorBridge
+      roll={roll}
+      shake={shake}
+      onAvailable={reportAvailable}
+    />
   ) : null;
 
   // 退避 (8.41): none = 背景装飾を一切描かない (うす緑も出さない)。

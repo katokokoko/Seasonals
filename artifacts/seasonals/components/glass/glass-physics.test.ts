@@ -130,6 +130,80 @@ describe("振りメーター (§2.3-1)", () => {
   });
 });
 
+// 8.47: 端末を振る (並進加速度) でも同じあふれが発動する。
+// st.shake は重力除去済みの |a| (m/s²) で、呼び手が毎フレーム書く外部入力
+describe("揺さぶりメーター (8.47 — 端末を振る)", () => {
+  /** shake を維持したまま n 秒進める (回転入力は与えない) */
+  function shakeFor(
+    st: GlassState,
+    rng: () => number,
+    mag: number,
+    seconds: number,
+    reduced = false
+  ) {
+    const n = Math.round(seconds / DT);
+    for (let i = 0; i < n; i++) {
+      st.shake = mag;
+      stepGlass(st, DT, W, H, reduced, 8, 8, rng);
+    }
+  }
+
+  it("閾値未満の揺れでは蓄積しない (歩行・手ブレで誤爆しない)", () => {
+    const { st, rng } = fresh();
+    shakeFor(st, rng, GLASS_TUNING.shakeThreshold * 0.9, 2);
+    expect(st.fizzMeter).toBe(0);
+    expect(st.fizzState).toBe(0);
+  });
+
+  it("強く振ると回転させなくてもあふれが発動する", () => {
+    const { st, rng } = fresh();
+    shakeFor(st, rng, 20, 1.5);
+    expect(st.fizzState).not.toBe(0);
+    // 液面は動かしていない = 揺さぶり単独で発動したことの確認
+    expect(Math.abs(st.angle)).toBeLessThan(0.01);
+  });
+
+  it("発動時は haptic フラグが立つ", () => {
+    const { st, rng } = fresh();
+    let sawHaptic = false;
+    const n = Math.round(1.5 / DT);
+    for (let i = 0; i < n; i++) {
+      st.shake = 20;
+      stepGlass(st, DT, W, H, false, 8, 8, rng);
+      if (st.hapticFizz) sawHaptic = true;
+    }
+    expect(sawHaptic).toBe(true);
+  });
+
+  it("reduce-motion 中は強く振っても発動しない (§2.4)", () => {
+    const { st, rng } = fresh();
+    shakeFor(st, rng, 20, 2, true);
+    expect(st.fizzMeter).toBe(0);
+    expect(st.fizzState).toBe(0);
+  });
+
+  it("cooldown 中は強く振っても蓄積しない (§2.3-4 連続発動防止)", () => {
+    const { st, rng } = fresh();
+    st.fizzCooldown = 1;
+    st.shake = 20;
+    stepGlass(st, DT, W, H, false, 8, 8, rng);
+    expect(st.fizzMeter).toBe(0);
+  });
+
+  it("shake 未設定なら従来どおり (回転由来の蓄積に影響しない)", () => {
+    const { st: a, rng: rngA } = fresh();
+    a.av = 5;
+    stepGlass(a, DT, W, H, false, 8, 8, rngA);
+
+    const { st: b, rng: rngB } = fresh();
+    b.av = 5;
+    b.shake = 0;
+    stepGlass(b, DT, W, H, false, 8, 8, rngB);
+
+    expect(b.fizzMeter).toBe(a.fizzMeter);
+  });
+});
+
 describe("あふれ状態機械 (§2.3-2/3/4)", () => {
   function trigger(st: GlassState, rng: () => number) {
     st.fizzMeter = 1;

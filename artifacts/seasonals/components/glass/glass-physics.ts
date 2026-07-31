@@ -63,6 +63,11 @@ export const GLASS_TUNING = {
   meterThreshold: 1.1, // rad/s
   meterGain: 0.9,
   meterDecay: 0.45,
+  // 8.47: 端末を振る (並進の揺さぶり) 由来の入力。単位 m/s²、重力除去済みの
+  // linear acceleration なので静止時 ~0。意図的な振りは 15+ が出る一方、
+  // 歩行や手ブレは 10 未満に収まるため、その間に閾値を置く
+  shakeThreshold: 9,
+  shakeGain: 0.45,
   /** 前兆泡が出始めるメーター値 */
   meterForeshadow: 0.35,
 
@@ -103,6 +108,8 @@ export interface GlassState {
   angle: number; // 液面角度 (ばね追従)
   av: number; // 角速度
   targetA: number; // 目標角度 (センサー由来、呼び手が書く)
+  /** 8.47: 端末の揺さぶりの強さ m/s² (重力除去済み。targetA と同じく呼び手が毎フレーム書く) */
+  shake: number;
   energy: number; // 揺れエネルギー (0..1)
   s1: number; // スロッシュ定在波の振幅
   s1v: number;
@@ -163,6 +170,7 @@ export function createGlassState(
     angle: 0,
     av: 0,
     targetA: 0,
+    shake: 0,
     energy: 0,
     s1: 0,
     s1v: 0,
@@ -259,8 +267,14 @@ export function stepGlass(
     st.fizzCooldown = Math.max(0, st.fizzCooldown - dt);
     st.fizzMeter = Math.max(0, st.fizzMeter - dt * T.meterDecay);
     if (st.fizzCooldown === 0 && !reduced) {
-      st.fizzMeter +=
-        Math.max(0, Math.abs(st.av) - T.meterThreshold) * dt * T.meterGain;
+      // 8.47: 2 系統の入力を同じメーターに合流させる。
+      //   swing = 液面を波打たせる (端末の回転由来の角速度 rad/s)
+      //   shake = 端末を振る (重力除去済みの並進加速度 m/s²)
+      // st.shake の既定は 0 なので、shake を書かない呼び手の挙動は従来と同一
+      const swing =
+        Math.max(0, Math.abs(st.av) - T.meterThreshold) * T.meterGain;
+      const shake = Math.max(0, st.shake - T.shakeThreshold) * T.shakeGain;
+      st.fizzMeter += (swing + shake) * dt;
     }
     // 前兆: メーターが上がるほど泡が増える (§2.3-1)
     if (

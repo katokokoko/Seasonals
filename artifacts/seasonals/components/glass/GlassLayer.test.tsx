@@ -30,6 +30,7 @@ let mockSensorAvailable = true;
 jest.mock("./useTiltRoll", () => ({
   useTiltRoll: (enabled: boolean) => ({
     roll: { value: 0 },
+    shake: { value: 0 },
     available: enabled ? mockSensorAvailable : null,
     senseActive: enabled,
     reportAvailable: () => undefined,

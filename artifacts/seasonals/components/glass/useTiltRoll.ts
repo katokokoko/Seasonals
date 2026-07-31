@@ -40,6 +40,11 @@ export interface TiltRoll {
   /** 目標傾き (rad、±maxTilt clamp 済)。物理側の targetA に毎フレーム読ませる */
   roll: SharedValue<number>;
   /**
+   * 8.47: 端末の揺さぶりの強さ |a| (m/s²、重力除去済みなので静止時 ~0)。
+   * 物理側の shake に毎フレーム読ませる (泡あふれメーターの 2 系統目の入力)
+   */
+  shake: SharedValue<number>;
+  /**
    * null = 未判定 (センサー登録待ち) / false = 利用不可。
    * 呼び手は true になるまで静的退避を出す (未判定中に液体を一瞬出さない — F3)
    */
@@ -56,12 +61,19 @@ export interface TiltRoll {
  */
 export function TiltSensorBridge({
   roll,
+  shake,
   onAvailable,
 }: {
   roll: SharedValue<number>;
+  shake: SharedValue<number>;
   onAvailable: (ok: boolean) => void;
 }): null {
   const rotation = useAnimatedSensor(SensorType.ROTATION, {
+    interval: SENSOR_INTERVAL_MS,
+  });
+  // 8.47: 2 本目。reanimated の ACCELEROMETER は Android の
+  // TYPE_LINEAR_ACCELERATION にマップされる = **重力除去済み** (静止時 ~0)
+  const accel = useAnimatedSensor(SensorType.ACCELEROMETER, {
     interval: SENSOR_INTERVAL_MS,
   });
 
@@ -93,11 +105,20 @@ export function TiltSensorBridge({
     );
   });
 
+  // 8.47: 揺さぶりの強さ = 並進加速度の大きさ。向きは問わないので |a| だけ見る
+  // (portrait 固定 + 大きさは軸入替で不変なので interface orientation は無関係)
+  const accelSV = accel.sensor;
+  useDerivedValue(() => {
+    const a = accelSV.value;
+    shake.value = Math.sqrt(a.x * a.x + a.y * a.y + a.z * a.z);
+  });
+
   return null;
 }
 
 export function useTiltRoll(enabled: boolean): TiltRoll {
   const roll = useSharedValue(0);
+  const shake = useSharedValue(0);
   const [available, setAvailable] = useState<boolean | null>(null);
   const [focused, setFocused] = useState(false);
   const [foreground, setForeground] = useState(true);
@@ -122,6 +143,7 @@ export function useTiltRoll(enabled: boolean): TiltRoll {
 
   return {
     roll,
+    shake,
     available,
     senseActive: enabled && focused && foreground,
     reportAvailable,
