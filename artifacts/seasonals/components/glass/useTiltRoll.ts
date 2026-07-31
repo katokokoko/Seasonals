@@ -65,16 +65,28 @@ export function TiltSensorBridge({
     interval: SENSOR_INTERVAL_MS,
   });
 
-  // isAvailable は ref 変異 (再レンダーを起こさない) だが、useAnimatedSensor の
-  // effect → 本 effect の順で実行されるため、mount 後にはここで登録結果が読める
+  // 罠 (8.46 で実機実測): useAnimatedSensor は**登録 effect の中で ref.current を
+  // sensor sharedValue ごと作り直す** (useAnimatedSensor.ts: effect 内で
+  // `ref.current = { sensor: initializeSensor(...), ... }`)。初回 render で返る
+  // オブジェクトは登録前の殻で、isAvailable は false のまま・sensor も実データが
+  // 届かない方を掴んでいる。そこで mount 直後に 1 回 re-render し、登録後の実体
+  // (新しい ref.current) を読み直す。
+  const [ready, setReady] = useState(false);
   useEffect(() => {
-    onAvailable(rotation.isAvailable);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    setReady(true);
   }, []);
 
-  // UI スレッド: センサー更新のたびに目標角へマッピング (JS 経由ゼロ)
+  useEffect(() => {
+    if (ready) onAvailable(rotation.isAvailable);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ready]);
+
+  // sensor sharedValue を**直接ローカルに掴む** — useDerivedValue の依存とマッパー
+  // 入力は worklet closure から抽出されるため、re-render 後の実体 (S2) を closure に
+  // 直接入れることで、マッパーが正しい sharedValue に付き直る
+  const sensorSV = rotation.sensor;
   useDerivedValue(() => {
-    const raw = -rotation.sensor.value.roll; // 旧 -gamma と同一の向き
+    const raw = -sensorSV.value.roll; // 旧 -gamma と同一の向き
     roll.value = Math.max(
       -GLASS_TUNING.maxTilt,
       Math.min(GLASS_TUNING.maxTilt, raw)
