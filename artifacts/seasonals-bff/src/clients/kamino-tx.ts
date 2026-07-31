@@ -18,7 +18,8 @@
  */
 
 import { fetchWithTimeout } from "./http"; // Phase 8.38 (B9): 共通 timeout
-import { simulateUnsignedTx } from "./helius-rpc"; // 8.51: 署名前の tx 検証
+// 8.51: 署名前の tx 検証 / 8.52: mainnet RPC の URL 組み立ては helius-rpc に集約
+import { buildUrl as heliusMainnetUrl, simulateUnsignedTx } from "./helius-rpc";
 const KAMINO_BASE = "https://api.kamino.finance";
 
 /** reserves/metrics の 1 reserve 分 (raw)。APY 系は fraction string。 */
@@ -91,9 +92,24 @@ async function kaminoTx(
   if (!json.transaction) {
     throw new Error(`Kamino ${action} tx: empty transaction in response`);
   }
-  // 8.51: 上流が「組めるが必ず失敗する tx」を返すことがあるので、署名前に検証する
-  await assertKlendTxWillSucceed(json.transaction, action, body.reserve);
+  // 8.51: 上流が「組めるが必ず失敗する tx」を返すことがあるので、署名前に検証する。
+  // 8.52: **deposit のみ**。withdraw を対象外にする理由は下の doc を参照
+  if (action === "deposit") {
+    await assertKlendTxWillSucceed(json.transaction, action, body.reserve);
+  }
   return { transaction: json.transaction };
+}
+
+/**
+ * 8.52: 「組めるが確実に失敗すると分かった tx」。上流が壊れた (HTTP エラー / 空
+ * 応答) 場合と区別するために型を分ける — 呼び手はこれを **409** に、それ以外を
+ * 502 にマップする (前者はユーザーに提示可能な理由がある)。
+ */
+export class KaminoDoomedTxError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "KaminoDoomedTxError";
+  }
 }
 
 /**
@@ -113,6 +129,12 @@ async function kaminoTx(
  * 見るので、誤ルーティングも上限超過も停止中リザーブも一様に捕まえられる。
  *
  * RPC 障害時は fail-open (通す) — ここで止めると外部要因で機能全体が死ぬため。
+ *
+ * **deposit 限定である理由 (8.52)**: withdraw = ユーザーの出口を、外部 RPC の
+ * 判定に依存させない。simulate は fee payer に SOL が無いだけでも落ちるので、
+ * 「手数料が足りない」が「would fail on-chain」に化けて **引き出しを塞ぐ** 誤検知に
+ * なる。守っている誤ルーティングも deposit limit 由来の現象で、withdraw では
+ * 再現しない (実測: 同じ reserve で withdraw は正常にルーティングされる)。
  */
 async function assertKlendTxWillSucceed(
   base64Tx: string,
@@ -122,7 +144,7 @@ async function assertKlendTxWillSucceed(
   const sim = await simulateUnsignedTx(base64Tx).catch(() => ({ ok: true }));
   if (sim.ok) return;
   const detail = "reason" in sim && sim.reason ? `: ${sim.reason}` : "";
-  throw new Error(
+  throw new KaminoDoomedTxError(
     `Kamino ${action} tx would fail on-chain (reserve ${reserve})${detail}`
   );
 }
@@ -297,33 +319,61 @@ export interface KaminoDepositCap {
  *   borrow_limit  = offset 5024 (連続、参考)
  *
  * USDC / SOL / JLP の 3 リザーブすべてで Kamino API の `reserveDepositLimit` と
- * 一致することを実測で確認済 (kamino-tx.test.ts で固定)。レイアウトが変われば
- * テストが落ちる。
+ * 一致することを実測で確認済 (2026-08-01: 1.0B / 10M / 0)。
+ *
+ * **レイアウト drift への備え (8.52)**: 凍結した fixture では上流の構造体変更を
+ * 検知できないので、二段構えにする:
+ *   1. ここでは **口座サイズ完全一致** (8624B) を要求し、違えばその reserve を
+ *      skip する = ゴミ値を読むより「上限不明」に倒す
+ *   2. 実測での検知は `scripts/verify-tx-routes.mjs` の drift check が担う
+ *      (mainnet の 3 reserve を実際に読んでサイズと値を確認する)
+ * 単体テスト (`kamino-tx.test.ts`) が固定するのは **デコーダの挙動** であって
+ * 上流のレイアウトではない。
  *
  * `getMultipleAccounts` 1 回で全リザーブ分を取得する。取得失敗時は空配列
- * (呼び手は「上限不明」として扱い、既存挙動を壊さない)。
+ * (呼び手は「上限不明」として扱い、既存挙動を壊さない)。上限はまず動かない値
+ * なので 60 秒 memoize し、menu と deposit 経路で往復を共有する。
  */
 const DEPOSIT_LIMIT_OFFSET = 5016;
+/** K-Lend の Reserve 口座サイズ。これ以外はレイアウトが変わったとみなす */
+const KLEND_RESERVE_SIZE = 8624;
+const CAP_TTL_MS = 60_000;
+
+const capCache = new Map<string, { at: number; cap: KaminoDepositCap }>();
 
 export async function fetchKaminoDepositCaps(
   reserves: string[]
 ): Promise<KaminoDepositCap[]> {
   if (reserves.length === 0) return [];
+  const now = Date.now();
+  const cached: KaminoDepositCap[] = [];
+  const missing: string[] = [];
+  for (const reserve of reserves) {
+    const hit = capCache.get(reserve);
+    if (hit && now - hit.at < CAP_TTL_MS) cached.push(hit.cap);
+    else missing.push(reserve);
+  }
+  if (missing.length === 0) return cached;
+  const fresh = await fetchDepositCapsUncached(missing);
+  for (const cap of fresh) capCache.set(cap.reserve, { at: now, cap });
+  return [...cached, ...fresh];
+}
+
+async function fetchDepositCapsUncached(
+  reserves: string[]
+): Promise<KaminoDepositCap[]> {
   const apiKey = process.env.HELIUS_API_KEY;
   if (!apiKey) return [];
-  const res = await fetchWithTimeout(
-    `https://mainnet.helius-rpc.com/?api-key=${apiKey}`,
-    {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        jsonrpc: "2.0",
-        id: "seasonals-kamino-caps",
-        method: "getMultipleAccounts",
-        params: [reserves, { encoding: "base64" }],
-      }),
-    }
-  ).catch(() => null);
+  const res = await fetchWithTimeout(heliusMainnetUrl(), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: "seasonals-kamino-caps",
+      method: "getMultipleAccounts",
+      params: [reserves, { encoding: "base64" }],
+    }),
+  }).catch(() => null);
   if (!res || !res.ok) return [];
   const json = (await res.json().catch(() => null)) as {
     result?: { value?: ({ data?: [string, string] } | null)[] };
@@ -335,7 +385,8 @@ export async function fetchKaminoDepositCaps(
     const reserve = reserves[i];
     if (!reserve || !v?.data?.[0]) return;
     const buf = Buffer.from(v.data[0], "base64");
-    if (buf.length < DEPOSIT_LIMIT_OFFSET + 8) return;
+    // サイズが違う = レイアウトが変わった。ゴミ値を読むより「上限不明」に倒す
+    if (buf.length !== KLEND_RESERVE_SIZE) return;
     out.push({ reserve, limit: buf.readBigUInt64LE(DEPOSIT_LIMIT_OFFSET) });
   });
   return out;

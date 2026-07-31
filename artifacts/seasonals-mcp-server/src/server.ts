@@ -116,6 +116,9 @@ export function buildMcpServer(
             // 無いため候補から除外 (fail-closed — stub simulate が「実行可能」に見える
             // 事故を防ぐ)。PT の maturity 情報は calendar resource 経由で agent に届く
             .filter((p) => !p.display_only)
+            // Phase 8.52: 預入停止中 / 上流都合で預入不能な pool も候補から外す
+            // (BFF は execute を 409 で止めるが、Agent に無駄な plan を作らせない)
+            .filter((p) => p.deposit_open !== false)
             .filter((p) => (p.deposit_asset ?? p.asset) === asset)
             .filter((p) =>
               constraints?.min_tvl !== undefined

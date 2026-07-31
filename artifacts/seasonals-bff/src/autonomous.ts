@@ -364,6 +364,9 @@ export async function runAutonomousCycle(
       // Phase 8.33: read-only listing (Exponent PT 等) は実行経路が無い —
       // 自律候補から fail-closed で除外 (§32.2 policy-aware execution)
       if (pool.display_only) continue;
+      // Phase 8.52: 預入停止中 / 上流都合で預入不能な pool も同様に除外
+      // (execute は 409 で止まるが、実行できない候補で plan を作らせない)
+      if (pool.deposit_open === false) continue;
       const asset = pool.deposit_asset ?? pool.asset;
       if (opts.asset && asset !== opts.asset) continue;
       candidates.push({ entry, pool, c: toCandidate(entry, pool, policy.max_tx_amount) });

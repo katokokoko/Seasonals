@@ -13,7 +13,11 @@
 import { fetchWithTimeout } from "./http"; // Phase 8.38 (B9): 共通 timeout
 const HELIUS_MAINNET_URL = "https://mainnet.helius-rpc.com";
 
-function buildUrl(): string {
+/**
+ * Helius mainnet の RPC URL。8.52: kamino-tx.ts も同じ口を使うので export し、
+ * key/URL の組み立てを 1 箇所に集約する (二重管理で片方だけ直る事故を防ぐ)。
+ */
+export function buildUrl(): string {
   const apiKey = process.env.HELIUS_API_KEY;
   if (!apiKey) {
     throw new Error("HELIUS_API_KEY is not set");
@@ -288,9 +292,12 @@ export async function simulateUnsignedTx(
   const value = json.result.value;
   if (!value.err) return { ok: true };
   const logs = value.logs ?? [];
-  // 人間が読める失敗理由 (program の説明ログ or Anchor のエラー行)
+  // 人間が読める失敗理由 (program の説明ログ or Anchor のエラー行)。
+  // 8.52: compute budget 系のログは "limit" を含むが失敗理由ではないので除外する
+  const isNoise = (l: string) =>
+    /compute unit|ComputeBudget|consumed \d+ of \d+/i.test(l);
   const reason =
-    logs.find((l) => /Cannot |limit|exceed|insufficient/i.test(l)) ??
+    logs.find((l) => !isNoise(l) && /Cannot |limit|exceed|insufficient/i.test(l)) ??
     logs.find((l) => /Error Code:/.test(l));
   return {
     ok: false,

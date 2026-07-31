@@ -28,6 +28,14 @@ export interface KaminoMarket {
   reserve: string;
   /** 参考 supply APY (実値は /protocols/kamino/reserves が上書き) */
   supply_apy_hint?: number;
+  /**
+   * Phase 8.52: **上流の都合で deposit が必ず失敗する** market に付ける理由。
+   * 預入上限 (on-chain の `deposit_limit`) とは独立した軸で、枠に空きがあっても
+   * 塞ぐ。設定すると BFF が `deposit_open=false` を配り、menu の CTA が落ち、
+   * deposit-tx は上流を叩く前に 409 を返す (fail-closed、§32.2)。
+   * withdraw には影響しない (出口は塞がない)。
+   */
+  deposit_blocked_reason?: string;
 }
 
 const USDC = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
@@ -44,6 +52,16 @@ export const KAMINO_MARKETS: KaminoMarket[] = [
     market: KAMINO_MAIN_MARKET,
     reserve: "D6q6wuQSrifJKZYpR1M8R4YawnLDtDsMmWM1NbBmgJ59",
     supply_apy_hint: 4.46,
+    // Phase 8.52: 上流の誤ルーティング。main market には USDC reserve が 4 本あり、
+    // `/ktx/klend/deposit` は body の `reserve` を必須にしながら**値を尊重しない**。
+    // この D6q6… (上限 1.00B / 使用 11%) を要求しても、返る tx は常に 5xXxt9uV…
+    // (status Hidden / 上限 0) を対象にするため program が DepositLimitExceeded を
+    // 投げる。枠には空きがあるので上限ガードでは捕まらない → ここで明示的に塞ぐ。
+    // 解除条件: 上流が `reserve` を尊重する / USDC reserve が 1 本に統合される。
+    // 判定方法は scripts/verify-tx-routes.mjs の "kamino dep USDC" (simulate)。
+    // withdraw は正常に動くので塞がない (§32.2 出口は塞がない)。
+    deposit_blocked_reason:
+      "Kamino is routing USDC deposits to a closed reserve (upstream issue)",
   },
   // SOL main reserve (TVL ~$203M、supplyApy ~8.6%、oracle: SOL)
   {

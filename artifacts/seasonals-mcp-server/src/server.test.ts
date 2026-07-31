@@ -191,6 +191,46 @@ describe("Seasonals MCP server", () => {
     expect(out.ranked_candidates[0]!.market_id).toBe("savefi_usdc_main");
   });
 
+  it("compare: deposit_open=false の pool (8.52 満杯/停止中) も候補から除外", async () => {
+    const menuWithClosed = [
+      ...MENU,
+      {
+        protocol_id: "exponent",
+        display_name: "Exponent",
+        primary_category: "pt_yt",
+        supported_assets: ["USDC"],
+        icon_id: "exponent",
+        icon_bg: "#000",
+        pools: [
+          {
+            pool_id: "exponent_closed_usdc",
+            name: "USDC (deposits closed)",
+            category: "lending",
+            asset: "USDC",
+            apy: 0.99, // 全 pool 中最高だが預入不能
+            tvl_usd: 9_000_000_000,
+            deposit_open: false,
+          },
+        ],
+      },
+    ];
+    const { client } = await connect(
+      fakeBff({
+        "/menu-listings": () => menuWithClosed,
+        "/agent-plans": () => ({ plan_id: "p3b" }),
+      })
+    );
+    const res = await client.callTool({
+      name: "compare_opportunities",
+      arguments: { objective: "max_yield", asset: "USDC" },
+    });
+    const out = textOf(res) as { ranked_candidates: { market_id: string }[] };
+    expect(
+      out.ranked_candidates.some((c) => c.market_id === "exponent_closed_usdc")
+    ).toBe(false);
+    expect(out.ranked_candidates[0]!.market_id).toBe("savefi_usdc_main");
+  });
+
   it("simulate_action: BFF へ透過し bundle_hash を返す / 不正 amount は zod 拒否", async () => {
     const { client } = await connect(
       fakeBff({

@@ -110,6 +110,8 @@ const EXP_MKT_B: ExponentFullMarket = {
 };
 
 const KAMINO_USDC = KAMINO_MARKETS.find((m) => m.pool_id === "kamino_usdc_main")!;
+// 8.52: USDC は registry で預入を塞いでいるので、「開いている pool」の確認は SOL で行う
+const KAMINO_SOL = KAMINO_MARKETS.find((m) => m.pool_id === "kamino_sol_main")!;
 const KVAULT = KAMINO_VAULTS[0]!;
 const SAVE_USDC = SAVE_MARKETS.find((m) => m.pool_id === "savefi_usdc_main")!;
 const ORCA_USDC_USDT = ORCA_MARKETS.find(
@@ -152,6 +154,7 @@ beforeEach(async () => {
   // 上限 200 USDC / 供給 1 USDC (fixture の totalSupply "1" に対応)
   mockCaps.mockResolvedValue([
     { reserve: KAMINO_USDC.reserve, limit: 200_000_000n },
+    { reserve: KAMINO_SOL.reserve, limit: 100_000_000_000n }, // 100 SOL (9 dec)
   ]);
   mockKamino.mockResolvedValue([
     {
@@ -164,6 +167,17 @@ beforeEach(async () => {
       totalBorrow: "1",
       totalSupplyUsd: "12345678.9",
       totalBorrowUsd: "1000000",
+    },
+    {
+      reserve: KAMINO_SOL.reserve,
+      liquidityToken: "SOL",
+      liquidityTokenMint: KAMINO_SOL.underlying_mint,
+      supplyApy: "0.086",
+      borrowApy: "0.11",
+      totalSupply: "2",
+      totalBorrow: "1",
+      totalSupplyUsd: "400",
+      totalBorrowUsd: "200",
     },
   ]);
   mockKvault.mockResolvedValue({
@@ -287,11 +301,29 @@ describe("GET /menu-listings — live overlay", () => {
     const usdc = pool(menu, "kamino", "kamino_usdc_main");
     expect(usdc.deposit_cap).toBe("200000000"); // 200 USDC (smallest)
     expect(usdc.deposit_used).toBe("1000000"); // totalSupply "1" USDC
-    expect(usdc.deposit_open).toBe(true);
+    // 8.52: USDC は registry で塞がれているので open は別 market (SOL) で見る
+    expect(pool(menu, "kamino", "kamino_sol_main").deposit_open).toBe(true);
     // 枠を取れなかった pool は undefined のまま (他 protocol も同様)
     const vault = pool(menu, "kamino", KVAULT.pool_id);
     expect(vault.deposit_cap).toBeUndefined();
     expect(pool(menu, "jupiter", "jupiter_usdc_main").deposit_cap).toBeUndefined();
+  });
+
+  it("8.52: deposit_blocked_reason 付き market は枠に空きがあっても deposit_open=false", async () => {
+    // USDC は上流の誤ルーティングで必ず失敗する。枠 (200 / 1 USDC) は空いている
+    const menu = await getMenu();
+    const usdc = pool(menu, "kamino", "kamino_usdc_main");
+    expect(KAMINO_USDC.deposit_blocked_reason).toBeTruthy(); // registry が真実の源
+    expect(usdc.deposit_cap).toBe("200000000"); // 枠情報自体は出す
+    expect(usdc.deposit_open).toBe(false);
+  });
+
+  it("8.52: 枠が取れない日でも deposit_blocked_reason は効く (cap と独立)", async () => {
+    mockCaps.mockResolvedValue([]);
+    const menu = await getMenu();
+    const usdc = pool(menu, "kamino", "kamino_usdc_main");
+    expect(usdc.deposit_cap).toBeUndefined();
+    expect(usdc.deposit_open).toBe(false);
   });
 
   it("8.51: 上限 0 (預入停止中) は deposit_open=false", async () => {

@@ -101,6 +101,7 @@ import {
   type KaminoVault,
 } from "@workspace/lib/config/kamino-markets";
 import {
+  KaminoDoomedTxError,
   fetchKaminoDepositCaps,
   fetchKaminoDepositTx,
   fetchKaminoObligationPnl,
@@ -737,6 +738,16 @@ async function buildKaminoTx(
     reply.code(400);
     return { error: "invalid_amount", amount: p.amount };
   }
+  // 8.52: 上流の都合で必ず失敗する market は、上流も RPC も叩かずに即 409。
+  // 上限とは独立した軸なので、枠に空きがあっても塞ぐ (registry が真実の源)
+  if (p.action === "deposit" && mkt.deposit_blocked_reason) {
+    reply.code(409);
+    return {
+      error: "deposit_unavailable",
+      message: mkt.deposit_blocked_reason,
+      reserve: p.reserve,
+    };
+  }
   // 8.51: 預入停止中のリザーブは tx を組む前に弾く (fail-closed、§32.2)。
   // 上流の tx builder は停止中でも tx を返してしまい、program まで行って
   // DepositLimitExceeded になる = ユーザーは署名後に失敗を知ることになる
@@ -783,6 +794,12 @@ async function buildKaminoTx(
       { err: (err as Error).message, reserve: p.reserve, action: p.action },
       "kamino tx build failed"
     );
+    // 8.52: 「確実に失敗すると分かった tx」は上流障害ではない。ユーザーに提示
+    // できる理由があるので 409 (§32.2 fail-closed、署名前に止める)
+    if (err instanceof KaminoDoomedTxError) {
+      reply.code(409);
+      return { error: "deposit_would_fail", message: (err as Error).message };
+    }
     reply.code(502);
     return { error: "kamino_tx_failed", message: (err as Error).message };
   }
@@ -2429,6 +2446,9 @@ export function applyMenuLiveOverlays(
             out.deposit_open = cap > 0n && BigInt(used) < cap;
           }
         }
+        // 8.52: 上流の都合で必ず失敗する market は、枠の取得可否と**独立**に塞ぐ
+        // (metric / cap が取れない日でも doomed な導線を出さない、§32.2)
+        if (reserve?.deposit_blocked_reason) out.deposit_open = false;
         const vault = KAMINO_VAULTS.find((v) => v.pool_id === pool.pool_id);
         const vm = vault ? s.kaminoVaults?.get(vault.vault) : undefined;
         if (vm) {

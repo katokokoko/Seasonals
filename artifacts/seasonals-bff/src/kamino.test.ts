@@ -22,6 +22,7 @@ import {
   truncateDecimal,
 } from "./server";
 import {
+  KaminoDoomedTxError,
   fetchKaminoDepositCaps,
   fetchKaminoDepositTx,
   fetchKaminoWithdrawTx,
@@ -73,6 +74,9 @@ const mockVaultPositions = fetchKaminoVaultUserPositions as jest.MockedFunction<
 const VALID_USER = "8sN5e1Qm9bYz2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7r";
 const USDC = KAMINO_MARKETS.find((m) => m.underlying_symbol === "USDC")!;
 const SOL = KAMINO_MARKETS.find((m) => m.underlying_symbol === "SOL")!;
+// 8.52: USDC は deposit_blocked_reason 付きになったので、6 decimals の変換確認は
+// 同じ 6 dec の JLP で行う (USDC は「塞がれること」自体を確認する)
+const JLP = KAMINO_MARKETS.find((m) => m.underlying_symbol === "JLP")!;
 const VAULT_USDC = KAMINO_VAULTS.find((v) => v.underlying_symbol === "USDC")!;
 const VAULT_SOL = KAMINO_VAULTS.find((v) => v.underlying_symbol === "SOL")!;
 
@@ -123,12 +127,61 @@ async function post(url: string, body: Record<string, unknown>) {
 }
 
 describe("POST /protocols/kamino/deposit-tx", () => {
-  it("8.51: 預入停止中 (limit 0) の reserve は tx を組む前に 409", async () => {
-    mockCaps.mockResolvedValue([{ reserve: USDC.reserve, limit: 0n }]);
+  it("8.52: 上流都合で預入不能な market は 409 deposit_unavailable (上流も枠 RPC も叩かない)", async () => {
+    // USDC は Kamino 側の誤ルーティングで必ず失敗する (registry の
+    // deposit_blocked_reason)。枠には空きがあるので上限ガードでは捕まらない
     const res = await post("/protocols/kamino/deposit-tx", {
       user: VALID_USER,
       reserve: USDC.reserve,
       amount: "1500000",
+    });
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error).toBe("deposit_unavailable");
+    expect(res.json().message).toBe(USDC.deposit_blocked_reason);
+    expect(mockDeposit).not.toHaveBeenCalled();
+    expect(mockCaps).not.toHaveBeenCalled(); // 無駄な RPC も打たない
+  });
+
+  it("8.52: withdraw は deposit_blocked_reason の影響を受けない (出口は塞がない)", async () => {
+    const res = await post("/protocols/kamino/withdraw-tx", {
+      user: VALID_USER,
+      reserve: USDC.reserve,
+      amount: "1500000",
+    });
+    expect(res.statusCode).toBe(200);
+    expect(mockWithdraw).toHaveBeenCalled();
+  });
+
+  it("8.52: 確実に失敗すると分かった tx は 409 deposit_would_fail (502 ではない)", async () => {
+    mockDeposit.mockRejectedValue(
+      new KaminoDoomedTxError("Kamino deposit tx would fail on-chain (reserve X)")
+    );
+    const res = await post("/protocols/kamino/deposit-tx", {
+      user: VALID_USER,
+      reserve: SOL.reserve,
+      amount: "500000000",
+    });
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error).toBe("deposit_would_fail");
+  });
+
+  it("8.52: 上流障害は従来どおり 502 (doomed tx と区別する)", async () => {
+    mockDeposit.mockRejectedValue(new Error("Kamino deposit tx HTTP 503"));
+    const res = await post("/protocols/kamino/deposit-tx", {
+      user: VALID_USER,
+      reserve: SOL.reserve,
+      amount: "500000000",
+    });
+    expect(res.statusCode).toBe(502);
+    expect(res.json().error).toBe("kamino_tx_failed");
+  });
+
+  it("8.51: 預入停止中 (limit 0) の reserve は tx を組む前に 409", async () => {
+    mockCaps.mockResolvedValue([{ reserve: SOL.reserve, limit: 0n }]);
+    const res = await post("/protocols/kamino/deposit-tx", {
+      user: VALID_USER,
+      reserve: SOL.reserve,
+      amount: "500000000",
     });
     expect(res.statusCode).toBe(409);
     expect(res.json().error).toBe("deposit_cap_reached");
@@ -139,8 +192,8 @@ describe("POST /protocols/kamino/deposit-tx", () => {
     mockCaps.mockRejectedValue(new Error("rpc down"));
     const res = await post("/protocols/kamino/deposit-tx", {
       user: VALID_USER,
-      reserve: USDC.reserve,
-      amount: "1500000",
+      reserve: SOL.reserve,
+      amount: "500000000",
     });
     expect(res.statusCode).toBe(200);
   });
@@ -155,22 +208,22 @@ describe("POST /protocols/kamino/deposit-tx", () => {
     expect(res.statusCode).toBe(200);
   });
 
-  it("USDC reserve を解決し smallest→human 変換して Kamino を呼ぶ", async () => {
+  it("JLP reserve を解決し smallest→human 変換して Kamino を呼ぶ", async () => {
     const res = await post("/protocols/kamino/deposit-tx", {
       user: VALID_USER,
-      reserve: USDC.reserve,
-      amount: "1500000", // 1.5 USDC (6 decimals)
+      reserve: JLP.reserve,
+      amount: "1500000", // 1.5 JLP (6 decimals)
     });
     expect(res.statusCode).toBe(200);
     expect(res.json().transaction).toBe("KAMINO_DEP_TX");
     expect(mockDeposit).toHaveBeenCalledWith({
       wallet: VALID_USER,
       market: KAMINO_MAIN_MARKET,
-      reserve: USDC.reserve,
+      reserve: JLP.reserve,
       amount: "1.5", // §4.5 human/decimal 変換
     });
-    // oracle gate は underlying (USDC mint) に掛かる
-    expect(mockOracle).toHaveBeenCalledWith(USDC.underlying_mint);
+    // oracle gate は underlying (JLP mint) に掛かる
+    expect(mockOracle).toHaveBeenCalledWith(JLP.underlying_mint);
   });
 
   it("SOL reserve: 500000000 (9 dec) → 0.5", async () => {
@@ -189,8 +242,8 @@ describe("POST /protocols/kamino/deposit-tx", () => {
     mockOracle.mockResolvedValue(blockedOracle());
     const res = await post("/protocols/kamino/deposit-tx", {
       user: VALID_USER,
-      reserve: USDC.reserve,
-      amount: "1500000",
+      reserve: SOL.reserve, // 8.52: USDC は手前の deposit_unavailable で止まるため
+      amount: "500000000",
     });
     expect(res.statusCode).toBe(409);
     expect(res.json().error).toBe("oracle_blocked");

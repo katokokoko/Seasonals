@@ -88,10 +88,62 @@ const EXPECTED = [
     why: "預入停止中のリザーブを署名前に 409 で拒否 (8.51 のガードが作動)",
   },
   {
-    match: /would fail on-chain/,
+    match: /would fail on-chain|deposit_would_fail/,
     why: "上流が失敗する tx を返したので署名前に拒否 (8.51 のガードが作動)",
   },
+  {
+    match: /deposit_unavailable/,
+    why: "registry で預入を塞いだ market (上流の誤ルーティング、8.52)",
+  },
 ];
+
+/**
+ * 8.52: K-Lend Reserve 口座の **レイアウト drift 検知**。
+ *
+ * `fetchKaminoDepositCaps` は offset 5016 を deposit_limit として読む。凍結した
+ * fixture では上流の構造体変更を検知できないので、**実 mainnet を読む**このハーネスが
+ * 唯一の検知点になる。口座サイズが変わる / 既知の非ゼロ上限が 0 になったら要調査。
+ */
+const RESERVE_SIZE = 8624;
+const DEPOSIT_LIMIT_OFFSET = 5016;
+const DRIFT_RESERVES = [
+  ["USDC", "D6q6wuQSrifJKZYpR1M8R4YawnLDtDsMmWM1NbBmgJ59", true], // 上限 1.0B
+  ["SOL", "d4A2prbA2whesmvHaL88BH6Ewn5N4bTSU2Ze8P6Bc4Q", true], // 上限 10M
+  ["JLP", "EAA3VVsxUuQB1Tm5x7TJkq9ATtiX5Qwq8ok7gXwim7oo", false], // 0 = 停止中 (正当)
+];
+
+async function checkReserveLayout() {
+  const r = await fetch(RPC, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "getMultipleAccounts",
+      params: [DRIFT_RESERVES.map(([, addr]) => addr), { encoding: "base64" }],
+    }),
+  });
+  const j = await r.json();
+  const values = j.result?.value;
+  if (!Array.isArray(values)) return ["reserve layout: RPC 応答が不正"];
+  const problems = [];
+  DRIFT_RESERVES.forEach(([sym, , mustBeNonZero], i) => {
+    const data = values[i]?.data?.[0];
+    if (!data) return problems.push(`${sym}: 口座を取得できない`);
+    const buf = Buffer.from(data, "base64");
+    if (buf.length !== RESERVE_SIZE) {
+      return problems.push(
+        `${sym}: 口座サイズ ${buf.length} (期待 ${RESERVE_SIZE}) — レイアウト変更の疑い`
+      );
+    }
+    const limit = buf.readBigUInt64LE(DEPOSIT_LIMIT_OFFSET);
+    console.log(`         ${sym.padEnd(4)} size=${buf.length} deposit_limit=${limit}`);
+    if (mustBeNonZero && limit === 0n) {
+      problems.push(`${sym}: deposit_limit が 0 — offset ずれ or 実際に停止`);
+    }
+  });
+  return problems;
+}
 
 async function run(name, route, extra) {
   const body = { user: WALLET, ...extra };
@@ -148,9 +200,17 @@ for (const r of results) {
     console.log(`要調査   ${r.name.padEnd(22)} ${(r.detail ?? "").slice(0, 200)}`);
   }
 }
+// 8.52: reserve レイアウトの drift 検知 (mainnet を実際に読む)
+console.log("\nKamino reserve layout (8.52 drift check)");
+const layoutProblems = await checkReserveLayout().catch((e) => [
+  `layout check 失敗: ${e.message}`,
+]);
+for (const p of layoutProblems) console.log(`要調査   ${p}`);
+unexpected += layoutProblems.length;
+
 console.log(
   `\n合計 ${results.length} 経路 / simulate 成功 ${results.filter((r) => r.ok).length} / 想定内の失敗 ${
-    results.filter((r) => !r.ok).length - unexpected
+    results.filter((r) => !r.ok).length - (unexpected - layoutProblems.length)
   } / 要調査 ${unexpected}`
 );
 process.exit(unexpected > 0 ? 1 : 0);

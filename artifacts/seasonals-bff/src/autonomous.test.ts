@@ -177,6 +177,46 @@ describe("runAutonomousCycle — decision + guards", () => {
     }
   });
 
+  it("8.52: deposit_open=false の pool は最高 APY でも候補にならない (fail-closed)", async () => {
+    // 預入停止中 / 上流都合で預入不能。execute は 409 で止まるが、そもそも
+    // 実行できない候補で plan を作らせない
+    const menuWithClosed: ProtocolMenuEntry[] = [
+      ...MENU,
+      {
+        protocol_id: "savefi",
+        display_name: "Save (closed)",
+        primary_category: "lending" as never,
+        supported_assets: ["USDC"],
+        icon_id: "savefi",
+        icon_bg: "#000",
+        pools: [
+          {
+            // APY も TVL も kamino pool を圧倒するが預入は閉じている
+            pool_id: "save_usdc_closed",
+            name: "USDC (deposits closed)",
+            category: "lending" as never,
+            asset: "USDC",
+            apy: 0.99,
+            tvl_usd: 9_000_000_000,
+            deposit_open: false,
+          },
+        ],
+      },
+    ];
+    const deps: AutonomousDeps = {
+      fetchMenu: async () => menuWithClosed,
+      getPolicy: () => autoPolicy(),
+      sendExecutionPush: jest.fn(),
+    };
+    for (const objective of ["safety_first", "max_yield"] as const) {
+      const rec = await runAutonomousCycle(
+        { objective, asset: "USDC", dry_run: true },
+        deps
+      );
+      expect(rec.protocol).toBe("kamino"); // savefi の closed pool は選ばれない
+    }
+  });
+
   it("本番: 委任署名 → confirmed devnet 署名 + notify + hard-cap notional", async () => {
     const push = jest.fn();
     const rec = await runAutonomousCycle(

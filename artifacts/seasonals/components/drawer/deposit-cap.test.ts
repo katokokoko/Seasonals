@@ -11,7 +11,7 @@ const usdc = (cap: string, used: string, open?: boolean) =>
   );
 
 describe("depositCapView", () => {
-  it("枠情報が無い pool は null (何も表示しない)", () => {
+  it("枠情報が無く預入可能な pool は null (何も表示しない)", () => {
     expect(depositCapView({ asset: "USDC" }, 6)).toBeNull();
     expect(depositCapView({ deposit_cap: "100", asset: "USDC" }, 6)).toBeNull();
   });
@@ -41,11 +41,29 @@ describe("depositCapView", () => {
     expect(v?.closed).toBe(true);
     expect(v?.reason).toBe("full");
     expect(v?.ratio).toBe(1);
+    expect(v?.label).toContain("Deposits full"); // 8.52: 理由を明示 (無言で無効化しない)
   });
 
-  it("BFF が deposit_open=false と言えば従う (満杯でなくても)", () => {
-    const v = usdc("1000000000000000", "1000000", false);
+  it("8.52: 枠に空きがあるのに閉じていれば reason=unavailable (上流都合)", () => {
+    // Kamino USDC: 上限 1.0B に対し使用 106M でも上流の誤ルーティングで預入不能
+    const v = usdc("1000000000000000", "106376882000000", false);
     expect(v?.closed).toBe(true);
+    expect(v?.reason).toBe("unavailable");
+    expect(v?.label).toBe("Deposits unavailable · 106.3M / 1.0B USDC");
+  });
+
+  it("8.52: 枠の数値が取れなくても閉じていれば理由を出す", () => {
+    // BFF の on-chain 読みが失敗した日 (cap/used undefined) でも押せない理由は出す
+    const v = depositCapView({ deposit_open: false, asset: "USDC" }, 6);
+    expect(v?.closed).toBe(true);
+    expect(v?.reason).toBe("unavailable");
+    expect(v?.label).toBe("Deposits unavailable");
+  });
+
+  it("8.52: 兆 (T) まで短縮する", () => {
+    // 5,000,000,000,000 / 9,000,000,000,000 USDC
+    const v = usdc("9000000000000000000", "5000000000000000000", true);
+    expect(v?.label).toBe("5.0T / 9.0T USDC");
   });
 
   it("巨大な値でも精度を落とさない (2^53 超)", () => {

@@ -16,24 +16,34 @@ export interface DepositCapView {
   label: string;
   /** 使用率 0..1 (上限 0 = 停止中なら 1) */
   ratio: number;
-  /** 預入を受け付けない (満杯 or 停止中) */
+  /** 預入を受け付けない (満杯 / 停止中 / 上流都合) */
   closed: boolean;
-  /** closed の理由。停止中と満杯で文言を変える */
-  reason?: "paused" | "full";
+  /**
+   * closed の理由。文言を変えるために使う:
+   *   paused      … 上限 0 = protocol 側が預入を止めている
+   *   full        … 枠が埋まった
+   *   unavailable … 枠に空きがあるのに BFF が閉じた (上流の不具合等、8.52)
+   */
+  reason?: "paused" | "full" | "unavailable";
 }
 
-/** 大きい数を 1.2K / 3.4M / 5.6B に丸める (TVL 表示と同じ語彙) */
+/**
+ * 大きい数を 1.2K / 3.4M / 5.6B / 7.8T に丸める (TVL 表示と同じ語彙)。
+ * **切り捨て** (四捨五入しない) — 枠の表示なので残量を過大に見せない側に倒す。
+ */
 function compact(human: string): string {
   const [intPart = "0"] = human.split(".");
   const digits = intPart.replace(/,/g, "").length;
   const units: [number, string][] = [
+    [13, "T"],
     [10, "B"],
     [7, "M"],
     [4, "K"],
   ];
   for (const [minDigits, suffix] of units) {
     if (digits >= minDigits) {
-      const scale = suffix === "B" ? 9 : suffix === "M" ? 6 : 3;
+      const scale =
+        suffix === "T" ? 12 : suffix === "B" ? 9 : suffix === "M" ? 6 : 3;
       const whole = intPart.replace(/,/g, "");
       const head = whole.slice(0, whole.length - scale) || "0";
       const tail = whole.slice(whole.length - scale, whole.length - scale + 1);
@@ -44,7 +54,12 @@ function compact(human: string): string {
 }
 
 /**
- * pool から預入枠の表示を作る。枠情報が無い protocol は null (何も出さない)。
+ * pool から預入枠の表示を作る。枠情報が無く、かつ預入可能な protocol は null
+ * (何も出さない)。
+ *
+ * 8.52: **`deposit_open === false` を先に見る**。枠の数値が取れていなくても
+ * (BFF の on-chain 読みが失敗した日など)「押せない理由」は必ず出す — さもないと
+ * 赤くも何ともない行がタップに無反応になる。
  */
 export function depositCapView(
   pool: Pick<
@@ -54,11 +69,24 @@ export function depositCapView(
   decimals: number
 ): DepositCapView | null {
   const { deposit_cap: cap, deposit_used: used } = pool;
-  if (typeof cap !== "string" || typeof used !== "string") return null;
-  if (!/^[0-9]+$/.test(cap) || !/^[0-9]+$/.test(used)) return null;
+  const blocked = pool.deposit_open === false;
+  const valid =
+    typeof cap === "string" &&
+    typeof used === "string" &&
+    /^[0-9]+$/.test(cap) &&
+    /^[0-9]+$/.test(used);
+  if (!valid) {
+    // 数値は無いが「閉じている」ことだけは分かる場合 (§4.5: 不正な値は無視する)
+    return blocked
+      ? { label: "Deposits unavailable", ratio: 1, closed: true, reason: "unavailable" }
+      : null;
+  }
 
   const capBig = BigInt(cap);
   const usedBig = BigInt(used);
+  const amounts = `${compact(formatTokenAmount(used, decimals))} / ${compact(
+    formatTokenAmount(cap, decimals)
+  )} ${pool.asset}`;
   // 上限 0 = 預入停止中。分母 0 の割り算を避けつつ「満杯」として見せる
   if (capBig === 0n) {
     return {
@@ -71,11 +99,18 @@ export function depositCapView(
   // 割合は bigint で 4 桁精度まで出してから小数へ (Number() で桁落ちさせない)
   const permyriad = Number((usedBig * 10_000n) / capBig) / 10_000;
   const ratio = Math.max(0, Math.min(1, permyriad));
-  const closed = pool.deposit_open === false || usedBig >= capBig;
-  const label = `${compact(formatTokenAmount(used, decimals))} / ${compact(
-    formatTokenAmount(cap, decimals)
-  )} ${pool.asset}`;
-  return closed
-    ? { label, ratio, closed, reason: "full" }
-    : { label, ratio, closed };
+  if (usedBig >= capBig) {
+    return { label: `Deposits full · ${amounts}`, ratio, closed: true, reason: "full" };
+  }
+  // 枠に空きがあるのに閉じている = 上限以外の理由 (上流の不具合等)。
+  // 残量は情報として併記しつつ、押せない理由を先頭に出す
+  if (blocked) {
+    return {
+      label: `Deposits unavailable · ${amounts}`,
+      ratio,
+      closed: true,
+      reason: "unavailable",
+    };
+  }
+  return { label: amounts, ratio, closed: false };
 }
