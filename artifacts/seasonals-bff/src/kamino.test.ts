@@ -16,6 +16,7 @@ import type { OracleResult } from "@workspace/lib/types";
 
 import {
   buildServer,
+  classifyKaminoUpstreamError,
   mapKaminoObligationsToEarnPositions,
   mapKaminoVaultPositionsToEarnPositions,
   sfToUsd8,
@@ -278,6 +279,66 @@ describe("POST /protocols/kamino/deposit-tx", () => {
     });
     expect(res.statusCode).toBe(400);
     expect(res.json().error).toBe("invalid_amount");
+  });
+});
+
+describe("8.53: 上流 4xx の翻訳", () => {
+  /** 上流が投げる形 (status + body) を模した error。identity ではなく形で判定される */
+  const upstream = (status: number, body: string) =>
+    Object.assign(new Error(`Kamino tx HTTP ${status}: ${body}`), { status, body });
+
+  it("ポジション未保有の withdraw は 400 position_not_found (502 ではない)", async () => {
+    mockWithdraw.mockRejectedValue(
+      upstream(
+        400,
+        '{"statusCode":400,"message":"Vanilla type Kamino Lend obligation does not exist for wallet 6QGJ… It must first be created by using a /deposit transaction"}'
+      )
+    );
+    const res = await post("/protocols/kamino/withdraw-tx", {
+      user: VALID_USER,
+      reserve: SOL.reserve,
+      amount: "500000000",
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toBe("position_not_found");
+    expect(res.json().reserve).toBe(SOL.reserve);
+  });
+
+  it("kVault の withdraw も同様に 400 へ翻訳する", async () => {
+    mockVaultWithdraw.mockRejectedValue(
+      upstream(400, '{"message":"obligation does not exist for wallet"}')
+    );
+    const res = await post("/protocols/kamino/vault-withdraw-tx", {
+      user: VALID_USER,
+      vault: VAULT_SOL.vault,
+      amount: "2500000",
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toBe("position_not_found");
+  });
+
+  it("上流 5xx / 認識できない 4xx は 502 のまま (自分のバグを client 起因にしない)", async () => {
+    mockWithdraw.mockRejectedValue(upstream(503, "Service Unavailable"));
+    const down = await post("/protocols/kamino/withdraw-tx", {
+      user: VALID_USER,
+      reserve: SOL.reserve,
+      amount: "500000000",
+    });
+    expect(down.statusCode).toBe(502);
+    mockWithdraw.mockRejectedValue(upstream(400, '{"message":"invalid reserve param"}'));
+    const unknown = await post("/protocols/kamino/withdraw-tx", {
+      user: VALID_USER,
+      reserve: SOL.reserve,
+      amount: "500000000",
+    });
+    expect(unknown.statusCode).toBe(502);
+    expect(unknown.json().error).toBe("kamino_tx_failed");
+  });
+
+  it("classifyKaminoUpstreamError: status を持たない error は素通り (null)", () => {
+    expect(classifyKaminoUpstreamError(new Error("boom"))).toBeNull();
+    expect(classifyKaminoUpstreamError(null)).toBeNull();
+    expect(classifyKaminoUpstreamError(upstream(500, "obligation does not exist"))).toBeNull();
   });
 });
 

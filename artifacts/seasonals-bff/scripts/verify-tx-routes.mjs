@@ -74,9 +74,11 @@ const CASES = [
  * ここに当たるものは PASS 扱い (tx が組めて program に到達した = 配線は正しい)。
  */
 const EXPECTED = [
-  { match: /position_not_found/, why: "ポジション未保有 (BFF が事前に弾く正しい挙動)" },
+  { match: /position_not_found/, why: "ポジション未保有 (BFF が 400 で弾く正しい挙動)" },
   { match: /not_matured/, why: "満期前 (Exponent は満期後のみ redeem 可)" },
-  { match: /obligation does not exist/, why: "Kamino のポジション未保有" },
+  // 8.53: 上流の 400 を BFF が position_not_found に翻訳するので、文言ではなく
+  // code で判定する (翻訳前の生メッセージも残す — 未翻訳の経路が出たら気付ける)
+  { match: /obligation does not exist/, why: "Kamino のポジション未保有 (生の上流メッセージ)" },
   { match: /AccountNotInitialized/, why: "share/cToken の ATA 未作成 (= 未保有)" },
   { match: /InvalidAccountData/, why: "cToken 未保有" },
   { match: /Custom":6025/, why: "Jupiter: 交換元トークン未保有" },

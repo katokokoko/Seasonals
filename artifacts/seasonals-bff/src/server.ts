@@ -715,6 +715,38 @@ function kaminoApyBpsByReserve(
 }
 
 /**
+ * Phase 8.53: 上流 (Kamino) の 4xx を Seasonals の error code に翻訳する。
+ *
+ * 例: ポジションを持たない wallet の withdraw に対し上流は 400 +
+ * "Vanilla type Kamino Lend obligation does not exist for wallet …" を返す。
+ * これを 502 にすると「Kamino が落ちている」と読めてしまい、実際の原因
+ * (ユーザーが未保有) が失われる。Meteora / Orca と同じ **400 position_not_found**
+ * に揃える。
+ *
+ * 認識できない 4xx は null = 従来どおり 502。我々のリクエスト組み立てのバグを
+ * 「client 起因」と誤ってラベルしないための fail-safe。
+ *
+ * 判定は instanceof ではなく **形** で見る (`KaminoUpstreamError` は client module
+ * にあり、テストでは module ごと mock されて identity が保てないため)。
+ */
+export function classifyKaminoUpstreamError(
+  err: unknown
+): { code: string; message: string } | null {
+  const e = err as { status?: unknown; body?: unknown } | null;
+  if (typeof e?.status !== "number" || e.status < 400 || e.status >= 500) {
+    return null;
+  }
+  const body = typeof e.body === "string" ? e.body : "";
+  if (/obligation does not exist/i.test(body)) {
+    return {
+      code: "position_not_found",
+      message: "No Kamino position for this wallet in this reserve",
+    };
+  }
+  return null;
+}
+
+/**
  * Phase 8.15b: Kamino deposit/withdraw の共通処理。oracle fail-closed gate (§4.6) →
  * smallest-unit → human/decimal 変換 → Kamino REST の unsigned tx builder。
  *   - reserve で market を解決し、oracle は underlying に掛ける。
@@ -799,6 +831,16 @@ async function buildKaminoTx(
     if (err instanceof KaminoDoomedTxError) {
       reply.code(409);
       return { error: "deposit_would_fail", message: (err as Error).message };
+    }
+    // 8.53: 上流の 4xx (未保有等) は上流障害ではない。Meteora / Orca と同じ 400 へ
+    const classified = classifyKaminoUpstreamError(err);
+    if (classified) {
+      reply.code(400);
+      return {
+        error: classified.code,
+        message: classified.message,
+        reserve: p.reserve,
+      };
     }
     reply.code(502);
     return { error: "kamino_tx_failed", message: (err as Error).message };
@@ -1346,6 +1388,16 @@ async function buildKaminoVaultTx(
       { err: (err as Error).message, vault: p.vault, action: p.action },
       "kamino vault tx build failed"
     );
+    // 8.53: klend と同じく上流の 4xx (未保有等) は 400 に翻訳する
+    const classified = classifyKaminoUpstreamError(err);
+    if (classified) {
+      reply.code(400);
+      return {
+        error: classified.code,
+        message: classified.message,
+        vault: p.vault,
+      };
+    }
     reply.code(502);
     return { error: "kamino_tx_failed", message: (err as Error).message };
   }

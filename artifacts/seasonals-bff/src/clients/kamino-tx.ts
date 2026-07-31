@@ -82,10 +82,12 @@ async function kaminoTx(
     body: JSON.stringify(body),
   });
   if (!res.ok) {
-    throw new Error(
-      `Kamino ${action} tx HTTP ${res.status}: ${await res
-        .text()
-        .catch(() => "")}`
+    const text = await res.text().catch(() => "");
+    // 8.53: 上流が理由を返している場合はそれを保持する (呼び手が 4xx/5xx を分ける)
+    throw new KaminoUpstreamError(
+      `Kamino ${action} tx HTTP ${res.status}: ${text}`,
+      res.status,
+      text
     );
   }
   const json = (await res.json()) as { transaction?: string };
@@ -111,6 +113,27 @@ export class KaminoDoomedTxError extends Error {
     this.name = "KaminoDoomedTxError";
   }
 }
+
+/**
+ * 8.53: 上流 (`api.kamino.finance`) が非 2xx を返した。status と body を保持して
+ * 呼び手が **client 起因 (4xx) と上流障害 (5xx)** を分けられるようにする。
+ *
+ * 例: ポジションを持たない wallet の withdraw で上流は 400 と
+ * "Vanilla type Kamino Lend obligation does not exist for wallet …" を返す。
+ * これを 502 にすると「Kamino が落ちている」と読めてしまい、実際には
+ * ユーザー側の状態 (未保有) が原因という情報が失われる。
+ */
+export class KaminoUpstreamError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly body: string
+  ) {
+    super(message);
+    this.name = "KaminoUpstreamError";
+  }
+}
+
 
 /**
  * 8.51: 返ってきた tx を **署名前に mainnet simulate** して、必ず失敗する tx を
@@ -181,10 +204,12 @@ async function kaminoVaultTx(
     body: JSON.stringify(body),
   });
   if (!res.ok) {
-    throw new Error(
-      `Kamino kvault ${action} tx HTTP ${res.status}: ${await res
-        .text()
-        .catch(() => "")}`
+    const text = await res.text().catch(() => "");
+    // 8.53: klend と同じく status/body を保持 (呼び手が 4xx/5xx を分ける)
+    throw new KaminoUpstreamError(
+      `Kamino kvault ${action} tx HTTP ${res.status}: ${text}`,
+      res.status,
+      text
     );
   }
   const json = (await res.json()) as { transaction?: string };
