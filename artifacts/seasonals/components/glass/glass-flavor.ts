@@ -42,7 +42,10 @@ export function flavorFromPalette(p: ThemeBgPalette): GlassFlavor {
     liquidMid: withAlpha(p.deep, 0.6),
     liquidBottom: withAlpha(p.bottom, 0.72),
     deepShadow: withAlpha(p.pool, 0.35),
-    cream: "rgba(255, 247, 224, 0.92)",
+    // 8.44: 帯を濃いめのクリームに。旧 rgba(255,247,224,.92) は液体の上で合成すると
+    // #F8F5DD になり、背景バニラ #FFF8E7 と ΔRGB 20 = 事実上同色で泡の層が消えていた。
+    // 現行値の合成結果は #EDE7C3 (背景 Δ71 / 液体 Δ83) で 3 層が分離する
+    cream: "rgba(243, 231, 196, 0.92)",
     creamBubble: "rgba(255, 251, 236, 0.9)",
     bubbleStroke: "rgba(255, 255, 255, 0.55)",
     bubbleFill: "rgba(255, 255, 255, 0.35)",

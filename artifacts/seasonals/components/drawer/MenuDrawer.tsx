@@ -79,35 +79,12 @@ import {
   useMenuListings,
   usePositions,
 } from "../../services/queries";
+// 8.44: protocol ロゴの require マップは登録漏れをテストで防ぐため別モジュールへ
+import { ICON_BY_ID, scaleOf } from "./protocol-icons";
 
 const SCREEN_WIDTH = Dimensions.get("window").width;
 const DRAWER_WIDTH = Math.min(360, SCREEN_WIDTH * 0.86);
 const ANIM_DURATION = 220;
-
-const ICON_BY_ID: Record<string, ImageRequireSource> = {
-  jupiter: require("../../assets/brands/jupiter.png"),
-  kamino: require("../../assets/brands/kamino.png"),
-  solstice: require("../../assets/brands/solstice.png"),
-  sanctum: require("../../assets/brands/sanctum.png"),
-  perena: require("../../assets/brands/perena.png"),
-  savefi: require("../../assets/brands/savefi.png"),
-  marinade: require("../../assets/brands/marinade.png"),
-  meteora: require("../../assets/brands/meteora.png"),
-  jito: require("../../assets/brands/jito.png"),
-  orca: require("../../assets/brands/orca.png"),
-};
-
-// Phase 6.3: per-protocol icon visual balance 微調整。
-// 元 PNG の内側 padding / aspect 比のバラつきを吸収するため transform scale を適用。
-// 他 protocol は default 1.0。
-const ICON_SCALE_BY_ID: Record<string, number> = {
-  jupiter: 1.5,
-  sanctum: 1.2,
-};
-
-function scaleOf(id: string): number {
-  return ICON_SCALE_BY_ID[id] ?? 1.0;
-}
 
 type FilterKey = "all" | PositionCategory;
 

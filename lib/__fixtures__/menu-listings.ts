@@ -18,8 +18,12 @@ import { PositionCategory } from "../types/enums";
 import { COLOR } from "../design-system";
 import type { ProtocolMenuEntry } from "../types/protocol-pool";
 
-// 外部 protocol icon の placeholder bg (DS palette 外、§6 規約 carve-out)
+// 外部 protocol icon の bg (DS palette 外、§6 規約 carve-out)。
+// ロゴ PNG は地色を焼き込んだ不透明画像で、iconBox は overflow:hidden の角丸。
+// **画像の地色と一致させる**こと (ずれると角に別色が覗く)。
 const ICON_BG_DARK = "#0E1F3A";
+const ICON_BG_BLACK = "#000000"; // exponent.png の地色
+const ICON_BG_HYLO = "#1A1818"; // hylo.png の地色
 
 export const fixtureMenuListings: ProtocolMenuEntry[] = [
   // ─── 1. Jupiter ────────────────────────────────────────────
@@ -379,14 +383,13 @@ export const fixtureMenuListings: ProtocolMenuEntry[] = [
   },
 
   // ─── 11. Hylo (Phase 8.27 — swap-earn 方式) ────────────────
-  // icon 画像未支給のため icon_id は未登録 → MenuDrawer が頭文字バッジに fallback
   {
     protocol_id: "hylo",
     display_name: "Hylo",
     primary_category: PositionCategory.Staking,
     supported_assets: ["SOL", "USDC"],
     icon_id: "hylo",
-    icon_bg: COLOR.sodaText,
+    icon_bg: ICON_BG_HYLO,
     pools: [
       {
         pool_id: "hylo_hylosol",
@@ -412,14 +415,13 @@ export const fixtureMenuListings: ProtocolMenuEntry[] = [
   // 本 fixture は offline/test 用 snapshot (2026-07-22 実測、lib/config/exponent-markets.ts
   // と同期)。PT market は 1〜4 ヶ月で世代交代するため満期を過ぎた pool は
   // buildExponentMenuPools の maturity filter で除外される (menu に腐った pool は出ない)。
-  // icon 画像未支給 → icon_id 未登録で頭文字バッジに fallback。
   {
     protocol_id: "exponent",
     display_name: "Exponent",
     primary_category: PositionCategory.PTYT,
     supported_assets: ["USX", "ONyc", "xSOL", "eUSX"],
     icon_id: "exponent",
-    icon_bg: ICON_BG_DARK,
+    icon_bg: ICON_BG_BLACK,
     pools: [
       {
         pool_id: "exponent_pt_usx_20260916",
