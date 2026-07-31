@@ -58,12 +58,13 @@ import {
   type ProtocolMenuEntry,
   type ProtocolPool,
 } from "@workspace/lib/types";
-import { formatUsd } from "@workspace/lib/utils/numeric";
+import { TOKEN_DECIMALS, formatUsd } from "@workspace/lib/utils/numeric";
 import {
   findMarketByShareMint,
   heldSwapEarnPositions,
 } from "@workspace/lib/config/swap-earn-markets";
 import {
+  KAMINO_MARKETS,
   findKaminoMarketByReserve,
   findKaminoVaultByAddress,
 } from "@workspace/lib/config/kamino-markets";
@@ -82,6 +83,8 @@ import {
 // 8.44: protocol ロゴの require マップは登録漏れをテストで防ぐため別モジュールへ
 import { ICON_BY_ID, scaleOf } from "./protocol-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+// 8.51: 預入枠の表示ロジック (純関数、単体テスト済)
+import { depositCapView } from "./deposit-cap";
 
 const SCREEN_WIDTH = Dimensions.get("window").width;
 const DRAWER_WIDTH = Math.min(360, SCREEN_WIDTH * 0.86);
@@ -187,6 +190,19 @@ function utilizationColor(utilization: number): string {
   return utilization >= UTILIZATION_WARN_THRESHOLD
     ? COLOR.cherryDark
     : COLOR.textMuted;
+}
+
+/**
+ * 8.51: 預入枠を human 表示するための decimals。Kamino registry を正とし、
+ * 無ければ asset の既定 decimals へ fallback する (枠は現状 Kamino のみ)。
+ */
+function poolDecimals(pool: ProtocolPool): number {
+  const kamino = KAMINO_MARKETS.find((m) => m.pool_id === pool.pool_id);
+  if (kamino) return kamino.underlying_decimals;
+  const asset = pool.deposit_asset ?? pool.asset;
+  return asset in TOKEN_DECIMALS
+    ? (TOKEN_DECIMALS as Record<string, number>)[asset]!
+    : 6;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -660,6 +676,9 @@ export function MenuDrawer({
     (entry: ProtocolMenuEntry, pool: ProtocolPool) => {
       // Phase 8.33: read-only listing (Exponent PT 等) は deposit 経路なし — tap 無効
       if (pool.display_only) return;
+      // 8.51: 満杯 / 預入停止中も同様に落とす。BFF も 409 で弾くが、必ず失敗する
+      // 導線をそもそも押させない (fail-closed、§32.2)
+      if (pool.deposit_open === false) return;
       onClose();
       const asset = pool.deposit_asset ?? pool.asset;
       onStartAction?.(entry.protocol_id, asset, "deposit", pool.pool_id);
@@ -1170,8 +1189,10 @@ function DefaultPoolDetailPane({
           <Pressable
             key={pool.pool_id}
             // Phase 8.33: read-only pool (Exponent PT 等) は tap 無効 (deposit 経路なし)
-            accessibilityRole={pool.display_only ? "none" : "button"}
-            disabled={pool.display_only === true}
+            accessibilityRole={
+              pool.display_only || pool.deposit_open === false ? "none" : "button"
+            }
+            disabled={pool.display_only === true || pool.deposit_open === false}
             onPress={() => onPoolTap(pool)}
             style={[
               styles.detailPoolRow,
@@ -1213,6 +1234,22 @@ function DefaultPoolDetailPane({
                     {formatUtilization(pool.utilization)}
                   </Text>
                 )}
+                {/* 8.51: 預入枠 (現状 Kamino のみ)。満杯/停止中は警告色 */}
+                {(() => {
+                  const cap = depositCapView(pool, poolDecimals(pool));
+                  if (!cap) return null;
+                  return (
+                    <Text
+                      style={[
+                        styles.poolMeta,
+                        cap.closed ? { color: COLOR.cherryDark } : null,
+                      ]}
+                      testID={`pool-cap-${pool.pool_id}`}
+                    >
+                      {cap.label}
+                    </Text>
+                  );
+                })()}
                 {/* Phase 8.33: read-only pool (deposit 経路なし) の明示 */}
                 {pool.display_only === true && (
                   <Text

@@ -81,6 +81,16 @@ const EXPECTED = [
   { match: /InvalidAccountData/, why: "cToken 未保有" },
   { match: /Custom":6025/, why: "Jupiter: 交換元トークン未保有" },
   { match: /DepositLimitExceeded/, why: "リザーブが預入上限 (on-chain の実状況、我々の不具合ではない)" },
+  // 8.51: 上流が「組めるが必ず失敗する tx」を返した場合に BFF が署名前に弾く。
+  // ユーザーに doomed な tx を渡さない = 正しい挙動なので想定内に分類する
+  {
+    match: /deposit_cap_reached/,
+    why: "預入停止中のリザーブを署名前に 409 で拒否 (8.51 のガードが作動)",
+  },
+  {
+    match: /would fail on-chain/,
+    why: "上流が失敗する tx を返したので署名前に拒否 (8.51 のガードが作動)",
+  },
 ];
 
 async function run(name, route, extra) {

@@ -18,6 +18,7 @@
  */
 
 import { fetchWithTimeout } from "./http"; // Phase 8.38 (B9): 共通 timeout
+import { simulateUnsignedTx } from "./helius-rpc"; // 8.51: 署名前の tx 検証
 const KAMINO_BASE = "https://api.kamino.finance";
 
 /** reserves/metrics の 1 reserve 分 (raw)。APY 系は fraction string。 */
@@ -90,7 +91,40 @@ async function kaminoTx(
   if (!json.transaction) {
     throw new Error(`Kamino ${action} tx: empty transaction in response`);
   }
+  // 8.51: 上流が「組めるが必ず失敗する tx」を返すことがあるので、署名前に検証する
+  await assertKlendTxWillSucceed(json.transaction, action, body.reserve);
   return { transaction: json.transaction };
+}
+
+/**
+ * 8.51: 返ってきた tx を **署名前に mainnet simulate** して、必ず失敗する tx を
+ * ユーザーに渡さないようにする。
+ *
+ * 背景 (実測 2026-08-01): Kamino の `/ktx/klend/*` は body の `reserve` を必須に
+ * しておきながら**値を尊重しない**ことがある。main market には USDC リザーブが
+ * 4 本あり、`D6q6…` (供給 113M / 上限 1.00B) を要求しても返る tx は常に
+ * `5xXxt9uV…` (status Hidden / 供給 0.1 / **deposit limit 0**) を対象にしていた。
+ * 結果 program が `DepositLimitExceeded` を投げ、**ユーザーは署名まで進んでから
+ * 失敗する**。リザーブが 1 本の mint (SOL / JLP) では正しくルーティングされる。
+ *
+ * tx から静的に判定する案は破棄した: 対象 reserve は ALT 側にあり、その ALT は
+ * 254 件の**共有テーブル**で正しい reserve も誤った reserve も両方含むため、
+ * 「含まれるか」では使用の証明にならない (実測で確認)。simulate なら実際の結果を
+ * 見るので、誤ルーティングも上限超過も停止中リザーブも一様に捕まえられる。
+ *
+ * RPC 障害時は fail-open (通す) — ここで止めると外部要因で機能全体が死ぬため。
+ */
+async function assertKlendTxWillSucceed(
+  base64Tx: string,
+  action: string,
+  reserve: string
+): Promise<void> {
+  const sim = await simulateUnsignedTx(base64Tx).catch(() => ({ ok: true }));
+  if (sim.ok) return;
+  const detail = "reason" in sim && sim.reason ? `: ${sim.reason}` : "";
+  throw new Error(
+    `Kamino ${action} tx would fail on-chain (reserve ${reserve})${detail}`
+  );
 }
 
 /** deposit unsigned tx (underlying → reserve、amount は human/decimal string) */
@@ -241,4 +275,68 @@ export async function fetchKaminoObligationPnl(
     `/v2/kamino-market/${market}/obligations/${obligation}/pnl`
   );
   return { sol: raw.sol ?? "0", usd: raw.usd ?? "0" };
+}
+
+// ── Phase 8.51: 預入上限 (deposit cap) ───────────────────────────────────────
+
+/** reserve 1 本分の預入枠。`limit === 0n` は「預入停止中」を意味する。 */
+export interface KaminoDepositCap {
+  reserve: string;
+  /** deposit limit (smallest unit)。0 は停止中 */
+  limit: bigint;
+}
+
+/**
+ * 8.51: reserve 口座から **deposit limit** を読む。
+ *
+ * Kamino の REST に reserve config を返す口は無い (`/reserves/metrics` は上限を
+ * 含まず、`/metrics/history` は含むが 1 リザーブ **22〜32MB** で実用外) ため、
+ * on-chain を直接読む。オフセットは Exponent (8.34) と同じ実測 + 交差検証方式:
+ *
+ *   deposit_limit = offset 5016 (u64 LE, smallest unit)
+ *   borrow_limit  = offset 5024 (連続、参考)
+ *
+ * USDC / SOL / JLP の 3 リザーブすべてで Kamino API の `reserveDepositLimit` と
+ * 一致することを実測で確認済 (kamino-tx.test.ts で固定)。レイアウトが変われば
+ * テストが落ちる。
+ *
+ * `getMultipleAccounts` 1 回で全リザーブ分を取得する。取得失敗時は空配列
+ * (呼び手は「上限不明」として扱い、既存挙動を壊さない)。
+ */
+const DEPOSIT_LIMIT_OFFSET = 5016;
+
+export async function fetchKaminoDepositCaps(
+  reserves: string[]
+): Promise<KaminoDepositCap[]> {
+  if (reserves.length === 0) return [];
+  const apiKey = process.env.HELIUS_API_KEY;
+  if (!apiKey) return [];
+  const res = await fetchWithTimeout(
+    `https://mainnet.helius-rpc.com/?api-key=${apiKey}`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: "seasonals-kamino-caps",
+        method: "getMultipleAccounts",
+        params: [reserves, { encoding: "base64" }],
+      }),
+    }
+  ).catch(() => null);
+  if (!res || !res.ok) return [];
+  const json = (await res.json().catch(() => null)) as {
+    result?: { value?: ({ data?: [string, string] } | null)[] };
+  } | null;
+  const values = json?.result?.value;
+  if (!Array.isArray(values)) return [];
+  const out: KaminoDepositCap[] = [];
+  values.forEach((v, i) => {
+    const reserve = reserves[i];
+    if (!reserve || !v?.data?.[0]) return;
+    const buf = Buffer.from(v.data[0], "base64");
+    if (buf.length < DEPOSIT_LIMIT_OFFSET + 8) return;
+    out.push({ reserve, limit: buf.readBigUInt64LE(DEPOSIT_LIMIT_OFFSET) });
+  });
+  return out;
 }

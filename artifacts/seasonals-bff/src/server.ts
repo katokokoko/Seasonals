@@ -101,6 +101,7 @@ import {
   type KaminoVault,
 } from "@workspace/lib/config/kamino-markets";
 import {
+  fetchKaminoDepositCaps,
   fetchKaminoDepositTx,
   fetchKaminoObligationPnl,
   fetchKaminoObligations,
@@ -735,6 +736,25 @@ async function buildKaminoTx(
   if (!isValidTokenAmount(p.amount)) {
     reply.code(400);
     return { error: "invalid_amount", amount: p.amount };
+  }
+  // 8.51: 預入停止中のリザーブは tx を組む前に弾く (fail-closed、§32.2)。
+  // 上流の tx builder は停止中でも tx を返してしまい、program まで行って
+  // DepositLimitExceeded になる = ユーザーは署名後に失敗を知ることになる
+  if (p.action === "deposit") {
+    // Promise.resolve().then() で包むのは、jest の自動 mock が非 Promise を返す
+    // ケースでも落ちないようにするため (8.37 の Exponent と同じ理由)
+    const caps = await Promise.resolve()
+      .then(() => fetchKaminoDepositCaps([p.reserve]))
+      .catch(() => []);
+    const cap = Array.isArray(caps) ? caps[0] : undefined;
+    if (cap && cap.limit === 0n) {
+      reply.code(409);
+      return {
+        error: "deposit_cap_reached",
+        message: "This Kamino reserve is not accepting deposits right now",
+        reserve: p.reserve,
+      };
+    }
   }
   const oracle = await getOracleResult(mkt.underlying_mint);
   if (oracle.status === "blocked") {
@@ -2283,6 +2303,8 @@ export interface MenuLiveSources {
   kaminoReserves?: KaminoReserveMetric[];
   /** vault address → metrics */
   kaminoVaults?: Map<string, KaminoVaultMetrics>;
+  /** 8.51: reserve address → deposit limit (smallest unit)。0 は預入停止中 */
+  kaminoCaps?: Map<string, bigint>;
   saveRates?: SaveReserveRate[];
   /** whirlpool address → stats */
   orcaStats?: Map<string, OrcaPoolStats>;
@@ -2389,6 +2411,22 @@ export function applyMenuLiveOverlays(
           // Phase 8.26: 稼働率 = borrow/supply (1.0 clamp、withdraw 流動性リスク可視化)
           if (tvl !== null && borrowed !== null && tvl > 0) {
             out.utilization = Math.min(1, borrowed / tvl);
+          }
+          // 8.51: 預入枠。cap は on-chain (offset 5016)、used は metrics の
+          // totalSupply (トークン単位) を smallest unit に揃える。
+          // cap===0 は「預入停止中」(JLP が該当) なので CTA を落とす
+          const cap = reserve ? s.kaminoCaps?.get(reserve.reserve) : undefined;
+          if (cap !== undefined && reserve) {
+            const dec = reserve.underlying_decimals;
+            // §4.5: totalSupply は API の decimal string。Number() を経由せず
+            // 桁を切り捨ててから smallest unit へ (API は decimals より多い桁を返す)
+            const used = toSmallestUnit(
+              truncateDecimal(metric.totalSupply, dec),
+              dec
+            );
+            out.deposit_cap = cap.toString();
+            out.deposit_used = used;
+            out.deposit_open = cap > 0n && BigInt(used) < cap;
           }
         }
         const vault = KAMINO_VAULTS.find((v) => v.pool_id === pool.pool_id);
@@ -2759,10 +2797,20 @@ export async function buildServer(
     if (perenaR.status === "fulfilled" && Number.isFinite(perenaR.value)) {
       yieldApys.set("USD*", perenaR.value);
     }
+    // 8.51: Kamino の預入枠 (on-chain)。getMultipleAccounts 1 回。失敗しても
+    // 空 Map で degrade する (UI は枠表示を出さないだけ)
+    const kaminoCaps = new Map<string, bigint>();
+    const capList = await Promise.resolve()
+      .then(() => fetchKaminoDepositCaps(KAMINO_MARKETS.map((m) => m.reserve)))
+      .catch(() => []);
+    if (Array.isArray(capList)) {
+      for (const cap of capList) kaminoCaps.set(cap.reserve, cap.limit);
+    }
     const data = applyMenuLiveOverlays(fixtureMenuListings, {
       jupiterMarkets: jupR.status === "fulfilled" ? jupR.value : undefined,
       kaminoReserves: kaminoR.status === "fulfilled" ? kaminoR.value : undefined,
       kaminoVaults,
+      kaminoCaps: kaminoCaps.size > 0 ? kaminoCaps : undefined,
       saveRates: saveR.status === "fulfilled" ? saveR.value : undefined,
       orcaStats: orcaR.status === "fulfilled" ? orcaR.value : undefined,
       lstApys: yieldApys.size > 0 ? yieldApys : undefined,

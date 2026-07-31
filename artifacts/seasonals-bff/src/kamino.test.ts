@@ -22,6 +22,7 @@ import {
   truncateDecimal,
 } from "./server";
 import {
+  fetchKaminoDepositCaps,
   fetchKaminoDepositTx,
   fetchKaminoWithdrawTx,
   fetchKaminoReserveMetrics,
@@ -38,6 +39,11 @@ jest.mock("./clients/oracle");
 
 const mockDeposit = fetchKaminoDepositTx as jest.MockedFunction<
   typeof fetchKaminoDepositTx
+>;
+// 8.51: 預入枠 (limit 0 = 停止中)。自動 mock なので既定は undefined を返す →
+// 各 test で明示する
+const mockCaps = fetchKaminoDepositCaps as jest.MockedFunction<
+  typeof fetchKaminoDepositCaps
 >;
 const mockWithdraw = fetchKaminoWithdrawTx as jest.MockedFunction<
   typeof fetchKaminoWithdrawTx
@@ -96,6 +102,8 @@ beforeEach(async () => {
   mockWithdraw.mockResolvedValue({ transaction: "KAMINO_WD_TX" });
   mockMetrics.mockResolvedValue([]);
   mockObligations.mockResolvedValue([]);
+  // 8.51: 既定は「枠情報なし」= 預入を妨げない。停止中を試す test が上書きする
+  mockCaps.mockResolvedValue([]);
   mockVaultDeposit.mockResolvedValue({ transaction: "KVAULT_DEP_TX" });
   mockVaultWithdraw.mockResolvedValue({ transaction: "KVAULT_WD_TX" });
   mockVaultMetrics.mockResolvedValue({
@@ -115,6 +123,38 @@ async function post(url: string, body: Record<string, unknown>) {
 }
 
 describe("POST /protocols/kamino/deposit-tx", () => {
+  it("8.51: 預入停止中 (limit 0) の reserve は tx を組む前に 409", async () => {
+    mockCaps.mockResolvedValue([{ reserve: USDC.reserve, limit: 0n }]);
+    const res = await post("/protocols/kamino/deposit-tx", {
+      user: VALID_USER,
+      reserve: USDC.reserve,
+      amount: "1500000",
+    });
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error).toBe("deposit_cap_reached");
+    expect(mockDeposit).not.toHaveBeenCalled(); // 上流を叩かない
+  });
+
+  it("8.51: 枠が取れなくても deposit は通す (fail-open、RPC 障害で機能を殺さない)", async () => {
+    mockCaps.mockRejectedValue(new Error("rpc down"));
+    const res = await post("/protocols/kamino/deposit-tx", {
+      user: VALID_USER,
+      reserve: USDC.reserve,
+      amount: "1500000",
+    });
+    expect(res.statusCode).toBe(200);
+  });
+
+  it("8.51: withdraw は枠ガードの対象外 (停止中でも引き出せる)", async () => {
+    mockCaps.mockResolvedValue([{ reserve: USDC.reserve, limit: 0n }]);
+    const res = await post("/protocols/kamino/withdraw-tx", {
+      user: VALID_USER,
+      reserve: USDC.reserve,
+      amount: "1500000",
+    });
+    expect(res.statusCode).toBe(200);
+  });
+
   it("USDC reserve を解決し smallest→human 変換して Kamino を呼ぶ", async () => {
     const res = await post("/protocols/kamino/deposit-tx", {
       user: VALID_USER,

@@ -15,6 +15,7 @@ import type { ProtocolMenuEntry } from "@workspace/lib/types";
 import { buildServer } from "./server";
 import { fetchEarnMarkets, type JupiterLendMarket } from "./clients/jupiter-lend";
 import {
+  fetchKaminoDepositCaps,
   fetchKaminoReserveMetrics,
   fetchKaminoVaultMetrics,
 } from "./clients/kamino-tx";
@@ -56,6 +57,10 @@ const mockKamino = fetchKaminoReserveMetrics as jest.MockedFunction<
 >;
 const mockKvault = fetchKaminoVaultMetrics as jest.MockedFunction<
   typeof fetchKaminoVaultMetrics
+>;
+// 8.51: 預入枠 (on-chain reserve から読む deposit limit)
+const mockCaps = fetchKaminoDepositCaps as jest.MockedFunction<
+  typeof fetchKaminoDepositCaps
 >;
 const mockSave = fetchSaveReserveRates as jest.MockedFunction<
   typeof fetchSaveReserveRates
@@ -143,6 +148,10 @@ beforeEach(async () => {
       supplyRateBps: 431,
       tvlUnderlying: "2000000000000000", // 2M SOL
     }),
+  ]);
+  // 上限 200 USDC / 供給 1 USDC (fixture の totalSupply "1" に対応)
+  mockCaps.mockResolvedValue([
+    { reserve: KAMINO_USDC.reserve, limit: 200_000_000n },
   ]);
   mockKamino.mockResolvedValue([
     {
@@ -271,6 +280,34 @@ describe("GET /menu-listings — live overlay", () => {
     expect(vault.apy).toBeCloseTo(0.081, 6);
     const fxVault = pool(fixtureMenuListings, "kamino", KVAULT.pool_id);
     expect(vault.tvl_usd).toBe(fxVault.tvl_usd); // TVL は fixture 維持
+  });
+
+  it("8.51: kamino pool に預入枠 (cap/used/open) が載る", async () => {
+    const menu = await getMenu();
+    const usdc = pool(menu, "kamino", "kamino_usdc_main");
+    expect(usdc.deposit_cap).toBe("200000000"); // 200 USDC (smallest)
+    expect(usdc.deposit_used).toBe("1000000"); // totalSupply "1" USDC
+    expect(usdc.deposit_open).toBe(true);
+    // 枠を取れなかった pool は undefined のまま (他 protocol も同様)
+    const vault = pool(menu, "kamino", KVAULT.pool_id);
+    expect(vault.deposit_cap).toBeUndefined();
+    expect(pool(menu, "jupiter", "jupiter_usdc_main").deposit_cap).toBeUndefined();
+  });
+
+  it("8.51: 上限 0 (預入停止中) は deposit_open=false", async () => {
+    mockCaps.mockResolvedValue([{ reserve: KAMINO_USDC.reserve, limit: 0n }]);
+    const menu = await getMenu();
+    const usdc = pool(menu, "kamino", "kamino_usdc_main");
+    expect(usdc.deposit_cap).toBe("0");
+    expect(usdc.deposit_open).toBe(false);
+  });
+
+  it("8.51: 枠の取得に失敗しても menu は degrade して返る", async () => {
+    mockCaps.mockRejectedValue(new Error("rpc down"));
+    const menu = await getMenu();
+    const usdc = pool(menu, "kamino", "kamino_usdc_main");
+    expect(usdc.deposit_cap).toBeUndefined();
+    expect(usdc.apy).toBeCloseTo(0.062, 6); // 他の overlay は生きている
   });
 
   it("jupiter: supplyRateBps/10000 + tvlUnderlying×price 換算", async () => {

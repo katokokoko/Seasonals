@@ -233,3 +233,68 @@ export async function fetchStakeAccounts(
   }
   return out;
 }
+
+// ── Phase 8.51: 署名前の tx 検証 ────────────────────────────────────────────
+
+export interface SimulationOutcome {
+  /** program まで到達して成功したか */
+  ok: boolean;
+  /** 失敗時の program エラー (JSON 文字列) */
+  err?: string;
+  /** 失敗の理由が読める形で分かる場合の 1 行 (program log 由来) */
+  reason?: string;
+}
+
+/**
+ * unsigned tx を **mainnet で simulate** して、署名前に成否を知る。
+ *
+ * `sigVerify:false` + `replaceRecentBlockhash:true` なので **署名も資金移動も
+ * 発生しない**。外部の tx builder が「組めるが必ず失敗する tx」を返すケース
+ * (8.51 の Kamino reserve 誤ルーティング等) を、ユーザーが署名する前に捕まえる。
+ *
+ * 注意: BFF の `SOLANA_RPC_URL` は自律実行のハードガードで devnet 固定なので、
+ * 検証は必ずこの mainnet 口を使う (devnet に投げると ALT 不在で必ず失敗する)。
+ */
+export async function simulateUnsignedTx(
+  base64Tx: string
+): Promise<SimulationOutcome> {
+  const res = await fetchWithTimeout(buildUrl(), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: "seasonals-simulate",
+      method: "simulateTransaction",
+      params: [
+        base64Tx,
+        {
+          sigVerify: false,
+          replaceRecentBlockhash: true,
+          encoding: "base64",
+          commitment: "confirmed",
+        },
+      ],
+    }),
+  });
+  if (!res.ok) {
+    // 検証できない時は通す (fail-open)。ここで止めると RPC 障害で全機能が死ぬ
+    return { ok: true };
+  }
+  const json = (await res.json()) as {
+    result?: { value?: { err?: unknown; logs?: string[] } };
+    error?: { message?: string };
+  };
+  if (json.error || !json.result?.value) return { ok: true };
+  const value = json.result.value;
+  if (!value.err) return { ok: true };
+  const logs = value.logs ?? [];
+  // 人間が読める失敗理由 (program の説明ログ or Anchor のエラー行)
+  const reason =
+    logs.find((l) => /Cannot |limit|exceed|insufficient/i.test(l)) ??
+    logs.find((l) => /Error Code:/.test(l));
+  return {
+    ok: false,
+    err: JSON.stringify(value.err),
+    ...(reason ? { reason: reason.replace(/^Program log: /, "") } : {}),
+  };
+}
