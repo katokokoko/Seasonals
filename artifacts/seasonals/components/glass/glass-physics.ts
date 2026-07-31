@@ -147,10 +147,12 @@ export function makeBubble(
 export function createGlassState(
   W: number,
   H: number,
-  bubbleCount: number = GLASS_TUNING.bubbleCount,
+  bubbleCountIn?: number,
   rng?: () => number
 ): GlassState {
   "worklet";
+  // stepGlass と同じ理由でデフォルト引数に GLASS_TUNING を使わない (worklet 制約)
+  const bubbleCount = bubbleCountIn ?? GLASS_TUNING.bubbleCount;
   const bubbles: GlassBubble[] = [];
   for (let i = 0; i < bubbleCount; i++) {
     bubbles.push(
@@ -224,12 +226,18 @@ export function stepGlass(
   W: number,
   H: number,
   reduced: boolean,
-  bubbleCap: number = GLASS_TUNING.bubbleCount,
-  dropletCap: number = GLASS_TUNING.dropletMax,
+  bubbleCapIn?: number,
+  dropletCapIn?: number,
   rng?: () => number
 ): void {
   "worklet";
+  // NOTE: worklet ではデフォルト引数に closure 変数 (GLASS_TUNING) を使えない —
+  // 生成コードの closure 展開 (this.__closure) は本体先頭で行われ、デフォルト
+  // 引数の評価がそれより先のため UI runtime で
+  // "Property 'GLASS_TUNING' doesn't exist" になる。本体で ?? 解決する
   const T = GLASS_TUNING;
+  const bubbleCap = bubbleCapIn ?? T.bubbleCount;
+  const dropletCap = dropletCapIn ?? T.dropletMax;
   st.t += dt;
   st.hapticSlosh = false;
   st.hapticFizz = false;
