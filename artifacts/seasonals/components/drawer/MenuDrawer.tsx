@@ -83,8 +83,18 @@ import {
 // 8.44: protocol ロゴの require マップは登録漏れをテストで防ぐため別モジュールへ
 import { ICON_BY_ID, scaleOf } from "./protocol-icons";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-// 8.51: 預入枠の表示ロジック (純関数、単体テスト済)
-import { depositCapView } from "./deposit-cap";
+// 8.51 の預入枠表示 (deposit-cap.ts) は 8.54 で vault-rows 経由に集約
+// 8.54: カード行のモデルと出し分け判断 (純関数、単体テスト済)
+import {
+  applyVaultFilter,
+  buildPoolVaultRows,
+  computeVaultSummary,
+  visibleFilters,
+  VISIBLE_ROW_LIMIT,
+  type VaultFilter,
+  type VaultRow,
+  type VaultSummary,
+} from "./vault-rows";
 
 const SCREEN_WIDTH = Dimensions.get("window").width;
 const DRAWER_WIDTH = Math.min(360, SCREEN_WIDTH * 0.86);
@@ -157,10 +167,6 @@ function apyAccent(apy: number): string {
   return apy > 0.09 ? COLOR.melonText : COLOR.sodaText;
 }
 
-function formatApy(apy: number): string {
-  return `${(apy * 100).toFixed(2)}%`;
-}
-
 function formatTvlUsd(usd: number): string {
   if (usd >= 1_000_000_000) {
     return `$${(usd / 1_000_000_000).toFixed(2)}B`;
@@ -181,17 +187,12 @@ function formatBorrowedUsd(usd: number): string {
 /**
  * Phase 8.26: lending market の稼働率表示。≥0.9 は「貸出満杯に近く withdraw が
  * 流動性不足で滞る可能性」の警告シグナルとして cherryDark、それ未満は textMuted。
+ * (8.54: カード行ではメタ行全体の色でこのシグナルを出す)
  */
 const UTILIZATION_WARN_THRESHOLD = 0.9;
 function formatUtilization(utilization: number): string {
   return `Util ${(utilization * 100).toFixed(0)}%`;
 }
-function utilizationColor(utilization: number): string {
-  return utilization >= UTILIZATION_WARN_THRESHOLD
-    ? COLOR.cherryDark
-    : COLOR.textMuted;
-}
-
 /**
  * 8.51: 預入枠を human 表示するための decimals。Kamino registry を正とし、
  * 無ければ asset の既定 decimals へ fallback する (枠は現状 Kamino のみ)。
@@ -209,37 +210,6 @@ function poolDecimals(pool: ProtocolPool): number {
 // Phase 8.11: Jupiter drill-down redesign — unified vault list helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
-interface JupiterVaultRow {
-  jlMint: string;
-  assetSymbol: string;
-  apyBps: number;
-  tvlUsd: number;
-  underlyingDecimals: number;
-  isDeposited: boolean;
-  /** smallest unit string (underlying decimals 基準) */
-  userUnderlyingAmount: string;
-  /** display only — Phase 8.4.1 carve-out (UI direct presentation) */
-  userUnderlyingHuman: number;
-  userUnderlyingUsd: number;
-  /** signed USD earned (loss は負)。display only。unknown 時は APR 概算 */
-  userEarnedUsd: number;
-  /** Phase 8.13: earned が実 cost-basis 由来か (false = APR 概算 fallback) */
-  userEarnedKnown: boolean;
-  /** Phase 8.13: earned 符号 (unknown 時は概算なので "gain" 相当に倒す) */
-  userEarnedSign: "gain" | "loss" | "unknown";
-  earnPosition?: EarnPosition;
-}
-
-const JUPITER_STABLE_ASSETS = new Set([
-  "USDC",
-  "USDT",
-  "USDS",
-  "USDG",
-  "EURC",
-  "jupUSD",
-  "JupUSD",
-]);
-
 /** Phase 8.12: 大 list で直接見せる primary vaults。それ以外は Others に折りたたむ。 */
 const JUPITER_PRIMARY_ASSETS: readonly string[] = [
   "JupUSD",
@@ -251,7 +221,7 @@ function isJupiterPrimaryAsset(asset: string): boolean {
   return JUPITER_PRIMARY_ASSETS.includes(asset);
 }
 
-function sortByPrimaryOrder(rows: JupiterVaultRow[]): JupiterVaultRow[] {
+function sortByPrimaryOrder(rows: VaultRow[]): VaultRow[] {
   const indexOf = (s: string) => JUPITER_PRIMARY_ASSETS.indexOf(s);
   return [...rows].sort((a, b) => indexOf(a.assetSymbol) - indexOf(b.assetSymbol));
 }
@@ -289,10 +259,14 @@ const ASSET_ICON_BY_SYMBOL: Record<string, ImageRequireSource> = {
   JupUSD: require("../../assets/brands/tokens/jupusd.png"),
 };
 
+/**
+ * Jupiter の行は fixture pool ではなく **live markets** から組む (8.6)。
+ * 8.54: 出力は共有の `VaultRow` — 描画・集計・絞り込みを他 protocol と同じ経路に流す。
+ */
 function buildJupiterVaultRows(
   markets: JupiterLendMarketDTO[],
   earnPositions?: EarnPositionsResponse
-): JupiterVaultRow[] {
+): VaultRow[] {
   const byShareMint = new Map<string, EarnPosition>();
   for (const p of earnPositions?.jupiterLend ?? []) {
     byShareMint.set(p.share_mint, p);
@@ -303,20 +277,34 @@ function buildJupiterVaultRows(
       (Number(m.tvlUnderlying) / Math.pow(10, m.underlyingDecimals)) *
       m.underlyingPriceUsd;
     const pos = byShareMint.get(m.jlMint);
+    const apyBps = m.supplyRateBps;
+    // deposit dispatch 用の pool (Jupiter の menu fixture は live 値で置換される)
+    const pool: ProtocolPool = {
+      pool_id: `jl_${assetSymbol}`,
+      name: `Jupiter Lend ${assetSymbol}`,
+      category: PositionCategory.Stable,
+      asset: assetSymbol,
+      apy: apyBps / 10000,
+      tvl_usd: tvlUsd,
+    };
+    const base = {
+      key: m.jlMint,
+      assetSymbol,
+      subtitle: "Jupiter Lend",
+      apyBps,
+      tvlUsd,
+      pool,
+      displayOnly: false,
+      capView: null,
+    };
     if (!pos) {
       return {
-        jlMint: m.jlMint,
-        assetSymbol,
-        apyBps: m.supplyRateBps,
-        tvlUsd,
-        underlyingDecimals: m.underlyingDecimals,
+        ...base,
         isDeposited: false,
-        userUnderlyingAmount: "0",
         userUnderlyingHuman: 0,
         userUnderlyingUsd: 0,
         userEarnedUsd: 0,
         userEarnedKnown: false,
-        userEarnedSign: "unknown",
       };
     }
     const human =
@@ -338,50 +326,15 @@ function buildJupiterVaultRows(
       earnedUsd = pos.accrued_yield_sign === "loss" ? -magnitudeUsd : magnitudeUsd;
     }
     return {
-      jlMint: m.jlMint,
-      assetSymbol,
-      apyBps: m.supplyRateBps,
-      tvlUsd,
-      underlyingDecimals: pos.underlying_decimals,
+      ...base,
       isDeposited: true,
-      userUnderlyingAmount: pos.underlying_amount,
       userUnderlyingHuman: human,
       userUnderlyingUsd: usdSafe,
       userEarnedUsd: earnedUsd,
       userEarnedKnown: earnedKnown,
-      userEarnedSign: pos.accrued_yield_sign,
       earnPosition: pos,
     };
   });
-}
-
-interface JupiterSummary {
-  depositedUsd: number;
-  earningsUsd: number;
-  /** Phase 8.13: cost-basis 既知の earned が 1 件でもあるか (false なら earnings は "—") */
-  hasKnownEarnings: boolean;
-  avgApyBps: number | null;
-}
-
-function computeJupiterSummary(rows: JupiterVaultRow[]): JupiterSummary {
-  let depositedUsd = 0;
-  let earningsUsd = 0;
-  let weighted = 0;
-  let hasKnownEarnings = false;
-  for (const r of rows) {
-    if (!r.isDeposited) continue;
-    depositedUsd += r.userUnderlyingUsd;
-    // Phase 8.13: cost-basis 既知の実 earned のみ合算 (符号付き)。
-    // 不明は概算を混ぜず除外し、全件不明なら "—" 表示にする。
-    if (r.userEarnedKnown) {
-      earningsUsd += r.userEarnedUsd;
-      hasKnownEarnings = true;
-    }
-    weighted += r.userUnderlyingUsd * (r.apyBps / 10000);
-  }
-  const avgApyBps =
-    depositedUsd > 0 ? Math.round((weighted / depositedUsd) * 10000) : null;
-  return { depositedUsd, earningsUsd, hasKnownEarnings, avgApyBps };
 }
 
 /** Number (USD, 表示専用) → "$1,234.56" 形式 */
@@ -442,37 +395,23 @@ function AssetBadge({ asset, size = 36 }: { asset: string; size?: number }) {
   );
 }
 
-type JupiterFilter = "all" | "stable" | "sol" | "deposited";
-
-const JUPITER_FILTER_ORDER: readonly JupiterFilter[] = [
+/**
+ * Jupiter のチップは **常に 4 つ固定** (8.11 の設計、vault 数が多く常に選ぶ意味がある)。
+ * 他 protocol は `visibleFilters()` で内容に応じて出し分ける (8.54)。
+ */
+const JUPITER_FILTER_ORDER: readonly VaultFilter[] = [
   "all",
   "stable",
   "sol",
   "deposited",
 ] as const;
 
-const JUPITER_FILTER_LABEL: Record<JupiterFilter, string> = {
+const VAULT_FILTER_LABEL: Record<VaultFilter, string> = {
   all: "All",
   stable: "Stable",
   sol: "SOL",
   deposited: "Deposited",
 };
-
-function applyJupiterFilter(
-  rows: JupiterVaultRow[],
-  filter: JupiterFilter
-): JupiterVaultRow[] {
-  switch (filter) {
-    case "all":
-      return rows;
-    case "stable":
-      return rows.filter((r) => JUPITER_STABLE_ASSETS.has(r.assetSymbol));
-    case "sol":
-      return rows.filter((r) => r.assetSymbol === "SOL");
-    case "deposited":
-      return rows.filter((r) => r.isDeposited);
-  }
-}
 
 export interface MenuDrawerProps {
   visible: boolean;
@@ -916,6 +855,32 @@ function formatApyBps(bps: number | null): string {
   return `${(bps / 100).toFixed(2)}% APY`;
 }
 
+/**
+ * Phase 8.15: registry の share_mint に hit する position は withdraw 経路を持つ。
+ *   swap-earn (Jupiter Lend / Jito / Marinade / Sanctum): share_mint = token mint
+ *   Kamino (8.15b): share_mint = reserve address (obligation withdraw)
+ *   Save (8.15c): share_mint = cToken mint (redeem)
+ *   Kamino kVault (8.15d): share_mint = vault address (share 建て withdraw)
+ * いずれにも hit しない (Kamino best-effort 等) は withdraw disable のまま。
+ *
+ * 8.54: カード行の CTA (Manage / Redeem) と "Your Positions" 行で共用する。
+ */
+function canWithdrawPosition(position: EarnPosition): boolean {
+  return (
+    findMarketByShareMint(position.share_mint) !== undefined ||
+    findKaminoMarketByReserve(position.share_mint) !== undefined ||
+    findSaveMarketByCToken(position.share_mint) !== undefined ||
+    findKaminoVaultByAddress(position.share_mint) !== undefined ||
+    // Exponent PT (8.34): 満期済のみ redeem 可 (満期前は server も 400 で拒否)
+    (findExponentMarketByPtMint(position.share_mint) !== undefined &&
+      position.maturity_at != null &&
+      new Date(position.maturity_at).getTime() <= Date.now()) ||
+    // Meteora (8.17) / Orca (8.18): share_mint = position 実 pubkey — protocol で判定
+    position.protocol_id === "meteora" ||
+    position.protocol_id === "orca"
+  );
+}
+
 interface YourPositionRowProps {
   position: EarnPosition;
   onWithdraw?: (position: EarnPosition) => void;
@@ -931,25 +896,7 @@ function YourPositionRow({
     position.underlying_amount,
     position.underlying_decimals
   );
-  // Phase 8.15: registry の share_mint に hit する position は withdraw 経路を持つ。
-  //   swap-earn (Jupiter Lend / Jito / Marinade / Sanctum): share_mint = token mint
-  //   Kamino (8.15b): share_mint = reserve address (obligation withdraw)
-  //   Save (8.15c): share_mint = cToken mint (redeem)
-  //   Kamino kVault (8.15d): share_mint = vault address (share 建て withdraw)
-  // いずれにも hit しない (Kamino best-effort 等) は withdraw disable のまま。
-  const canWithdraw =
-    (findMarketByShareMint(position.share_mint) !== undefined ||
-      findKaminoMarketByReserve(position.share_mint) !== undefined ||
-      findSaveMarketByCToken(position.share_mint) !== undefined ||
-      findKaminoVaultByAddress(position.share_mint) !== undefined ||
-      // Exponent PT (8.34): 満期済のみ redeem 可 (満期前は server も 400 で拒否)
-      (findExponentMarketByPtMint(position.share_mint) !== undefined &&
-        position.maturity_at != null &&
-        new Date(position.maturity_at).getTime() <= Date.now()) ||
-      // Meteora (8.17) / Orca (8.18): share_mint = position 実 pubkey — protocol で判定
-      position.protocol_id === "meteora" ||
-      position.protocol_id === "orca") &&
-    onWithdraw !== undefined;
+  const canWithdraw = canWithdrawPosition(position) && onWithdraw !== undefined;
   return (
     <Pressable
       accessibilityRole={canWithdraw ? "button" : "none"}
@@ -1102,6 +1049,44 @@ function DefaultPoolDetailPane({
   testID,
 }: PoolDetailPaneProps) {
   const iconSrc = ICON_BY_ID[entry.icon_id];
+  const [filter, setFilter] = useState<VaultFilter>("all");
+  const [othersExpanded, setOthersExpanded] = useState(false);
+
+  // 8.54: pool → カード行。保有は行に統合し、紐付かない position だけ
+  // "Your Positions" に残す (Meteora / Orca の LP 等)
+  const { rows, unlinked } = useMemo(() => {
+    const myPositions = positionsForProtocol(
+      entry.protocol_id,
+      earnPositions,
+      positions
+    );
+    return buildPoolVaultRows(entry, myPositions, poolDecimals);
+  }, [entry, earnPositions, positions]);
+
+  const summary = useMemo(() => computeVaultSummary(rows), [rows]);
+  const chips = useMemo(() => visibleFilters(rows), [rows]);
+  // 選択中の filter が候補から消えた場合 (保有が無くなった等) は all に戻す
+  const activeFilter = chips.includes(filter) ? filter : "all";
+  const visibleRows = useMemo(
+    () => applyVaultFilter(rows, activeFilter),
+    [rows, activeFilter]
+  );
+
+  const shownRows = visibleRows.slice(0, VISIBLE_ROW_LIMIT);
+  const otherRows = visibleRows.slice(VISIBLE_ROW_LIMIT);
+
+  const handleDeposit = useCallback(
+    (row: VaultRow) => {
+      if (row.pool) onPoolTap(row.pool);
+    },
+    [onPoolTap]
+  );
+  const handleManage = useCallback(
+    (row: VaultRow) => {
+      if (row.earnPosition) onWithdrawPosition?.(row.earnPosition);
+    },
+    [onWithdrawPosition]
+  );
 
   return (
     <View style={styles.detailPane}>
@@ -1155,120 +1140,78 @@ function DefaultPoolDetailPane({
         contentContainerStyle={styles.detailListInner}
         showsVerticalScrollIndicator={false}
       >
-        {/* Phase 8.2.1: Your Positions subsection (該当 protocol の position があれば) */}
-        {(() => {
-          const myPositions = positionsForProtocol(
-            entry.protocol_id,
-            earnPositions,
-            positions
-          );
-          if (myPositions.length === 0) return null;
-          return (
-            <View
-              style={styles.detailEarnSection}
-              testID={testID ? `${testID}-earn` : undefined}
-            >
-              <Text style={styles.detailEarnHeader}>Your Positions</Text>
-              {myPositions.map((pos) => (
-                <YourPositionRow
-                  key={`${pos.protocol_id}-${pos.share_mint}`}
-                  position={pos}
-                  onWithdraw={onWithdrawPosition}
-                  testID={
-                    testID
-                      ? `${testID}-earn-row-${pos.share_mint}`
-                      : undefined
-                  }
-                />
-              ))}
-            </View>
-          );
-        })()}
+        {/* 8.54: 保有があれば Your Balance サマリー (無い protocol では出さない) */}
+        {summary.depositedUsd > 0 && (
+          <BalanceSummaryCard
+            summary={summary}
+            testID={testID ? `${testID}-summary` : undefined}
+          />
+        )}
 
-        {entry.pools.map((pool, idx) => (
-          <Pressable
-            key={pool.pool_id}
-            // Phase 8.33: read-only pool (Exponent PT 等) は tap 無効 (deposit 経路なし)
-            accessibilityRole={
-              pool.display_only || pool.deposit_open === false ? "none" : "button"
-            }
-            disabled={pool.display_only === true || pool.deposit_open === false}
-            onPress={() => onPoolTap(pool)}
-            style={[
-              styles.detailPoolRow,
-              idx > 0 && styles.detailPoolRowDivider,
-            ]}
-            testID={
-              testID ? `${testID}-pool-${pool.pool_id}` : undefined
-            }
+        {/* 8.54: 選ぶ意味がある時だけチップを出す (単一 asset の protocol では非表示) */}
+        {chips.length > 1 && (
+          <FilterChips
+            filters={chips}
+            active={activeFilter}
+            onSelect={setFilter}
+            testID={testID}
+          />
+        )}
+
+        {/* Phase 8.2.1 → 8.54: 行に統合できなかった position だけ別枠に残す
+            (Meteora / Orca の LP position、Kamino best-effort 等) */}
+        {unlinked.length > 0 && (
+          <View
+            style={styles.detailEarnSection}
+            testID={testID ? `${testID}-earn` : undefined}
           >
-            <View style={styles.poolMain}>
-              <View style={styles.poolNameRow}>
-                <Text style={styles.detailPoolName} numberOfLines={2}>
-                  {pool.name}
-                </Text>
-                <Text style={styles.poolAsset}>·  {pool.asset}</Text>
-              </View>
-              <View style={styles.poolMetricsRow}>
-                <Text
-                  style={[styles.detailPoolApy, { color: apyAccent(pool.apy) }]}
-                >
-                  APY {formatApy(pool.apy)}
-                </Text>
-                <Text style={styles.poolMeta}>
-                  {`TVL ${formatTvlUsd(pool.tvl_usd)}`}
-                </Text>
-                {pool.borrowed_usd != null && (
-                  <Text style={styles.poolMeta}>
-                    {`borrowed ${formatBorrowedUsd(pool.borrowed_usd)}`}
-                  </Text>
-                )}
-                {pool.utilization != null && (
-                  <Text
-                    style={[
-                      styles.poolMeta,
-                      { color: utilizationColor(pool.utilization) },
-                    ]}
-                    testID={`pool-util-${pool.pool_id}`}
-                  >
-                    {formatUtilization(pool.utilization)}
-                  </Text>
-                )}
-                {/* 8.51: 預入枠 (現状 Kamino のみ)。満杯/停止中は警告色 */}
-                {(() => {
-                  const cap = depositCapView(pool, poolDecimals(pool));
-                  if (!cap) return null;
-                  return (
-                    <Text
-                      style={[
-                        styles.poolMeta,
-                        cap.closed ? { color: COLOR.cherryDark } : null,
-                      ]}
-                      testID={`pool-cap-${pool.pool_id}`}
-                    >
-                      {cap.label}
-                    </Text>
-                  );
-                })()}
-                {/* Phase 8.33: read-only pool (deposit 経路なし) の明示 */}
-                {pool.display_only === true && (
-                  <Text
-                    style={styles.poolMeta}
-                    testID={`pool-viewonly-${pool.pool_id}`}
-                  >
-                    View only
-                  </Text>
-                )}
-              </View>
-              {/* 8.26: 満杯市場は withdraw が滞る可能性を明示 */}
-              {pool.utilization != null && pool.utilization >= 0.95 && (
-                <Text style={styles.poolUtilWarning}>
-                  High utilization — withdrawals may be limited
-                </Text>
-              )}
-            </View>
-          </Pressable>
+            <Text style={styles.detailEarnHeader}>Your Positions</Text>
+            {unlinked.map((pos) => (
+              <YourPositionRow
+                key={`${pos.protocol_id}-${pos.share_mint}`}
+                position={pos}
+                onWithdraw={onWithdrawPosition}
+                testID={
+                  testID ? `${testID}-earn-row-${pos.share_mint}` : undefined
+                }
+              />
+            ))}
+          </View>
+        )}
+
+        {visibleRows.length === 0 && (
+          <Text style={styles.empty}>No pools match.</Text>
+        )}
+
+        {shownRows.map((row) => (
+          <VaultRowView
+            key={row.key}
+            row={row}
+            onDeposit={() => handleDeposit(row)}
+            onManage={() => handleManage(row)}
+            testID={testID ? `${testID}-pool-${row.key}` : undefined}
+          />
         ))}
+
+        {otherRows.length > 0 && (
+          <OthersExpanderRow
+            others={otherRows}
+            expanded={othersExpanded}
+            onToggle={() => setOthersExpanded((v) => !v)}
+            testID={testID ? `${testID}-others-expander` : undefined}
+          />
+        )}
+
+        {othersExpanded &&
+          otherRows.map((row) => (
+            <VaultRowView
+              key={row.key}
+              row={row}
+              onDeposit={() => handleDeposit(row)}
+              onManage={() => handleManage(row)}
+              testID={testID ? `${testID}-pool-${row.key}` : undefined}
+            />
+          ))}
       </ScrollView>
     </View>
   );
@@ -1288,23 +1231,23 @@ function JupiterDetailPane({
   testID,
 }: PoolDetailPaneProps) {
   const iconSrc = ICON_BY_ID[entry.icon_id];
-  const [filter, setFilter] = useState<JupiterFilter>("all");
+  const [filter, setFilter] = useState<VaultFilter>("all");
   const [othersExpanded, setOthersExpanded] = useState(false);
 
   const rows = useMemo(
     () => buildJupiterVaultRows(jlMarkets ?? [], earnPositions),
     [jlMarkets, earnPositions]
   );
-  const summary = useMemo(() => computeJupiterSummary(rows), [rows]);
+  const summary = useMemo(() => computeVaultSummary(rows), [rows]);
   const filteredRows = useMemo(
-    () => applyJupiterFilter(rows, filter),
+    () => applyVaultFilter(rows, filter),
     [rows, filter]
   );
 
   // Phase 8.12: "All" filter 時のみ primary / others partition
   const { primaryRows, otherRows } = useMemo(() => {
     if (filter !== "all") {
-      return { primaryRows: filteredRows, otherRows: [] as JupiterVaultRow[] };
+      return { primaryRows: filteredRows, otherRows: [] as VaultRow[] };
     }
     const primary = sortByPrimaryOrder(
       filteredRows.filter((r) => isJupiterPrimaryAsset(r.assetSymbol))
@@ -1322,22 +1265,15 @@ function JupiterDetailPane({
   }, [rows]);
 
   const handleDeposit = useCallback(
-    (row: JupiterVaultRow) => {
-      const pool: ProtocolPool = {
-        pool_id: `jl_${row.assetSymbol}`,
-        name: `Jupiter Lend ${row.assetSymbol}`,
-        category: PositionCategory.Stable,
-        asset: row.assetSymbol,
-        apy: row.apyBps / 10000,
-        tvl_usd: row.tvlUsd,
-      };
-      onPoolTap(pool);
+    (row: VaultRow) => {
+      // 8.54: pool は row 構築時に組んである (jl_<asset>)
+      if (row.pool) onPoolTap(row.pool);
     },
     [onPoolTap]
   );
 
   const handleManage = useCallback(
-    (row: JupiterVaultRow) => {
+    (row: VaultRow) => {
       if (row.earnPosition) {
         onWithdrawPosition?.(row.earnPosition);
       }
@@ -1397,86 +1333,19 @@ function JupiterDetailPane({
         contentContainerStyle={styles.detailListInner}
         showsVerticalScrollIndicator={false}
       >
-        {/* Summary card — Your Jupiter Balance */}
-        <View
-          style={styles.jupSummaryCard}
+        {/* Summary card — Your Jupiter Balance (8.54: 共有 component) */}
+        <BalanceSummaryCard
+          summary={summary}
           testID={testID ? `${testID}-summary` : undefined}
-        >
-          <Text style={styles.jupSummaryTitle}>Your Balance</Text>
-          <View style={styles.jupSummaryMetricsRow}>
-            <View style={styles.jupSummaryMetric}>
-              <Text style={styles.jupSummaryMetricLabel}>Deposited</Text>
-              <Text style={styles.jupSummaryMetricValue}>
-                {summary.depositedUsd > 0
-                  ? formatUsdDisplay(summary.depositedUsd)
-                  : "—"}
-              </Text>
-            </View>
-            <View style={styles.jupSummaryDivider} />
-            <View style={styles.jupSummaryMetric}>
-              <Text style={styles.jupSummaryMetricLabel}>Earnings</Text>
-              <Text
-                style={[
-                  styles.jupSummaryMetricValue,
-                  // Phase 8.13: 実 earned の符号で着色 (gain=melon / loss=cherry)
-                  summary.hasKnownEarnings &&
-                    summary.earningsUsd > 0 && { color: COLOR.melonText },
-                  summary.hasKnownEarnings &&
-                    summary.earningsUsd < 0 && { color: COLOR.cherryDark },
-                ]}
-              >
-                {summary.hasKnownEarnings
-                  ? `${summary.earningsUsd < 0 ? "−" : "+"}${formatUsdDisplay(
-                      Math.abs(summary.earningsUsd),
-                      4
-                    )}`
-                  : "—"}
-              </Text>
-            </View>
-            <View style={styles.jupSummaryDivider} />
-            <View style={styles.jupSummaryMetric}>
-              <Text style={styles.jupSummaryMetricLabel}>Avg APY</Text>
-              <Text style={styles.jupSummaryMetricValue}>
-                {summary.avgApyBps !== null
-                  ? `${(summary.avgApyBps / 100).toFixed(2)}%`
-                  : "—"}
-              </Text>
-            </View>
-          </View>
-        </View>
+        />
 
-        {/* Filter chips */}
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          style={styles.jupFilterScroll}
-          contentContainerStyle={styles.jupFilterRow}
-        >
-          {JUPITER_FILTER_ORDER.map((k) => {
-            const active = filter === k;
-            return (
-              <Pressable
-                key={k}
-                accessibilityRole="button"
-                accessibilityState={{ selected: active }}
-                onPress={() => setFilter(k)}
-                style={[styles.chip, active && styles.chipActive]}
-                testID={
-                  testID ? `${testID}-filter-${k}` : undefined
-                }
-              >
-                <Text
-                  style={[
-                    styles.chipText,
-                    active && styles.chipTextActive,
-                  ]}
-                >
-                  {JUPITER_FILTER_LABEL[k]}
-                </Text>
-              </Pressable>
-            );
-          })}
-        </ScrollView>
+        {/* Filter chips — Jupiter は 4 つ固定 (vault 数が多く常に選ぶ意味がある) */}
+        <FilterChips
+          filters={JUPITER_FILTER_ORDER}
+          active={filter}
+          onSelect={setFilter}
+          testID={testID}
+        />
 
         {/* All vaults section header */}
         <Text style={styles.jupSectionHeader}>ALL VAULTS</Text>
@@ -1486,8 +1355,8 @@ function JupiterDetailPane({
         )}
 
         {primaryRows.map((row) => (
-          <JupiterVaultRowView
-            key={row.jlMint}
+          <VaultRowView
+            key={row.key}
             row={row}
             onDeposit={() => handleDeposit(row)}
             onManage={() => handleManage(row)}
@@ -1509,8 +1378,8 @@ function JupiterDetailPane({
         {showOthersExpander &&
           othersExpanded &&
           otherRows.map((row) => (
-            <JupiterVaultRowView
-              key={row.jlMint}
+            <VaultRowView
+              key={row.key}
               row={row}
               onDeposit={() => handleDeposit(row)}
               onManage={() => handleManage(row)}
@@ -1530,7 +1399,7 @@ function OthersExpanderRow({
   onToggle,
   testID,
 }: {
-  others: JupiterVaultRow[];
+  others: VaultRow[];
   expanded: boolean;
   onToggle: () => void;
   testID?: string;
@@ -1547,7 +1416,7 @@ function OthersExpanderRow({
       <View style={styles.jupOthersIconStack}>
         {stackIcons.map((r, idx) => (
           <View
-            key={r.jlMint}
+            key={r.key}
             style={[
               styles.jupOthersIconBubble,
               { left: idx * 16, zIndex: stackIcons.length - idx },
@@ -1568,18 +1437,67 @@ function OthersExpanderRow({
   );
 }
 
-function JupiterVaultRowView({
+// ─────────────────────────────────────────────────────────────────────────────
+// Phase 8.54: 共有カード行 — Jupiter / 他 protocol で **1 つの視覚定義**を使う
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * 行下段の CTA を決める。優先順位:
+ *   1. 保有あり かつ withdraw 経路あり → Manage (Exponent の満期済 PT は Redeem)
+ *   2. read-only listing (8.33) → CTA なし (タイトルに "View only" バッジ)
+ *   3. 預入不可 (8.51/8.52 満杯・停止中・上流都合) → 無効 CTA + 理由
+ *   4. それ以外 → Deposit
+ */
+function ctaForRow(row: VaultRow): {
+  label: string;
+  kind: "manage" | "deposit";
+  disabled: boolean;
+} | null {
+  if (row.isDeposited && row.earnPosition) {
+    if (!canWithdrawPosition(row.earnPosition)) return null;
+    const redeem = row.displayOnly; // Exponent PT: 満期済のみここに来る
+    return { label: redeem ? "Redeem" : "Manage", kind: "manage", disabled: false };
+  }
+  if (row.displayOnly) return null;
+  if (row.capView?.closed) {
+    const label =
+      row.capView.reason === "paused"
+        ? "Paused"
+        : row.capView.reason === "full"
+          ? "Full"
+          : "Unavailable";
+    return { label, kind: "deposit", disabled: true };
+  }
+  return { label: "Deposit", kind: "deposit", disabled: false };
+}
+
+/**
+ * 保有が無い行の下段に出すメタ (稼働率 / 借入)。無ければ既定文言。
+ * **預入枠はここに混ぜない** — CTA と同じ行で幅を取り合って省略される。
+ * 枠は行を分けて出す (8.51/8.52 の情報を切らせないため)。
+ */
+function metaLineForRow(row: VaultRow): string {
+  const parts: string[] = [];
+  if (row.utilization != null) parts.push(formatUtilization(row.utilization));
+  if (row.borrowedUsd != null) {
+    parts.push(`borrowed ${formatBorrowedUsd(row.borrowedUsd)}`);
+  }
+  return parts.length > 0 ? parts.join("  ·  ") : "No deposit yet";
+}
+
+function VaultRowView({
   row,
   onDeposit,
   onManage,
   testID,
 }: {
-  row: JupiterVaultRow;
+  row: VaultRow;
   onDeposit: () => void;
   onManage: () => void;
   testID?: string;
 }) {
   const deposited = row.isDeposited;
+  const cta = ctaForRow(row);
   return (
     <View
       style={[
@@ -1596,9 +1514,20 @@ function JupiterVaultRowView({
             {deposited && (
               <Text style={styles.jupDepositedBadge}>Deposited</Text>
             )}
+            {/* Phase 8.33: read-only listing (deposit 経路なし) の明示 */}
+            {!deposited && row.displayOnly && (
+              <Text
+                style={styles.jupViewOnlyBadge}
+                testID={`pool-viewonly-${row.key}`}
+              >
+                View only
+              </Text>
+            )}
           </View>
-          <Text style={styles.jupVaultSubtitle}>
-            {`Jupiter Lend  ·  TVL ${formatTvlUsd(row.tvlUsd)}`}
+          {/* 8.54: pool 名は行の識別子 (Kamino は同一 asset に複数 pool) なので
+              APY ブロックに押されても切らずに 2 行まで折り返す */}
+          <Text style={styles.jupVaultSubtitle} numberOfLines={2}>
+            {`${row.subtitle}  ·  TVL ${formatTvlUsd(row.tvlUsd)}`}
           </Text>
         </View>
         <View style={styles.jupVaultApyBlock}>
@@ -1611,8 +1540,33 @@ function JupiterVaultRowView({
         </View>
       </View>
 
+      {/* 8.51/8.52: 預入枠は CTA と幅を取り合わせず独立行で出す (省略させない) */}
+      {!deposited && row.capView && (
+        <Text
+          style={[
+            styles.jupVaultCapLine,
+            row.capView.closed ? { color: COLOR.cherryDark } : null,
+          ]}
+          numberOfLines={1}
+          testID={`pool-cap-${row.key}`}
+        >
+          {row.capView.label}
+        </Text>
+      )}
+
       <View style={styles.jupVaultBottomRow}>
-        <Text style={styles.jupVaultDepositLine} numberOfLines={1}>
+        <Text
+          style={[
+            styles.jupVaultDepositLine,
+            // 8.26: 高稼働率は警告色 (withdraw が流動性不足で滞り得る)
+            !deposited &&
+            row.utilization != null &&
+            row.utilization >= UTILIZATION_WARN_THRESHOLD
+              ? { color: COLOR.cherryDark }
+              : null,
+          ]}
+          numberOfLines={1}
+        >
           {deposited
             ? `You: ${formatHumanAmount(row.userUnderlyingHuman)} ${row.assetSymbol} · Earned ${
                 row.userEarnedKnown
@@ -1621,34 +1575,139 @@ function JupiterVaultRowView({
                     )} USD`
                   : "— USD"
               }`
-            : "No deposit yet"}
+            : metaLineForRow(row)}
         </Text>
-        <Pressable
-          accessibilityRole="button"
-          onPress={deposited ? onManage : onDeposit}
-          style={[
-            styles.jupVaultCta,
-            deposited ? styles.jupVaultCtaManage : styles.jupVaultCtaDeposit,
-          ]}
-          testID={
-            testID
-              ? `${testID}-cta-${deposited ? "manage" : "deposit"}`
-              : undefined
-          }
-        >
+        {cta && (
+          <Pressable
+            accessibilityRole={cta.disabled ? "none" : "button"}
+            disabled={cta.disabled}
+            onPress={cta.kind === "manage" ? onManage : onDeposit}
+            style={[
+              styles.jupVaultCta,
+              cta.kind === "manage"
+                ? styles.jupVaultCtaManage
+                : styles.jupVaultCtaDeposit,
+              cta.disabled && styles.jupVaultCtaDisabled,
+            ]}
+            testID={testID ? `${testID}-cta-${cta.kind}` : undefined}
+          >
+            <Text
+              style={[
+                styles.jupVaultCtaText,
+                cta.kind === "manage"
+                  ? styles.jupVaultCtaTextManage
+                  : styles.jupVaultCtaTextDeposit,
+                cta.disabled && styles.jupVaultCtaTextDisabled,
+              ]}
+            >
+              {cta.label}
+            </Text>
+          </Pressable>
+        )}
+      </View>
+
+      {/* 8.26: 満杯市場は withdraw が滞る可能性を明示 */}
+      {row.utilization != null && row.utilization >= 0.95 && (
+        <Text style={styles.poolUtilWarning}>
+          High utilization — withdrawals may be limited
+        </Text>
+      )}
+    </View>
+  );
+}
+
+/** "Your Balance" サマリー (Deposited / Earnings / Avg APY) */
+function BalanceSummaryCard({
+  summary,
+  testID,
+}: {
+  summary: VaultSummary;
+  testID?: string;
+}) {
+  return (
+    <View style={styles.jupSummaryCard} testID={testID}>
+      <Text style={styles.jupSummaryTitle}>Your Balance</Text>
+      <View style={styles.jupSummaryMetricsRow}>
+        <View style={styles.jupSummaryMetric}>
+          <Text style={styles.jupSummaryMetricLabel}>Deposited</Text>
+          <Text style={styles.jupSummaryMetricValue}>
+            {summary.depositedUsd > 0
+              ? formatUsdDisplay(summary.depositedUsd)
+              : "—"}
+          </Text>
+        </View>
+        <View style={styles.jupSummaryDivider} />
+        <View style={styles.jupSummaryMetric}>
+          <Text style={styles.jupSummaryMetricLabel}>Earnings</Text>
           <Text
             style={[
-              styles.jupVaultCtaText,
-              deposited
-                ? styles.jupVaultCtaTextManage
-                : styles.jupVaultCtaTextDeposit,
+              styles.jupSummaryMetricValue,
+              // Phase 8.13: 実 earned の符号で着色 (gain=melon / loss=cherry)
+              summary.hasKnownEarnings &&
+                summary.earningsUsd > 0 && { color: COLOR.melonText },
+              summary.hasKnownEarnings &&
+                summary.earningsUsd < 0 && { color: COLOR.cherryDark },
             ]}
           >
-            {deposited ? "Manage" : "Deposit"}
+            {summary.hasKnownEarnings
+              ? `${summary.earningsUsd < 0 ? "−" : "+"}${formatUsdDisplay(
+                  Math.abs(summary.earningsUsd),
+                  4
+                )}`
+              : "—"}
           </Text>
-        </Pressable>
+        </View>
+        <View style={styles.jupSummaryDivider} />
+        <View style={styles.jupSummaryMetric}>
+          <Text style={styles.jupSummaryMetricLabel}>Avg APY</Text>
+          <Text style={styles.jupSummaryMetricValue}>
+            {summary.avgApyBps !== null
+              ? `${(summary.avgApyBps / 100).toFixed(2)}%`
+              : "—"}
+          </Text>
+        </View>
       </View>
     </View>
+  );
+}
+
+/** 絞り込みチップ行 (どのチップを出すかは呼び手が決める) */
+function FilterChips({
+  filters,
+  active,
+  onSelect,
+  testID,
+}: {
+  filters: readonly VaultFilter[];
+  active: VaultFilter;
+  onSelect: (f: VaultFilter) => void;
+  testID?: string;
+}) {
+  return (
+    <ScrollView
+      horizontal
+      showsHorizontalScrollIndicator={false}
+      style={styles.jupFilterScroll}
+      contentContainerStyle={styles.jupFilterRow}
+    >
+      {filters.map((k) => {
+        const selected = active === k;
+        return (
+          <Pressable
+            key={k}
+            accessibilityRole="button"
+            accessibilityState={{ selected }}
+            onPress={() => onSelect(k)}
+            style={[styles.chip, selected && styles.chipActive]}
+            testID={testID ? `${testID}-filter-${k}` : undefined}
+          >
+            <Text style={[styles.chipText, selected && styles.chipTextActive]}>
+              {VAULT_FILTER_LABEL[k]}
+            </Text>
+          </Pressable>
+        );
+      })}
+    </ScrollView>
   );
 }
 
@@ -2032,52 +2091,7 @@ const styles = StyleSheet.create({
     paddingTop: SPACE.sm,
     paddingBottom: SPACE.xl,
   },
-  detailPoolRow: {
-    paddingVertical: SPACE.md,
-  },
-  detailPoolRowDivider: {
-    borderTopWidth: 1,
-    borderTopColor: COLOR.divider,
-  },
-  detailPoolName: {
-    fontSize: FONT_SIZE.bodyLG,
-    fontFamily: FONT.heading,
-    fontWeight: WEIGHT.bold,
-    color: COLOR.textPrimary,
-  },
-  detailPoolApy: {
-    fontSize: FONT_SIZE.bodyLG,
-    fontFamily: FONT.heading,
-    fontWeight: WEIGHT.bold,
-  },
-  // ─── Pool row shared ─────────────────────────────────────────
-  poolMain: {
-    gap: 4,
-  },
-  poolNameRow: {
-    flexDirection: "row",
-    alignItems: "baseline",
-    gap: SPACE.xs,
-    flexWrap: "wrap",
-  },
-  poolAsset: {
-    fontSize: FONT_SIZE.bodySM,
-    fontFamily: FONT.heading,
-    fontWeight: WEIGHT.regular,
-    color: COLOR.textSubtitle,
-  },
-  poolMetricsRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: SPACE.md,
-    flexWrap: "wrap",
-    marginTop: 2,
-  },
-  poolMeta: {
-    fontSize: FONT_SIZE.bodySM,
-    fontFamily: FONT.body,
-    color: COLOR.textMuted,
-  },
+  // 8.54: 旧 pool 行 (テキスト羅列) の style は Jupiter 版カード行に統合され消滅
   // 8.26: 稼働率 ≥95% の withdraw 流動性注意 (pool 行下の小テキスト)
   poolUtilWarning: {
     fontSize: FONT_SIZE.bodySM,
@@ -2236,6 +2250,13 @@ const styles = StyleSheet.create({
     fontFamily: FONT.body,
     color: COLOR.textSubtitle,
   },
+  // 8.54: 預入枠 (8.51/8.52) の独立行 — CTA と幅を取り合わないので省略されない
+  jupVaultCapLine: {
+    marginTop: SPACE.xs,
+    fontSize: FONT_SIZE.bodySM,
+    fontFamily: FONT.body,
+    color: COLOR.textMuted,
+  },
   jupVaultCta: {
     paddingHorizontal: SPACE.md,
     paddingVertical: SPACE.xs + 2,
@@ -2257,6 +2278,25 @@ const styles = StyleSheet.create({
   },
   jupVaultCtaTextManage: {
     color: COLOR.textOnColor,
+  },
+  // 8.54: 預入不可 (満杯 / 停止中 / 上流都合) の CTA — 押せないことを見た目で示す
+  jupVaultCtaDisabled: {
+    backgroundColor: withAlpha(COLOR.textMuted, 0.15),
+  },
+  jupVaultCtaTextDisabled: {
+    color: COLOR.textMuted,
+  },
+  // 8.54: read-only listing (Exponent PT 等) のバッジ。Deposited と同じ形で色だけ中立
+  jupViewOnlyBadge: {
+    fontSize: FONT_SIZE.bodySM,
+    fontFamily: FONT.heading,
+    fontWeight: WEIGHT.semibold,
+    color: COLOR.textMuted,
+    backgroundColor: withAlpha(COLOR.textMuted, 0.12),
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: RADIUS.pill,
+    overflow: "hidden",
   },
   // Phase 8.12 — Others expander row
   jupOthersRow: {
