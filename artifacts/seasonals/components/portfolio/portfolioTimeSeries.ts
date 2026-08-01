@@ -179,16 +179,24 @@ export interface ServerHistoryPoint {
   at: number;
   usd: string;
   sol: string;
+  /** 8.62: protocol に預けた分のみ (Total / Deposited トグル) */
+  deposited_usd?: string;
+  deposited_sol?: string;
 }
+
+/** 8.62: 集計の対象。total = 全資産 / deposited = protocol への預入のみ */
+export type PortfolioScope = "total" | "deposited";
 
 export function serverHistoryToPoints(
   points: ServerHistoryPoint[],
-  currency: CurrencyUnit
+  currency: CurrencyUnit,
+  scope: PortfolioScope = "total"
 ): PortfolioPoint[] {
   const out: PortfolioPoint[] = [];
   for (const p of points) {
-    const usd = Number(p.usd);
-    const sol = Number(p.sol);
+    const deposited = scope === "deposited";
+    const usd = Number(deposited ? (p.deposited_usd ?? "0") : p.usd);
+    const sol = Number(deposited ? (p.deposited_sol ?? "0") : p.sol);
     const value = currency === "SOL" ? sol : usd;
     if (!Number.isFinite(value) || value < 0) continue;
     // 8.60: **0 は落とさない** — 入金前 / 全額引き出し後の「保有ゼロ」は事実。

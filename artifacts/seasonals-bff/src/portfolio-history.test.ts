@@ -273,6 +273,59 @@ describe("firstFundedTime — 最初に資産を持った時刻 (8.60)", () => {
   });
 });
 
+describe("buildHistorySeries — 預入分の同時集計 (8.62)", () => {
+  const jl: HistoryAsset = {
+    mint: "JL_MINT",
+    symbol: "jlUSDC",
+    decimals: 6,
+    currentUsd8: "1.00000000",
+    deposited: true,
+  };
+  const rawSol: HistoryAsset = {
+    mint: WSOL,
+    symbol: "SOL",
+    decimals: 9,
+    feedId: SOL_FEED,
+    deposited: false,
+  };
+
+  it("同じ残高・価格から全資産と預入分の 2 本を出す", () => {
+    const at = NOW - DAY;
+    const balances = new Map([
+      [
+        at,
+        new Map([
+          [WSOL, 1_000_000_000n], // 1 SOL = $80
+          ["JL_MINT", 10_000_000n], // 10 jlUSDC = $10
+        ]),
+      ],
+    ]);
+    const prices = new Map([[at, new Map([[SOL_FEED, "80.00000000"]])]]);
+    const out = buildHistorySeries([at], balances, [rawSol, jl], prices, SOL_FEED);
+    expect(out.points[0]!.usd).toBe("90.00000000");
+    expect(out.points[0]!.deposited_usd).toBe("10.00000000");
+    // SOL 建ても同じ SOL 価格で割る
+    expect(out.points[0]!.sol).toBe("1.12500000");
+    expect(out.points[0]!.deposited_sol).toBe("0.12500000");
+  });
+
+  it("預入がゼロの時点は deposited_usd='0' (全資産は出る)", () => {
+    const at = NOW - DAY;
+    const balances = new Map([[at, new Map([[WSOL, 1_000_000_000n]])]]);
+    const prices = new Map([[at, new Map([[SOL_FEED, "80.00000000"]])]]);
+    const out = buildHistorySeries([at], balances, [rawSol, jl], prices, SOL_FEED);
+    expect(out.points[0]!.usd).toBe("80.00000000");
+    expect(out.points[0]!.deposited_usd).toBe("0.00000000");
+  });
+
+  it("全部が預入なら 2 本は一致する", () => {
+    const at = NOW - DAY;
+    const balances = new Map([[at, new Map([["JL_MINT", 10_000_000n]])]]);
+    const out = buildHistorySeries([at], balances, [jl], new Map(), SOL_FEED);
+    expect(out.points[0]!.deposited_usd).toBe(out.points[0]!.usd);
+  });
+});
+
 describe("buildHistorySeries — ゼロ期間 (8.60)", () => {
   const solAsset: HistoryAsset = {
     mint: WSOL,

@@ -261,3 +261,38 @@ describe("coverageFromKnownStart (8.60)", () => {
     expect(rangeExceedsCoverage("1Y", c)).toBe(false);
   });
 });
+
+describe("serverHistoryToPoints — scope (8.62)", () => {
+  const AT = Math.floor(Date.parse("2026-08-01T00:00:00Z") / 1000);
+  const points = [
+    {
+      at: AT,
+      usd: "122.00000000",
+      sol: "1.60000000",
+      deposited_usd: "10.20000000",
+      deposited_sol: "0.14000000",
+    },
+  ];
+
+  it("total は全資産、deposited は預入分を返す", () => {
+    expect(serverHistoryToPoints(points, "USDC", "total")[0]!.value).toBe(122);
+    expect(serverHistoryToPoints(points, "USDC", "deposited")[0]!.value).toBe(10.2);
+    expect(serverHistoryToPoints(points, "SOL", "deposited")[0]!.value).toBe(0.14);
+  });
+
+  it("scope 未指定は total (既存の呼び出しを壊さない)", () => {
+    expect(serverHistoryToPoints(points, "USDC")[0]!.value).toBe(122);
+  });
+
+  it("預入ゼロの点も落とさない (8.61 の regression 防止)", () => {
+    const zero = [
+      { ...points[0]!, deposited_usd: "0.00000000", deposited_sol: "0.00000000" },
+    ];
+    expect(serverHistoryToPoints(zero, "USDC", "deposited")[0]!.value).toBe(0);
+  });
+
+  it("deposited_* が無い応答 (旧 BFF) は 0 として扱う", () => {
+    const legacy = [{ at: AT, usd: "122.00000000", sol: "1.60000000" }];
+    expect(serverHistoryToPoints(legacy, "USDC", "deposited")[0]!.value).toBe(0);
+  });
+});

@@ -52,6 +52,8 @@ export interface HistoryAsset {
   mint: string;
   symbol: string;
   decimals: number;
+  /** 8.62: protocol への預入か (Total / Deposited トグルの集計に使う) */
+  deposited?: boolean;
   /** Pyth feed id (無ければ過去価格を引けない = 現在価格で近似) */
   feedId?: string | undefined;
   /** 現在の USD 単価 (8-dec string)。feed が無い asset の近似に使う */
@@ -61,10 +63,14 @@ export interface HistoryAsset {
 export interface HistoryPoint {
   /** その点の時刻 (unix 秒)。8.59: 日内サンプリングのため日付文字列から変更 */
   at: number;
-  /** その時点の評価額 (USD 8-dec string) */
+  /** その時点の評価額 (USD 8-dec string)。**全資産** */
   usd: string;
   /** その時点の SOL 建て評価額 (8-dec string)。SOL 価格が無い点は "0" */
   sol: string;
+  /** 8.62: protocol に預けた分のみの評価額 (同じ残高・価格から同時に集計) */
+  deposited_usd: string;
+  /** 8.62: 同上の SOL 建て */
+  deposited_sol: string;
 }
 
 const SECONDS_PER_DAY = 86_400;
@@ -257,6 +263,7 @@ export function buildHistorySeries(
     if (!balances) continue;
     const pricesOfPoint = pricesByTime.get(at);
     let usdTotal = 0n; // 8-dec fixed point
+    let depositedTotal = 0n; // 8.62: 預入分のみ (同じ 1 パスで集計)
     let priced = false;
     let heldAnything = false;
     for (const asset of assets) {
@@ -269,22 +276,36 @@ export function buildHistorySeries(
       const scaled = usd8ToScaled(price.usd8);
       if (scaled === null || scaled === 0n) continue;
       if (price.approximated) approximated.add(asset.symbol);
-      usdTotal += (amount * scaled) / 10n ** BigInt(asset.decimals);
+      const value = (amount * scaled) / 10n ** BigInt(asset.decimals);
+      usdTotal += value;
+      if (asset.deposited) depositedTotal += value;
       priced = true;
     }
     // 8.60: 全資産ゼロは **事実** なので 0 の点を描く (入金前 / 全額引き出し後)。
     // 「保有しているが価格が引けない」場合とは区別し、後者は点を作らない
     if (!priced) {
       if (heldAnything) continue;
-      points.push({ at, usd: "0.00000000", sol: "0.00000000" });
+      points.push({
+        at,
+        usd: "0.00000000",
+        sol: "0.00000000",
+        deposited_usd: "0.00000000",
+        deposited_sol: "0.00000000",
+      });
       continue;
     }
     const solScaled = solFeedId
       ? usd8ToScaled(pricesOfPoint?.get(solFeedId) ?? "")
       : null;
-    const sol8 =
-      solScaled && solScaled > 0n ? (usdTotal * 100_000_000n) / solScaled : 0n;
-    points.push({ at, usd: formatUsd8(usdTotal), sol: formatUsd8(sol8) });
+    const toSol = (usd8: bigint) =>
+      solScaled && solScaled > 0n ? (usd8 * 100_000_000n) / solScaled : 0n;
+    points.push({
+      at,
+      usd: formatUsd8(usdTotal),
+      sol: formatUsd8(toSol(usdTotal)),
+      deposited_usd: formatUsd8(depositedTotal),
+      deposited_sol: formatUsd8(toSol(depositedTotal)),
+    });
   }
   return { points, approximatedSymbols: [...approximated].sort() };
 }

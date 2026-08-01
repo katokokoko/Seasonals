@@ -93,6 +93,7 @@ import {
 } from "./clients/oracle";
 // 8.58: 過去価格 (Pyth Benchmarks) と履歴組み立ての純関数
 import { fetchPriceSeries, priceAtOrBefore } from "./clients/pyth-history";
+import { isDepositedMint } from "@workspace/lib/config/deposited-mints";
 import {
   buildHistorySeries,
   firstFundedTime,
@@ -458,6 +459,8 @@ async function loadWalletHistoryInputs(
       symbol,
       decimals: known?.decimals ?? asset.token_info?.decimals ?? 0,
       feedId: pythFeedIdForSymbol(symbol),
+      // 8.62: protocol への預入か (Total / Deposited の切り替えに使う)
+      deposited: isDepositedMint(asset.id),
       currentUsd8:
         typeof priceFloat === "number" && Number.isFinite(priceFloat)
           ? priceFloat.toFixed(8)

@@ -16,6 +16,7 @@ import {
 } from "@workspace/lib/types";
 import { TOKEN_DECIMALS, toHumanReadable } from "@workspace/lib/utils/numeric";
 import { COLOR } from "@workspace/lib/design-system";
+import { isDepositedMint } from "@workspace/lib/config/deposited-mints";
 
 export type CurrencyUnit = "USDC" | "SOL";
 
@@ -135,6 +136,34 @@ export function positionSolValue(p: Position, prices: PriceMap = {}): number {
   const solUsd = solUsdPrice(prices);
   if (solUsd === null) return 0;
   return positionUsdValue(p, prices) / solUsd;
+}
+
+/**
+ * position が指す token mint。source によって置き場所が違う:
+ *   - earn position (earn-to-position) → `raw_state.share_mint`
+ *   - wallet holding (Helius DAS)      → `raw_state.mint`
+ * どちらも無ければ null (= 判定不能なので預入に数えない)。
+ */
+export function positionMint(p: Position): string | null {
+  const rs = (p.raw_state ?? {}) as Record<string, unknown>;
+  if (typeof rs.share_mint === "string") return rs.share_mint;
+  if (typeof rs.mint === "string") return rs.mint;
+  return null;
+}
+
+/**
+ * 8.62: protocol に預けた position のみの USD 評価額 (Deposited スコープ)。
+ * 判定は registry (lib/config/deposited-mints) が唯一の材料。
+ */
+export function depositedUsdValue(
+  positions: Position[],
+  prices: PriceMap = {}
+): number {
+  return positions.reduce((sum, p) => {
+    const mint = positionMint(p);
+    if (!mint || !isDepositedMint(mint)) return sum;
+    return sum + positionUsdValue(p, prices);
+  }, 0);
 }
 
 /** ポートフォリオ全体の USD 評価額 (全 positions の単純合計) */

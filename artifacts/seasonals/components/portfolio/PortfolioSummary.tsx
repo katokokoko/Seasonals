@@ -55,6 +55,7 @@ import { Charts } from "./Charts";
 import { SponsoredCard } from "./SponsoredCard";
 import {
   aggregateAllocation,
+  depositedUsdValue,
   positionUsdValue,
   solUsdPrice,
   totalUsdValue,
@@ -73,6 +74,7 @@ import {
   serverHistoryToPoints,
   totalSolValue,
   type PortfolioPoint,
+  type PortfolioScope,
   type RangeKey,
 } from "./portfolioTimeSeries";
 // 8.56: 端末に貯めた日次スナップショット (実測のみ)
@@ -148,6 +150,8 @@ export function PortfolioSummary({
 
   const [currency, setCurrency] = useState<CurrencyUnit>("USDC");
   const [range, setRange] = useState<RangeKey>("1M");
+  // 8.62: 全資産 (total) か、protocol に預けた分だけ (deposited) か
+  const [scope, setScope] = useState<PortfolioScope>("total");
 
   // Phase 8.4.1: total を asset_symbol price table から直接計算 (allocation.ts と同じロジック)
   // 8.57: 実価格 map (native SOL は DAS に価格が無いので oracle から埋める)
@@ -162,9 +166,13 @@ export function PortfolioSummary({
   }, [priceStrings]);
   const solUsd = solUsdPrice(prices);
 
+  // 8.62: 見出しは scope に追従 (deposited は protocol への預入分のみ)
   const totalUsd = useMemo(
-    () => totalUsdValue(positions, prices),
-    [positions, prices]
+    () =>
+      scope === "deposited"
+        ? depositedUsdValue(positions, prices)
+        : totalUsdValue(positions, prices),
+    [positions, prices, scope]
   );
   const totalSol = solUsd === null ? 0 : totalUsd / solUsd;
 
@@ -247,10 +255,17 @@ export function PortfolioSummary({
     [snapshots, positions, range, today, currency, prices]
   );
   const serverSeries: PortfolioPoint[] = useMemo(
-    () => serverHistoryToPoints(serverHistory?.points ?? [], currency),
-    [serverHistory, currency]
+    () => serverHistoryToPoints(serverHistory?.points ?? [], currency, scope),
+    [serverHistory, currency, scope]
   );
-  const series = serverSeries.length >= 2 ? serverSeries : localSeries;
+  // deposited のローカル記録は無い (8.56 の snapshot は全資産) ので、
+  // server 履歴が無ければ現在値カードに落とす (全資産の線を流用しない)
+  const series =
+    serverSeries.length >= 2
+      ? serverSeries
+      : scope === "deposited"
+        ? []
+        : localSeries;
   const approximatedSymbols = serverHistory?.approximated_symbols ?? [];
   // 8.60: 履歴がどこまで遡れているか (3M と 1Y が同じに見える理由の説明)
   const coverage = useMemo(
@@ -272,8 +287,12 @@ export function PortfolioSummary({
     () => coverageFromKnownStart(knownStart, today),
     [knownStart, today]
   );
-  // 変動を観測できていない間は線を描かず現在値カードを出す
-  const showChart = seriesHasHistory(series);
+  // 変動を観測できていない間は線を描かず現在値カードを出す。
+  // 8.62: ただし **server が復元した実履歴** は平坦でも描く — 「残高が動いて
+  // いない」という事実だからである (Deposited は預入額が変わらなければ平坦に
+  // なるのが正しい)。hasHistory の門番は端末スナップショット経路に限る
+  const showChart =
+    serverSeries.length >= 2 ? true : seriesHasHistory(series);
   const trackingSince = snapshots[0] ? dayKeyToDate(snapshots[0].day) : today;
 
   // Phase 8.4.1: currency 駆動で donut value も切替
@@ -409,6 +428,29 @@ export function PortfolioSummary({
             <Text style={styles.avgYieldLabel}>AVG YIELD</Text>
             <Text style={styles.avgYieldValue}>{avgYieldDisplay}</Text>
           </View>
+        </View>
+
+        {/* 8.62: 集計対象 (全資産 / 預入分) */}
+        <View style={styles.scopeRow}>
+          {(["total", "deposited"] as const).map((k) => (
+            <Pressable
+              key={k}
+              accessibilityRole="button"
+              accessibilityState={{ selected: scope === k }}
+              onPress={() => setScope(k)}
+              style={[styles.scopeBtn, scope === k && styles.scopeBtnActive]}
+              testID={testID ? `${testID}-scope-${k}` : undefined}
+            >
+              <Text
+                style={[
+                  styles.scopeText,
+                  scope === k && styles.scopeTextActive,
+                ]}
+              >
+                {k === "total" ? "Total" : "Deposited"}
+              </Text>
+            </Pressable>
+          ))}
         </View>
 
         {/* Range selector */}
@@ -822,6 +864,32 @@ function makeStyles(c: ThemeColors) {
       flexDirection: "row",
       gap: 4,
       paddingTop: SPACE.xs,
+    },
+    // 8.62: 集計対象トグル (Total / Deposited)。通貨トグルと同じ pill 意匠に揃える
+    scopeRow: {
+      flexDirection: "row",
+      alignSelf: "flex-start",
+      borderRadius: RADIUS.pill,
+      backgroundColor: withAlpha(c.textMuted, 0.12),
+      padding: 2,
+      marginTop: SPACE.xs,
+    },
+    scopeBtn: {
+      paddingHorizontal: SPACE.md,
+      paddingVertical: 4,
+      borderRadius: RADIUS.pill,
+    },
+    scopeBtnActive: {
+      backgroundColor: c.sodaText,
+    },
+    scopeText: {
+      fontSize: FONT_SIZE.bodySM,
+      fontFamily: FONT.heading,
+      fontWeight: WEIGHT.semibold,
+      color: c.textSubtitle,
+    },
+    scopeTextActive: {
+      color: c.textOnColor,
     },
     rangeBtn: {
       paddingHorizontal: SPACE.sm,
