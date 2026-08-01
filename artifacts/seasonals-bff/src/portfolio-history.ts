@@ -59,62 +59,103 @@ export interface HistoryAsset {
 }
 
 export interface HistoryPoint {
-  /** "YYYY-MM-DD" (UTC) */
-  day: string;
-  /** その日の評価額 (USD 8-dec string) */
+  /** その点の時刻 (unix 秒)。8.59: 日内サンプリングのため日付文字列から変更 */
+  at: number;
+  /** その時点の評価額 (USD 8-dec string) */
   usd: string;
-  /** その日の SOL 建て評価額 (8-dec string)。SOL 価格が無い日は "0" */
+  /** その時点の SOL 建て評価額 (8-dec string)。SOL 価格が無い点は "0" */
   sol: string;
 }
 
 const SECONDS_PER_DAY = 86_400;
+const SECONDS_PER_HOUR = 3_600;
 
-/** unix 秒 → UTC の "YYYY-MM-DD" */
+/**
+ * 切りのよい刻み幅 (秒)。範囲 ÷ 目標点数 を、この中の最も近い値に丸める。
+ * epoch からの倍数に整列させるので、同じ刻みなら毎回同じ時刻を引く
+ * (= 過去価格キャッシュがそのまま効く)。
+ */
+const NICE_STEPS_SEC = [
+  1 * SECONDS_PER_HOUR,
+  2 * SECONDS_PER_HOUR,
+  3 * SECONDS_PER_HOUR,
+  4 * SECONDS_PER_HOUR,
+  6 * SECONDS_PER_HOUR,
+  8 * SECONDS_PER_HOUR,
+  12 * SECONDS_PER_HOUR,
+  1 * SECONDS_PER_DAY,
+  2 * SECONDS_PER_DAY,
+  4 * SECONDS_PER_DAY,
+  7 * SECONDS_PER_DAY,
+  8 * SECONDS_PER_DAY,
+  14 * SECONDS_PER_DAY,
+];
+
+/** どの range でもこの点数を目指す (3M の日次 ≒ 90 点が「ちょうどいい」基準) */
+export const TARGET_POINTS = 90;
+
+/**
+ * 末尾の点を「今」から少し戻す秒数。
+ * 実測 (8.58): Benchmarks は現在時刻ちょうどだと 404、60s 前なら 200。
+ */
+export const HISTORY_PRICE_LAG_SEC = 120;
+
+/** unix 秒 → UTC の "YYYY-MM-DD" (ログ / 表示補助用) */
 export function utcDayKey(unixSeconds: number): string {
   return new Date(unixSeconds * 1000).toISOString().slice(0, 10);
 }
 
-/** "YYYY-MM-DD" の **終わり** (23:59:59 UTC) の unix 秒 */
-export function endOfUtcDay(day: string): number {
-  return Math.floor(Date.parse(`${day}T23:59:59.999Z`) / 1000);
-}
-
 /**
- * 描画する日付の並びを作る。
- * 90 日までは日次、それを超えたら**週次サンプリング** (点数を ~52 に抑える)。
- * 過去価格は 1 日 1 リクエストなので、1Y を日次にすると 365 回叩くことになる。
+ * 描画する時刻の並びを作る。
+ *
+ * 8.59: range によって点密度が違った (1W は 8 点、3M は 91 点) のを、
+ * **目標点数から刻みを決める**方式に変更。1W なら 2 時間刻み、1Y なら 4 日刻みで
+ * どれも ~90 点になる。Pyth Benchmarks は任意時刻に対応するので日内も引ける。
  */
-export function sampleDays(days: number, nowSeconds: number): string[] {
-  const step = days > 90 ? 7 : 1;
-  const out: string[] = [];
-  for (let ago = days; ago >= 0; ago -= step) {
-    out.push(utcDayKey(nowSeconds - ago * SECONDS_PER_DAY));
+export function sampleTimestamps(
+  days: number,
+  nowSeconds: number,
+  targetPoints: number = TARGET_POINTS
+): number[] {
+  const rangeSec = days * SECONDS_PER_DAY;
+  const ideal = rangeSec / Math.max(1, targetPoints);
+  // 理想の刻みに **最も近い** 値を選ぶ。切り上げだと 1Y (理想 4.05 日) が
+  // 7 日刻みに飛んで 53 点しか出ず、range 間で密度が揃わない
+  const step = NICE_STEPS_SEC.reduce((best, s) =>
+    Math.abs(s - ideal) < Math.abs(best - ideal) ? s : best
+  );
+  // 末尾は「今」ではなく少し過去 (Benchmarks は現在時刻ちょうどで 404)
+  const end = nowSeconds - HISTORY_PRICE_LAG_SEC;
+  // epoch 倍数に整列 (同じ引数なら毎回同一の配列 = キャッシュが効く)
+  const lastAligned = Math.floor(end / step) * step;
+  const out: number[] = [];
+  for (let at = lastAligned - rangeSec; at <= lastAligned; at += step) {
+    out.push(at);
   }
-  const todayKey = utcDayKey(nowSeconds);
-  if (out[out.length - 1] !== todayKey) out.push(todayKey);
   return out;
 }
 
 /**
- * 現在残高から差分を遡って、各日の**終値残高**を復元する。
+ * 現在残高から差分を遡って、**各時点の残高**を復元する。
  *
- * balance(D) = current − Σ(D の終わりより後に起きた差分)
+ * balance(t) = current − Σ(t より後に起きた差分)
  * tx window の外まで遡ると負になり得るため、負は 0 に丸める
  * (「その頃はもっと持っていた」ことは差分から証明できないため)。
+ *
+ * 8.59: 日単位から unix 秒単位に一般化 (1W を日内 2 時間刻みで描くため)。
  */
 export function replayBalances(
   current: Map<string, bigint>,
   deltas: BalanceDelta[],
-  days: string[]
-): Map<string, Map<string, bigint>> {
+  timestamps: number[]
+): Map<number, Map<string, bigint>> {
   const newestFirst = [...deltas].sort((a, b) => b.timestamp - a.timestamp);
   const running = new Map(current);
-  const out = new Map<string, Map<string, bigint>>();
+  const out = new Map<number, Map<string, bigint>>();
   let cursor = 0;
-  for (let i = days.length - 1; i >= 0; i--) {
-    const day = days[i]!;
-    const dayEnd = endOfUtcDay(day);
-    while (cursor < newestFirst.length && newestFirst[cursor]!.timestamp > dayEnd) {
+  for (let i = timestamps.length - 1; i >= 0; i--) {
+    const at = timestamps[i]!;
+    while (cursor < newestFirst.length && newestFirst[cursor]!.timestamp > at) {
       const d = newestFirst[cursor]!;
       running.set(d.mint, (running.get(d.mint) ?? 0n) - d.amount);
       cursor++;
@@ -123,12 +164,40 @@ export function replayBalances(
     for (const [mint, amount] of running) {
       snapshot.set(mint, amount > 0n ? amount : 0n);
     }
-    out.set(day, snapshot);
+    out.set(at, snapshot);
   }
   return out;
 }
 
-/** その asset の、その日の USD 単価 (8-dec string)。引けなければ null */
+/**
+ * 8.59: 「wallet が資産を持ち始めた時刻」を差分から求める。
+ *
+ * 現在残高から差分を遡っていき、**全 mint が 0 以下になった瞬間**の tx 時刻を返す
+ * (それより前は空 = 描いても点にならない)。ここを起点にしないと、履歴の無い期間を
+ * 含んだまま刻みを決めてしまい、実際に描ける点が目標より大幅に少なくなる
+ * (1Y 指定で 20 点しか出ない等)。全期間を通じて保有していれば null。
+ */
+export function earliestFundedTime(
+  current: Map<string, bigint>,
+  deltas: BalanceDelta[]
+): number | null {
+  const newestFirst = [...deltas].sort((a, b) => b.timestamp - a.timestamp);
+  const running = new Map(current);
+  for (const d of newestFirst) {
+    running.set(d.mint, (running.get(d.mint) ?? 0n) - d.amount);
+    let allEmpty = true;
+    for (const amount of running.values()) {
+      if (amount > 0n) {
+        allEmpty = false;
+        break;
+      }
+    }
+    if (allEmpty) return d.timestamp;
+  }
+  return null;
+}
+
+/** その asset の、その時点の USD 単価 (8-dec string)。引けなければ null */
 function priceForAsset(
   asset: HistoryAsset,
   pricesOfDay: Map<string, string> | undefined
@@ -151,28 +220,28 @@ export interface HistorySeries {
 }
 
 /**
- * 日次残高 × その日の価格 → 評価額の系列。
- * SOL 建ては同じ日の SOL 価格で割る (SOL の線も歴史的に正しくなる)。
+ * 各時点の残高 × その時点の価格 → 評価額の系列。
+ * SOL 建ては同じ時点の SOL 価格で割る (SOL の線も歴史的に正しくなる)。
  */
 export function buildHistorySeries(
-  days: string[],
-  balancesByDay: Map<string, Map<string, bigint>>,
+  timestamps: number[],
+  balancesByTime: Map<number, Map<string, bigint>>,
   assets: HistoryAsset[],
-  pricesByDay: Map<string, Map<string, string>>,
+  pricesByTime: Map<number, Map<string, string>>,
   solFeedId: string | undefined
 ): HistorySeries {
   const points: HistoryPoint[] = [];
   const approximated = new Set<string>();
-  for (const day of days) {
-    const balances = balancesByDay.get(day);
+  for (const at of timestamps) {
+    const balances = balancesByTime.get(at);
     if (!balances) continue;
-    const pricesOfDay = pricesByDay.get(day);
+    const pricesOfPoint = pricesByTime.get(at);
     let usdTotal = 0n; // 8-dec fixed point
     let priced = false;
     for (const asset of assets) {
       const amount = balances.get(asset.mint) ?? 0n;
       if (amount === 0n) continue;
-      const price = priceForAsset(asset, pricesOfDay);
+      const price = priceForAsset(asset, pricesOfPoint);
       if (!price) continue;
       // amount(smallest) × price(8-dec) / 10^decimals → USD の 8-dec fixed point
       const scaled = usd8ToScaled(price.usd8);
@@ -183,15 +252,11 @@ export function buildHistorySeries(
     }
     if (!priced) continue;
     const solScaled = solFeedId
-      ? usd8ToScaled(pricesOfDay?.get(solFeedId) ?? "")
+      ? usd8ToScaled(pricesOfPoint?.get(solFeedId) ?? "")
       : null;
     const sol8 =
       solScaled && solScaled > 0n ? (usdTotal * 100_000_000n) / solScaled : 0n;
-    points.push({
-      day,
-      usd: formatUsd8(usdTotal),
-      sol: formatUsd8(sol8),
-    });
+    points.push({ at, usd: formatUsd8(usdTotal), sol: formatUsd8(sol8) });
   }
   return { points, approximatedSymbols: [...approximated].sort() };
 }

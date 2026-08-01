@@ -352,8 +352,9 @@ export async function getPrices(
 
 /** Phase 8.58: BFF が wallet tx から復元した過去の評価額 */
 export interface PortfolioHistoryDTO {
-  points: { day: string; usd: string; sol: string }[];
-  oldest_day: string | null;
+  /** 8.59: at は unix 秒 (range によらず ~90 点、1W は日内 2h 刻み) */
+  points: { at: number; usd: string; sol: string }[];
+  oldest_at: number | null;
   approximated_symbols: string[];
 }
 
@@ -367,7 +368,7 @@ export async function getPortfolioHistory(
 ): Promise<PortfolioHistoryDTO> {
   const empty: PortfolioHistoryDTO = {
     points: [],
-    oldest_day: null,
+    oldest_at: null,
     approximated_symbols: [],
   };
   return tryHttpThenFixture(

@@ -144,9 +144,11 @@ describe("formatAxisValue", () => {
 });
 
 describe("serverHistoryToPoints — BFF 復元履歴 (8.58)", () => {
+  const AT_1 = Math.floor(Date.parse("2026-07-31T12:00:00Z") / 1000);
+  const AT_2 = Math.floor(Date.parse("2026-08-01T12:00:00Z") / 1000);
   const server = [
-    { day: "2026-07-31", usd: "122.13275883", sol: "1.67776341" },
-    { day: "2026-08-01", usd: "122.17923625", sol: "1.67479218" },
+    { at: AT_1, usd: "122.13275883", sol: "1.67776341" },
+    { at: AT_2, usd: "122.17923625", sol: "1.67479218" },
   ];
 
   it("トグル通貨に応じて usd / sol を選ぶ", () => {
@@ -156,17 +158,16 @@ describe("serverHistoryToPoints — BFF 復元履歴 (8.58)", () => {
     expect(sol.map((p) => p.value)).toEqual([1.67776341, 1.67479218]);
   });
 
-  it("day を Date に戻す (ローカル 0 時)", () => {
+  it("at (unix 秒) から Date を作る", () => {
     const pts = serverHistoryToPoints(server, "USDC");
-    expect(pts[0]!.date.getFullYear()).toBe(2026);
-    expect(pts[0]!.date.getDate()).toBe(31);
+    expect(pts[0]!.date.getTime()).toBe(AT_1 * 1000);
   });
 
   it("0 / 不正値の点は落とす (SOL 価格が無い日の sol='0' 等)", () => {
     const pts = serverHistoryToPoints(
       [
-        { day: "2026-08-01", usd: "122.00000000", sol: "0.00000000" },
-        { day: "2026-08-02", usd: "1", sol: "bad" },
+        { at: AT_1, usd: "122.00000000", sol: "0.00000000" },
+        { at: AT_2, usd: "1", sol: "bad" },
       ],
       "SOL"
     );

@@ -173,7 +173,8 @@ export function formatAxisValue(value: number, step?: number): string {
  * chart の系列に変換する。**表示直前の Number 化**なので §4.5 の carve-out 内。
  */
 export interface ServerHistoryPoint {
-  day: string;
+  /** 8.59: unix 秒 (日内サンプリングのため日付文字列から変更) */
+  at: number;
   usd: string;
   sol: string;
 }
@@ -186,7 +187,7 @@ export function serverHistoryToPoints(
   for (const p of points) {
     const value = Number(currency === "SOL" ? p.sol : p.usd);
     if (!Number.isFinite(value) || value <= 0) continue;
-    out.push({ date: dayKeyToDate(p.day), value, isFuture: false });
+    out.push({ date: new Date(p.at * 1000), value, isFuture: false });
   }
   return out;
 }

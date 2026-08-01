@@ -92,13 +92,13 @@ import {
   pythFeedIdForSymbol,
 } from "./clients/oracle";
 // 8.58: 過去価格 (Pyth Benchmarks) と履歴組み立ての純関数
-import { fetchHistoricalPrices } from "./clients/pyth-history";
+import { fetchPriceSeries, priceAtOrBefore } from "./clients/pyth-history";
 import {
   buildHistorySeries,
-  endOfUtcDay,
+  earliestFundedTime,
   replayBalances,
-  sampleDays,
-  utcDayKey,
+  sampleTimestamps,
+  HISTORY_PRICE_LAG_SEC,
   type BalanceDelta,
   type HistoryAsset,
   type HistoryPoint,
@@ -388,13 +388,11 @@ const historyCache = new Map<
 const HISTORY_CACHE_TTL_MS = 5 * 60_000;
 /** tx ページングの安全弁 (100 件 × 10 = 1000 tx) */
 const HISTORY_MAX_TX_PAGES = 10;
-/** Benchmarks は現在時刻ちょうどで 404 になるため、今日の点は少し過去を引く */
-const HISTORY_PRICE_LAG_SEC = 120;
 
 export interface PortfolioHistoryResponse {
   points: HistoryPoint[];
-  /** 残高を保証できる最も古い日 (tx window の制約)。points が空なら null */
-  oldest_day: string | null;
+  /** 残高を保証できる最も古い時刻 (unix 秒、tx window の制約)。空なら null */
+  oldest_at: number | null;
   /** その日の実価格が無く現在価格で近似した asset */
   approximated_symbols: string[];
 }
@@ -437,7 +435,7 @@ export async function buildPortfolioHistory(
     });
   }
   if (historyAssets.length === 0) {
-    return { points: [], oldest_day: null, approximated_symbols: [] };
+    return { points: [], oldest_at: null, approximated_symbols: [] };
   }
 
   // native SOL は DAS が価格を持たない。過去価格が引けない日の保険として
@@ -493,46 +491,80 @@ export async function buildPortfolioHistory(
     if (!before || oldestSeen <= cutoff) break;
   }
 
-  // 3. 日付の並び (90 日超は週次) → 残高の逆算
-  const dayKeys = sampleDays(days, nowSeconds);
-  // 残高を保証できるのは tx window の範囲まで。それより古い日は返さない
-  const oldestProvable = utcDayKey(Math.max(oldestSeen, cutoff));
-  const days1 = dayKeys.filter((d) => d >= oldestProvable);
-  if (days1.length === 0) {
-    return { points: [], oldest_day: null, approximated_symbols: [] };
+  // 3. 描画する時刻の並び → 残高の逆算
+  //
+  // 8.59: 刻みは **実際に描ける期間** から決める。要求 range から決めると、
+  // 履歴が range より短い wallet で密度が落ちる (1Y 指定なのに描けるのが 80 日
+  // しかない場合、4 日刻みで 20 点にしかならず 3M より粗くなっていた)。
+  // 資産を持ち始めた時刻より前は全 mint が 0 になり点が作れないので、
+  // 刻みの計算からも除く (含めると実際に描ける点が目標より大幅に減る)
+  const fundedFrom = earliestFundedTime(current, deltas);
+  const oldestProvable = Math.max(oldestSeen, cutoff, fundedFrom ?? 0);
+  const provableDays = Math.max(1, (nowSeconds - oldestProvable) / 86_400);
+  const stamps1 = sampleTimestamps(
+    Math.min(days, provableDays),
+    nowSeconds
+  ).filter((at) => at >= oldestProvable);
+  if (stamps1.length === 0) {
+    return { points: [], oldest_at: null, approximated_symbols: [] };
   }
-  const balancesByDay = replayBalances(current, deltas, days1);
+  const balancesByTime = replayBalances(current, deltas, stamps1);
 
-  // 4. その日の実価格 (feed がある asset のみ)。同じ日は pyth-history が cache
-  const feedIds = [
+  // 4. その時点の実価格。8.59: **symbol ごとに 1 リクエスト**で範囲全体の系列を
+  // 取り、各点は「その時刻以前の直近」を引く。点ごとに個別取得すると ~90 本の
+  // リクエストになり rate limit で大半が落ちていた (実機で平坦線として露見)
+  const step = stamps1.length > 1 ? stamps1[1]! - stamps1[0]! : 86_400;
+  const pricedSymbols = [
     ...new Set(
-      historyAssets.map((a) => a.feedId).filter((f): f is string => Boolean(f))
+      historyAssets
+        .filter((a) => a.feedId)
+        .map((a) => (a.symbol === "WSOL" ? "SOL" : a.symbol))
     ),
   ];
-  const pricesByDay = new Map<string, Map<string, string>>();
-  if (feedIds.length > 0) {
-    const fetched = await Promise.all(
-      days1.map(async (day) => {
-        // 実測: Benchmarks は **現在時刻ちょうどだと 404**。今日の点は少し過去
-        // (60s 前で 200) を引く
-        const at = Math.min(endOfUtcDay(day), nowSeconds - HISTORY_PRICE_LAG_SEC);
-        return [day, await fetchHistoricalPrices(feedIds, at)] as const;
-      })
-    );
-    for (const [day, prices] of fetched) pricesByDay.set(day, prices);
+  const seriesBySymbol = new Map(
+    await Promise.all(
+      pricedSymbols.map(
+        async (symbol) =>
+          [
+            symbol,
+            await fetchPriceSeries(
+              symbol,
+              // 先頭の点にも「その時刻以前の bar」が要るので刻み 2 個分手前から
+              // (D 解像度は UTC 深夜境界なので、padding が無いと初日が近似落ちする)
+              stamps1[0]! - 2 * step,
+              stamps1[stamps1.length - 1]!,
+              step
+            ),
+          ] as const
+      )
+    )
+  );
+  // buildHistorySeries は feedId をキーに価格を引くので、その形に詰め替える
+  const pricesByTime = new Map<number, Map<string, string>>();
+  for (const at of stamps1) {
+    const forPoint = new Map<string, string>();
+    for (const asset of historyAssets) {
+      if (!asset.feedId) continue;
+      const symbol = asset.symbol === "WSOL" ? "SOL" : asset.symbol;
+      const series = seriesBySymbol.get(symbol);
+      if (!series) continue;
+      const usd8 = priceAtOrBefore(series, at);
+      if (usd8) forPoint.set(asset.feedId, usd8);
+    }
+    if (forPoint.size > 0) pricesByTime.set(at, forPoint);
   }
 
   const solFeedId = pythFeedIdForSymbol("SOL");
   const series = buildHistorySeries(
-    days1,
-    balancesByDay,
+    stamps1,
+    balancesByTime,
     historyAssets,
-    pricesByDay,
+    pricesByTime,
     solFeedId
   );
   const data: PortfolioHistoryResponse = {
     points: series.points,
-    oldest_day: series.points[0]?.day ?? null,
+    oldest_at: series.points[0]?.at ?? null,
     approximated_symbols: series.approximatedSymbols,
   };
   historyCache.set(cacheKey, { at: Date.now(), data });
@@ -3910,7 +3942,7 @@ export async function buildServer(
           { err: (err as Error).message, wallet },
           "portfolio history failed; returning empty"
         );
-        return { points: [], oldest_day: null, approximated_symbols: [] };
+        return { points: [], oldest_at: null, approximated_symbols: [] };
       }
     }
   );
