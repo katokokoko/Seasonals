@@ -14,7 +14,10 @@ import {
   buildPortfolioTimeSeries,
   chartBounds,
   formatAxisValue,
+  coverageFromKnownStart,
   hasHistory,
+  historyCoverage,
+  rangeExceedsCoverage,
   serverHistoryToPoints,
 } from "./portfolioTimeSeries";
 
@@ -172,5 +175,76 @@ describe("serverHistoryToPoints — BFF 復元履歴 (8.58)", () => {
       "SOL"
     );
     expect(pts).toHaveLength(0);
+  });
+});
+
+describe("historyCoverage / rangeExceedsCoverage (8.60)", () => {
+  const DAY = 86_400;
+  const END = Math.floor(Date.parse("2026-08-01T00:00:00Z") / 1000);
+  /** span 日分の points を作る (値は使わない) */
+  const pointsSpanning = (spanDays: number) => [
+    { at: END - spanDays * DAY, usd: "100", sol: "1" },
+    { at: END, usd: "100", sol: "1" },
+  ];
+
+  it("range を満たしていれば partial=false", () => {
+    // 1W (7 日) に対し 7 日分ある
+    expect(historyCoverage(pointsSpanning(7), "1W").partial).toBe(false);
+  });
+
+  it("range より短ければ partial=true と開始日を返す", () => {
+    // 1Y を要求したが 82 日分しかない (今回の wallet)
+    const c = historyCoverage(pointsSpanning(82), "1Y");
+    expect(c.partial).toBe(true);
+    expect(c.coveredDays).toBeCloseTo(82, 3);
+    expect(c.from!.getTime()).toBe((END - 82 * DAY) * 1000);
+  });
+
+  it("points が無い / 1 点だけなら判定しない", () => {
+    expect(historyCoverage([], "1Y").partial).toBe(false);
+    expect(historyCoverage([{ at: END, usd: "1", sol: "1" }], "1Y").partial).toBe(
+      false
+    );
+  });
+
+  it("サンプリングの端で 1 日欠けても partial にしない", () => {
+    // 3M (90 日) に対し 89.5 日分 → 刻みの都合なので partial 扱いしない
+    expect(historyCoverage(pointsSpanning(89.5), "3M").partial).toBe(false);
+  });
+
+  it("淡色化: カバー外の range だけ true", () => {
+    const c = historyCoverage(pointsSpanning(82), "1Y");
+    expect(rangeExceedsCoverage("1W", c)).toBe(false);
+    expect(rangeExceedsCoverage("1M", c)).toBe(false);
+    expect(rangeExceedsCoverage("3M", c)).toBe(true); // 90 > 82
+    expect(rangeExceedsCoverage("1Y", c)).toBe(true);
+    expect(rangeExceedsCoverage("ALL", c)).toBe(true);
+  });
+
+  it("カバーしきっている時は何も淡色にしない (長い range の有無は不明)", () => {
+    const c = historyCoverage(pointsSpanning(7), "1W");
+    for (const r of ["1W", "1M", "3M", "1Y", "ALL"] as const) {
+      expect(rangeExceedsCoverage(r, c)).toBe(false);
+    }
+  });
+});
+
+describe("coverageFromKnownStart (8.60)", () => {
+  const NOW = new Date("2026-08-01T00:00:00Z");
+
+  it("開始日が分かっていれば、その時点からの日数で判定する", () => {
+    const start = new Date("2026-05-11T00:00:00Z");
+    const c = coverageFromKnownStart(start, NOW);
+    expect(c.partial).toBe(true);
+    expect(c.coveredDays).toBeCloseTo(82, 0);
+    // 短い range に切り替えても長い range は淡色のまま
+    expect(rangeExceedsCoverage("1M", c)).toBe(false);
+    expect(rangeExceedsCoverage("1Y", c)).toBe(true);
+  });
+
+  it("未知なら何も淡色にしない", () => {
+    const c = coverageFromKnownStart(null, NOW);
+    expect(c.partial).toBe(false);
+    expect(rangeExceedsCoverage("1Y", c)).toBe(false);
   });
 });

@@ -254,3 +254,30 @@ describe("earliestFundedTime — 資産を持ち始めた時刻 (8.59)", () => {
     expect(earliestFundedTime(new Map([[USDC, 1n]]), [])).toBeNull();
   });
 });
+
+describe("sampleTimestamps — epoch 整列 (8.60 の regression)", () => {
+  it("days が端数でも全点が step の倍数に乗る", () => {
+    // 描ける期間から算出するので days は端数になる (82.13 日など)
+    for (const days of [82.13, 82.14, 82.5, 6.7]) {
+      const stamps = sampleTimestamps(days, NOW);
+      const step = stamps[1]! - stamps[0]!;
+      for (const at of stamps) expect(at % step).toBe(0);
+    }
+  });
+
+  it("同じ刻みに落ちる days は同一の時刻列を返す (価格 cache が効く条件)", () => {
+    // 82.1 と 82.9 はどちらも 1 日刻み → 同じ列でなければ cache が無駄になる
+    const a = sampleTimestamps(82.1, NOW);
+    const b = sampleTimestamps(82.9, NOW);
+    expect(a).toEqual(b);
+  });
+
+  it("末尾は常に整列済みの最新点", () => {
+    const stamps = sampleTimestamps(82.13, NOW);
+    const step = stamps[1]! - stamps[0]!;
+    expect(stamps[stamps.length - 1]! % step).toBe(0);
+    expect(stamps[stamps.length - 1]).toBeLessThanOrEqual(
+      NOW - HISTORY_PRICE_LAG_SEC
+    );
+  });
+});

@@ -128,10 +128,12 @@ export function sampleTimestamps(
   const end = nowSeconds - HISTORY_PRICE_LAG_SEC;
   // epoch 倍数に整列 (同じ引数なら毎回同一の配列 = キャッシュが効く)
   const lastAligned = Math.floor(end / step) * step;
+  // 8.60: **末尾から step の倍数だけ遡る**。以前は `lastAligned - rangeSec` を
+  // 起点にしていたため、days が端数 (描ける期間から算出するので端数になる) だと
+  // 全点が整列から外れ、range ごとに別の時刻列 = 価格キャッシュが効かなかった
+  const count = Math.floor(rangeSec / step);
   const out: number[] = [];
-  for (let at = lastAligned - rangeSec; at <= lastAligned; at += step) {
-    out.push(at);
-  }
+  for (let i = count; i >= 0; i--) out.push(lastAligned - i * step);
   return out;
 }
 

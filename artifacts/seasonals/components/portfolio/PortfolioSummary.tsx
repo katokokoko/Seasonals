@@ -66,6 +66,9 @@ import { conversionLine, holdingView, rateLine } from "./holding-view";
 import {
   buildPortfolioTimeSeries,
   hasHistory as seriesHasHistory,
+  coverageFromKnownStart,
+  historyCoverage,
+  rangeExceedsCoverage,
   rangeToDays,
   serverHistoryToPoints,
   totalSolValue,
@@ -249,6 +252,26 @@ export function PortfolioSummary({
   );
   const series = serverSeries.length >= 2 ? serverSeries : localSeries;
   const approximatedSymbols = serverHistory?.approximated_symbols ?? [];
+  // 8.60: 履歴がどこまで遡れているか (3M と 1Y が同じに見える理由の説明)
+  const coverage = useMemo(
+    () => historyCoverage(serverHistory?.points ?? [], range),
+    [serverHistory, range]
+  );
+  // 一度分かった開始日は覚えておく (絶対的な事実なので、短い range に
+  // 切り替えて判定材料が無くなっても淡色表示を保つ)
+  const [knownStart, setKnownStart] = useState<Date | null>(null);
+  useEffect(() => {
+    if (!coverage.partial || !coverage.from) return;
+    setKnownStart((prev) =>
+      prev === null || coverage.from!.getTime() < prev.getTime()
+        ? coverage.from
+        : prev
+    );
+  }, [coverage]);
+  const chipCoverage = useMemo(
+    () => coverageFromKnownStart(knownStart, today),
+    [knownStart, today]
+  );
   // 変動を観測できていない間は線を描かず現在値カードを出す
   const showChart = seriesHasHistory(series);
   const trackingSince = snapshots[0] ? dayKeyToDate(snapshots[0].day) : today;
@@ -390,24 +413,29 @@ export function PortfolioSummary({
 
         {/* Range selector */}
         <View style={styles.rangeRow}>
-          {RANGE_KEYS.map((k) => (
-            <Pressable
-              key={k}
-              accessibilityRole="button"
-              accessibilityState={{ selected: range === k }}
-              onPress={() => handleSelectRange(k)}
-              style={[styles.rangeBtn, range === k && styles.rangeBtnActive]}
-            >
-              <Text
-                style={[
-                  styles.rangeText,
-                  range === k && styles.rangeTextActive,
-                ]}
+          {RANGE_KEYS.map((k) => {
+            // 8.60: 履歴が届かない range は淡色に (押せば同じ全期間が出る)
+            const beyond = rangeExceedsCoverage(k, chipCoverage);
+            return (
+              <Pressable
+                key={k}
+                accessibilityRole="button"
+                accessibilityState={{ selected: range === k }}
+                onPress={() => handleSelectRange(k)}
+                style={[styles.rangeBtn, range === k && styles.rangeBtnActive]}
               >
-                {k}
-              </Text>
-            </Pressable>
-          ))}
+                <Text
+                  style={[
+                    styles.rangeText,
+                    range === k && styles.rangeTextActive,
+                    beyond && range !== k && styles.rangeTextBeyond,
+                  ]}
+                >
+                  {k}
+                </Text>
+              </Pressable>
+            );
+          })}
         </View>
 
         {/* Chart — Phase 8.4 / 8.56: 過去データを偽造しない。
@@ -443,6 +471,16 @@ export function PortfolioSummary({
               </>
             )}
           </View>
+        )}
+
+        {/* 8.60: 要求 range より履歴が短い時だけ、どこからの記録かを出す */}
+        {showChart && coverage.partial && coverage.from && (
+          <Text
+            style={styles.approxNote}
+            testID={testID ? `${testID}-coverage-note` : undefined}
+          >
+            {`履歴は ${format(coverage.from, "M/d")} から (それ以前は残高なし)`}
+          </Text>
         )}
 
         {/* 8.58: 過去の実価格が無く現在価格で近似した asset がある時だけ注記 */}
@@ -828,6 +866,10 @@ function makeStyles(c: ThemeColors) {
       fontFamily: FONT.heading,
       fontWeight: WEIGHT.bold,
       color: c.textOnColor,
+    },
+    // 8.60: 履歴が届かない range のラベル (淡色。押せないわけではない)
+    rangeTextBeyond: {
+      opacity: 0.35,
     },
     // 8.58: 過去価格が無い asset の注記 (chart 下、控えめに)
     approxNote: {

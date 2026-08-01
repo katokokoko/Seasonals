@@ -389,6 +389,29 @@ const HISTORY_CACHE_TTL_MS = 5 * 60_000;
 /** tx ページングの安全弁 (100 件 × 10 = 1000 tx) */
 const HISTORY_MAX_TX_PAGES = 10;
 
+/**
+ * 8.60: wallet 単位の上流キャッシュ。range が違っても「現在残高 + tx 差分」は
+ * 同じなので、90/365/730 で Helius DAS と tx ページングを 3 回やり直していた。
+ * range をまたいで共有する (価格系列は pyth-history 側が別途 cache)。
+ */
+interface WalletHistoryInputs {
+  current: Map<string, bigint>;
+  assets: HistoryAsset[];
+  deltas: BalanceDelta[];
+  oldestSeen: number;
+  /** この差分が何日前まで遡れているか (これより長い range は再取得が要る) */
+  fetchedDays: number;
+}
+const walletInputsCache = new Map<
+  string,
+  { at: number; data: WalletHistoryInputs }
+>();
+
+export function _clearPortfolioHistoryCacheForTest(): void {
+  historyCache.clear();
+  walletInputsCache.clear();
+}
+
 export interface PortfolioHistoryResponse {
   points: HistoryPoint[];
   /** 残高を保証できる最も古い時刻 (unix 秒、tx window の制約)。空なら null */
@@ -397,14 +420,21 @@ export interface PortfolioHistoryResponse {
   approximated_symbols: string[];
 }
 
-export async function buildPortfolioHistory(
+/**
+ * 8.60: 「現在残高 + tx 差分」を wallet 単位で取得・キャッシュする。
+ * 要求 range より短い期間しか遡っていない cache は再取得する。
+ */
+async function loadWalletHistoryInputs(
   wallet: string,
   days: number,
-  nowSeconds = Math.floor(Date.now() / 1000)
-): Promise<PortfolioHistoryResponse> {
-  const cacheKey = `${wallet}|${days}`;
-  const cached = historyCache.get(cacheKey);
-  if (cached && Date.now() - cached.at < HISTORY_CACHE_TTL_MS) {
+  nowSeconds: number
+): Promise<WalletHistoryInputs | null> {
+  const cached = walletInputsCache.get(wallet);
+  if (
+    cached &&
+    Date.now() - cached.at < HISTORY_CACHE_TTL_MS &&
+    cached.data.fetchedDays >= days
+  ) {
     return cached.data;
   }
 
@@ -434,11 +464,9 @@ export async function buildPortfolioHistory(
           : undefined,
     });
   }
-  if (historyAssets.length === 0) {
-    return { points: [], oldest_at: null, approximated_symbols: [] };
-  }
+  if (historyAssets.length === 0) return null;
 
-  // native SOL は DAS が価格を持たない。過去価格が引けない日の保険として
+  // native SOL は DAS が価格を持たない。過去価格が引けない点の保険として
   // oracle の現在価格を currentUsd8 に入れておく (/prices と同じ出所)
   await Promise.all(
     historyAssets
@@ -490,6 +518,35 @@ export async function buildPortfolioHistory(
     before = txs[txs.length - 1]?.signature;
     if (!before || oldestSeen <= cutoff) break;
   }
+
+  const data: WalletHistoryInputs = {
+    current,
+    assets: historyAssets,
+    deltas,
+    oldestSeen,
+    fetchedDays: days,
+  };
+  walletInputsCache.set(wallet, { at: Date.now(), data });
+  return data;
+}
+
+export async function buildPortfolioHistory(
+  wallet: string,
+  days: number,
+  nowSeconds = Math.floor(Date.now() / 1000)
+): Promise<PortfolioHistoryResponse> {
+  const cacheKey = `${wallet}|${days}`;
+  const cached = historyCache.get(cacheKey);
+  if (cached && Date.now() - cached.at < HISTORY_CACHE_TTL_MS) {
+    return cached.data;
+  }
+
+  const cutoff = nowSeconds - days * 86_400;
+  const inputs = await loadWalletHistoryInputs(wallet, days, nowSeconds);
+  if (!inputs) {
+    return { points: [], oldest_at: null, approximated_symbols: [] };
+  }
+  const { current, assets: historyAssets, deltas, oldestSeen } = inputs;
 
   // 3. 描画する時刻の並び → 残高の逆算
   //

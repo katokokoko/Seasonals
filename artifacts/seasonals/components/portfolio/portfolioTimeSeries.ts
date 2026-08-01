@@ -191,3 +191,68 @@ export function serverHistoryToPoints(
   }
   return out;
 }
+
+/**
+ * Phase 8.60: 選択中の range に対して履歴がどこまで遡れているかを判定する。
+ *
+ * 「3M と 1Y が同じグラフ」の正体は **その wallet に 82 日分しか履歴が無い**
+ * ことだった (それ以前は残高ゼロ)。データは正しいので、UI 側で
+ * 「ここから先は存在しない」と伝える。
+ *
+ * 判定は server の points だけで完結させる (端末時計のズレに影響されない)。
+ */
+export interface HistoryCoverage {
+  /** 要求 range より短い範囲しか描けていない */
+  partial: boolean;
+  /** 履歴の開始 (points の先頭)。points が空なら null */
+  from: Date | null;
+  /** 実際に描けている日数 */
+  coveredDays: number;
+}
+
+export function historyCoverage(
+  points: ServerHistoryPoint[],
+  range: RangeKey
+): HistoryCoverage {
+  const first = points[0];
+  const last = points[points.length - 1];
+  if (!first || !last || points.length < 2) {
+    return { partial: false, from: null, coveredDays: 0 };
+  }
+  const coveredDays = (last.at - first.at) / 86_400;
+  return {
+    // 1 日の余裕を見る (サンプリングの刻みで端が欠けるため)
+    partial: coveredDays < rangeToDays(range) - 1,
+    from: new Date(first.at * 1000),
+    coveredDays,
+  };
+}
+
+/**
+ * その range が「描ける期間」を超えているか (range チップの淡色化に使う)。
+ * **カバーしきっている時は何も淡色にしない** — より長い range にデータが
+ * あるかは、その range を引いてみるまで分からないため。
+ */
+export function rangeExceedsCoverage(
+  range: RangeKey,
+  coverage: HistoryCoverage
+): boolean {
+  if (!coverage.partial) return false;
+  return rangeToDays(range) > coverage.coveredDays + 1;
+}
+
+/**
+ * 一度分かった「履歴の開始」から coverage を作る。
+ *
+ * 開始日は **絶対的な事実** (それ以前は残高ゼロ) なので、短い range に切り替えて
+ * 判定材料が無くなっても淡色表示を保つために使う。range を跨いで表示が
+ * ちらつくのを防ぐ。
+ */
+export function coverageFromKnownStart(
+  startAt: Date | null,
+  now: Date
+): HistoryCoverage {
+  if (!startAt) return { partial: false, from: null, coveredDays: 0 };
+  const coveredDays = (now.getTime() - startAt.getTime()) / (86_400 * 1000);
+  return { partial: true, from: startAt, coveredDays };
+}
