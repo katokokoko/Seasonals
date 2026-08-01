@@ -12,7 +12,7 @@ import {
   HISTORY_PRICE_LAG_SEC,
   TARGET_POINTS,
   buildHistorySeries,
-  earliestFundedTime,
+  firstFundedTime,
   replayBalances,
   sampleTimestamps,
   utcDayKey,
@@ -217,67 +217,95 @@ describe("utcDayKey", () => {
   });
 });
 
-describe("earliestFundedTime — 資産を持ち始めた時刻 (8.59)", () => {
-  it("全 mint が 0 になる tx の時刻を返す (それ以前は空)", () => {
-    // 現在 100 USDC。3 日前に +100 の入金 = それ以前は空
+describe("firstFundedTime — 最初に資産を持った時刻 (8.60)", () => {
+  it("入金 → 全額引出 → 再入金 でも **最初の** 入金を返す", () => {
+    // 実測パターン: 2025-10 に 5 SOL → ゼロ → 2026-05 に再入金。
+    // 旧実装 (earliestFundedTime) は再入金の方を返し、10 月分が消えていた
+    const first = NOW - 280 * DAY;
+    const emptied = NOW - 279 * DAY;
+    const refunded = NOW - 82 * DAY;
+    const deltas: BalanceDelta[] = [
+      { timestamp: first, mint: WSOL, amount: 5_000_000_000n },
+      { timestamp: emptied, mint: WSOL, amount: -5_000_000_000n },
+      { timestamp: refunded, mint: USDC, amount: 100_000_000n },
+    ];
+    // window 全体 (300 日前から) を見るので 10 月の保有が起点になる
+    expect(
+      firstFundedTime(new Map([[USDC, 100_000_000n]]), deltas, NOW - 300 * DAY)
+    ).toBe(first);
+  });
+
+  it("単純な 1 回入金ならその時刻", () => {
     const deltas: BalanceDelta[] = [
       { timestamp: NOW - 3 * DAY, mint: USDC, amount: 100_000_000n },
     ];
-    expect(earliestFundedTime(new Map([[USDC, 100_000_000n]]), deltas)).toBe(
-      NOW - 3 * DAY
-    );
+    expect(
+      firstFundedTime(new Map([[USDC, 100_000_000n]]), deltas, NOW - 30 * DAY)
+    ).toBe(NOW - 3 * DAY);
   });
 
-  it("複数 mint はすべて空になった時点で判定する", () => {
-    const deltas: BalanceDelta[] = [
-      { timestamp: NOW - DAY, mint: WSOL, amount: 1_000_000_000n },
-      { timestamp: NOW - 3 * DAY, mint: USDC, amount: 100_000_000n },
-    ];
-    const current = new Map([
-      [USDC, 100_000_000n],
-      [WSOL, 1_000_000_000n],
-    ]);
-    // USDC 入金 (3 日前) を戻した時点で両方 0 になる
-    expect(earliestFundedTime(current, deltas)).toBe(NOW - 3 * DAY);
-  });
-
-  it("window 全体で保有していれば null (起点を絞らない)", () => {
+  it("window 先頭で既に保有していれば null (それ以前は証明できない)", () => {
     const deltas: BalanceDelta[] = [
       { timestamp: NOW - DAY, mint: USDC, amount: 10_000_000n },
     ];
+    // 現在 100 / 差分 +10 → 先頭時点で 90 保有していた
     expect(
-      earliestFundedTime(new Map([[USDC, 100_000_000n]]), deltas)
+      firstFundedTime(new Map([[USDC, 100_000_000n]]), deltas, NOW - 30 * DAY)
     ).toBeNull();
   });
 
+  it("8.60: window より後の入金なら、その入金時点 (入金前のゼロは描かない)", () => {
+    // 3M window の途中で入金した場合 → 5/4 ではなく入金日から始める
+    const funded = NOW - 82 * DAY;
+    const deltas: BalanceDelta[] = [
+      { timestamp: NOW - 280 * DAY, mint: WSOL, amount: 5_000_000_000n },
+      { timestamp: NOW - 279 * DAY, mint: WSOL, amount: -5_000_000_000n },
+      { timestamp: funded, mint: USDC, amount: 100_000_000n },
+    ];
+    // window = 90 日 → 10 月の保有は範囲外なので入金日が起点
+    expect(
+      firstFundedTime(new Map([[USDC, 100_000_000n]]), deltas, NOW - 90 * DAY)
+    ).toBe(funded);
+  });
+
   it("差分が無ければ null", () => {
-    expect(earliestFundedTime(new Map([[USDC, 1n]]), [])).toBeNull();
+    expect(firstFundedTime(new Map([[USDC, 1n]]), [], NOW - DAY)).toBeNull();
   });
 });
 
-describe("sampleTimestamps — epoch 整列 (8.60 の regression)", () => {
-  it("days が端数でも全点が step の倍数に乗る", () => {
-    // 描ける期間から算出するので days は端数になる (82.13 日など)
-    for (const days of [82.13, 82.14, 82.5, 6.7]) {
-      const stamps = sampleTimestamps(days, NOW);
-      const step = stamps[1]! - stamps[0]!;
-      for (const at of stamps) expect(at % step).toBe(0);
-    }
+describe("buildHistorySeries — ゼロ期間 (8.60)", () => {
+  const solAsset: HistoryAsset = {
+    mint: WSOL,
+    symbol: "SOL",
+    decimals: 9,
+    feedId: SOL_FEED,
+    currentUsd8: "73.00000000",
+  };
+
+  it("全資産ゼロの点は 0 として描く (保有していなかったという事実)", () => {
+    const stamps = [NOW - 2 * DAY, NOW - DAY];
+    const balances = new Map([
+      [NOW - 2 * DAY, new Map([[WSOL, 0n]])],
+      [NOW - DAY, new Map([[WSOL, 1_000_000_000n]])],
+    ]);
+    const prices = new Map([
+      [NOW - 2 * DAY, new Map([[SOL_FEED, "80.00000000"]])],
+      [NOW - DAY, new Map([[SOL_FEED, "73.00000000"]])],
+    ]);
+    const out = buildHistorySeries(stamps, balances, [solAsset], prices, SOL_FEED);
+    expect(out.points.map((p) => p.usd)).toEqual(["0.00000000", "73.00000000"]);
   });
 
-  it("同じ刻みに落ちる days は同一の時刻列を返す (価格 cache が効く条件)", () => {
-    // 82.1 と 82.9 はどちらも 1 日刻み → 同じ列でなければ cache が無駄になる
-    const a = sampleTimestamps(82.1, NOW);
-    const b = sampleTimestamps(82.9, NOW);
-    expect(a).toEqual(b);
-  });
-
-  it("末尾は常に整列済みの最新点", () => {
-    const stamps = sampleTimestamps(82.13, NOW);
-    const step = stamps[1]! - stamps[0]!;
-    expect(stamps[stamps.length - 1]! % step).toBe(0);
-    expect(stamps[stamps.length - 1]).toBeLessThanOrEqual(
-      NOW - HISTORY_PRICE_LAG_SEC
+  it("保有はあるが価格が引けない点は作らない (ゼロと混同しない)", () => {
+    const noPrice: HistoryAsset = { mint: "X", symbol: "X", decimals: 6 };
+    const balances = new Map([[NOW - DAY, new Map([["X", 1_000_000n]])]]);
+    const out = buildHistorySeries(
+      [NOW - DAY],
+      balances,
+      [noPrice],
+      new Map(),
+      SOL_FEED
     );
+    expect(out.points).toEqual([]);
   });
 });

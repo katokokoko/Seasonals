@@ -142,7 +142,9 @@ export function chartBounds(points: PortfolioPoint[]): {
   const span = rawMax - rawMin || Math.abs(rawMax) * 0.01 || 1;
   const pad = span * 0.1;
   return {
-    minValue: rawMin - pad,
+    // 8.60: 評価額は負にならない。ゼロ期間を含む系列で軸に「-13 USDC」が
+    // 出ていたので下端を 0 で止める
+    minValue: rawMin >= 0 ? Math.max(0, rawMin - pad) : rawMin - pad,
     maxValue: rawMax + pad,
   };
 }
@@ -185,8 +187,13 @@ export function serverHistoryToPoints(
 ): PortfolioPoint[] {
   const out: PortfolioPoint[] = [];
   for (const p of points) {
-    const value = Number(currency === "SOL" ? p.sol : p.usd);
-    if (!Number.isFinite(value) || value <= 0) continue;
+    const usd = Number(p.usd);
+    const sol = Number(p.sol);
+    const value = currency === "SOL" ? sol : usd;
+    if (!Number.isFinite(value) || value < 0) continue;
+    // 8.60: **0 は落とさない** — 入金前 / 全額引き出し後の「保有ゼロ」は事実。
+    // ただし SOL 建てだけ 0 で USD が正の点は「SOL 価格が引けなかった」なので落とす
+    if (currency === "SOL" && sol === 0 && usd > 0) continue;
     out.push({ date: new Date(p.at * 1000), value, isFuture: false });
   }
   return out;

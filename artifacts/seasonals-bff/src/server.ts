@@ -95,7 +95,7 @@ import {
 import { fetchPriceSeries, priceAtOrBefore } from "./clients/pyth-history";
 import {
   buildHistorySeries,
-  earliestFundedTime,
+  firstFundedTime,
   replayBalances,
   sampleTimestamps,
   HISTORY_PRICE_LAG_SEC,
@@ -553,9 +553,9 @@ export async function buildPortfolioHistory(
   // 8.59: 刻みは **実際に描ける期間** から決める。要求 range から決めると、
   // 履歴が range より短い wallet で密度が落ちる (1Y 指定なのに描けるのが 80 日
   // しかない場合、4 日刻みで 20 点にしかならず 3M より粗くなっていた)。
-  // 資産を持ち始めた時刻より前は全 mint が 0 になり点が作れないので、
-  // 刻みの計算からも除く (含めると実際に描ける点が目標より大幅に減る)
-  const fundedFrom = earliestFundedTime(current, deltas);
+  // 最初に資産を持った時刻より前は差分から何も言えないので下限にする。
+  // 途中のゼロ期間は 0 の点として描かれる (8.60)
+  const fundedFrom = firstFundedTime(current, deltas, cutoff);
   const oldestProvable = Math.max(oldestSeen, cutoff, fundedFrom ?? 0);
   const provableDays = Math.max(1, (nowSeconds - oldestProvable) / 86_400);
   const stamps1 = sampleTimestamps(

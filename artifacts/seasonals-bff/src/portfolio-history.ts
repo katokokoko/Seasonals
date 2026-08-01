@@ -85,7 +85,9 @@ const NICE_STEPS_SEC = [
   12 * SECONDS_PER_HOUR,
   1 * SECONDS_PER_DAY,
   2 * SECONDS_PER_DAY,
+  3 * SECONDS_PER_DAY,
   4 * SECONDS_PER_DAY,
+  5 * SECONDS_PER_DAY,
   7 * SECONDS_PER_DAY,
   8 * SECONDS_PER_DAY,
   14 * SECONDS_PER_DAY,
@@ -172,29 +174,45 @@ export function replayBalances(
 }
 
 /**
- * 8.59: 「wallet が資産を持ち始めた時刻」を差分から求める。
+ * 「wallet が **最初に** 資産を持った時刻」を差分から求める (8.60)。
  *
- * 現在残高から差分を遡っていき、**全 mint が 0 以下になった瞬間**の tx 時刻を返す
- * (それより前は空 = 描いても点にならない)。ここを起点にしないと、履歴の無い期間を
- * 含んだまま刻みを決めてしまい、実際に描ける点が目標より大幅に少なくなる
- * (1Y 指定で 20 点しか出ない等)。全期間を通じて保有していれば null。
+ * 8.59 は「遡って最初に全部ゼロになった時点」を返していたが、
+ * 入金 → 全額引き出し → 再入金 という wallet で **最後の保有期間しか出ない**
+ * 欠陥があった (実測: 2025-10-26 に 5 SOL 保有 → ゼロ → 2026-05-10 再入金、の
+ * 10 月分が丸ごと消えていた)。
+ *
+ * そこで **要求 window の中で最初に** 残高が正になった時刻を返す。
+ * これを描画の下限にすることで:
+ *   - window 開始より後に入金した場合 → 入金時点から描く (入金前のゼロは描かない)
+ *   - window の中で一度ゼロに戻った場合 → **途中のゼロ期間は事実として描く**
+ *
+ * window 先頭で既に保有していた場合は null (= それ以前は差分から証明できないので、
+ * 呼び手は window 端を下限にする)。
  */
-export function earliestFundedTime(
+export function firstFundedTime(
   current: Map<string, bigint>,
-  deltas: BalanceDelta[]
+  deltas: BalanceDelta[],
+  windowStart: number
 ): number | null {
-  const newestFirst = [...deltas].sort((a, b) => b.timestamp - a.timestamp);
-  const running = new Map(current);
-  for (const d of newestFirst) {
-    running.set(d.mint, (running.get(d.mint) ?? 0n) - d.amount);
-    let allEmpty = true;
+  // window 先頭の残高 = 現在 − (それ以降に起きた差分)
+  const atWindowStart = new Map(current);
+  const inWindow: BalanceDelta[] = [];
+  for (const d of deltas) {
+    if (d.timestamp <= windowStart) continue;
+    inWindow.push(d);
+    atWindowStart.set(d.mint, (atWindowStart.get(d.mint) ?? 0n) - d.amount);
+  }
+  for (const amount of atWindowStart.values()) {
+    // 先頭時点で既に保有 = それ以前は差分から証明できない
+    if (amount > 0n) return null;
+  }
+  inWindow.sort((a, b) => a.timestamp - b.timestamp);
+  const running = new Map<string, bigint>();
+  for (const d of inWindow) {
+    running.set(d.mint, (running.get(d.mint) ?? 0n) + d.amount);
     for (const amount of running.values()) {
-      if (amount > 0n) {
-        allEmpty = false;
-        break;
-      }
+      if (amount > 0n) return d.timestamp;
     }
-    if (allEmpty) return d.timestamp;
   }
   return null;
 }
@@ -240,9 +258,11 @@ export function buildHistorySeries(
     const pricesOfPoint = pricesByTime.get(at);
     let usdTotal = 0n; // 8-dec fixed point
     let priced = false;
+    let heldAnything = false;
     for (const asset of assets) {
       const amount = balances.get(asset.mint) ?? 0n;
       if (amount === 0n) continue;
+      heldAnything = true;
       const price = priceForAsset(asset, pricesOfPoint);
       if (!price) continue;
       // amount(smallest) × price(8-dec) / 10^decimals → USD の 8-dec fixed point
@@ -252,7 +272,13 @@ export function buildHistorySeries(
       usdTotal += (amount * scaled) / 10n ** BigInt(asset.decimals);
       priced = true;
     }
-    if (!priced) continue;
+    // 8.60: 全資産ゼロは **事実** なので 0 の点を描く (入金前 / 全額引き出し後)。
+    // 「保有しているが価格が引けない」場合とは区別し、後者は点を作らない
+    if (!priced) {
+      if (heldAnything) continue;
+      points.push({ at, usd: "0.00000000", sol: "0.00000000" });
+      continue;
+    }
     const solScaled = solFeedId
       ? usd8ToScaled(pricesOfPoint?.get(solFeedId) ?? "")
       : null;

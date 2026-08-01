@@ -166,7 +166,7 @@ describe("serverHistoryToPoints — BFF 復元履歴 (8.58)", () => {
     expect(pts[0]!.date.getTime()).toBe(AT_1 * 1000);
   });
 
-  it("0 / 不正値の点は落とす (SOL 価格が無い日の sol='0' 等)", () => {
+  it("SOL 建てだけ 0 で USD が正の点は落とす (SOL 価格が引けなかった点)", () => {
     const pts = serverHistoryToPoints(
       [
         { at: AT_1, usd: "122.00000000", sol: "0.00000000" },
@@ -175,6 +175,19 @@ describe("serverHistoryToPoints — BFF 復元履歴 (8.58)", () => {
       "SOL"
     );
     expect(pts).toHaveLength(0);
+  });
+
+  it("8.60: 保有ゼロの点 (usd も sol も 0) は落とさない — 事実なので描く", () => {
+    const zeroPeriod = [
+      { at: AT_1, usd: "0.00000000", sol: "0.00000000" },
+      { at: AT_2, usd: "122.00000000", sol: "1.60000000" },
+    ];
+    expect(serverHistoryToPoints(zeroPeriod, "USDC").map((p) => p.value)).toEqual([
+      0, 122,
+    ]);
+    expect(serverHistoryToPoints(zeroPeriod, "SOL").map((p) => p.value)).toEqual([
+      0, 1.6,
+    ]);
   });
 });
 
