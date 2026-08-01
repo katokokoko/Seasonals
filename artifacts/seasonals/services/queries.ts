@@ -56,6 +56,9 @@ export const queryKeys = {
   oracleStatus: (mint: string) => ["oracle-status", mint] as const,
   /** Phase 8.57: symbol 群の実 USD 価格 */
   prices: (symbols: readonly string[]) => ["prices", symbols.join(",")] as const,
+  /** Phase 8.58: wallet tx から復元した過去の評価額 */
+  portfolioHistory: (address: string, days: number) =>
+    ["portfolio-history", address, days] as const,
   agentPlan: (planId: string) => ["agent-plan", planId] as const,
   agentPlans: () => ["agent-plans"] as const,
   approvalToken: (tokenId: string) => ["approval-token", tokenId] as const,
@@ -183,6 +186,22 @@ export function usePrices(
 
 /** oracle registry にある asset (BFF `/prices` が返せるもの) */
 export const PRICED_SYMBOLS = ["SOL", "USDC", "USDT", "JLP"] as const;
+
+/**
+ * Phase 8.58: wallet の tx から復元した過去の評価額。address が無い
+ * (未接続 / default variant) 時は query 自体を disable する。
+ */
+export function usePortfolioHistory(
+  address: string | null | undefined,
+  days: number
+): UseQueryResult<api.PortfolioHistoryDTO, Error> {
+  return useQuery({
+    queryKey: queryKeys.portfolioHistory(address ?? "", days),
+    queryFn: () => api.getPortfolioHistory(address!, days),
+    enabled: Boolean(address),
+    staleTime: 5 * 60_000,
+  });
+}
 
 /** AgentPlan の一覧を取得 (Plans tab で使用) */
 export function useAgentPlans(): UseQueryResult<AgentPlan[], Error> {

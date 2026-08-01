@@ -350,6 +350,36 @@ export async function getPrices(
   );
 }
 
+/** Phase 8.58: BFF が wallet tx から復元した過去の評価額 */
+export interface PortfolioHistoryDTO {
+  points: { day: string; usd: string; sol: string }[];
+  oldest_day: string | null;
+  approximated_symbols: string[];
+}
+
+/**
+ * Phase 8.58: 過去の評価額。BFF 不通 / 未接続時は空 (呼び手は端末の
+ * 日次スナップショット (8.56) に落ちる)。
+ */
+export async function getPortfolioHistory(
+  wallet: string,
+  days: number
+): Promise<PortfolioHistoryDTO> {
+  const empty: PortfolioHistoryDTO = {
+    points: [],
+    oldest_day: null,
+    approximated_symbols: [],
+  };
+  return tryHttpThenFixture(
+    () =>
+      httpGetJson<PortfolioHistoryDTO>(
+        `/portfolio/history?wallet=${encodeURIComponent(wallet)}&days=${days}`
+      ),
+    async () => empty,
+    "/portfolio/history"
+  );
+}
+
 export async function getJupiterLendMarkets(): Promise<JupiterLendMarketDTO[]> {
   return tryHttpThenFixture(
     () => httpGetJson<JupiterLendMarketDTO[]>("/protocols/jupiter-lend/markets"),

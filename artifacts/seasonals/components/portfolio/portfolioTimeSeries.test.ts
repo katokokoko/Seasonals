@@ -15,6 +15,7 @@ import {
   chartBounds,
   formatAxisValue,
   hasHistory,
+  serverHistoryToPoints,
 } from "./portfolioTimeSeries";
 
 /** oracle 由来の実価格 map (8.57: 固定表をやめた) */
@@ -139,5 +140,36 @@ describe("formatAxisValue", () => {
     expect(formatAxisValue(150.631, 0.028)).toBe("150.631");
     expect(formatAxisValue(0.8641, 0.0596)).toBe("0.864");
     expect(formatAxisValue(1234, 100)).toBe("1234");
+  });
+});
+
+describe("serverHistoryToPoints — BFF 復元履歴 (8.58)", () => {
+  const server = [
+    { day: "2026-07-31", usd: "122.13275883", sol: "1.67776341" },
+    { day: "2026-08-01", usd: "122.17923625", sol: "1.67479218" },
+  ];
+
+  it("トグル通貨に応じて usd / sol を選ぶ", () => {
+    const usdc = serverHistoryToPoints(server, "USDC");
+    expect(usdc.map((p) => p.value)).toEqual([122.13275883, 122.17923625]);
+    const sol = serverHistoryToPoints(server, "SOL");
+    expect(sol.map((p) => p.value)).toEqual([1.67776341, 1.67479218]);
+  });
+
+  it("day を Date に戻す (ローカル 0 時)", () => {
+    const pts = serverHistoryToPoints(server, "USDC");
+    expect(pts[0]!.date.getFullYear()).toBe(2026);
+    expect(pts[0]!.date.getDate()).toBe(31);
+  });
+
+  it("0 / 不正値の点は落とす (SOL 価格が無い日の sol='0' 等)", () => {
+    const pts = serverHistoryToPoints(
+      [
+        { day: "2026-08-01", usd: "122.00000000", sol: "0.00000000" },
+        { day: "2026-08-02", usd: "1", sol: "bad" },
+      ],
+      "SOL"
+    );
+    expect(pts).toHaveLength(0);
   });
 });

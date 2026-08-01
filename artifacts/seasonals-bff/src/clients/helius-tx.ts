@@ -101,6 +101,37 @@ function buildUrl(walletAddress: string, limit: number): string {
 }
 
 /**
+ * Phase 8.58: 履歴再構築用のページング取得。`before=<signature>` で 1 ページずつ
+ * 遡る。cache は使わない (呼び手が cutoff まで繰り返すため、ページ単位で持つと
+ * 意味が薄い)。実測: limit=100 / before で 2 ページ目以降も同 shape で返る。
+ */
+export async function fetchEnhancedTransactionsPage(
+  walletAddress: string,
+  opts: { limit?: number; before?: string } = {}
+): Promise<HeliusEnhancedTx[]> {
+  const limit = opts.limit ?? 100;
+  const url =
+    buildUrl(walletAddress, limit) +
+    (opts.before ? `&before=${encodeURIComponent(opts.before)}` : "");
+  const res = await fetchWithTimeout(url, {
+    method: "GET",
+    headers: { accept: "application/json" },
+  });
+  if (!res.ok) {
+    throw new Error(
+      `Helius enhanced-tx HTTP ${res.status} ${res.statusText}: ${await res
+        .text()
+        .catch(() => "")}`
+    );
+  }
+  const json = (await res.json()) as HeliusEnhancedTx[];
+  if (!Array.isArray(json)) {
+    throw new Error("Helius enhanced-tx unexpected shape (not array)");
+  }
+  return json;
+}
+
+/**
  * 指定 wallet の最近の tx 一覧を Enhanced Transactions API で取得。
  * 過去 50 件 (= Helius 1 page default、recent activity を見せる目的なので十分)。
  */

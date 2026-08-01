@@ -51,7 +51,7 @@ export function totalSolValue(
 }
 
 /** range key → 過去日数 */
-function rangeToDays(range: RangeKey): number {
+export function rangeToDays(range: RangeKey): number {
   switch (range) {
     case "1W":
       return 7;
@@ -166,4 +166,27 @@ export function formatAxisValue(value: number, step?: number): string {
   if (abs >= 100) return value.toFixed(1);
   if (abs >= 1) return value.toFixed(2);
   return value.toFixed(4);
+}
+
+/**
+ * Phase 8.58: BFF が tx から復元した履歴 (day/usd/sol の 8-dec string) を
+ * chart の系列に変換する。**表示直前の Number 化**なので §4.5 の carve-out 内。
+ */
+export interface ServerHistoryPoint {
+  day: string;
+  usd: string;
+  sol: string;
+}
+
+export function serverHistoryToPoints(
+  points: ServerHistoryPoint[],
+  currency: CurrencyUnit
+): PortfolioPoint[] {
+  const out: PortfolioPoint[] = [];
+  for (const p of points) {
+    const value = Number(currency === "SOL" ? p.sol : p.usd);
+    if (!Number.isFinite(value) || value <= 0) continue;
+    out.push({ date: dayKeyToDate(p.day), value, isFuture: false });
+  }
+  return out;
 }

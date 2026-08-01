@@ -438,6 +438,7 @@ export default function HomeScreen() {
         positions={positions}
         protocols={protocols}
         today={new Date()}
+        walletAddress={onchainAddress}
         animatedPosition={sheetPosition}
         testID="home-portfolio"
       />

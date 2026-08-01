@@ -45,7 +45,11 @@ import {
   useThemedStyles,
   type ThemeColors,
 } from "../../stores/theme";
-import { usePrices, useJupiterLendMarkets } from "../../services/queries";
+import {
+  usePortfolioHistory,
+  usePrices,
+  useJupiterLendMarkets,
+} from "../../services/queries";
 import { AllocationDonut } from "./AllocationDonut";
 import { Charts } from "./Charts";
 import { SponsoredCard } from "./SponsoredCard";
@@ -62,6 +66,8 @@ import { conversionLine, holdingView, rateLine } from "./holding-view";
 import {
   buildPortfolioTimeSeries,
   hasHistory as seriesHasHistory,
+  rangeToDays,
+  serverHistoryToPoints,
   totalSolValue,
   type PortfolioPoint,
   type RangeKey,
@@ -84,6 +90,8 @@ export interface PortfolioSummaryProps {
   isPending?: boolean;
   /** 今日として扱う日 (chart の time-series 起点) */
   today?: Date;
+  /** 8.58: 接続中の wallet (BFF から過去の評価額を復元するのに使う)。未接続は null */
+  walletAddress?: string | null;
   /**
    * BottomSheet の animatedPosition を外部に exposeし、DailyView の card 高さ
    * 計算に使えるようにする (Phase 5A.3)。SheetPosition は top からの px。
@@ -97,6 +105,7 @@ export function PortfolioSummary({
   protocols = [],
   isPending,
   today = new Date(),
+  walletAddress,
   animatedPosition,
   testID,
 }: PortfolioSummaryProps) {
@@ -216,7 +225,13 @@ export function PortfolioSummary({
   // 8.55: 系列はトグル通貨建てで生成 (chart 縦軸をトグルと一致させる)
   // 8.56: 実測スナップショット + 今日の現在値。過去は捏造しない
   const snapshots = usePortfolioHistoryStore((s) => s.snapshots);
-  const series: PortfolioPoint[] = useMemo(
+  // 8.58: BFF が wallet の tx から復元した履歴を優先し、無ければ端末の
+  // 日次スナップショットに落ちる (未接続 / fixture / BFF 不通)
+  const { data: serverHistory } = usePortfolioHistory(
+    walletAddress,
+    rangeToDays(range)
+  );
+  const localSeries: PortfolioPoint[] = useMemo(
     () =>
       buildPortfolioTimeSeries(
         snapshots,
@@ -228,6 +243,12 @@ export function PortfolioSummary({
       ),
     [snapshots, positions, range, today, currency, prices]
   );
+  const serverSeries: PortfolioPoint[] = useMemo(
+    () => serverHistoryToPoints(serverHistory?.points ?? [], currency),
+    [serverHistory, currency]
+  );
+  const series = serverSeries.length >= 2 ? serverSeries : localSeries;
+  const approximatedSymbols = serverHistory?.approximated_symbols ?? [];
   // 変動を観測できていない間は線を描かず現在値カードを出す
   const showChart = seriesHasHistory(series);
   const trackingSince = snapshots[0] ? dayKeyToDate(snapshots[0].day) : today;
@@ -422,6 +443,16 @@ export function PortfolioSummary({
               </>
             )}
           </View>
+        )}
+
+        {/* 8.58: 過去の実価格が無く現在価格で近似した asset がある時だけ注記 */}
+        {showChart && approximatedSymbols.length > 0 && (
+          <Text
+            style={styles.approxNote}
+            testID={testID ? `${testID}-approx-note` : undefined}
+          >
+            {`${approximatedSymbols.join(", ")} は現在価格で概算`}
+          </Text>
         )}
 
         {/* Allocation section — donut + legend */}
@@ -797,6 +828,14 @@ function makeStyles(c: ThemeColors) {
       fontFamily: FONT.heading,
       fontWeight: WEIGHT.bold,
       color: c.textOnColor,
+    },
+    // 8.58: 過去価格が無い asset の注記 (chart 下、控えめに)
+    approxNote: {
+      fontSize: FONT_SIZE.bodySM,
+      fontFamily: FONT.body,
+      color: c.textMuted,
+      textAlign: "center",
+      marginTop: SPACE.xs,
     },
     // 8.56: 履歴が貯まるまでの chart 代替 (高さを維持してレイアウトを揺らさない)
     chartPlaceholder: {

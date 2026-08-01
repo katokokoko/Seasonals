@@ -94,6 +94,16 @@ export function oracleMintForSymbol(symbol: string): string | undefined {
   return undefined;
 }
 
+/**
+ * Phase 8.58: symbol → Pyth feed id。過去価格 (Benchmarks) を引くのに使う。
+ * latest (Hermes) と同じ feed を使うことで現在と過去の出所を揃える。
+ */
+export function pythFeedIdForSymbol(symbol: string): string | undefined {
+  const mint = oracleMintForSymbol(symbol);
+  if (!mint) return undefined;
+  return ASSET_ORACLE_FEEDS[mint]?.pythFeedId;
+}
+
 const UNAVAILABLE: OracleSourceStatus = {
   available: false,
   price_usd: null,

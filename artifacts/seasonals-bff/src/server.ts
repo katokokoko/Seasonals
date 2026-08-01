@@ -71,6 +71,7 @@ import {
 } from "./clients/jupiter-lend";
 import {
   fetchEnhancedTransactions,
+  fetchEnhancedTransactionsPage,
   type HeliusEnhancedTx,
   type HeliusTokenBalanceChange,
 } from "./clients/helius-tx";
@@ -85,7 +86,23 @@ import {
   sendTransactionViaHelius,
   type StakeAccountInfo,
 } from "./clients/helius-rpc";
-import { getOracleResult, oracleMintForSymbol } from "./clients/oracle";
+import {
+  getOracleResult,
+  oracleMintForSymbol,
+  pythFeedIdForSymbol,
+} from "./clients/oracle";
+// 8.58: 過去価格 (Pyth Benchmarks) と履歴組み立ての純関数
+import { fetchHistoricalPrices } from "./clients/pyth-history";
+import {
+  buildHistorySeries,
+  endOfUtcDay,
+  replayBalances,
+  sampleDays,
+  utcDayKey,
+  type BalanceDelta,
+  type HistoryAsset,
+  type HistoryPoint,
+} from "./portfolio-history";
 import {
   SWAP_EARN_MARKETS,
   findMarketByProtocolAsset,
@@ -356,6 +373,170 @@ export function normalizeJup8DecimalUsd(
   if (raw === null || raw === undefined) return "0";
   if (!isValidTokenAmount(raw)) return "0";
   return toHumanReadable(raw, 8);
+}
+
+// ── Phase 8.58: portfolio history (tx 遡り + 過去価格) ───────────────────────
+
+/** wallet+days 単位の応答 cache (5 分)。過去価格自体は pyth-history が別途保持 */
+/** native SOL は DAS が WSOL mint の synthetic entry で返す (helius.ts:151) */
+const WSOL_MINT = "So11111111111111111111111111111111111111112";
+
+const historyCache = new Map<
+  string,
+  { at: number; data: PortfolioHistoryResponse }
+>();
+const HISTORY_CACHE_TTL_MS = 5 * 60_000;
+/** tx ページングの安全弁 (100 件 × 10 = 1000 tx) */
+const HISTORY_MAX_TX_PAGES = 10;
+/** Benchmarks は現在時刻ちょうどで 404 になるため、今日の点は少し過去を引く */
+const HISTORY_PRICE_LAG_SEC = 120;
+
+export interface PortfolioHistoryResponse {
+  points: HistoryPoint[];
+  /** 残高を保証できる最も古い日 (tx window の制約)。points が空なら null */
+  oldest_day: string | null;
+  /** その日の実価格が無く現在価格で近似した asset */
+  approximated_symbols: string[];
+}
+
+export async function buildPortfolioHistory(
+  wallet: string,
+  days: number,
+  nowSeconds = Math.floor(Date.now() / 1000)
+): Promise<PortfolioHistoryResponse> {
+  const cacheKey = `${wallet}|${days}`;
+  const cached = historyCache.get(cacheKey);
+  if (cached && Date.now() - cached.at < HISTORY_CACHE_TTL_MS) {
+    return cached.data;
+  }
+
+  // 1. 現在残高 (DAS)。native SOL は WSOL mint の synthetic entry で入る
+  const assets = await fetchAssetsByOwner(wallet);
+  const current = new Map<string, bigint>();
+  const historyAssets: HistoryAsset[] = [];
+  for (const asset of assets) {
+    if (asset.interface !== "FungibleToken") continue;
+    const rawBalance = asset.token_info?.balance;
+    if (rawBalance === undefined || rawBalance === null) continue;
+    const balance = String(rawBalance);
+    if (!isValidTokenAmount(balance) || balance === "0") continue;
+    const known = KNOWN_PROTOCOL_MINTS[asset.id];
+    const symbol =
+      known?.asset_symbol ?? asset.token_info?.symbol ?? asset.id.slice(0, 4);
+    const priceFloat = asset.token_info?.price_info?.price_per_token;
+    current.set(asset.id, toBigInt(balance));
+    historyAssets.push({
+      mint: asset.id,
+      symbol,
+      decimals: known?.decimals ?? asset.token_info?.decimals ?? 0,
+      feedId: pythFeedIdForSymbol(symbol),
+      currentUsd8:
+        typeof priceFloat === "number" && Number.isFinite(priceFloat)
+          ? priceFloat.toFixed(8)
+          : undefined,
+    });
+  }
+  if (historyAssets.length === 0) {
+    return { points: [], oldest_day: null, approximated_symbols: [] };
+  }
+
+  // native SOL は DAS が価格を持たない。過去価格が引けない日の保険として
+  // oracle の現在価格を currentUsd8 に入れておく (/prices と同じ出所)
+  await Promise.all(
+    historyAssets
+      .filter((a) => !a.currentUsd8 && a.feedId)
+      .map(async (a) => {
+        const mint = oracleMintForSymbol(a.symbol);
+        if (!mint) return;
+        const result = await getOracleResult(mint).catch(() => null);
+        if (result && result.status !== "blocked" && result.price_usd) {
+          a.currentUsd8 = result.price_usd;
+        }
+      })
+  );
+
+  // 2. tx を cutoff まで遡って符号付き差分を集める
+  const cutoff = nowSeconds - days * 86_400;
+  const deltas: BalanceDelta[] = [];
+  let before: string | undefined;
+  let oldestSeen = nowSeconds;
+  for (let page = 0; page < HISTORY_MAX_TX_PAGES; page++) {
+    const txs = await fetchEnhancedTransactionsPage(wallet, {
+      limit: 100,
+      ...(before ? { before } : {}),
+    });
+    if (txs.length === 0) break;
+    for (const tx of txs) {
+      oldestSeen = Math.min(oldestSeen, tx.timestamp);
+      for (const account of tx.accountData ?? []) {
+        // native SOL: wallet 自身の account の lamports 変化 (fee 込みの実変化)
+        if (account.account === wallet && account.nativeBalanceChange) {
+          deltas.push({
+            timestamp: tx.timestamp,
+            mint: WSOL_MINT,
+            amount: BigInt(account.nativeBalanceChange),
+          });
+        }
+        for (const change of account.tokenBalanceChanges ?? []) {
+          if (change.userAccount !== wallet) continue;
+          const raw = change.rawTokenAmount?.tokenAmount;
+          if (typeof raw !== "string" || !/^-?[0-9]+$/.test(raw)) continue;
+          deltas.push({
+            timestamp: tx.timestamp,
+            mint: change.mint,
+            amount: BigInt(raw),
+          });
+        }
+      }
+    }
+    before = txs[txs.length - 1]?.signature;
+    if (!before || oldestSeen <= cutoff) break;
+  }
+
+  // 3. 日付の並び (90 日超は週次) → 残高の逆算
+  const dayKeys = sampleDays(days, nowSeconds);
+  // 残高を保証できるのは tx window の範囲まで。それより古い日は返さない
+  const oldestProvable = utcDayKey(Math.max(oldestSeen, cutoff));
+  const days1 = dayKeys.filter((d) => d >= oldestProvable);
+  if (days1.length === 0) {
+    return { points: [], oldest_day: null, approximated_symbols: [] };
+  }
+  const balancesByDay = replayBalances(current, deltas, days1);
+
+  // 4. その日の実価格 (feed がある asset のみ)。同じ日は pyth-history が cache
+  const feedIds = [
+    ...new Set(
+      historyAssets.map((a) => a.feedId).filter((f): f is string => Boolean(f))
+    ),
+  ];
+  const pricesByDay = new Map<string, Map<string, string>>();
+  if (feedIds.length > 0) {
+    const fetched = await Promise.all(
+      days1.map(async (day) => {
+        // 実測: Benchmarks は **現在時刻ちょうどだと 404**。今日の点は少し過去
+        // (60s 前で 200) を引く
+        const at = Math.min(endOfUtcDay(day), nowSeconds - HISTORY_PRICE_LAG_SEC);
+        return [day, await fetchHistoricalPrices(feedIds, at)] as const;
+      })
+    );
+    for (const [day, prices] of fetched) pricesByDay.set(day, prices);
+  }
+
+  const solFeedId = pythFeedIdForSymbol("SOL");
+  const series = buildHistorySeries(
+    days1,
+    balancesByDay,
+    historyAssets,
+    pricesByDay,
+    solFeedId
+  );
+  const data: PortfolioHistoryResponse = {
+    points: series.points,
+    oldest_day: series.points[0]?.day ?? null,
+    approximated_symbols: series.approximatedSymbols,
+  };
+  historyCache.set(cacheKey, { at: Date.now(), data });
+  return data;
 }
 
 /**
@@ -3698,6 +3879,39 @@ export async function buildServer(
         return { error: "mint_required" };
       }
       return getOracleResult(mint);
+    }
+  );
+
+  /**
+   * Phase 8.58: wallet の tx から復元した **過去の評価額**。
+   *
+   * 現在残高 (DAS) から enhanced tx の符号付き差分を遡って各日の残高を作り、
+   * その日の実価格 (Pyth Benchmarks) で値付けする。端末側の日次スナップショット
+   * (8.56) より前の期間を埋めるのが目的。
+   *
+   * 上流が落ちた時は **空 points** で返す (fixture の履歴を捏造しない)。
+   */
+  app.get<{ Querystring: { wallet?: string; days?: string } }>(
+    "/portfolio/history",
+    async (req, reply) => {
+      const wallet = req.query?.wallet?.trim();
+      if (!wallet) {
+        reply.code(400);
+        return { error: "wallet_required" };
+      }
+      const requested = Number(req.query?.days ?? "30");
+      const days = Number.isFinite(requested)
+        ? Math.min(730, Math.max(1, Math.floor(requested)))
+        : 30;
+      try {
+        return await buildPortfolioHistory(wallet, days);
+      } catch (err) {
+        req.log.warn(
+          { err: (err as Error).message, wallet },
+          "portfolio history failed; returning empty"
+        );
+        return { points: [], oldest_day: null, approximated_symbols: [] };
+      }
     }
   );
 
