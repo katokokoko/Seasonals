@@ -269,8 +269,9 @@ export function PortfolioSummary({
   const approximatedSymbols = serverHistory?.approximated_symbols ?? [];
   // 8.60: 履歴がどこまで遡れているか (3M と 1Y が同じに見える理由の説明)
   const coverage = useMemo(
-    () => historyCoverage(serverHistory?.points ?? [], range),
-    [serverHistory, range]
+    // 8.63: 描いている系列で判定する (先頭ゼロを落とすので生 points とはズレる)
+    () => historyCoverage(serverSeries, range),
+    [serverSeries, range]
   );
   // 一度分かった開始日は覚えておく (絶対的な事実なので、短い range に
   // 切り替えて判定材料が無くなっても淡色表示を保つ)

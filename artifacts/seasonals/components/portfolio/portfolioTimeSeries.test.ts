@@ -19,6 +19,7 @@ import {
   historyCoverage,
   rangeExceedsCoverage,
   serverHistoryToPoints,
+  trimLeadingZeros,
 } from "./portfolioTimeSeries";
 
 /** oracle 由来の実価格 map (8.57: 固定表をやめた) */
@@ -177,27 +178,36 @@ describe("serverHistoryToPoints — BFF 復元履歴 (8.58)", () => {
     expect(pts).toHaveLength(0);
   });
 
-  it("8.60: 保有ゼロの点 (usd も sol も 0) は落とさない — 事実なので描く", () => {
-    const zeroPeriod = [
+  it("8.63: **途中の** ゼロは残す (資金が抜けていた事実)", () => {
+    const gap = [
+      { at: AT_1 - 86_400, usd: "50.00000000", sol: "0.60000000" },
       { at: AT_1, usd: "0.00000000", sol: "0.00000000" },
       { at: AT_2, usd: "122.00000000", sol: "1.60000000" },
     ];
-    expect(serverHistoryToPoints(zeroPeriod, "USDC").map((p) => p.value)).toEqual([
-      0, 122,
+    expect(serverHistoryToPoints(gap, "USDC").map((p) => p.value)).toEqual([
+      50, 0, 122,
     ]);
-    expect(serverHistoryToPoints(zeroPeriod, "SOL").map((p) => p.value)).toEqual([
-      0, 1.6,
-    ]);
+  });
+
+  it("8.63: **先頭の** ゼロは落とす (入金前で軸が潰れるため)", () => {
+    const leading = [
+      { at: AT_1 - 86_400, usd: "0.00000000", sol: "0.00000000" },
+      { at: AT_1, usd: "0.00000000", sol: "0.00000000" },
+      { at: AT_2, usd: "122.00000000", sol: "1.60000000" },
+    ];
+    const pts = serverHistoryToPoints(leading, "USDC");
+    expect(pts.map((p) => p.value)).toEqual([122]);
+    expect(pts[0]!.date.getTime()).toBe(AT_2 * 1000);
   });
 });
 
 describe("historyCoverage / rangeExceedsCoverage (8.60)", () => {
   const DAY = 86_400;
   const END = Math.floor(Date.parse("2026-08-01T00:00:00Z") / 1000);
-  /** span 日分の points を作る (値は使わない) */
+  /** span 日分の描画系列を作る (8.63: coverage は描く系列で判定する) */
   const pointsSpanning = (spanDays: number) => [
-    { at: END - spanDays * DAY, usd: "100", sol: "1" },
-    { at: END, usd: "100", sol: "1" },
+    { date: new Date((END - spanDays * DAY) * 1000), value: 100, isFuture: false },
+    { date: new Date(END * 1000), value: 100, isFuture: false },
   ];
 
   it("range を満たしていれば partial=false", () => {
@@ -215,9 +225,12 @@ describe("historyCoverage / rangeExceedsCoverage (8.60)", () => {
 
   it("points が無い / 1 点だけなら判定しない", () => {
     expect(historyCoverage([], "1Y").partial).toBe(false);
-    expect(historyCoverage([{ at: END, usd: "1", sol: "1" }], "1Y").partial).toBe(
-      false
-    );
+    expect(
+      historyCoverage(
+        [{ date: new Date(END * 1000), value: 1, isFuture: false }],
+        "1Y"
+      ).partial
+    ).toBe(false);
   });
 
   it("サンプリングの端で 1 日欠けても partial にしない", () => {
@@ -284,15 +297,55 @@ describe("serverHistoryToPoints — scope (8.62)", () => {
     expect(serverHistoryToPoints(points, "USDC")[0]!.value).toBe(122);
   });
 
-  it("預入ゼロの点も落とさない (8.61 の regression 防止)", () => {
-    const zero = [
-      { ...points[0]!, deposited_usd: "0.00000000", deposited_sol: "0.00000000" },
+  it("8.63: 預入が途中でゼロになる点は残す (引き出しの事実)", () => {
+    const withGap = [
+      { ...points[0]!, at: AT - 2 * 86_400 },
+      {
+        ...points[0]!,
+        at: AT - 86_400,
+        deposited_usd: "0.00000000",
+        deposited_sol: "0.00000000",
+      },
+      points[0]!,
     ];
-    expect(serverHistoryToPoints(zero, "USDC", "deposited")[0]!.value).toBe(0);
+    expect(
+      serverHistoryToPoints(withGap, "USDC", "deposited").map((p) => p.value)
+    ).toEqual([10.2, 0, 10.2]);
   });
 
-  it("deposited_* が無い応答 (旧 BFF) は 0 として扱う", () => {
+  it("8.63: 全点ゼロ (預入なし / 旧 BFF 応答) は空 → 線を描かない", () => {
+    const allZero = [
+      { ...points[0]!, deposited_usd: "0.00000000", deposited_sol: "0.00000000" },
+    ];
+    expect(serverHistoryToPoints(allZero, "USDC", "deposited")).toEqual([]);
     const legacy = [{ at: AT, usd: "122.00000000", sol: "1.60000000" }];
-    expect(serverHistoryToPoints(legacy, "USDC", "deposited")[0]!.value).toBe(0);
+    expect(serverHistoryToPoints(legacy, "USDC", "deposited")).toEqual([]);
+  });
+});
+
+describe("trimLeadingZeros (8.63)", () => {
+  const pt = (value: number, dayOffset: number) => ({
+    date: new Date(Date.parse("2026-08-01T00:00:00Z") + dayOffset * 86_400_000),
+    value,
+    isFuture: false,
+  });
+
+  it("先頭の連続ゼロを落とす", () => {
+    const out = trimLeadingZeros([pt(0, -3), pt(0, -2), pt(10, -1), pt(12, 0)]);
+    expect(out.map((p) => p.value)).toEqual([10, 12]);
+  });
+
+  it("途中のゼロは残す (引き出し → 再入金)", () => {
+    const out = trimLeadingZeros([pt(0, -4), pt(10, -3), pt(0, -2), pt(12, 0)]);
+    expect(out.map((p) => p.value)).toEqual([10, 0, 12]);
+  });
+
+  it("先頭から非ゼロならそのまま", () => {
+    const input = [pt(10, -1), pt(12, 0)];
+    expect(trimLeadingZeros(input)).toBe(input);
+  });
+
+  it("全点ゼロは空配列 (線を描かず現在値カードに落とす)", () => {
+    expect(trimLeadingZeros([pt(0, -1), pt(0, 0)])).toEqual([]);
   });
 });

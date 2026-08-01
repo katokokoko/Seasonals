@@ -187,6 +187,23 @@ export interface ServerHistoryPoint {
 /** 8.62: 集計の対象。total = 全資産 / deposited = protocol への預入のみ */
 export type PortfolioScope = "total" | "deposited";
 
+/**
+ * Phase 8.63: **先頭の連続ゼロ**を落とす (途中のゼロは残す)。
+ *
+ * 8.61 で保有ゼロの期間も描くようにしたら、入金前の長いゼロ区間が線の大半を
+ * 占め、y 軸が 0 まで伸びて **直近の変動が直線に潰れて**しまった。
+ * 先頭のゼロは「まだ入金していない」以上の情報を持たない (その事実は 8.60 の
+ * 注記が伝えている) ので落とす。一方 **途中のゼロ** (全額引き出し → 再入金) は
+ * 「資金が抜けていた」という情報なので残す。
+ *
+ * 全点ゼロなら空配列 (線を描かず現在値カードに落とす)。
+ */
+export function trimLeadingZeros(points: PortfolioPoint[]): PortfolioPoint[] {
+  const firstNonZero = points.findIndex((p) => p.value > 0);
+  if (firstNonZero === -1) return [];
+  return firstNonZero === 0 ? points : points.slice(firstNonZero);
+}
+
 export function serverHistoryToPoints(
   points: ServerHistoryPoint[],
   currency: CurrencyUnit,
@@ -204,7 +221,8 @@ export function serverHistoryToPoints(
     if (currency === "SOL" && sol === 0 && usd > 0) continue;
     out.push({ date: new Date(p.at * 1000), value, isFuture: false });
   }
-  return out;
+  // 8.63: 入金前のゼロ区間で軸が潰れるので落とす (途中のゼロは残る)
+  return trimLeadingZeros(out);
 }
 
 /**
@@ -225,8 +243,12 @@ export interface HistoryCoverage {
   coveredDays: number;
 }
 
+/**
+ * 8.63: 判定は **実際に描く系列** (先頭ゼロを落とした後) から行う。
+ * server の生 points を見ると、注記の日付が線の開始とズレる。
+ */
 export function historyCoverage(
-  points: ServerHistoryPoint[],
+  points: PortfolioPoint[],
   range: RangeKey
 ): HistoryCoverage {
   const first = points[0];
@@ -234,11 +256,12 @@ export function historyCoverage(
   if (!first || !last || points.length < 2) {
     return { partial: false, from: null, coveredDays: 0 };
   }
-  const coveredDays = (last.at - first.at) / 86_400;
+  const coveredDays =
+    (last.date.getTime() - first.date.getTime()) / (86_400 * 1000);
   return {
     // 1 日の余裕を見る (サンプリングの刻みで端が欠けるため)
     partial: coveredDays < rangeToDays(range) - 1,
-    from: new Date(first.at * 1000),
+    from: first.date,
     coveredDays,
   };
 }
