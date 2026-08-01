@@ -33,7 +33,8 @@ export interface JupiterLendPositionRaw {
       address: string;
       symbol: string;
       decimals: number;
-      price?: number;
+      /** 8.57: 実 API は **decimal string** で返す (型は歴史的に number だった) */
+      price?: number | string;
     };
   };
   /** 保有 jlToken (smallest unit integer string、share decimals 基準) */

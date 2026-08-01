@@ -19,9 +19,10 @@ import type { Position } from "@workspace/lib/types";
 // Phase 8.4.1: 計算ロジックは allocation.ts に集約済 (asset_symbol → price table)。
 // 旧 currentSolOf (position.unit_price_sol 依存) は撤去。
 import {
-  SOL_USD_PRICE,
+  solUsdPrice,
   totalSolValue as allocationTotalSolValue,
   type CurrencyUnit,
+  type PriceMap,
 } from "./allocation";
 // 8.56: 実測スナップショット (store は stores/portfolioHistory.ts)
 import {
@@ -42,8 +43,11 @@ export interface PortfolioPoint {
 }
 
 /** ポートフォリオ全体の現在 SOL 評価額 (allocation.ts と同じ計算ロジック) */
-export function totalSolValue(positions: Position[]): number {
-  return allocationTotalSolValue(positions);
+export function totalSolValue(
+  positions: Position[],
+  prices: PriceMap = {}
+): number {
+  return allocationTotalSolValue(positions, prices);
 }
 
 /** range key → 過去日数 */
@@ -78,11 +82,15 @@ export function buildPortfolioTimeSeries(
   positions: Position[],
   range: RangeKey,
   today: Date,
-  currency: CurrencyUnit = "SOL"
+  currency: CurrencyUnit = "SOL",
+  prices: PriceMap = {}
 ): PortfolioPoint[] {
   if (positions.length === 0) return [];
+  // 8.57: 過去の snapshot は SOL 建てで保存されているので、USDC 表示は
+  // **現在の** SOL 価格で換算する (過去価格での再評価は 8.58 の履歴再構築で扱う)
+  const solUsd = solUsdPrice(prices);
   const toValue = (sol: number) =>
-    currency === "SOL" ? sol : sol * SOL_USD_PRICE;
+    currency === "SOL" ? sol : sol * (solUsd ?? 0);
   const todayKey = dayKey(today);
   const past = snapshotsInRange(snapshots, rangeToDays(range), today)
     // 今日の分は現在値 (最新) を優先するので除く
@@ -96,7 +104,7 @@ export function buildPortfolioTimeSeries(
     ...past,
     {
       date: today,
-      value: toValue(totalSolValue(positions)),
+      value: toValue(totalSolValue(positions, prices)),
       isFuture: false,
     },
   ];

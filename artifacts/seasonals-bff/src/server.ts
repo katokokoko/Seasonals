@@ -85,7 +85,7 @@ import {
   sendTransactionViaHelius,
   type StakeAccountInfo,
 } from "./clients/helius-rpc";
-import { getOracleResult } from "./clients/oracle";
+import { getOracleResult, oracleMintForSymbol } from "./clients/oracle";
 import {
   SWAP_EARN_MARKETS,
   findMarketByProtocolAsset,
@@ -359,6 +359,41 @@ export function normalizeJup8DecimalUsd(
 }
 
 /**
+ * Phase 8.57: Jupiter Lend position の USD 評価額。
+ *
+ * 8.12 は `underlyingBalance` を「USD の 8-dec fixed point」と解釈していたが
+ * **誤り**だった。実測 (2026-08-01、wallet 6QGJ…):
+ *   underlyingAssets = 10206598 (10.206598 USDC) / underlyingBalance = 90262168
+ * で、`underlyingBalance` は **wallet 側の underlying 残高** (asset decimals) と
+ * 一致していた (同 wallet の USDC 残高 90.262168 とビット単位で同じ)。
+ * これを USD として扱ったため 10.2 USDC の position が $0.90 と表示されていた。
+ *
+ * 正しくは `underlyingAssets × asset.price`。price は API の decimal string。
+ * §4.5: 8-dec の bigint に落としてから乗算する (Number を挟まない)。
+ */
+export function jupiterLendUsd8(
+  underlyingAssets: string,
+  assetDecimals: number,
+  // API は decimal string で返すが型定義は number。実データに合わせ両方受ける
+  price: string | number | null | undefined
+): string {
+  if (!isValidTokenAmount(underlyingAssets)) return "0";
+  if (price === null || price === undefined) return "0";
+  const priceDecimalString =
+    typeof price === "number"
+      ? Number.isFinite(price)
+        ? price.toFixed(8)
+        : null
+      : price;
+  if (!priceDecimalString) return "0";
+  const truncated = truncateDecimal(priceDecimalString, 8);
+  if (truncated === "0") return "0";
+  const price8 = toBigInt(toSmallestUnit(truncated, 8));
+  const amount = toBigInt(underlyingAssets);
+  return formatUsd8((amount * price8) / 10n ** BigInt(assetDecimals));
+}
+
+/**
  * Phase 8.2: Jupiter Lend raw position → 共通 EarnPosition shape へ正規化。
  * shares === "0" は除外。
  *
@@ -402,7 +437,12 @@ export function mapJupiterLendToEarnPositions(
       asset_symbol: raw.token.asset.symbol,
       underlying_amount: raw.underlyingAssets,
       underlying_decimals: raw.token.asset.decimals,
-      underlying_usd: normalizeJup8DecimalUsd(raw.underlyingBalance),
+      // 8.57: underlyingBalance は USD ではなく wallet 残高だった (上記 doc 参照)
+      underlying_usd: jupiterLendUsd8(
+        raw.underlyingAssets,
+        raw.token.asset.decimals,
+        raw.token.asset.price
+      ),
       supply_rate_bps: Number(raw.supplyRate) || 0,
       accrued_yield_amount,
       accrued_yield_sign,
@@ -3658,6 +3698,51 @@ export async function buildServer(
         return { error: "mint_required" };
       }
       return getOracleResult(mint);
+    }
+  );
+
+  /**
+   * Phase 8.57: symbol → 実 USD 価格 (8 decimals string、§4.5)。
+   *
+   * mobile は wallet holdings の価格を position の `unit_price_usd`
+   * (Helius DAS 由来) から取るが、**native SOL には DAS の price_info が無く
+   * 0 で来る**。そこを埋めるのがこの口 (oracle registry にある asset のみ)。
+   *
+   * §4.6 fail-closed の一貫性: blocked / 価格不明の symbol は **返さない**。
+   * 0 を返すと呼び手が「0 円」と誤解するため、キー自体を落とす。
+   */
+  app.get<{ Querystring: { symbols?: string } }>(
+    "/prices",
+    async (req, reply) => {
+      const raw = req.query?.symbols?.trim();
+      if (!raw) {
+        reply.code(400);
+        return { error: "symbols_required" };
+      }
+      const symbols = raw
+        .split(",")
+        .map((s) => s.trim())
+        .filter(Boolean)
+        .slice(0, 20); // 上限 (registry は 4 asset なので実質十分)
+      const prices: Record<string, string> = {};
+      await Promise.all(
+        symbols.map(async (symbol) => {
+          const mint = oracleMintForSymbol(symbol);
+          if (!mint) return;
+          try {
+            const result = await getOracleResult(mint);
+            if (result.status !== "blocked" && result.price_usd) {
+              prices[symbol] = result.price_usd;
+            }
+          } catch (err) {
+            req.log.warn(
+              { err: (err as Error).message, symbol },
+              "price lookup failed"
+            );
+          }
+        })
+      );
+      return { prices };
     }
   );
 

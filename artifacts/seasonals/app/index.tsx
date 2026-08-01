@@ -67,6 +67,7 @@ import {
   useAgentPlans,
   useEarnPositions,
   usePositions,
+  usePrices,
   useWalletTimeEvents,
   useProtocols,
   useTimeEvents,
@@ -135,11 +136,17 @@ export default function HomeScreen() {
     [basePositions, earnPositionsData]
   );
   // Phase 8.56: 評価額を 1 日 1 点だけ記録する (chart の実履歴)。
-  // positions が解決した後にだけ走らせ、0 / 未接続の値は貯めない
+  // 8.57: 実価格が揃ってから記録する (SOL 価格が無いと 0 になり、store 側で捨てられる)
+  const { data: priceStrings } = usePrices();
   useEffect(() => {
     if (positions.length === 0) return;
-    usePortfolioHistoryStore.getState().record(totalSolValue(positions));
-  }, [positions]);
+    const prices: Record<string, number> = {};
+    for (const [symbol, value] of Object.entries(priceStrings ?? {})) {
+      const n = Number(value);
+      if (Number.isFinite(n) && n > 0) prices[symbol] = n;
+    }
+    usePortfolioHistoryStore.getState().record(totalSolValue(positions, prices));
+  }, [positions, priceStrings]);
 
   // Phase 8.3 Part B: wallet tx 由来 events + fixture events を merge
   const events = useMemo(

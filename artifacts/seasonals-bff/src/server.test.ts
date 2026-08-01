@@ -25,6 +25,7 @@ import {
   buildServer,
   computeCostBasisByShareMint,
   mapJupiterLendToEarnPositions,
+  jupiterLendUsd8,
   normalizeJup8DecimalUsd,
 } from "./server";
 import type { HeliusEnhancedTx } from "./clients/helius-tx";
@@ -274,7 +275,7 @@ describe("Phase 8.12 — Jupiter Lend underlying_usd 正規化", () => {
     expect(normalizeJup8DecimalUsd(undefined)).toBe("0");
   });
 
-  it("mapJupiterLendToEarnPositions: underlying_usd を decimal string に変換", () => {
+  it("8.57: underlying_usd は underlyingAssets × asset.price (underlyingBalance ではない)", () => {
     const raws = [
       {
         token: {
@@ -306,7 +307,9 @@ describe("Phase 8.12 — Jupiter Lend underlying_usd 正規化", () => {
       asset_symbol: "USDC",
       underlying_amount: "37635272",
       underlying_decimals: 6,
-      underlying_usd: "37.63527416",
+      // 8.57: 37.635272 USDC × $1.0。旧版は underlyingBalance を 8-dec USD と
+      // 誤解しており、実データ (wallet 残高が入る) では桁が狂っていた
+      underlying_usd: "37.63527200",
       supply_rate_bps: 303,
     });
   });
@@ -464,5 +467,24 @@ describe("mapJupiterLendToEarnPositions — accrued yield", () => {
   it("引数省略時は cost-basis なし扱い (後方互換)", () => {
     const pos = mapJupiterLendToEarnPositions([jlRaw("100420000")])[0]!;
     expect(pos.accrued_yield_sign).toBe("unknown");
+  });
+});
+
+describe("Phase 8.57 — jupiterLendUsd8", () => {
+  it("underlyingAssets × price を 8-dec USD string にする", () => {
+    // 実測 (2026-08-01): 10.206598 USDC × $0.999846136315
+    // price は §4.5 に合わせ 8 桁で**切り捨て** (0.99984613) してから乗算する
+    expect(jupiterLendUsd8("10206598", 6, "0.999846136315")).toBe("10.20502751");
+  });
+
+  it("price 欠落 / 不正 amount は '0' (0 円と誤読されない側に倒す)", () => {
+    expect(jupiterLendUsd8("10206598", 6, null)).toBe("0");
+    expect(jupiterLendUsd8("10206598", 6, "0")).toBe("0");
+    expect(jupiterLendUsd8("12.3", 6, "1")).toBe("0");
+  });
+
+  it("SOL (9 dec) でも桁が合う", () => {
+    // 0.2976 SOL × $74.92 = 22.2961920
+    expect(jupiterLendUsd8("297600000", 9, "74.92")).toBe("22.29619200");
   });
 });

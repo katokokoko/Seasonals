@@ -9,7 +9,6 @@
  */
 import type { Position } from "@workspace/lib/types";
 
-import { SOL_USD_PRICE } from "./allocation";
 import type { PortfolioSnapshot } from "./history";
 import {
   buildPortfolioTimeSeries,
@@ -17,6 +16,10 @@ import {
   formatAxisValue,
   hasHistory,
 } from "./portfolioTimeSeries";
+
+/** oracle 由来の実価格 map (8.57: 固定表をやめた) */
+const SOL_USD = 74.92;
+const PRICES = { SOL: SOL_USD, USDC: 1 };
 
 const TODAY = new Date(2026, 7, 1); // 2026-08-01 (ローカル)
 
@@ -27,14 +30,15 @@ function usdcPosition(): Position {
     protocol_id: "wallet_stable",
     asset_symbol: "USDC",
     current_amount: "150000000", // 150 USDC (6 dec)
+    unit_price_usd: "1.00000000",
   } as unknown as Position;
 }
 
-const NOW_SOL = 150 / SOL_USD_PRICE;
+const NOW_SOL = 150 / SOL_USD;
 
 describe("buildPortfolioTimeSeries", () => {
   it("スナップショットが無ければ今日の 1 点だけ (過去を捏造しない)", () => {
-    const pts = buildPortfolioTimeSeries([], [usdcPosition()], "1M", TODAY, "USDC");
+    const pts = buildPortfolioTimeSeries([], [usdcPosition()], "1M", TODAY, "USDC", PRICES);
     expect(pts).toHaveLength(1);
     expect(pts[0]!.date).toEqual(TODAY);
     expect(pts[0]!.value).toBeCloseTo(150, 6);
@@ -45,7 +49,7 @@ describe("buildPortfolioTimeSeries", () => {
       { day: "2026-07-30", sol: 0.88 },
       { day: "2026-07-31", sol: 0.89 },
     ];
-    const pts = buildPortfolioTimeSeries(snaps, [usdcPosition()], "1M", TODAY, "SOL");
+    const pts = buildPortfolioTimeSeries(snaps, [usdcPosition()], "1M", TODAY, "SOL", PRICES);
     expect(pts.map((p) => p.value)).toEqual([0.88, 0.89, NOW_SOL]);
     expect(pts[2]!.date).toEqual(TODAY);
   });
@@ -55,7 +59,7 @@ describe("buildPortfolioTimeSeries", () => {
       { day: "2026-07-31", sol: 0.89 },
       { day: "2026-08-01", sol: 0.5 }, // 古い記録
     ];
-    const pts = buildPortfolioTimeSeries(snaps, [usdcPosition()], "1M", TODAY, "SOL");
+    const pts = buildPortfolioTimeSeries(snaps, [usdcPosition()], "1M", TODAY, "SOL", PRICES);
     expect(pts).toHaveLength(2);
     expect(pts[1]!.value).toBeCloseTo(NOW_SOL, 6);
   });
@@ -65,20 +69,20 @@ describe("buildPortfolioTimeSeries", () => {
       { day: "2026-06-01", sol: 0.5 }, // 1W 外
       { day: "2026-07-30", sol: 0.88 },
     ];
-    const pts = buildPortfolioTimeSeries(snaps, [usdcPosition()], "1W", TODAY, "SOL");
+    const pts = buildPortfolioTimeSeries(snaps, [usdcPosition()], "1W", TODAY, "SOL", PRICES);
     expect(pts.map((p) => p.value)).toEqual([0.88, NOW_SOL]);
   });
 
   it("currency=USDC なら USD 建て、SOL なら SOL 建て", () => {
     const snaps: PortfolioSnapshot[] = [{ day: "2026-07-31", sol: 1 }];
-    const usdc = buildPortfolioTimeSeries(snaps, [usdcPosition()], "1M", TODAY, "USDC");
-    const sol = buildPortfolioTimeSeries(snaps, [usdcPosition()], "1M", TODAY, "SOL");
-    expect(usdc[0]!.value).toBeCloseTo(SOL_USD_PRICE, 6);
+    const usdc = buildPortfolioTimeSeries(snaps, [usdcPosition()], "1M", TODAY, "USDC", PRICES);
+    const sol = buildPortfolioTimeSeries(snaps, [usdcPosition()], "1M", TODAY, "SOL", PRICES);
+    expect(usdc[0]!.value).toBeCloseTo(SOL_USD, 6);
     expect(sol[0]!.value).toBe(1);
   });
 
   it("positions 空は空配列 (履歴を偽造しない)", () => {
-    expect(buildPortfolioTimeSeries([], [], "1M", TODAY, "USDC")).toEqual([]);
+    expect(buildPortfolioTimeSeries([], [], "1M", TODAY, "USDC", PRICES)).toEqual([]);
   });
 });
 

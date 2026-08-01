@@ -8,6 +8,8 @@ import type { OracleResult } from "@workspace/lib/types";
 const mockGetOracleResult = jest.fn<Promise<OracleResult>, [string]>();
 
 jest.mock("./clients/oracle", () => ({
+  // 8.57: symbol → mint の逆引きは実物を使う (registry と一致させるため)
+  ...jest.requireActual("./clients/oracle"),
   getOracleResult: (mint: string) => mockGetOracleResult(mint),
 }));
 
@@ -57,5 +59,61 @@ describe("POST /protocols/jupiter-lend/deposit-tx — oracle fail-closed gate", 
     expect(body.swapTransaction).toBeUndefined();
     // blocked の時点で oracle を 1 回引いている
     expect(mockGetOracleResult).toHaveBeenCalledWith(USDC);
+  });
+});
+
+// ── Phase 8.57: GET /prices (mobile の評価額に使う実 USD 価格) ───────────────
+
+function okResult(symbol: string, price: string): OracleResult {
+  return {
+    asset_symbol: symbol,
+    status: "ok",
+    primary: "pyth",
+    price_usd: price,
+    pyth: { available: true, price_usd: price, age_seconds: 2 },
+    switchboard: { available: false, price_usd: null, age_seconds: null },
+    divergence_pct: null,
+    warnings: [],
+    block_reason: null,
+  };
+}
+
+describe("GET /prices", () => {
+  it("symbol → 8-dec USD string を返す (registry にある asset のみ)", async () => {
+    mockGetOracleResult.mockImplementation(async (mint) =>
+      mint === "So11111111111111111111111111111111111111112"
+        ? okResult("SOL", "74.92000000")
+        : okResult("USDC", "0.99986310")
+    );
+    const res = await app.inject({ method: "GET", url: "/prices?symbols=SOL,USDC" });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().prices).toEqual({
+      SOL: "74.92000000",
+      USDC: "0.99986310",
+    });
+  });
+
+  it("blocked の symbol は **返さない** (0 で埋めると 0 円と誤読される)", async () => {
+    mockGetOracleResult.mockResolvedValue(blockedResult());
+    const res = await app.inject({ method: "GET", url: "/prices?symbols=SOL" });
+    expect(res.json().prices).toEqual({});
+  });
+
+  it("registry に無い symbol は oracle を叩かずに落とす", async () => {
+    mockGetOracleResult.mockResolvedValue(okResult("SOL", "74.92000000"));
+    const res = await app.inject({ method: "GET", url: "/prices?symbols=DOGE" });
+    expect(res.json().prices).toEqual({});
+    expect(mockGetOracleResult).not.toHaveBeenCalled();
+  });
+
+  it("WSOL は SOL として解決する", async () => {
+    mockGetOracleResult.mockResolvedValue(okResult("SOL", "74.92000000"));
+    const res = await app.inject({ method: "GET", url: "/prices?symbols=WSOL" });
+    expect(res.json().prices).toEqual({ WSOL: "74.92000000" });
+  });
+
+  it("symbols 未指定は 400", async () => {
+    const res = await app.inject({ method: "GET", url: "/prices" });
+    expect(res.statusCode).toBe(400);
   });
 });

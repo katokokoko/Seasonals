@@ -81,6 +81,19 @@ const ASSET_ORACLE_FEEDS: Record<string, FeedConfig> = {
   },
 };
 
+/**
+ * Phase 8.57: symbol → underlying mint (registry の逆引き)。
+ * `/prices` が symbol 指定で oracle 価格を引くために使う。
+ * WSOL は SOL の別名として扱う (mobile 側は SOL に正規化して持つ)。
+ */
+export function oracleMintForSymbol(symbol: string): string | undefined {
+  const wanted = symbol === "WSOL" ? "SOL" : symbol;
+  for (const [mint, feed] of Object.entries(ASSET_ORACLE_FEEDS)) {
+    if (feed.symbol === wanted) return mint;
+  }
+  return undefined;
+}
+
 const UNAVAILABLE: OracleSourceStatus = {
   available: false,
   price_usd: null,

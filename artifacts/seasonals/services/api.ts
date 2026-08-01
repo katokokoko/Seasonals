@@ -328,6 +328,28 @@ export interface JupiterLendMarketDTO {
   tvlUnderlying: string;
 }
 
+/**
+ * Phase 8.57: symbol → 実 USD 価格 (8 decimals string)。
+ * 取得できない symbol は **キー自体が返らない** (0 で埋めない = 誤った金額を出さない)。
+ * fixture / BFF 不通時は空 map (呼び手は position の unit_price_usd に落ちる)。
+ */
+export async function getPrices(
+  symbols: string[]
+): Promise<Record<string, string>> {
+  if (symbols.length === 0) return {};
+  const q = encodeURIComponent(symbols.join(","));
+  return tryHttpThenFixture(
+    async () => {
+      const res = await httpGetJson<{ prices?: Record<string, string> }>(
+        `/prices?symbols=${q}`
+      );
+      return res.prices ?? {};
+    },
+    async () => ({}),
+    "/prices"
+  );
+}
+
 export async function getJupiterLendMarkets(): Promise<JupiterLendMarketDTO[]> {
   return tryHttpThenFixture(
     () => httpGetJson<JupiterLendMarketDTO[]>("/protocols/jupiter-lend/markets"),

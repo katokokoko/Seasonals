@@ -45,15 +45,15 @@ import {
   useThemedStyles,
   type ThemeColors,
 } from "../../stores/theme";
-import { useJupiterLendMarkets } from "../../services/queries";
+import { usePrices, useJupiterLendMarkets } from "../../services/queries";
 import { AllocationDonut } from "./AllocationDonut";
 import { Charts } from "./Charts";
 import { SponsoredCard } from "./SponsoredCard";
 import {
   aggregateAllocation,
   positionUsdValue,
+  solUsdPrice,
   totalUsdValue,
-  SOL_USD_PRICE,
   type AllocationSegment,
   type CurrencyUnit,
 } from "./allocation";
@@ -72,7 +72,7 @@ import { dayKeyToDate } from "./history";
 
 const RANGE_KEYS: RangeKey[] = ["1W", "1M", "3M", "1Y", "ALL"];
 
-// Phase 8.4.1: SOL/USD は allocation.ts SOL_USD_PRICE に集約 (import で参照)。
+// Phase 8.57: SOL/USD は固定値をやめ oracle の実価格 (usePrices) を使う。
 
 const SNAP_INDEX_KEY = "home:bottomSheetSnapIndex"; // Phase 5B.1 persist
 
@@ -138,8 +138,23 @@ export function PortfolioSummary({
   const [range, setRange] = useState<RangeKey>("1M");
 
   // Phase 8.4.1: total を asset_symbol price table から直接計算 (allocation.ts と同じロジック)
-  const totalUsd = useMemo(() => totalUsdValue(positions), [positions]);
-  const totalSol = totalUsd / SOL_USD_PRICE;
+  // 8.57: 実価格 map (native SOL は DAS に価格が無いので oracle から埋める)
+  const { data: priceStrings } = usePrices();
+  const prices = useMemo(() => {
+    const out: Record<string, number> = {};
+    for (const [symbol, value] of Object.entries(priceStrings ?? {})) {
+      const n = Number(value);
+      if (Number.isFinite(n) && n > 0) out[symbol] = n;
+    }
+    return out;
+  }, [priceStrings]);
+  const solUsd = solUsdPrice(prices);
+
+  const totalUsd = useMemo(
+    () => totalUsdValue(positions, prices),
+    [positions, prices]
+  );
+  const totalSol = solUsd === null ? 0 : totalUsd / solUsd;
 
   // Phase 8.10: earn position (Jupiter Lend / Kamino) の supply_rate_bps を
   // USD 重みで加重平均して実効 APR を算出。range 日数で按分して period yield に。
@@ -181,7 +196,7 @@ export function PortfolioSummary({
       const bps = fromRaw > 0 ? fromRaw : fromMarkets;
       if (bps <= 0) continue;
       // USD weight = positionUsdValue
-      const usd = positionUsdValue(p);
+      const usd = positionUsdValue(p, prices);
       if (!Number.isFinite(usd) || usd <= 0) continue;
       earnUsd += usd;
       weighted += usd * (bps / 10000);
@@ -191,19 +206,27 @@ export function PortfolioSummary({
     const yUsd = earnUsd * avgApr * (days / 365);
     return {
       yieldUsd: yUsd,
-      yieldSol: yUsd / SOL_USD_PRICE,
+      yieldSol: solUsd === null ? 0 : yUsd / solUsd,
       yieldRatio: avgApr,
       avgYieldDisplay:
         avgApr > 0 ? `${(avgApr * 100).toFixed(2)}%` : "—",
     };
-  }, [positions, range, bpsByJlMint]);
+  }, [positions, range, bpsByJlMint, prices, solUsd]);
 
   // 8.55: 系列はトグル通貨建てで生成 (chart 縦軸をトグルと一致させる)
   // 8.56: 実測スナップショット + 今日の現在値。過去は捏造しない
   const snapshots = usePortfolioHistoryStore((s) => s.snapshots);
   const series: PortfolioPoint[] = useMemo(
-    () => buildPortfolioTimeSeries(snapshots, positions, range, today, currency),
-    [snapshots, positions, range, today, currency]
+    () =>
+      buildPortfolioTimeSeries(
+        snapshots,
+        positions,
+        range,
+        today,
+        currency,
+        prices
+      ),
+    [snapshots, positions, range, today, currency, prices]
   );
   // 変動を観測できていない間は線を描かず現在値カードを出す
   const showChart = seriesHasHistory(series);
@@ -211,8 +234,8 @@ export function PortfolioSummary({
 
   // Phase 8.4.1: currency 駆動で donut value も切替
   const allocation: AllocationSegment[] = useMemo(
-    () => aggregateAllocation(positions, protocols, currency),
-    [positions, protocols, currency]
+    () => aggregateAllocation(positions, protocols, currency, prices),
+    [positions, protocols, currency, prices]
   );
 
   // Phase 8.7: wallet 直接保有 (raw token) を separate section で list 表示
@@ -455,7 +478,7 @@ export function PortfolioSummary({
             <Text style={styles.sectionLabel}>Wallet holdings</Text>
             <View style={styles.legend}>
               {walletHoldings.map((h) => {
-                const view = holdingView(h);
+                const view = holdingView(h, prices);
                 const expanded = expandedHoldings.has(h.position_id);
                 return (
                   <View key={h.position_id}>
@@ -512,7 +535,7 @@ export function PortfolioSummary({
                           {conversionLine(view)}
                         </Text>
                         <Text style={styles.holdingDetailRate}>
-                          {rateLine()}
+                          {rateLine(prices)}
                         </Text>
                       </View>
                     )}

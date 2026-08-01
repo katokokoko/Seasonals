@@ -54,6 +54,8 @@ export const queryKeys = {
   jupiterLendMarkets: () => ["jupiter-lend-markets"] as const,
   /** Phase 8.14: underlying mint 別の oracle 判定 (§4.6) */
   oracleStatus: (mint: string) => ["oracle-status", mint] as const,
+  /** Phase 8.57: symbol 群の実 USD 価格 */
+  prices: (symbols: readonly string[]) => ["prices", symbols.join(",")] as const,
   agentPlan: (planId: string) => ["agent-plan", planId] as const,
   agentPlans: () => ["agent-plans"] as const,
   approvalToken: (tokenId: string) => ["approval-token", tokenId] as const,
@@ -163,6 +165,24 @@ export function useJupiterLendMarkets(): UseQueryResult<
     queryFn: api.getJupiterLendMarkets,
   });
 }
+
+/**
+ * Phase 8.57: oracle 由来の実 USD 価格 (native SOL 等、DAS に価格が無い asset 用)。
+ * 価格は動くので短めの staleTime。取得失敗は空 map で degrade する。
+ */
+export function usePrices(
+  symbols: readonly string[] = PRICED_SYMBOLS
+): UseQueryResult<Record<string, string>, Error> {
+  const key = [...symbols].sort();
+  return useQuery({
+    queryKey: queryKeys.prices(key),
+    queryFn: () => api.getPrices(key),
+    staleTime: 60_000,
+  });
+}
+
+/** oracle registry にある asset (BFF `/prices` が返せるもの) */
+export const PRICED_SYMBOLS = ["SOL", "USDC", "USDT", "JLP"] as const;
 
 /** AgentPlan の一覧を取得 (Plans tab で使用) */
 export function useAgentPlans(): UseQueryResult<AgentPlan[], Error> {

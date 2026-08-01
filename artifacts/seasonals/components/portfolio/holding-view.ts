@@ -13,9 +13,10 @@ import type { Position } from "@workspace/lib/types";
 import { TOKEN_DECIMALS, toHumanReadable } from "@workspace/lib/utils/numeric";
 
 import {
-  SOL_USD_PRICE,
   positionSolValue,
   positionUsdValue,
+  solUsdPrice,
+  type PriceMap,
 } from "./allocation";
 
 export interface HoldingView {
@@ -45,7 +46,10 @@ function trimDecimals(human: string, places: number): string {
   return cut ? `${int}.${cut}` : int;
 }
 
-export function holdingView(position: Position): HoldingView {
+export function holdingView(
+  position: Position,
+  prices: PriceMap = {}
+): HoldingView {
   const symbol = position.asset_symbol === "WSOL" ? "SOL" : position.asset_symbol;
   // WSOL は TOKEN_DECIMALS / 価格テーブルの両方に無いので、decimals (9) と
   // 価格を正しく引くため **正規化した symbol** で評価する
@@ -58,13 +62,13 @@ export function holdingView(position: Position): HoldingView {
     toHumanReadable(position.current_amount, decimals),
     4
   );
-  const usd = positionUsdValue(normalized);
+  const usd = positionUsdValue(normalized, prices);
   return {
     symbol,
     nativeAmount,
     usd,
-    sol: positionSolValue(normalized),
-    // ASSET_USD_PRICE に無い asset は usd 0 になる (allocation.ts)。
+    sol: positionSolValue(normalized, prices),
+    // 価格が引けない asset は usd 0 になる (allocation.ts)。
     // 0 保有と区別できないが、どちらも「換算を出さない」で正しい
     priced: usd > 0,
   };
@@ -82,7 +86,15 @@ export function conversionLine(view: HoldingView): string {
   return `≈ ${usd} USDC · ${sol} SOL`;
 }
 
-/** 展開行のレート注記 (固定換算であることを明示する) */
-export function rateLine(): string {
-  return `1 SOL = ${SOL_USD_PRICE} USDC`;
+/**
+ * 展開行のレート注記。8.57: live 価格 (oracle) を出す。
+ * 価格が取れていなければ注記自体を出さない (レートを騙らない)。
+ */
+export function rateLine(prices: PriceMap): string | null {
+  const sol = solUsdPrice(prices);
+  if (sol === null) return null;
+  return `1 SOL = ${sol.toLocaleString("en-US", {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })} USDC`;
 }

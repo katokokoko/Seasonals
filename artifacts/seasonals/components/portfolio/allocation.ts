@@ -69,25 +69,34 @@ const COLOR_BY_CATEGORY: Record<PositionCategory, string> = {
   other: COLOR.textMuted,
 };
 
-/** SOL/USD 換算 (PortfolioSummary 内 SOL_TO_USD と一致、Phase 8.5 で oracle に差替) */
-export const SOL_USD_PRICE = 168.5;
+/**
+ * symbol → USD 価格 (実価格)。source は 2 つ:
+ *   1. position の `unit_price_usd` (Helius DAS。SPL token は基本ここで埋まる)
+ *   2. BFF `/prices` (oracle)。**native SOL は DAS に price_info が無く 0** で
+ *      来るため、そこを埋めるのがこちら
+ * Phase 8.57 以前は下の固定表だけを見ていて、SOL を $168.5 (実勢の 2 倍超) で
+ * 評価していた。
+ */
+export type PriceMap = Record<string, number>;
 
 /**
- * 主要 mainnet asset の USD 価格 (Phase 8.5 で oracle 連携予定)。
- * 未登録 asset は price 0 → total / donut に出ない (フィルタされる)。
+ * 最終 fallback の固定価格。**stale な可能性がある** ので、live 価格
+ * (DAS / oracle) が取れた asset には使わない。stablecoin だけに留める
+ * (SOL 系は実勢との乖離が大きく、固定値で出すと誤情報になる)。
  */
-const ASSET_USD_PRICE: Record<string, number> = {
+const FALLBACK_USD_PRICE: Record<string, number> = {
   USDC: 1,
   USDT: 1,
   USDS: 1,
   USDG: 1,
-  EURC: 1.08,
   JupUSD: 1,
-  SOL: SOL_USD_PRICE,
-  mSOL: SOL_USD_PRICE,
-  JitoSOL: SOL_USD_PRICE,
-  bSOL: SOL_USD_PRICE,
 };
+
+/** 表示用の SOL/USD レート。live 価格が無ければ null (レートを騙らない) */
+export function solUsdPrice(prices: PriceMap): number | null {
+  const sol = prices.SOL;
+  return typeof sol === "number" && sol > 0 ? sol : null;
+}
 
 function decimalsOf(asset: string): number {
   if (asset in TOKEN_DECIMALS) {
@@ -96,28 +105,54 @@ function decimalsOf(asset: string): number {
   return 6;
 }
 
-/** 1 position の現在 USD 評価額 (smallest unit → human × asset price) */
-export function positionUsdValue(p: Position): number {
+/**
+ * asset 1 単位の USD 価格を解決する (優先順: position の実価格 → oracle → 固定)。
+ * どこからも取れなければ null = **評価額不明** (0 として合算しない)。
+ */
+export function unitUsdPrice(p: Position, prices: PriceMap): number | null {
+  // 1. Helius DAS 由来の実価格 (SPL token はここで埋まる。native SOL は 0)
+  const fromPosition = Number(p.unit_price_usd);
+  if (Number.isFinite(fromPosition) && fromPosition > 0) return fromPosition;
+  // 2. oracle (BFF /prices)。native SOL はここで埋まる
+  const symbol = p.asset_symbol === "WSOL" ? "SOL" : p.asset_symbol;
+  const fromOracle = prices[symbol];
+  if (typeof fromOracle === "number" && fromOracle > 0) return fromOracle;
+  // 3. stablecoin の固定 fallback のみ
+  return FALLBACK_USD_PRICE[symbol] ?? null;
+}
+
+/** 1 position の現在 USD 評価額。価格不明は 0 (合算に影響させない) */
+export function positionUsdValue(p: Position, prices: PriceMap = {}): number {
   const decimals = decimalsOf(p.asset_symbol);
   const human = Number(toHumanReadable(p.current_amount, decimals));
-  const usdPrice = ASSET_USD_PRICE[p.asset_symbol] ?? 0;
-  if (!Number.isFinite(human) || !Number.isFinite(usdPrice)) return 0;
+  const usdPrice = unitUsdPrice(p, prices);
+  if (!Number.isFinite(human) || usdPrice === null) return 0;
   return human * usdPrice;
 }
 
-/** 1 position の現在 SOL 評価額 (USD 経由) */
-export function positionSolValue(p: Position): number {
-  return positionUsdValue(p) / SOL_USD_PRICE;
+/** 1 position の現在 SOL 評価額 (USD 経由)。SOL 価格不明なら 0 */
+export function positionSolValue(p: Position, prices: PriceMap = {}): number {
+  const solUsd = solUsdPrice(prices);
+  if (solUsd === null) return 0;
+  return positionUsdValue(p, prices) / solUsd;
 }
 
 /** ポートフォリオ全体の USD 評価額 (全 positions の単純合計) */
-export function totalUsdValue(positions: Position[]): number {
-  return positions.reduce((sum, p) => sum + positionUsdValue(p), 0);
+export function totalUsdValue(
+  positions: Position[],
+  prices: PriceMap = {}
+): number {
+  return positions.reduce((sum, p) => sum + positionUsdValue(p, prices), 0);
 }
 
-/** ポートフォリオ全体の SOL 評価額 (USD 経由) */
-export function totalSolValue(positions: Position[]): number {
-  return totalUsdValue(positions) / SOL_USD_PRICE;
+/** ポートフォリオ全体の SOL 評価額 (USD 経由)。SOL 価格不明なら 0 */
+export function totalSolValue(
+  positions: Position[],
+  prices: PriceMap = {}
+): number {
+  const solUsd = solUsdPrice(prices);
+  if (solUsd === null) return 0;
+  return totalUsdValue(positions, prices) / solUsd;
 }
 
 /**
@@ -130,7 +165,8 @@ export function totalSolValue(positions: Position[]): number {
 export function aggregateAllocation(
   positions: Position[],
   protocols: Protocol[],
-  currency: CurrencyUnit = "SOL"
+  currency: CurrencyUnit = "SOL",
+  prices: PriceMap = {}
 ): AllocationSegment[] {
   const protocolById = new Map(protocols.map((p) => [p.protocol_id, p]));
   const sumByCategory = new Map<PositionCategory, number>();
@@ -139,7 +175,9 @@ export function aggregateAllocation(
     const protocol = protocolById.get(pos.protocol_id);
     if (!protocol) continue;
     const value =
-      currency === "USDC" ? positionUsdValue(pos) : positionSolValue(pos);
+      currency === "USDC"
+        ? positionUsdValue(pos, prices)
+        : positionSolValue(pos, prices);
     sumByCategory.set(
       protocol.category,
       (sumByCategory.get(protocol.category) ?? 0) + value

@@ -7,7 +7,7 @@
  *
  * 規約:
  *   - amount は smallest unit string のまま保持 (§4.5)
- *   - unit_price_sol は 8 decimals string、SOL_USD 168.5 で USD → SOL 換算
+ *   - unit_price_usd は **per-unit** USD (8 decimals string、8.57 で修正)
  *     (Phase 8.4 で Pyth に差替予定。PortfolioSummary 内 SOL_TO_USD と整合)
  *   - protocol_id は EarnPosition のまま (fixtureProtocols に "jupiter_lend" /
  *     "kamino" が登録済なので aggregateAllocation で Lending segment に集計される)
@@ -19,29 +19,23 @@ import type {
   Position,
 } from "@workspace/lib/types";
 
-/** PortfolioSummary 内の SOL_TO_USD と一致させる (Phase 8.4 で oracle 差替え予定) */
-const SOL_TO_USD = 168.5;
-
 /**
- * Phase 8.3.1: BFF が underlying_usd を "0" で返す protocol があるため、
- * asset_symbol から固定 USD 価格を解決して unit_price_sol を補完する。
- * Phase 8.4 で Pyth oracle に差替予定。
+ * Phase 8.3.1 / 8.57: BFF が underlying_usd を "0" で返す protocol 用の fallback。
+ *
+ * 8.57: **stablecoin のみ**に縮小した。旧版は SOL 系を $168.5 の固定値で埋めて
+ * いたが実勢と 2 倍以上乖離しており、誤った評価額の出所になっていた。価格が
+ * 引けない asset は 0 (= 評価額不明) にし、表示側で live 価格に解決させる。
  */
-const ASSET_USD_PRICE: Record<string, number> = {
+const FALLBACK_USD_PRICE: Record<string, number> = {
   USDC: 1,
   USDT: 1,
   USDS: 1,
   USDG: 1,
-  EURC: 1.08,
   JupUSD: 1,
-  SOL: SOL_TO_USD,
-  mSOL: SOL_TO_USD,
-  JitoSOL: SOL_TO_USD,
-  bSOL: SOL_TO_USD,
 };
 
 function fallbackAssetUsd(asset: string): number {
-  return ASSET_USD_PRICE[asset] ?? 0;
+  return FALLBACK_USD_PRICE[asset] ?? 0;
 }
 
 export function earnPositionToPosition(earn: EarnPosition): Position {
@@ -55,8 +49,6 @@ export function earnPositionToPosition(earn: EarnPosition): Position {
   // per-unit USD: usdTotal が有効ならそれを human で割る、無効なら asset fallback
   const usdPerUnit =
     human > 0 && usdTotal > 0 ? usdTotal / human : fallbackAssetUsd(earn.asset_symbol);
-  const solPerUnit = usdPerUnit / SOL_TO_USD;
-  const unit_price_sol = solPerUnit > 0 ? solPerUnit.toFixed(8) : "0.00000000";
 
   return {
     position_id: `earn_${earn.protocol_id}_${earn.share_mint}`,
@@ -70,8 +62,12 @@ export function earnPositionToPosition(earn: EarnPosition): Position {
     // 符号・既知性は raw_state (accrued_yield_sign / cost_basis_amount) で伝搬する
     // (Position.accrued_yield_amount は §4.5 `^[0-9]+$` の magnitude string を維持)。
     accrued_yield_amount: earn.accrued_yield_amount,
-    unit_price_usd: earn.underlying_usd,
-    unit_price_sol,
+    // 8.57: **per-unit** の USD 価格を入れる。旧版は position の合計 USD
+    // (earn.underlying_usd) をそのまま入れており、単価として読むと桁が狂う
+    // (allocation が固定表を見ていた間は露見していなかった)
+    unit_price_usd: usdPerUnit > 0 ? usdPerUnit.toFixed(8) : "0.00000000",
+    // SOL 建て単価は live SOL 価格が要るので表示層で導出する (ここでは持たない)
+    unit_price_sol: "0.00000000",
     deposited_at: new Date().toISOString(),
     // Phase 8.33: 満期付き protocol (Exponent PT) は BFF の maturity_at をそのまま通す
     maturity_at: earn.maturity_at ?? null,
