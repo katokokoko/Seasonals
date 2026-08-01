@@ -106,13 +106,13 @@ export function Charts({ data, unit, width, height, testID }: ChartsProps) {
     // pivot line (今日の縦の参照線)
     const pivotX = past.length > 0 ? xOf(past.length - 1) : null;
 
-    // y 軸 label (4 段)
+    // y 軸 label (4 段)。8.56: 刻み幅から小数桁を決める (隣と同じ文字列にしない)
     const yTicks = 4;
+    const yStep = (maxValue - minValue) / (yTicks - 1);
     const yLabels = Array.from({ length: yTicks }, (_, i) => {
-      const value =
-        minValue + ((maxValue - minValue) * (yTicks - 1 - i)) / (yTicks - 1);
+      const value = minValue + yStep * (yTicks - 1 - i);
       const y = yOf(value);
-      return { value, y };
+      return { label: formatAxisValue(value, yStep), y };
     });
 
     // x 軸 label (5-7 個間引き)
@@ -220,7 +220,7 @@ export function Charts({ data, unit, width, height, testID }: ChartsProps) {
             { top: tick.y - 8, left: 4 },
           ]}
         >
-          {formatAxisValue(tick.value)}
+          {tick.label}
           {"\n"}
           {unit}
         </Text>

@@ -90,6 +90,9 @@ import {
 import { useWallet } from "../services/useWallet";
 import { USE_ONCHAIN } from "../services/config";
 import { mergeEarnPositions } from "../services/earn-to-position";
+// 8.56: portfolio chart の実履歴 (1 日 1 点の実測スナップショット)
+import { usePortfolioHistoryStore } from "../stores/portfolioHistory";
+import { totalSolValue } from "../components/portfolio/portfolioTimeSeries";
 
 function localDayKey(day: Date): string {
   return `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, "0")}-${String(day.getDate()).padStart(2, "0")}`;
@@ -131,6 +134,13 @@ export default function HomeScreen() {
     () => mergeEarnPositions(basePositions, earnPositionsData),
     [basePositions, earnPositionsData]
   );
+  // Phase 8.56: 評価額を 1 日 1 点だけ記録する (chart の実履歴)。
+  // positions が解決した後にだけ走らせ、0 / 未接続の値は貯めない
+  useEffect(() => {
+    if (positions.length === 0) return;
+    usePortfolioHistoryStore.getState().record(totalSolValue(positions));
+  }, [positions]);
+
   // Phase 8.3 Part B: wallet tx 由来 events + fixture events を merge
   const events = useMemo(
     () => [...fixtureEvents, ...walletEvents],

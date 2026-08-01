@@ -86,7 +86,10 @@ export function Charts({ data, unit, width, height, testID }: ChartsProps) {
             stroke={COLOR.textMuted}
             domain={[bounds.minValue, bounds.maxValue]}
             tick={{ fontSize: 9 }}
-            tickFormatter={(v: number) => `${formatAxisValue(v)} ${unit}`}
+            tickFormatter={(v: number) =>
+              // 8.56: native と同じく刻み幅から小数桁を決める (既定 5 tick 相当)
+              `${formatAxisValue(v, (bounds.maxValue - bounds.minValue) / 4)} ${unit}`
+            }
             width={54}
           />
           {todayLabel && (

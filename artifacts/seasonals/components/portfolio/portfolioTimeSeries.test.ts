@@ -1,20 +1,24 @@
 /**
- * portfolioTimeSeries — chart 系列と y 軸範囲 (Phase 8.55)。
+ * portfolioTimeSeries — chart 系列と y 軸範囲 (Phase 8.55 / 8.56)。
  *
- * 8.55 で直した 2 つの症状を固定する:
- *   1. トグル USDC でも系列が SOL 建てのままだった (縦軸不一致)
- *   2. 水平線 (履歴未実装の 2 点) で y 軸ラベル 4 つが同値に潰れていた
+ * 固定する仕様:
+ *   - 系列はトグル通貨建て (8.55: 縦軸がトグルと一致)
+ *   - 系列は **観測した点だけ** (8.56: 過去に遡って点を捏造しない)
+ *   - 変動を観測していない間は hasHistory=false → 呼び手が線を描かない
+ *   - 軸は実変動幅 (span) の ±10% — 小さな利回りの動きが見えるように
  */
 import type { Position } from "@workspace/lib/types";
 
 import { SOL_USD_PRICE } from "./allocation";
+import type { PortfolioSnapshot } from "./history";
 import {
   buildPortfolioTimeSeries,
   chartBounds,
   formatAxisValue,
+  hasHistory,
 } from "./portfolioTimeSeries";
 
-const TODAY = new Date("2026-08-01T00:00:00.000Z");
+const TODAY = new Date(2026, 7, 1); // 2026-08-01 (ローカル)
 
 /** 150 USDC 保有 1 件 (wallet_stable) */
 function usdcPosition(): Position {
@@ -26,57 +30,110 @@ function usdcPosition(): Position {
   } as unknown as Position;
 }
 
+const NOW_SOL = 150 / SOL_USD_PRICE;
+
 describe("buildPortfolioTimeSeries", () => {
-  it("currency=USDC なら USD 建て、SOL なら SOL 建ての系列を返す", () => {
-    const usdc = buildPortfolioTimeSeries([usdcPosition()], "1M", TODAY, "USDC");
-    const sol = buildPortfolioTimeSeries([usdcPosition()], "1M", TODAY, "SOL");
-    expect(usdc).toHaveLength(2);
-    expect(usdc[0]!.value).toBeCloseTo(150, 6);
-    expect(sol[0]!.value).toBeCloseTo(150 / SOL_USD_PRICE, 6);
+  it("スナップショットが無ければ今日の 1 点だけ (過去を捏造しない)", () => {
+    const pts = buildPortfolioTimeSeries([], [usdcPosition()], "1M", TODAY, "USDC");
+    expect(pts).toHaveLength(1);
+    expect(pts[0]!.date).toEqual(TODAY);
+    expect(pts[0]!.value).toBeCloseTo(150, 6);
   });
 
-  it("右端は today (リアルタイム)、左端は range 日数分前", () => {
-    const pts = buildPortfolioTimeSeries([usdcPosition()], "1M", TODAY, "USDC");
-    expect(pts[1]!.date).toEqual(TODAY);
-    const diffDays =
-      (TODAY.getTime() - pts[0]!.date.getTime()) / (24 * 3600 * 1000);
-    expect(diffDays).toBe(30);
+  it("range 内の実測 + 末尾に今日の現在値を並べる", () => {
+    const snaps: PortfolioSnapshot[] = [
+      { day: "2026-07-30", sol: 0.88 },
+      { day: "2026-07-31", sol: 0.89 },
+    ];
+    const pts = buildPortfolioTimeSeries(snaps, [usdcPosition()], "1M", TODAY, "SOL");
+    expect(pts.map((p) => p.value)).toEqual([0.88, 0.89, NOW_SOL]);
+    expect(pts[2]!.date).toEqual(TODAY);
+  });
+
+  it("今日の分の実測は現在値で置き換える (二重に並べない)", () => {
+    const snaps: PortfolioSnapshot[] = [
+      { day: "2026-07-31", sol: 0.89 },
+      { day: "2026-08-01", sol: 0.5 }, // 古い記録
+    ];
+    const pts = buildPortfolioTimeSeries(snaps, [usdcPosition()], "1M", TODAY, "SOL");
+    expect(pts).toHaveLength(2);
+    expect(pts[1]!.value).toBeCloseTo(NOW_SOL, 6);
+  });
+
+  it("range 外の古い実測は含めない (1W)", () => {
+    const snaps: PortfolioSnapshot[] = [
+      { day: "2026-06-01", sol: 0.5 }, // 1W 外
+      { day: "2026-07-30", sol: 0.88 },
+    ];
+    const pts = buildPortfolioTimeSeries(snaps, [usdcPosition()], "1W", TODAY, "SOL");
+    expect(pts.map((p) => p.value)).toEqual([0.88, NOW_SOL]);
+  });
+
+  it("currency=USDC なら USD 建て、SOL なら SOL 建て", () => {
+    const snaps: PortfolioSnapshot[] = [{ day: "2026-07-31", sol: 1 }];
+    const usdc = buildPortfolioTimeSeries(snaps, [usdcPosition()], "1M", TODAY, "USDC");
+    const sol = buildPortfolioTimeSeries(snaps, [usdcPosition()], "1M", TODAY, "SOL");
+    expect(usdc[0]!.value).toBeCloseTo(SOL_USD_PRICE, 6);
+    expect(sol[0]!.value).toBe(1);
   });
 
   it("positions 空は空配列 (履歴を偽造しない)", () => {
-    expect(buildPortfolioTimeSeries([], "1M", TODAY, "USDC")).toEqual([]);
+    expect(buildPortfolioTimeSeries([], [], "1M", TODAY, "USDC")).toEqual([]);
   });
 });
 
-describe("chartBounds — 値 ±10% (8.55)", () => {
-  it("水平線でも上下に幅が出る (min×0.9 / max×1.1)", () => {
-    const pts = buildPortfolioTimeSeries([usdcPosition()], "1M", TODAY, "USDC");
-    const { minValue, maxValue } = chartBounds(pts);
-    expect(minValue).toBeCloseTo(135, 6);
-    expect(maxValue).toBeCloseTo(165, 6);
+describe("hasHistory — 変動を観測できているか", () => {
+  const pt = (value: number) => ({ date: TODAY, value, isFuture: false });
+
+  it("1 点だけなら false (記録初日)", () => {
+    expect(hasHistory([pt(1)])).toBe(false);
   });
 
-  it("水平線で 4 段の軸ラベルがすべて異なる値になる (旧実装の regression)", () => {
-    const pts = buildPortfolioTimeSeries([usdcPosition()], "1M", TODAY, "SOL");
+  it("全点が同値なら false (中身のない目盛りを作らない)", () => {
+    expect(hasHistory([pt(1), pt(1), pt(1)])).toBe(false);
+  });
+
+  it("変動があれば true", () => {
+    expect(hasHistory([pt(1), pt(1.0001)])).toBe(true);
+  });
+});
+
+describe("chartBounds — 実変動幅の ±10% (8.56)", () => {
+  it("小さな利回りの動きでも軸いっぱいに見える", () => {
+    const pts = [150.61, 150.68].map((v) => ({
+      date: TODAY,
+      value: v,
+      isFuture: false,
+    }));
     const { minValue, maxValue } = chartBounds(pts);
+    expect(minValue).toBeCloseTo(150.603, 3);
+    expect(maxValue).toBeCloseTo(150.687, 3);
+    // 4 段の軸ラベルがすべて異なる文字列になる (刻み幅から小数桁を決めるため)
+    const step = (maxValue - minValue) / 3;
     const labels = Array.from({ length: 4 }, (_, i) =>
-      formatAxisValue(minValue + ((maxValue - minValue) * i) / 3)
+      formatAxisValue(minValue + step * i, step)
     );
     expect(new Set(labels).size).toBe(4);
+    expect(labels[0]).toBe("150.603");
   });
 
-  it("値が 0 / 空なら {0, 1} fallback (0 除算しない)", () => {
+  it("空 / 全点同値でも 0 除算しない (保険。通常は hasHistory=false で未到達)", () => {
     expect(chartBounds([])).toEqual({ minValue: 0, maxValue: 1 });
-    expect(
-      chartBounds([{ date: TODAY, value: 0, isFuture: false }])
-    ).toEqual({ minValue: 0, maxValue: 1 });
+    const flat = chartBounds([{ date: TODAY, value: 100, isFuture: false }]);
+    expect(flat.maxValue).toBeGreaterThan(flat.minValue);
   });
 });
 
-describe("formatAxisValue — 桁に応じた小数桁", () => {
-  it("≥100 は 1 桁 / ≥1 は 2 桁 / <1 は 4 桁", () => {
+describe("formatAxisValue", () => {
+  it("step 未指定は値の桁で決める (≥100 → 1 桁 / ≥1 → 2 桁 / <1 → 4 桁)", () => {
     expect(formatAxisValue(150.61)).toBe("150.6");
     expect(formatAxisValue(12.345)).toBe("12.35");
     expect(formatAxisValue(0.8938)).toBe("0.8938");
+  });
+
+  it("step 指定時は刻み幅で決める (隣の目盛りと同じ文字列にしない)", () => {
+    expect(formatAxisValue(150.631, 0.028)).toBe("150.631");
+    expect(formatAxisValue(0.8641, 0.0596)).toBe("0.864");
+    expect(formatAxisValue(1234, 100)).toBe("1234");
   });
 });

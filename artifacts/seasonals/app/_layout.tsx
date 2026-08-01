@@ -44,6 +44,7 @@ import {
 } from "../services/push";
 import { ComingSoonToast } from "../components/feedback/ComingSoonToast";
 import { usePrefsStore } from "../stores/prefs";
+import { usePortfolioHistoryStore } from "../stores/portfolioHistory";
 import { isDarkBackground, useActiveTheme } from "../stores/theme";
 
 // SplashScreen が消えるタイミングを font load 完了後にする
@@ -77,8 +78,10 @@ export default function RootLayout() {
   }, [fontsLoaded, fontsError]);
 
   // Phase 8.36: UI 設定 (液体演出 on/off 等) を起動時に復元
+  // Phase 8.56: portfolio の日次スナップショット (chart の実履歴) も復元
   useEffect(() => {
     void usePrefsStore.getState().hydrate();
+    void usePortfolioHistoryStore.getState().hydrate();
   }, []);
 
   // Phase 8.45: edge-to-edge のシステムバーアイコン色を active theme に追従させる。

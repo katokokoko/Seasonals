@@ -20,6 +20,7 @@ import {
   View,
 } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { format } from "date-fns";
 import BottomSheet, {
   BottomSheetScrollView,
   type BottomSheetMethods,
@@ -60,10 +61,14 @@ import {
 import { conversionLine, holdingView, rateLine } from "./holding-view";
 import {
   buildPortfolioTimeSeries,
+  hasHistory as seriesHasHistory,
   totalSolValue,
   type PortfolioPoint,
   type RangeKey,
 } from "./portfolioTimeSeries";
+// 8.56: 端末に貯めた日次スナップショット (実測のみ)
+import { usePortfolioHistoryStore } from "../../stores/portfolioHistory";
+import { dayKeyToDate } from "./history";
 
 const RANGE_KEYS: RangeKey[] = ["1W", "1M", "3M", "1Y", "ALL"];
 
@@ -194,10 +199,15 @@ export function PortfolioSummary({
   }, [positions, range, bpsByJlMint]);
 
   // 8.55: 系列はトグル通貨建てで生成 (chart 縦軸をトグルと一致させる)
+  // 8.56: 実測スナップショット + 今日の現在値。過去は捏造しない
+  const snapshots = usePortfolioHistoryStore((s) => s.snapshots);
   const series: PortfolioPoint[] = useMemo(
-    () => buildPortfolioTimeSeries(positions, range, today, currency),
-    [positions, range, today, currency]
+    () => buildPortfolioTimeSeries(snapshots, positions, range, today, currency),
+    [snapshots, positions, range, today, currency]
   );
+  // 変動を観測できていない間は線を描かず現在値カードを出す
+  const showChart = seriesHasHistory(series);
+  const trackingSince = snapshots[0] ? dayKeyToDate(snapshots[0].day) : today;
 
   // Phase 8.4.1: currency 駆動で donut value も切替
   const allocation: AllocationSegment[] = useMemo(
@@ -356,10 +366,10 @@ export function PortfolioSummary({
           ))}
         </View>
 
-        {/* Chart — Phase 8.4: history は wallet tx index 後の phase で実装。
-            positions 空 / series 空 の時は empty state を出して、過去データの
-            偽造をやめる (旧 APY 5.7% mock 撤去済)。 */}
-        {series.length > 0 ? (
+        {/* Chart — Phase 8.4 / 8.56: 過去データを偽造しない。
+            観測した変動が 2 点以上たまるまでは線を描かず、現在値と
+            「いつから記録しているか」を出す (中身のない目盛りを作らない)。 */}
+        {showChart ? (
           <Charts
             data={series}
             unit={currency}
@@ -369,14 +379,25 @@ export function PortfolioSummary({
           />
         ) : (
           <View
-            style={[styles.section, { paddingVertical: SPACE.lg }]}
+            style={[styles.chartPlaceholder, { height: chartHeight }]}
             testID={testID ? `${testID}-chart-empty` : undefined}
           >
-            <Text style={styles.empty}>
-              {positions.length === 0
-                ? "Connect a wallet to see your positions"
-                : "Time-series history will appear once tx activity is indexed"}
-            </Text>
+            {positions.length === 0 ? (
+              <Text style={styles.empty}>
+                Connect a wallet to see your positions
+              </Text>
+            ) : (
+              <>
+                <Text style={styles.placeholderValue}>
+                  {currency === "SOL"
+                    ? `${totalSol.toFixed(4)} SOL`
+                    : `${totalUsd.toLocaleString("en-US", { maximumFractionDigits: 2, minimumFractionDigits: 2 })} USDC`}
+                </Text>
+                <Text style={styles.empty}>
+                  {`Tracking since ${format(trackingSince, "MMM d")} · history builds daily`}
+                </Text>
+              </>
+            )}
           </View>
         )}
 
@@ -753,6 +774,18 @@ function makeStyles(c: ThemeColors) {
       fontFamily: FONT.heading,
       fontWeight: WEIGHT.bold,
       color: c.textOnColor,
+    },
+    // 8.56: 履歴が貯まるまでの chart 代替 (高さを維持してレイアウトを揺らさない)
+    chartPlaceholder: {
+      alignItems: "center",
+      justifyContent: "center",
+      gap: SPACE.xs,
+    },
+    placeholderValue: {
+      fontSize: FONT_SIZE.displaySM,
+      fontFamily: FONT.heading,
+      fontWeight: WEIGHT.bold,
+      color: c.textPrimary,
     },
     // 8.55: holdings 行タップで出す換算の展開行 (badge 幅 + gap 分 indent)
     holdingDetail: {

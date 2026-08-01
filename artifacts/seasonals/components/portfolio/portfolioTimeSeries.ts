@@ -14,8 +14,6 @@
  * トグルを USDC にしても縦軸が SOL のままだった。
  */
 
-import { addDays } from "date-fns";
-
 import type { Position } from "@workspace/lib/types";
 
 // Phase 8.4.1: 計算ロジックは allocation.ts に集約済 (asset_symbol → price table)。
@@ -25,6 +23,13 @@ import {
   totalSolValue as allocationTotalSolValue,
   type CurrencyUnit,
 } from "./allocation";
+// 8.56: 実測スナップショット (store は stores/portfolioHistory.ts)
+import {
+  dayKey,
+  dayKeyToDate,
+  snapshotsInRange,
+  type PortfolioSnapshot,
+} from "./history";
 
 export type RangeKey = "1W" | "1M" | "3M" | "1Y" | "ALL";
 
@@ -58,38 +63,64 @@ function rangeToDays(range: RangeKey): number {
 }
 
 /**
- * Phase 8.4: history を偽造しない。
- * - positions が空: 空配列を返し、PortfolioSummary 側で empty state を出す
- * - positions あり: 現在値だけの **flat line** (range の両端 2 点)。chart が破綻
- *   しない最低 data。実際に過去 balance を retrieve するには Helius tx history
- *   から逐次再構築が必要だが、別 phase で対応。
+ * Phase 8.4 / 8.56: history を偽造しない。**観測した点だけ**を並べる。
  *
- * 旧版は APY 5.7% mock で linear 推移を生成していた (Prototype "+5.70%" のため
- * の演出) が、本物の wallet position と整合が取れないため撤去。
+ * - positions が空 → 空配列 (PortfolioSummary が empty state を出す)
+ * - 端末に貯めた日次スナップショット (range 内) + 末尾に今日の現在値
+ * - 過去に遡って点を作らない。したがって記録初日は 1 点だけ = 線にならない。
+ *   その状態は `hasHistory` false として呼び手が現在値カードに切り替える
+ *
+ * 旧版 (8.4〜8.55) は現在値を range の両端 2 点に置いた水平線で、
+ * 中身のない目盛りが出ていた。
  */
 export function buildPortfolioTimeSeries(
+  snapshots: PortfolioSnapshot[],
   positions: Position[],
   range: RangeKey,
   today: Date,
   currency: CurrencyUnit = "SOL"
 ): PortfolioPoint[] {
   if (positions.length === 0) return [];
-  const totalSol = totalSolValue(positions);
-  const value = currency === "SOL" ? totalSol : totalSol * SOL_USD_PRICE;
-  const pastDays = rangeToDays(range);
-  const start = addDays(today, -pastDays);
+  const toValue = (sol: number) =>
+    currency === "SOL" ? sol : sol * SOL_USD_PRICE;
+  const todayKey = dayKey(today);
+  const past = snapshotsInRange(snapshots, rangeToDays(range), today)
+    // 今日の分は現在値 (最新) を優先するので除く
+    .filter((s) => s.day !== todayKey)
+    .map<PortfolioPoint>((s) => ({
+      date: dayKeyToDate(s.day),
+      value: toValue(s.sol),
+      isFuture: false,
+    }));
   return [
-    { date: start, value, isFuture: false },
-    { date: today, value, isFuture: false },
+    ...past,
+    {
+      date: today,
+      value: toValue(totalSolValue(positions)),
+      isFuture: false,
+    },
   ];
 }
 
 /**
- * chart の y 軸範囲。
+ * chart として意味のある履歴があるか。
+ * 2 点未満、または全点が同値 (= 変動を観測していない) なら false。
+ * false の間は線を描かず現在値カードを出す (中身のない目盛りを作らない)。
+ */
+export function hasHistory(points: PortfolioPoint[]): boolean {
+  if (points.length < 2) return false;
+  const first = points[0]!.value;
+  return points.some((p) => p.value !== first);
+}
+
+/**
+ * chart の y 軸範囲 = **実際の変動幅 (span) の ±10%** 余白。
  *
- * 8.55: **値そのものの ±10%** を上下端にする (min×0.9 〜 max×1.1)。
- * 旧実装は「値幅 (max−min) の ±10%」だったため、履歴未実装の水平線 (幅 0) では
- * ほぼゼロ幅になり、4 つの軸ラベルが全部同じ値に丸まっていた。
+ * 8.55 は「値そのものの ±10%」にしたが、それだと実データの変動 (利回りは日
+ * 0.01% 程度) が広い軸の中に埋もれて再び横一本に見える。span 基準なら小さな
+ * 動きでも軸いっぱいに見える。span が 0 の系列は `hasHistory` false として
+ * そもそも chart を描かないので、ここでゼロ幅を気にする必要はない
+ * (呼ばれても 0 除算しないよう最低幅は残す)。
  */
 export function chartBounds(points: PortfolioPoint[]): {
   minValue: number;
@@ -99,19 +130,30 @@ export function chartBounds(points: PortfolioPoint[]): {
   const values = points.map((p) => p.value);
   const rawMin = Math.min(...values);
   const rawMax = Math.max(...values);
-  if (rawMax <= 0) return { minValue: 0, maxValue: 1 };
+  // 保険: 全点同値でも 0 除算しない最低幅 (通常は hasHistory=false で未到達)
+  const span = rawMax - rawMin || Math.abs(rawMax) * 0.01 || 1;
+  const pad = span * 0.1;
   return {
-    minValue: rawMin * 0.9,
-    maxValue: rawMax * 1.1,
+    minValue: rawMin - pad,
+    maxValue: rawMax + pad,
   };
 }
 
 /**
- * y 軸ラベルの数値部。値の桁に応じて小数桁を変える
- * (≥100 → 1 桁 / ≥1 → 2 桁 / それ未満 → 4 桁)。
+ * y 軸ラベルの数値部。
+ *
+ * 8.56: 小数桁は **目盛りの刻み幅 (step)** から決める。値の桁で決めていた
+ * (≥100 → 1 桁) と、150.603 / 150.631 / 150.659 が全部 "150.6" に潰れて
+ * 4 段の軸が 2 種類の文字列になっていた — 変動の小さい実データで再発する。
+ * step 未指定時は従来どおり値の桁で決める。
  */
-export function formatAxisValue(value: number): string {
+export function formatAxisValue(value: number, step?: number): string {
   if (!Number.isFinite(value)) return "0";
+  if (step !== undefined && Number.isFinite(step) && step > 0) {
+    // step が 0.028 なら 3 桁 (= 隣の目盛りと必ず違う文字列になる)
+    const digits = Math.min(6, Math.max(0, Math.ceil(-Math.log10(step)) + 1));
+    return value.toFixed(digits);
+  }
   const abs = Math.abs(value);
   if (abs >= 100) return value.toFixed(1);
   if (abs >= 1) return value.toFixed(2);
