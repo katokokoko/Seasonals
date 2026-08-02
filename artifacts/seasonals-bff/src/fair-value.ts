@@ -138,3 +138,34 @@ export function evaluateFairValue(p: {
   }
   return { status: "ok", deviation_bps: deviationBps };
 }
+
+/** bps → "6.20%" (表示専用。判定側は bigint のまま) */
+function bpsToPercent(bps: number): string {
+  return `${(bps / 100).toFixed(2)}%`;
+}
+
+/**
+ * Phase 8.74: 拒否の理由を人が読める 1 文にする。
+ *
+ * これが無いと mobile には `fair_value_blocked` という**生の code** がそのまま
+ * 出ていた (`services/api.ts` は `body.message ?? body.error` を投げる)。
+ *
+ * 末尾の「量の問題ではない」は実測に基づく — 乖離は取引量にほぼ依存しない
+ * (0.1 / 1 / 10 SOL で不変) ので、減額して再試行しても改善しない。
+ * 無駄なリトライに誘導しないために明示する。
+ */
+export function fairValueBlockMessage(
+  reason: "fair_value_deviation" | "fair_value_unavailable",
+  shareSymbol: string,
+  deviationBps: number | undefined,
+  guardBps: number
+): string {
+  if (reason === "fair_value_unavailable") {
+    return `Could not read ${shareSymbol} redemption value, so this quote can't be checked. Stopped before signing.`;
+  }
+  const off =
+    deviationBps === undefined ? "off" : `${bpsToPercent(deviationBps)} below`;
+  return `Quote is ${off} ${shareSymbol} redemption value (limit ${bpsToPercent(
+    guardBps
+  )}). Stopped before signing — this is a routing or liquidity problem, not your amount.`;
+}
