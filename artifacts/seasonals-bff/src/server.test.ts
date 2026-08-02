@@ -25,7 +25,9 @@ import {
   buildServer,
   computeCostBasisByShareMint,
   mapJupiterLendToEarnPositions,
+  jlSharePriceOverrides,
   jupiterLendUsd8,
+  mapAssetsToPositions,
   normalizeJup8DecimalUsd,
 } from "./server";
 import type { HeliusEnhancedTx } from "./clients/helius-tx";
@@ -486,5 +488,87 @@ describe("Phase 8.57 — jupiterLendUsd8", () => {
   it("SOL (9 dec) でも桁が合う", () => {
     // 0.2976 SOL × $74.92 = 22.2961920
     expect(jupiterLendUsd8("297600000", 9, "74.92")).toBe("22.29619200");
+  });
+});
+
+describe("Phase 8.70 — jlSharePriceOverrides / DAS 価格の上書き", () => {
+  /** 実測 (2026-08-03) の jlUSDC market */
+  const jlUsdcMarket = {
+    jlMint: "9BEcn9aPEmhSPbPQeFGjidRiEKki46fVQDyPpSQXPA2D",
+    jlSymbol: "jlUSDC",
+    jlDecimals: 6,
+    underlyingMint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+    underlyingSymbol: "USDC",
+    underlyingDecimals: 6,
+    underlyingPriceUsd: 0.999809443243,
+    underlyingPriceRaw: "0.999809443243",
+    convertToAssets: "1054007",
+    supplyRateBps: 447,
+    rewardsRateBps: 72,
+    totalRateBps: 519,
+    tvlUnderlying: "420563446936375",
+  };
+
+  it("convertToAssets × underlying price が 1 share の単価になる", () => {
+    const out = jlSharePriceOverrides([jlUsdcMarket]);
+    // DAS が返していた 1.08643570 ではなく、償還価値ベースの値
+    // price は §4.5 に合わせ 8 桁切り捨てしてから乗算する (既存 helper の規約)
+    expect(out.get(jlUsdcMarket.jlMint)).toBe("1.05380614");
+  });
+
+  it("convertToAssets 欠落 / price 0 の market は map に入れない (0 を配らない)", () => {
+    const { convertToAssets: _drop, ...noRate } = jlUsdcMarket;
+    expect(jlSharePriceOverrides([noRate]).size).toBe(0);
+    expect(
+      jlSharePriceOverrides([
+        { ...jlUsdcMarket, underlyingPriceRaw: "0", underlyingPriceUsd: 0 },
+      ]).size
+    ).toBe(0);
+    expect(jlSharePriceOverrides([]).size).toBe(0);
+  });
+
+  it("override があれば DAS 価格に勝ち、無ければ DAS のまま", () => {
+    const assets = [
+      {
+        interface: "FungibleToken",
+        id: jlUsdcMarket.jlMint,
+        token_info: {
+          balance: "9685801",
+          decimals: 6,
+          symbol: "jlUSDC",
+          price_info: { price_per_token: 1.0864357 },
+        },
+      },
+      {
+        interface: "FungibleToken",
+        id: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+        token_info: {
+          balance: "90262168",
+          decimals: 6,
+          symbol: "USDC",
+          price_info: { price_per_token: 0.9997741 },
+        },
+      },
+    ] as unknown as Parameters<typeof mapAssetsToPositions>[0];
+
+    const overridden = mapAssetsToPositions(
+      assets,
+      "6QGJNXnCjhYkKgPpDm7qRzxBKCj9KugUL2LDHc8sGUUM",
+      jlSharePriceOverrides([jlUsdcMarket])
+    );
+    const jl = overridden.find((p) => p.asset_symbol === "jlUSDC")!;
+    const usdc = overridden.find((p) => p.asset_symbol === "USDC")!;
+    expect(jl.unit_price_usd).toBe("1.05380614");
+    // override の無い token は DAS のまま (回帰)
+    expect(usdc.unit_price_usd).toBe("0.99977410");
+
+    // override 未指定 = 従来どおり全部 DAS
+    const legacy = mapAssetsToPositions(
+      assets,
+      "6QGJNXnCjhYkKgPpDm7qRzxBKCj9KugUL2LDHc8sGUUM"
+    );
+    expect(legacy.find((p) => p.asset_symbol === "jlUSDC")!.unit_price_usd).toBe(
+      "1.08643570"
+    );
   });
 });

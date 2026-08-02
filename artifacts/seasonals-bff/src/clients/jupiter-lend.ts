@@ -96,6 +96,17 @@ export interface JupiterLendMarket {
   underlyingSymbol: string;
   underlyingDecimals: number;
   underlyingPriceUsd: number;
+  /**
+   * 8.70: `asset.price` の **生 decimal string**。評価額計算は float を挟まず
+   * これを使う (§4.5)。`underlyingPriceUsd` は menu の TVL 換算が使うので残置。
+   */
+  underlyingPriceRaw?: string;
+  /**
+   * 8.70: 1 share あたりの underlying smallest unit (= **償還価値**)。
+   * DAS の `price_per_token` は市場推定で、実測で 3.1% ずれることがあった
+   * (jlUSDC: DAS 1.08643570 vs 実勢 1.05380615)。protocol 自身のこの値を優先する。
+   */
+  convertToAssets?: string;
   supplyRateBps: number;
   rewardsRateBps: number;
   totalRateBps: number;
@@ -120,6 +131,8 @@ interface JupTokenRaw {
   rewardsRate?: string;
   totalRate?: string;
   totalAssets?: string;
+  /** 8.70: 1 share あたりの underlying smallest unit (償還価値) */
+  convertToAssets?: string;
 }
 
 export async function fetchEarnMarkets(): Promise<JupiterLendMarket[]> {
@@ -154,6 +167,13 @@ export async function fetchEarnMarkets(): Promise<JupiterLendMarket[]> {
           : typeof t.asset?.price === "string"
             ? Number.parseFloat(t.asset.price)
             : 0,
+      // 8.70: float 化していない生の値も持ち回る (評価額計算はこちらを使う)
+      ...(typeof t.asset?.price === "string"
+        ? { underlyingPriceRaw: t.asset.price }
+        : {}),
+      ...(typeof t.convertToAssets === "string"
+        ? { convertToAssets: t.convertToAssets }
+        : {}),
       supplyRateBps: Number(t.supplyRate) || 0,
       rewardsRateBps: Number(t.rewardsRate) || 0,
       totalRateBps: Number(t.totalRate) || 0,

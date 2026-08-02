@@ -314,9 +314,12 @@ function deriveWalletProtocol(assetSymbol: string): string {
   return "wallet_holding";
 }
 
-function mapAssetsToPositions(
+export function mapAssetsToPositions(
   assets: HeliusAsset[],
-  walletAddress: string
+  walletAddress: string,
+  // 8.70: mint → 単価 (8-dec string) の上書き。DAS 価格より権威ある出所がある
+  // token 用 (現状 jlToken)。空 / 未指定なら従来どおり DAS 価格
+  priceOverrides: Map<string, string> = new Map()
 ): Position[] {
   const out: Position[] = [];
   const now = new Date().toISOString();
@@ -337,10 +340,13 @@ function mapAssetsToPositions(
       asset.content?.metadata?.symbol ??
       asset.id.slice(0, 4);
     const priceFloat = asset.token_info?.price_info?.price_per_token;
-    const unitPriceUsd =
+    const dasPriceUsd =
       typeof priceFloat === "number" && Number.isFinite(priceFloat)
         ? priceFloat.toFixed(8)
         : "0.00000000";
+    // 8.70: DAS の price_per_token は市場推定で、利回り token では実勢とずれる
+    // (実測 jlUSDC: DAS 1.08643570 vs 償還価値 1.05380615 = 3.1% 高)
+    const unitPriceUsd = priceOverrides.get(asset.id) ?? dasPriceUsd;
 
     out.push({
       position_id: `helius_${walletAddress}_${asset.id}`,
@@ -445,8 +451,14 @@ async function loadWalletHistoryInputs(
     return cached.data;
   }
 
-  // 1. 現在残高 (DAS)。native SOL は WSOL mint の synthetic entry で入る
-  const assets = await fetchAssetsByOwner(wallet);
+  // 1. 現在残高 (DAS)。native SOL は WSOL mint の synthetic entry で入る。
+  // 8.70: jlToken の単価は DAS ではなく protocol の交換レートを使う (取得失敗は
+  // DAS に degrade)。ここを直さないと 8.64 のアンカーが誤差を系列全体に広げる
+  const [assets, jupiterMarketsForPrice] = await Promise.all([
+    fetchAssetsByOwner(wallet),
+    fetchEarnMarkets().catch(() => [] as JupiterLendMarket[]),
+  ]);
+  const priceOverrides = jlSharePriceOverrides(jupiterMarketsForPrice);
   const current = new Map<string, bigint>();
   const historyAssets: HistoryAsset[] = [];
   for (const asset of assets) {
@@ -468,9 +480,10 @@ async function loadWalletHistoryInputs(
       // 8.62: protocol への預入か (Total / Deposited の切り替えに使う)
       deposited: isDepositedMint(asset.id),
       currentUsd8:
-        typeof priceFloat === "number" && Number.isFinite(priceFloat)
+        priceOverrides.get(asset.id) ??
+        (typeof priceFloat === "number" && Number.isFinite(priceFloat)
           ? priceFloat.toFixed(8)
-          : undefined,
+          : undefined),
     });
   }
   if (historyAssets.length === 0) return null;
@@ -683,6 +696,39 @@ export function jupiterLendUsd8(
   const price8 = toBigInt(toSmallestUnit(truncated, 8));
   const amount = toBigInt(underlyingAssets);
   return formatUsd8((amount * price8) / 10n ** BigInt(assetDecimals));
+}
+
+/**
+ * Phase 8.70: jlMint → **1 share あたりの USD** (8-dec string) の上書き表。
+ *
+ * Helius DAS の `price_info.price_per_token` は市場推定で、利回りで単価が上がる
+ * share token では実勢とずれる。実測 (2026-08-03):
+ *   jlUSDC  DAS 1.08643570  vs  convertToAssets 由来 1.05380615  (3.1% 高)
+ * この誤差で Portfolio の見出しが $10.52、Menu のドリルダウンが $10.21 と、
+ * **同じ position が画面ごとに違う金額**になっていた。
+ *
+ * `convertToAssets` は「1 share = underlying 何 smallest unit か」= 償還価値
+ * そのもので、protocol 自身が出している一次情報。DAS より優先する。
+ *
+ * 引けなかった market は **map に入れない** (0 を価格として配ると呼び手が
+ * 「0 円」と誤解する。§4.6 fail-closed / `/prices` と同じ扱い)。
+ */
+export function jlSharePriceOverrides(
+  markets: JupiterLendMarket[]
+): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const m of markets) {
+    if (!m.jlMint || !m.convertToAssets) continue;
+    // 1 share 分の underlying を USD 評価する = そのまま share の単価になる
+    const usd8 = jupiterLendUsd8(
+      m.convertToAssets,
+      m.underlyingDecimals,
+      m.underlyingPriceRaw ?? m.underlyingPriceUsd
+    );
+    if (usd8 === "0") continue;
+    out.set(m.jlMint, usd8);
+  }
+  return out;
 }
 
 /**
@@ -2944,8 +2990,18 @@ export async function buildServer(
       }
 
       try {
-        const assets = await fetchAssetsByOwner(wallet);
-        return mapAssetsToPositions(assets, wallet);
+        // 8.70: jlToken は DAS 価格ではなく protocol 自身の交換レートで評価する。
+        // markets は 30s cache 済で追加の上流コストはほぼ無い。取得に失敗しても
+        // DAS 価格に degrade するだけ (positions 自体は返す)
+        const [assets, markets] = await Promise.all([
+          fetchAssetsByOwner(wallet),
+          fetchEarnMarkets().catch(() => [] as JupiterLendMarket[]),
+        ]);
+        return mapAssetsToPositions(
+          assets,
+          wallet,
+          jlSharePriceOverrides(markets)
+        );
       } catch (err) {
         req.log.error(
           { err: (err as Error).message, wallet },
