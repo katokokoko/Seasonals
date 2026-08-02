@@ -89,6 +89,8 @@ import {
 } from "../../services/mwa";
 import { USE_ONCHAIN } from "../../services/config";
 import * as api from "../../services/api";
+// 8.74: BFF の拒否 code を判別するため (失敗と拒否を見分ける)
+import { BffError } from "../../services/api";
 import { useQueryClient } from "@tanstack/react-query";
 import {
   JUPITER_MINTS,
@@ -137,6 +139,9 @@ export function ActionModal({
   const [phase, setPhase] = useState<Phase>("review");
   const [signature, setSignature] = useState<string | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  // 8.74: BFF が返した machine-readable な code。「失敗」と「意図的な拒否」を
+  // 区別して見せるために持つ
+  const [errorCode, setErrorCode] = useState<string | null>(null);
 
   const approveMutation = useApproveAgentPlan();
   const { authorization, isConnected } = useWallet();
@@ -410,12 +415,18 @@ export function ActionModal({
       } catch (e) {
         // Phase 8.6.1: null / 空 message を可視化 (Phantom が無応答で戻った時等)
         const raw = e instanceof Error ? e.message : e == null ? "" : String(e);
+        // 8.74: 構造化された拒否 (oracle / fair value) は message が完結しているので、
+        // stack の 1 行目を足さない (雑音にしかならない)
+        const code = e instanceof BffError ? (e.code ?? null) : null;
         const detail =
-          e instanceof Error && e.stack ? `\n${e.stack.split("\n")[0]}` : "";
+          !code && e instanceof Error && e.stack
+            ? `\n${e.stack.split("\n")[0]}`
+            : "";
         const msg =
           raw && raw !== "null"
             ? raw + detail
             : "Wallet returned no result. Try disconnecting and reconnecting.";
+        setErrorCode(code);
         setErrorMsg(msg);
         setPhase("error");
       }
@@ -735,7 +746,12 @@ export function ActionModal({
         <View style={styles.header}>
           <View>
             <Text style={styles.headerLabel}>Approve & Execute</Text>
-            <Text style={styles.headerTitle}>{phaseLabel(phase)}</Text>
+            <Text style={styles.headerTitle}>
+              {/* 8.74: 拒否は「失敗」ではないので見出しも変える */}
+              {phase === "error" && isDeclined(errorCode)
+                ? "Stopped"
+                : phaseLabel(phase)}
+            </Text>
           </View>
           <Pressable
             accessibilityRole="button"
@@ -780,6 +796,12 @@ export function ActionModal({
         {phase === "error" && (
           <ErrorBody
             message={errorMsg ?? "unknown error"}
+            title={isDeclined(errorCode) ? "Stopped before signing" : undefined}
+            note={
+              isDeclined(errorCode)
+                ? "No funds moved — the transaction was never signed."
+                : undefined
+            }
             onRetry={() => setPhase("review")}
             onClose={handleClose}
             testID={testID ? `${testID}-error` : undefined}
@@ -789,6 +811,14 @@ export function ActionModal({
       </View>
     </Modal>
   );
+}
+
+/**
+ * 8.74: BFF が **意図的に拒否した** ケースか。失敗ではないので見出しを変える。
+ * §4.6 の oracle gate と 8.72 の償還価値ガードが該当。
+ */
+function isDeclined(code: string | null): boolean {
+  return code === "fair_value_blocked" || code === "oracle_blocked";
 }
 
 // Phase 8.6.1: English labels for consistency with rest of UI
@@ -1163,11 +1193,17 @@ function SuccessBody({
 
 function ErrorBody({
   message,
+  title,
+  note,
   onRetry,
   onClose,
   testID,
 }: {
   message: string;
+  /** 8.74: 拒否ケースでは "Transaction failed" ではない見出しにする */
+  title?: string;
+  /** 8.74: 資金が動いていないことの一言 (拒否ケースのみ) */
+  note?: string;
   onRetry: () => void;
   onClose: () => void;
   testID?: string;
@@ -1178,7 +1214,7 @@ function ErrorBody({
       <View style={styles.errorIconWrap}>
         <Text style={styles.errorIcon}>!</Text>
       </View>
-      <Text style={styles.errorTitle}>Transaction failed</Text>
+      <Text style={styles.errorTitle}>{title ?? "Transaction failed"}</Text>
       <Text
         style={styles.errorMessage}
         selectable
@@ -1186,6 +1222,14 @@ function ErrorBody({
       >
         {message}
       </Text>
+      {note && (
+        <Text
+          style={styles.errorMessage}
+          testID={testID ? `${testID}-note` : undefined}
+        >
+          {note}
+        </Text>
+      )}
       <Pressable
         accessibilityRole="button"
         onPress={onRetry}

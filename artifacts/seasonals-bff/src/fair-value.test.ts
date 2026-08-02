@@ -9,6 +9,7 @@ import {
   DEFAULT_FAIR_VALUE_GUARD_BPS,
   evaluateFairValue,
   FAIR_VALUE_LST_SYMBOLS,
+  fairValueBlockMessage,
   fairValueGuardBps,
 } from "./fair-value";
 
@@ -164,5 +165,46 @@ describe("fairValueGuardBps / FAIR_VALUE_LST_SYMBOLS", () => {
 
   it("参照を持つのは Sanctum sol-value がある 3 LST", () => {
     expect([...FAIR_VALUE_LST_SYMBOLS].sort()).toEqual(["INF", "jitoSOL", "mSOL"]);
+  });
+});
+
+describe("fairValueBlockMessage (8.74) — 生 code ではなく文章を返す", () => {
+  it("乖離: symbol / 実測 % / 上限 % が入り、量の問題ではないと明示する", () => {
+    const msg = fairValueBlockMessage(
+      "fair_value_deviation",
+      "jitoSOL",
+      620,
+      200
+    );
+    expect(msg).toContain("jitoSOL");
+    expect(msg).toContain("6.20%");
+    expect(msg).toContain("2.00%");
+    expect(msg).toContain("Stopped before signing");
+    // 乖離は取引量にほぼ依存しないので、減額リトライに誘導しない
+    expect(msg).toContain("not your amount");
+  });
+
+  it("参照が取れない場合は別の文面 (乖離 % を語らない)", () => {
+    const msg = fairValueBlockMessage(
+      "fair_value_unavailable",
+      "mSOL",
+      undefined,
+      200
+    );
+    expect(msg).toContain("mSOL");
+    expect(msg).toContain("Stopped before signing");
+    expect(msg).not.toContain("%");
+  });
+
+  it("deviation_bps が無くても壊れない", () => {
+    const msg = fairValueBlockMessage(
+      "fair_value_deviation",
+      "INF",
+      undefined,
+      200
+    );
+    expect(msg).toContain("INF");
+    expect(msg).toContain("2.00%");
+    expect(msg).not.toContain("undefined");
   });
 });

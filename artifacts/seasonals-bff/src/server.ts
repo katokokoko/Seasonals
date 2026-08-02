@@ -104,6 +104,7 @@ import { fetchLstSolValues } from "./clients/lst-rates";
 import {
   evaluateFairValue,
   FAIR_VALUE_LST_SYMBOLS,
+  fairValueBlockMessage,
   fairValueGuardBps,
   type FairValueVerdict,
 } from "./fair-value";
@@ -890,6 +891,24 @@ const COST_BASIS_SHARE_TO_UNDERLYING: Record<string, string> = {
 };
 
 /**
+ * Phase 8.74: §4.6 の block reason を人が読める 1 文にする。
+ * mobile 側にも `oracleBlockLabel` があるが、あちらは CTA 前の事前表示用。
+ * execute 時の 409 は error 画面に落ちるので、こちらでも文章を持つ。
+ */
+function oracleBlockMessage(reason: string | null | undefined): string {
+  switch (reason) {
+    case "oracle_both_stale":
+      return "Both Pyth and Switchboard are stale (>60s), so the price can't be trusted. Stopped before signing.";
+    case "oracle_divergence_too_large":
+      return "Pyth and Switchboard disagree by more than 5%. Stopped before signing.";
+    case "oracle_unavailable":
+      return "Price oracle unavailable, so this action can't be checked. Stopped before signing.";
+    default:
+      return "Oracle check failed. Stopped before signing.";
+  }
+}
+
+/**
  * Phase 8.72: quote に償還価値ガードを掛ける (I/O 部分。判定は fair-value.ts の純関数)。
  *
  * Sanctum の sol-value 取得に失敗しても **通さない** — 参照を持つはずの LST で値が
@@ -962,7 +981,13 @@ async function buildSwapEarnTx(
   const oracle = await getOracleResult(p.oracleMint);
   if (oracle.status === "blocked") {
     reply.code(409);
-    return { error: "oracle_blocked", block_reason: oracle.block_reason, oracle };
+    return {
+      error: "oracle_blocked",
+      block_reason: oracle.block_reason,
+      // 8.74: fair value と同じ理由で message を添える (生 code を見せない)
+      message: oracleBlockMessage(oracle.block_reason),
+      oracle,
+    };
   }
   try {
     const quote = await fetchSwapQuote({
@@ -981,6 +1006,14 @@ async function buildSwapEarnTx(
         reason: fv.reason,
         deviation_bps: fv.deviation_bps,
         guard_bps: fairValueGuardBps(),
+        // 8.74: mobile はこの message をそのまま出す。無いと生の code が
+        // ユーザーに見えてしまう
+        message: fairValueBlockMessage(
+          fv.reason,
+          p.fairValue?.shareSymbol ?? "this token",
+          fv.deviation_bps,
+          fairValueGuardBps()
+        ),
       };
     }
 

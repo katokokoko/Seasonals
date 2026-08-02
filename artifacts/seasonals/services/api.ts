@@ -258,6 +258,22 @@ async function fxRejectAgentPlan(planId: string): Promise<AgentPlan> {
 // Public fetchers — IS_TEST_ENV で path 切替
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * Phase 8.74: BFF が返す machine-readable な `error` コードを保持する Error。
+ *
+ * 従来は `new Error(body.message ?? body.error)` だったため、呼び手は
+ * **「失敗」と「意図的な拒否」を区別できなかった** (oracle / fair value の
+ * 409 が「Transaction failed」として出ていた)。tx を取る 4 関数だけこれを投げる。
+ */
+export class BffError extends Error {
+  readonly code: string | undefined;
+  constructor(message: string, code?: string) {
+    super(message);
+    this.name = "BffError";
+    this.code = code;
+  }
+}
+
 export async function getTimeEvents(): Promise<UnifiedTimeEvent[]> {
   return tryHttpThenFixture(
     () => httpGetJson<UnifiedTimeEvent[]>("/time-events"),
@@ -439,8 +455,9 @@ export async function getJupiterDepositTx(input: {
       error?: string;
       message?: string;
     };
-    throw new Error(
-      body.message ?? body.error ?? `HTTP ${res.status} ${res.statusText}`
+    throw new BffError(
+      body.message ?? body.error ?? `HTTP ${res.status} ${res.statusText}`,
+      body.error
     );
   }
   return (await res.json()) as JupiterDepositTxResponse;
@@ -466,8 +483,9 @@ export async function getJupiterWithdrawTx(input: {
       error?: string;
       message?: string;
     };
-    throw new Error(
-      body.message ?? body.error ?? `HTTP ${res.status} ${res.statusText}`
+    throw new BffError(
+      body.message ?? body.error ?? `HTTP ${res.status} ${res.statusText}`,
+      body.error
     );
   }
   return (await res.json()) as JupiterDepositTxResponse;
@@ -494,8 +512,9 @@ export async function getSwapEarnDepositTx(input: {
       error?: string;
       message?: string;
     };
-    throw new Error(
-      body.message ?? body.error ?? `HTTP ${res.status} ${res.statusText}`
+    throw new BffError(
+      body.message ?? body.error ?? `HTTP ${res.status} ${res.statusText}`,
+      body.error
     );
   }
   return (await res.json()) as JupiterDepositTxResponse;
@@ -520,8 +539,9 @@ export async function getSwapEarnWithdrawTx(input: {
       error?: string;
       message?: string;
     };
-    throw new Error(
-      body.message ?? body.error ?? `HTTP ${res.status} ${res.statusText}`
+    throw new BffError(
+      body.message ?? body.error ?? `HTTP ${res.status} ${res.statusText}`,
+      body.error
     );
   }
   return (await res.json()) as JupiterDepositTxResponse;

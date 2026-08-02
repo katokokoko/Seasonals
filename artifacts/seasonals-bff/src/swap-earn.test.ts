@@ -342,6 +342,9 @@ describe("Phase 8.72 — 償還価値ガード (LST の NAV から不利方向�
     expect(body.reason).toBe("fair_value_deviation");
     expect(body.deviation_bps).toBeGreaterThan(900);
     expect(body.guard_bps).toBe(200);
+    // 8.74: 生 code ではなく人が読める文章も返す (machine-readable は維持)
+    expect(body.message).toContain("jitoSOL");
+    expect(body.message).toContain("Stopped before signing");
     // 署名前に止める = swap tx を組ませない
     expect(mockTx).not.toHaveBeenCalled();
   });
@@ -366,6 +369,7 @@ describe("Phase 8.72 — 償還価値ガード (LST の NAV から不利方向�
     });
     expect(res.statusCode).toBe(409);
     expect(res.json().reason).toBe("fair_value_unavailable");
+    expect(res.json().message).toContain("Stopped before signing");
     expect(mockTx).not.toHaveBeenCalled();
   });
 
