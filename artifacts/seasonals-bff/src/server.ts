@@ -4016,7 +4016,8 @@ export async function buildServer(
 
     // v1: swap-earn (Jupiter routable) の deposit / withdraw のみ。
     // Phase 8.37: 実行可否と oracle gate を **token 消費より前** に判定する —
-    // 単発 token を oracle block / 非対応 action で無駄に消費させない (§29.3)
+    // 単発 token を oracle block / 非対応 action で無駄に消費させない (§29.3)。
+    // Phase 8.75: 償還価値ガードも同じ理由で token 消費より前に置いた
     const market = action.asset
       ? findMarketByProtocolAsset(action.protocol, action.asset)
       : undefined;
@@ -4047,22 +4048,53 @@ export async function buildServer(
       return { error: "oracle_blocked", block_reason: oracle.block_reason, oracle };
     }
 
-    const validation = validateAndConsumeToken(tokenId, {
-      plan_id: planId,
-      bundle_hash: computeBundleHash(action),
-    });
-    if (!validation.valid) {
-      reply.code(403);
-      return { error: "approval_token_invalid", reason: validation.reason };
-    }
     const isDeposit = action.action_type === "deposit";
     try {
+      // Phase 8.75: quote は **token 消費より前** に取る。8.72 の償還価値ガードで
+      // 止まる時に単発 token を無駄にしないため — 8.37 (B1) が oracle gate で
+      // 確立した順序をそのまま踏襲する (§29.3)
       const quote = await fetchSwapQuote({
         inputMint: isDeposit ? market.underlying_mint : market.share_mint,
         outputMint: isDeposit ? market.share_mint : market.underlying_mint,
         amount: action.amount,
         slippageBps: 50,
       });
+
+      // Phase 8.75: 8.72 の償還価値ガードは buildSwapEarnTx 経由の human 経路にしか
+      // 掛かっておらず、**agent 経路だけ素通り**していた。oracle で 8.37 (B1) が直した
+      // drift の再発で、しかもこちらは画面を見ている人間がいない分だけ悪い。
+      // 上で取った quote をそのまま判定に使うので Jupiter への追加呼び出しは無い
+      const fv = await evaluateSwapFairValue(req, quote, {
+        direction: isDeposit ? "deposit" : "withdraw",
+        shareSymbol: market.share_symbol,
+      });
+      if (fv.status === "blocked") {
+        // plan は Approved のまま残す (Failed にしない) — 乖離が戻れば同じ token で
+        // 再実行できる。oracle block と同じ扱い
+        reply.code(409);
+        return {
+          error: "fair_value_blocked",
+          reason: fv.reason,
+          deviation_bps: fv.deviation_bps,
+          guard_bps: fairValueGuardBps(),
+          message: fairValueBlockMessage(
+            fv.reason,
+            market.share_symbol,
+            fv.deviation_bps,
+            fairValueGuardBps()
+          ),
+        };
+      }
+
+      const validation = validateAndConsumeToken(tokenId, {
+        plan_id: planId,
+        bundle_hash: computeBundleHash(action),
+      });
+      if (!validation.valid) {
+        reply.code(403);
+        return { error: "approval_token_invalid", reason: validation.reason };
+      }
+
       const tx = await fetchSwapTransaction({
         quoteResponse: quote,
         userPublicKey: action.wallet_id,
