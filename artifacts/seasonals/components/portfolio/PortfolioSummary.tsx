@@ -18,6 +18,8 @@ import {
   StyleSheet,
   Text,
   View,
+  type StyleProp,
+  type TextStyle,
 } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { format } from "date-fns";
@@ -27,6 +29,14 @@ import BottomSheet, {
   type BottomSheetBackgroundProps,
 } from "@gorhom/bottom-sheet";
 import type { SharedValue } from "react-native-reanimated";
+// 8.76: brewing 表示のパルス (opacity 往復)
+import Animated, {
+  Easing,
+  useAnimatedStyle,
+  useSharedValue,
+  withRepeat,
+  withTiming,
+} from "react-native-reanimated";
 
 import {
   FONT,
@@ -63,7 +73,15 @@ import {
   type CurrencyUnit,
 } from "./allocation";
 // 8.55: holdings 行の表示モデル (純関数、単体テスト済)
-import { conversionLine, holdingView, rateLine } from "./holding-view";
+import { holdingView } from "./holding-view";
+// 8.76: チャート領域の状態 (chart / brewing / connect / placeholder)
+import { chartAreaState } from "./chart-state";
+// 8.76: holdings タップ展開の預入内訳
+import {
+  depositedBreakdown,
+  emptyBreakdownLine,
+  familyOfHolding,
+} from "./deposited-breakdown";
 import {
   buildPortfolioTimeSeries,
   hasHistory as seriesHasHistory,
@@ -93,7 +111,6 @@ export interface PortfolioSummaryProps {
   positions: Position[];
   /** Allocation 集計に使う protocol registry。未指定なら donut は表示しない */
   protocols?: Protocol[];
-  isPending?: boolean;
   /** 今日として扱う日 (chart の time-series 起点) */
   today?: Date;
   /** 8.58: 接続中の wallet (BFF から過去の評価額を復元するのに使う)。未接続は null */
@@ -109,7 +126,6 @@ export interface PortfolioSummaryProps {
 export function PortfolioSummary({
   positions,
   protocols = [],
-  isPending,
   today = new Date(),
   walletAddress,
   animatedPosition,
@@ -239,10 +255,10 @@ export function PortfolioSummary({
   const snapshots = usePortfolioHistoryStore((s) => s.snapshots);
   // 8.58: BFF が wallet の tx から復元した履歴を優先し、無ければ端末の
   // 日次スナップショットに落ちる (未接続 / fixture / BFF 不通)
-  const { data: serverHistory } = usePortfolioHistory(
-    walletAddress,
-    rangeToDays(range)
-  );
+  // 8.76: isFetching は brewing 表示用。isPending でない理由は chart-state.ts 参照
+  // (disabled query は isPending が永久 true → 未接続で brew し続ける)
+  const { data: serverHistory, isFetching: historyFetching } =
+    usePortfolioHistory(walletAddress, rangeToDays(range));
   const localSeries: PortfolioPoint[] = useMemo(
     () =>
       buildPortfolioTimeSeries(
@@ -489,38 +505,62 @@ export function PortfolioSummary({
 
         {/* Chart — Phase 8.4 / 8.56: 過去データを偽造しない。
             観測した変動が 2 点以上たまるまでは線を描かず、現在値と
-            「いつから記録しているか」を出す (中身のない目盛りを作らない)。 */}
-        {showChart ? (
-          <Charts
-            data={series}
-            unit={currency}
-            width={chartWidth}
-            height={chartHeight}
-            testID={testID ? `${testID}-chart` : undefined}
-          />
-        ) : (
-          <View
-            style={[styles.chartPlaceholder, { height: chartHeight }]}
-            testID={testID ? `${testID}-chart-empty` : undefined}
-          >
-            {positions.length === 0 ? (
-              <Text style={styles.empty}>
-                Connect a wallet to see your positions
-              </Text>
-            ) : (
-              <>
-                <Text style={styles.placeholderValue}>
-                  {currency === "SOL"
-                    ? `${totalSol.toFixed(4)} SOL`
-                    : `${totalUsd.toLocaleString("en-US", { maximumFractionDigits: 2, minimumFractionDigits: 2 })} USDC`}
-                </Text>
+            「いつから記録しているか」を出す (中身のない目盛りを作らない)。
+            8.76: history 読込中は brewing 表示 (状態の優先順位は chart-state.ts)。 */}
+        {(() => {
+          const areaState = chartAreaState({
+            hasPositions: positions.length > 0,
+            showChart,
+            historyFetching,
+          });
+          if (areaState === "chart") {
+            return (
+              <Charts
+                data={series}
+                unit={currency}
+                width={chartWidth}
+                height={chartHeight}
+                testID={testID ? `${testID}-chart` : undefined}
+              />
+            );
+          }
+          if (areaState === "brewing") {
+            return (
+              <View
+                style={[styles.chartPlaceholder, { height: chartHeight }]}
+                testID={testID ? `${testID}-chart-brewing` : undefined}
+              >
+                <BrewingIndicator textStyle={styles.brewingText} />
                 <Text style={styles.empty}>
-                  {`Tracking since ${format(trackingSince, "MMM d")} · history builds daily`}
+                  Fresh from the wallet — a few sips away
                 </Text>
-              </>
-            )}
-          </View>
-        )}
+              </View>
+            );
+          }
+          return (
+            <View
+              style={[styles.chartPlaceholder, { height: chartHeight }]}
+              testID={testID ? `${testID}-chart-empty` : undefined}
+            >
+              {areaState === "connect" ? (
+                <Text style={styles.empty}>
+                  Connect a wallet to see your positions
+                </Text>
+              ) : (
+                <>
+                  <Text style={styles.placeholderValue}>
+                    {currency === "SOL"
+                      ? `${totalSol.toFixed(4)} SOL`
+                      : `${totalUsd.toLocaleString("en-US", { maximumFractionDigits: 2, minimumFractionDigits: 2 })} USDC`}
+                  </Text>
+                  <Text style={styles.empty}>
+                    {`Tracking since ${format(trackingSince, "MMM d")} · history builds daily`}
+                  </Text>
+                </>
+              )}
+            </View>
+          );
+        })()}
 
         {/* 8.65: マーカーを打った時だけ凡例を出す。段差が「利回り」ではなく
             「元本の増減」であることを、この 1 行だけで読めるようにする */}
@@ -596,9 +636,9 @@ export function PortfolioSummary({
           </View>
         )}
 
-        {/* Phase 8.7 → 8.55: Wallet holdings — 行はトークンそのものの量 (ネイティブ
-            単位)。トグル通貨換算だと SOL の行に USDC が並ぶ不整合があった。
-            タップで USDC / SOL 両換算 + 固定レート注記を展開する */}
+        {/* Phase 8.7 → 8.55 → 8.76: Wallet holdings — 行はトークンそのものの量
+            (ネイティブ単位)。タップ展開は 8.55 の通貨換算をやめ、その通貨系統で
+            **何をどこに預けているか** (share symbol + underlying 換算量) を並べる */}
         {walletHoldings.length > 0 && (
           <View
             style={styles.section}
@@ -608,14 +648,18 @@ export function PortfolioSummary({
             <View style={styles.legend}>
               {walletHoldings.map((h) => {
                 const view = holdingView(h, prices);
+                // 8.76: 展開可否は「預入内訳を持ちうる family か」で決まる
+                // (旧: view.priced)。価格が引けなくても内訳は出せる
+                const family = familyOfHolding(view.symbol);
+                const expandable = family !== null;
                 const expanded = expandedHoldings.has(h.position_id);
                 return (
                   <View key={h.position_id}>
                     <Pressable
-                      accessibilityRole={view.priced ? "button" : "none"}
+                      accessibilityRole={expandable ? "button" : "none"}
                       accessibilityState={{ expanded }}
                       onPress={
-                        view.priced
+                        expandable
                           ? () => toggleHolding(h.position_id)
                           : undefined
                       }
@@ -648,10 +692,10 @@ export function PortfolioSummary({
                       </View>
                       <Text style={styles.legendValue}>
                         {`${view.nativeAmount} ${view.symbol}`}
-                        {view.priced ? (expanded ? "  ⌄" : "  ›") : ""}
+                        {expandable ? (expanded ? "  ⌄" : "  ›") : ""}
                       </Text>
                     </Pressable>
-                    {expanded && view.priced && (
+                    {expanded && family !== null && (
                       <View
                         style={styles.holdingDetail}
                         testID={
@@ -660,12 +704,45 @@ export function PortfolioSummary({
                             : undefined
                         }
                       >
-                        <Text style={styles.holdingDetailText}>
-                          {conversionLine(view)}
-                        </Text>
-                        <Text style={styles.holdingDetailRate}>
-                          {rateLine(prices)}
-                        </Text>
+                        {(() => {
+                          const rows = depositedBreakdown(
+                            family,
+                            positions,
+                            prices
+                          );
+                          if (rows.length === 0) {
+                            return (
+                              <Text style={styles.holdingDetailText}>
+                                {emptyBreakdownLine(family)}
+                              </Text>
+                            );
+                          }
+                          return rows.map((row) => (
+                            <View
+                              key={row.key}
+                              style={styles.holdingDetailRow}
+                              testID={
+                                testID
+                                  ? `${testID}-holding-${view.symbol}-detail-${row.shareSymbol}`
+                                  : undefined
+                              }
+                            >
+                              <Text style={styles.holdingDetailText}>
+                                {row.shareSymbol}
+                              </Text>
+                              <Text style={styles.holdingDetailText}>
+                                {row.amountLine}
+                                {/* stable は underlying 量が既に USDC 換算なので
+                                    USD 併記は sol family のみ */}
+                                {family === "sol" && row.usd > 0 && (
+                                  <Text style={styles.holdingDetailRate}>
+                                    {`  ·  $${row.usd.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+                                  </Text>
+                                )}
+                              </Text>
+                            </View>
+                          ));
+                        })()}
                       </View>
                     )}
                   </View>
@@ -681,11 +758,36 @@ export function PortfolioSummary({
           <SponsoredCard testID={testID ? `${testID}-sponsored` : undefined} />
         </View>
 
-        {isPending && positions.length === 0 && (
-          <Text style={styles.empty}>Loading…</Text>
-        )}
       </BottomSheetScrollView>
     </BottomSheet>
+  );
+}
+
+/**
+ * BrewingIndicator — history 読込中のパルス表示 (Phase 8.76)
+ *
+ * Pacifico (FONT.script) はロゴ専用の規約 (CLAUDE.md §6) だが、この読込表示は
+ * 「フォントはアプリロゴと同じで」というユーザー明示指定の例外 (2026-08)。
+ * カフェ比喩の文言はブランドの世界観 (クリームソーダ) に合わせている。
+ */
+function BrewingIndicator({
+  textStyle,
+}: {
+  textStyle: StyleProp<TextStyle>;
+}) {
+  const pulse = useSharedValue(0);
+  useEffect(() => {
+    pulse.value = withRepeat(
+      withTiming(1, { duration: 900, easing: Easing.inOut(Easing.quad) }),
+      -1,
+      true
+    );
+  }, [pulse]);
+  const anim = useAnimatedStyle(() => ({
+    opacity: 0.45 + 0.55 * pulse.value,
+  }));
+  return (
+    <Animated.Text style={[textStyle, anim]}>Brewing your chart…</Animated.Text>
   );
 }
 
@@ -979,12 +1081,27 @@ function makeStyles(c: ThemeColors) {
       fontWeight: WEIGHT.bold,
       color: c.textPrimary,
     },
-    // 8.55: holdings 行タップで出す換算の展開行 (badge 幅 + gap 分 indent)
+    // 8.76: history 読込中の brewing 表示。Pacifico はロゴ専用規約の例外
+    // (ユーザー明示指定、BrewingIndicator の docblock 参照)
+    brewingText: {
+      fontFamily: FONT.script,
+      fontSize: FONT_SIZE.headingLG,
+      color: c.sodaText,
+      includeFontPadding: false,
+    },
+    // 8.55 → 8.76: holdings 行タップで出す預入内訳の展開領域 (badge 幅 + gap 分 indent)
     holdingDetail: {
       paddingLeft: 24 + SPACE.sm,
       paddingTop: 2,
       paddingBottom: SPACE.xs,
       gap: 2,
+    },
+    // 8.76: 内訳 1 行 (share symbol 左 / 換算量 右)
+    holdingDetailRow: {
+      flexDirection: "row",
+      alignItems: "baseline",
+      justifyContent: "space-between",
+      paddingRight: SPACE.sm,
     },
     holdingDetailText: {
       fontSize: FONT_SIZE.bodySM,

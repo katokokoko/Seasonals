@@ -6,7 +6,7 @@
  */
 import type { Position } from "@workspace/lib/types";
 
-import { conversionLine, holdingView, rateLine } from "./holding-view";
+import { holdingView } from "./holding-view";
 
 /** oracle 由来の実価格 map を模したもの */
 const SOL_USD = 74.92;
@@ -95,28 +95,5 @@ describe("holdingView", () => {
   });
 });
 
-describe("conversionLine / rateLine", () => {
-  it("≈ USD · SOL の両換算と live レート注記", () => {
-    const v = holdingView(
-      pos({ asset_symbol: "SOL", current_amount: "297600000" }),
-      PRICES
-    );
-    const expectedUsd = (0.2976 * SOL_USD).toFixed(2);
-    expect(conversionLine(v)).toBe(`≈ ${expectedUsd} USDC · 0.2976 SOL`);
-    expect(rateLine(PRICES)).toBe(`1 SOL = ${SOL_USD.toFixed(2)} USDC`);
-  });
-
-  it("8.57: SOL 価格が無ければレート注記を出さない", () => {
-    expect(rateLine({})).toBeNull();
-  });
-
-  it("SOL 換算は行のネイティブ表示と同じ切り捨て (丸めで食い違わない)", () => {
-    // 0.297567891 SOL → 行 0.2975、換算行も 0.2975 (toFixed だと 0.2976)
-    const v = holdingView(
-      pos({ asset_symbol: "SOL", current_amount: "297567891" }),
-      PRICES
-    );
-    expect(v.nativeAmount).toBe("0.2975");
-    expect(conversionLine(v)).toContain("· 0.2975 SOL");
-  });
-});
+// 8.76: conversionLine / rateLine は展開が預入内訳に置き換わり撤去
+// (deposited-breakdown.test.ts が後継)。
