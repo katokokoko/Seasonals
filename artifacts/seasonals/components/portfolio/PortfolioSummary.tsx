@@ -529,7 +529,7 @@ export function PortfolioSummary({
             style={styles.approxNote}
             testID={testID ? `${testID}-flow-note` : undefined}
           >
-            ● は預入 / 引出 (元本の増減。利回りではない)
+            ● deposit / withdrawal — principal, not yield
           </Text>
         )}
 
@@ -539,7 +539,7 @@ export function PortfolioSummary({
             style={styles.approxNote}
             testID={testID ? `${testID}-coverage-note` : undefined}
           >
-            {`履歴は ${format(coverage.from, "M/d")} から (それ以前は残高なし)`}
+            {`History from ${format(coverage.from, "M/d")} · no balance before`}
           </Text>
         )}
 
@@ -549,7 +549,7 @@ export function PortfolioSummary({
             style={styles.approxNote}
             testID={testID ? `${testID}-approx-note` : undefined}
           >
-            {`${approximatedSymbols.join(", ")} は現在価格で概算`}
+            {`${approximatedSymbols.join(", ")} estimated at current price`}
           </Text>
         )}
 
@@ -958,8 +958,10 @@ function makeStyles(c: ThemeColors) {
       opacity: 0.35,
     },
     // 8.58: 過去価格が無い asset の注記 (chart 下、控えめに)
+    // 8.66: chart の読み方の補足であって主役ではないので、本文より一段小さい
+    // caption (metadata 用 token) にする。2 本並んでも塊に見えない
     approxNote: {
-      fontSize: FONT_SIZE.bodySM,
+      fontSize: FONT_SIZE.caption,
       fontFamily: FONT.body,
       color: c.textMuted,
       textAlign: "center",
