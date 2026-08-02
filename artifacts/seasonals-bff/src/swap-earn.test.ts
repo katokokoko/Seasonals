@@ -18,9 +18,12 @@ import type { OracleResult } from "@workspace/lib/types";
 import { buildServer } from "./server";
 import { fetchSwapQuote, fetchSwapTransaction } from "./clients/jupiter-swap";
 import { getOracleResult } from "./clients/oracle";
+import { fetchLstSolValues } from "./clients/lst-rates";
 
 jest.mock("./clients/jupiter-swap");
 jest.mock("./clients/oracle");
+// 8.72/8.73: 償還価値ガードの参照レート (protocol 実データ)。実ネットワークは叩かない
+jest.mock("./clients/lst-rates");
 
 const mockQuote = fetchSwapQuote as jest.MockedFunction<typeof fetchSwapQuote>;
 const mockTx = fetchSwapTransaction as jest.MockedFunction<
@@ -29,6 +32,20 @@ const mockTx = fetchSwapTransaction as jest.MockedFunction<
 const mockOracle = getOracleResult as jest.MockedFunction<
   typeof getOracleResult
 >;
+const mockSolValues = fetchLstSolValues as jest.MockedFunction<
+  typeof fetchLstSolValues
+>;
+/** 8.72: jitoSOL 1 枚 = 1.2 SOL の想定レート (lamports) */
+const JITO_SOL_VALUE = 1_200_000_000n;
+const JITO_MINT = "J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn";
+/** fair な受取量。deposit = SOL→jitoSOL / withdraw = jitoSOL→SOL で向きが逆 */
+function fairOut(inAmount: string, inputMint: string): string {
+  if (!/^[0-9]+$/.test(inAmount)) return "999";
+  const amount = BigInt(inAmount);
+  return inputMint === JITO_MINT
+    ? ((amount * JITO_SOL_VALUE) / 1_000_000_000n).toString()
+    : ((amount * 1_000_000_000n) / JITO_SOL_VALUE).toString();
+}
 
 const VALID_USER = "8sN5e1Qm9bYz2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7r";
 
@@ -65,11 +82,13 @@ let app: FastifyInstance;
 beforeEach(async () => {
   jest.clearAllMocks();
   mockOracle.mockResolvedValue(okOracle());
+  mockSolValues.mockResolvedValue(new Map([["jitoSOL", JITO_SOL_VALUE]]));
   mockQuote.mockImplementation(async (params) => ({
     inputMint: params.inputMint,
     outputMint: params.outputMint,
     inAmount: params.amount,
-    outAmount: "999",
+    // 8.72: 既定は **fair な quote**。ガードそのものは専用の describe で検証する
+    outAmount: fairOut(params.amount, params.inputMint),
     otherAmountThreshold: "990",
     swapMode: "ExactIn",
     slippageBps: params.slippageBps ?? 50,
@@ -285,5 +304,81 @@ describe("jupiter-lend endpoint back-compat (helper 経由 refactor 後)", () =>
     });
     expect(res.statusCode).toBe(400);
     expect(res.json().error).toBe("unsupported_input_mint");
+  });
+});
+
+describe("Phase 8.72 — 償還価値ガード (LST の NAV から不利方向に外れた quote)", () => {
+  /** 参照レートを持たない market の代表 (jlUSDC) */
+  const noRefMarket = SWAP_EARN_MARKETS.find(
+    (m) => m.protocol_id === "jupiter_lend" && m.underlying_symbol === "USDC"
+  )!;
+
+  /** 既定の fair な quote を上書きして、任意の受取量を返させる */
+  function quoteReturning(outAmount: string) {
+    mockQuote.mockImplementation(async (params) => ({
+      inputMint: params.inputMint,
+      outputMint: params.outputMint,
+      inAmount: params.amount,
+      outAmount,
+      otherAmountThreshold: outAmount,
+      swapMode: "ExactIn",
+      slippageBps: params.slippageBps ?? 50,
+      priceImpactPct: "0",
+      routePlan: [],
+    }));
+  }
+
+  it("受取が NAV より不利に外れた deposit は 409 + tx を組まない", async () => {
+    // fair は 1e9 → 833333333。既定 200bps を明確に超える 10% 少ない受取
+    quoteReturning("750000000");
+    const res = await post("/protocols/swap-earn/deposit-tx", {
+      user: VALID_USER,
+      shareMint: jito.share_mint,
+      amount: "1000000000",
+    });
+    expect(res.statusCode).toBe(409);
+    const body = res.json();
+    expect(body.error).toBe("fair_value_blocked");
+    expect(body.reason).toBe("fair_value_deviation");
+    expect(body.deviation_bps).toBeGreaterThan(900);
+    expect(body.guard_bps).toBe(200);
+    // 署名前に止める = swap tx を組ませない
+    expect(mockTx).not.toHaveBeenCalled();
+  });
+
+  it("ユーザー有利方向 (受取が多い) は通す", async () => {
+    quoteReturning("900000000"); // fair 833333333 より多い
+    const res = await post("/protocols/swap-earn/deposit-tx", {
+      user: VALID_USER,
+      shareMint: jito.share_mint,
+      amount: "1000000000",
+    });
+    expect(res.statusCode).toBe(200);
+    expect(mockTx).toHaveBeenCalled();
+  });
+
+  it("Sanctum が落ちても通さない (fail-closed)", async () => {
+    mockSolValues.mockRejectedValue(new Error("lst rate source down"));
+    const res = await post("/protocols/swap-earn/deposit-tx", {
+      user: VALID_USER,
+      shareMint: jito.share_mint,
+      amount: "1000000000",
+    });
+    expect(res.statusCode).toBe(409);
+    expect(res.json().reason).toBe("fair_value_unavailable");
+    expect(mockTx).not.toHaveBeenCalled();
+  });
+
+  it("参照を持たない market (jlUSDC) はガードを通さず素通り", async () => {
+    // LST の fair からは大きく外れた値でも、参照が無いので判定対象外
+    quoteReturning("1");
+    mockSolValues.mockRejectedValue(new Error("lst rate source down"));
+    const res = await post("/protocols/swap-earn/deposit-tx", {
+      user: VALID_USER,
+      shareMint: noRefMarket.share_mint,
+      amount: "1500000",
+    });
+    expect(res.statusCode).toBe(200);
+    expect(mockTx).toHaveBeenCalled();
   });
 });

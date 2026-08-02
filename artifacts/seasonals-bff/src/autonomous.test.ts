@@ -483,9 +483,19 @@ describe("routes: /autonomous/* + PATCH /user-policy", () => {
     expect(appr.json().approval_token).toBeNull(); // token 未発行
   });
 
-  it("buildAutonomousDeps.fetchMenu が /menu-listings を返す (回帰 smoke)", async () => {
-    const deps = buildAutonomousDeps(app);
-    const menu = await deps.fetchMenu();
-    expect(Array.isArray(menu)).toBe(true);
-  });
+  /**
+   * この smoke だけ **live upstream (Jupiter / Kamino / Sanctum …) を実際に叩く**
+   * ため、jest 既定の 5s では上流が遅い日に落ちる (実際に間欠 fail していた)。
+   * 検証したいのは「fetchMenu が /menu-listings に配線されている」ことなので、
+   * 上流の遅さで赤くならないよう明示的に余裕を持たせる。
+   */
+  it(
+    "buildAutonomousDeps.fetchMenu が /menu-listings を返す (回帰 smoke)",
+    async () => {
+      const deps = buildAutonomousDeps(app);
+      const menu = await deps.fetchMenu();
+      expect(Array.isArray(menu)).toBe(true);
+    },
+    30_000
+  );
 });
