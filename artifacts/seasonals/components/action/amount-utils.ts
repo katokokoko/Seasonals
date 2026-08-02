@@ -133,19 +133,19 @@ export function validateAmountInput(
 ): AmountValidation {
   const trimmed = input.trim();
   if (trimmed === "") {
-    return { ok: false, error: "金額を入力してください" };
+    return { ok: false, error: "Enter an amount" };
   }
   let smallest: string;
   try {
     smallest = toSmallestUnit(trimmed, decimals);
   } catch (e) {
     if (e instanceof RangeError) {
-      return { ok: false, error: `小数は ${decimals} 桁までです` };
+      return { ok: false, error: `Up to ${decimals} decimal places` };
     }
-    return { ok: false, error: "数値の形式が不正です" };
+    return { ok: false, error: "Invalid number format" };
   }
   if (smallest === "0") {
-    return { ok: false, error: "0 より大きい金額を入力してください" };
+    return { ok: false, error: "Enter an amount greater than 0" };
   }
   return { ok: true, smallest };
 }

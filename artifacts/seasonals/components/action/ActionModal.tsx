@@ -841,9 +841,9 @@ function ReviewBody({
   let balanceText = "—";
   try {
     if (isDeposit && depositBalance) {
-      balanceText = `残高 ${toHumanReadable(depositBalance, amountUnit.decimals)} ${amountUnit.unitSymbol}`;
+      balanceText = `Balance ${toHumanReadable(depositBalance, amountUnit.decimals)} ${amountUnit.unitSymbol}`;
     } else if (!isDeposit && action?.amount) {
-      balanceText = `保有 ${toHumanReadable(action.amount, amountUnit.decimals)} ${amountUnit.unitSymbol}`;
+      balanceText = `Holding ${toHumanReadable(action.amount, amountUnit.decimals)} ${amountUnit.unitSymbol}`;
     }
   } catch {
     balanceText = "—";
@@ -959,7 +959,7 @@ function ReviewBody({
           </Text>
         )}
         <View style={styles.metaRow}>
-          <Text style={styles.metaLabel}>推定 APY</Text>
+          <Text style={styles.metaLabel}>Est. APY</Text>
           <Text style={styles.metaValue}>{apyText}</Text>
         </View>
       </View>
@@ -990,7 +990,8 @@ function ReviewBody({
         <View style={styles.warningCard} testID={testID ? `${testID}-oracle-blocked` : undefined}>
           <Text style={styles.warningIcon}>⛔</Text>
           <Text style={styles.warningText}>
-            Oracle check failed: {oracleBlockLabel(oracle?.block_reason)}。安全のため実行できません。
+            Oracle check failed: {oracleBlockLabel(oracle?.block_reason)} — execution
+            blocked for safety.
           </Text>
         </View>
       )}
@@ -998,7 +999,8 @@ function ReviewBody({
       {!isConnected && (
         <View style={styles.notice} testID={testID ? `${testID}-not-connected` : undefined}>
           <Text style={styles.noticeText}>
-            wallet 未接続のため approve のみ実行 (sign skip)。on-chain broadcast は wallet 接続後に有効。
+            Wallet not connected — approve only (signing skipped). On-chain
+            broadcast needs a connected wallet.
           </Text>
         </View>
       )}
@@ -1023,12 +1025,12 @@ function ReviewBody({
             >
               <Text style={styles.ctaPrimaryText}>
                 {oracleBlocked
-                  ? "実行不可 (oracle)"
+                  ? "Blocked (oracle)"
                   : oracleChecking
-                    ? "Oracle 確認中…"
+                    ? "Checking oracle…"
                     : isConnected
-                      ? "署名して実行"
-                      : "Approve のみ実行"}
+                      ? "Sign & execute"
+                      : "Approve only"}
               </Text>
             </Pressable>
           );
@@ -1074,7 +1076,7 @@ function JupiterQuoteCard({
         </Text>
       </View>
       <Text style={styles.adapterMeta}>
-        最小: {minOutHuman} {outputSym} (slippage {quote.slippage_bps / 100}%)
+        Min: {minOutHuman} {outputSym} (slippage {quote.slippage_bps / 100}%)
         {quote.route.length > 0 && ` · via ${quote.route[0]!.amm_key}`}
       </Text>
     </View>

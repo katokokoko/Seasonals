@@ -128,11 +128,11 @@ export function oracleBlockLabel(
 ): string {
   switch (reason) {
     case "oracle_both_stale":
-      return "Pyth / Switchboard どちらも stale (>60s)";
+      return "Both Pyth and Switchboard are stale (>60s)";
     case "oracle_divergence_too_large":
-      return "Pyth ↔ Switchboard の価格乖離が >5%";
+      return "Pyth ↔ Switchboard divergence >5%";
     case "oracle_unavailable":
-      return "価格 oracle を取得できません";
+      return "Price oracle unavailable";
     default:
       return "oracle check failed";
   }

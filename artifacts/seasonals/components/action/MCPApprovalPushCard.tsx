@@ -207,7 +207,7 @@ export function MCPApprovalPushCard({
 
       <View style={styles.detailGrid}>
         <View style={styles.detailItem}>
-          <Text style={styles.detailLabel}>推定 out</Text>
+          <Text style={styles.detailLabel}>Est. out</Text>
           <Text
             style={styles.detailValue}
             testID={testID ? `${testID}-estimated-out` : undefined}
@@ -216,7 +216,7 @@ export function MCPApprovalPushCard({
           </Text>
         </View>
         <View style={styles.detailItem}>
-          <Text style={styles.detailLabel}>推定 fee</Text>
+          <Text style={styles.detailLabel}>Est. fee</Text>
           <Text
             style={styles.detailValue}
             testID={testID ? `${testID}-fee` : undefined}
@@ -242,10 +242,10 @@ export function MCPApprovalPushCard({
             >
               <Text style={styles.ctaApproveText}>
                 {approve.isPending
-                  ? "実行中…"
+                  ? "Executing…"
                   : isExpired
-                  ? "有効期限切れ"
-                  : "署名して実行"}
+                  ? "Expired"
+                  : "Sign & execute"}
               </Text>
             </Pressable>
           );
@@ -262,14 +262,14 @@ export function MCPApprovalPushCard({
           testID={testID ? `${testID}-reject` : undefined}
         >
           <Text style={styles.ctaRejectText}>
-            {reject.isPending ? "拒否中…" : "拒否"}
+            {reject.isPending ? "Rejecting…" : "Reject"}
           </Text>
         </Pressable>
         <Text
           style={[styles.expiresText, isExpired && styles.expiresExpired]}
           testID={testID ? `${testID}-expires` : undefined}
         >
-          {isExpired ? "有効期限切れ" : `有効期限 残 ${formatRemaining(remainingMs)}`}
+          {isExpired ? "Expired" : `Expires in ${formatRemaining(remainingMs)}`}
         </Text>
       </View>
     </ScrollView>

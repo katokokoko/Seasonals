@@ -257,7 +257,7 @@ describe("oracleBlockLabel", () => {
   it("各 block reason に専用ラベル", () => {
     expect(oracleBlockLabel("oracle_both_stale")).toMatch(/stale/i);
     expect(oracleBlockLabel("oracle_divergence_too_large")).toMatch(/>5%/);
-    expect(oracleBlockLabel("oracle_unavailable")).toMatch(/取得できません/);
+    expect(oracleBlockLabel("oracle_unavailable")).toMatch(/unavailable/i);
   });
 
   it("null / 未知は generic ラベル", () => {
