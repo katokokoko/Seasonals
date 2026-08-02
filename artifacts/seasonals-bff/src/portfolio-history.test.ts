@@ -140,10 +140,10 @@ describe("buildHistorySeries", () => {
       [NOW - 600, new Map([[WSOL, 1_000_000_000n]])],
     ]);
     const prices = new Map([
-      [NOW - DAY, new Map([[SOL_FEED, "80.00000000"]])],
-      [NOW - 600, new Map([[SOL_FEED, "73.00000000"]])],
+      [NOW - DAY, new Map([[WSOL, "80.00000000"]])],
+      [NOW - 600, new Map([[WSOL, "73.00000000"]])],
     ]);
-    const out = buildHistorySeries(stamps, balances, [solAsset], prices, SOL_FEED);
+    const out = buildHistorySeries(stamps, balances, [solAsset], prices, WSOL);
     expect(out.points.map((p) => p.usd)).toEqual(["80.00000000", "73.00000000"]);
     expect(out.points.map((p) => p.at)).toEqual(stamps);
     // SOL 建てはその時点の SOL 価格で割るので 1 SOL のまま
@@ -157,10 +157,10 @@ describe("buildHistorySeries", () => {
       intraday.map((at) => [at, new Map([[WSOL, 1_000_000_000n]])])
     );
     const prices = new Map([
-      [intraday[0]!, new Map([[SOL_FEED, "75.00000000"]])],
-      [intraday[1]!, new Map([[SOL_FEED, "73.00000000"]])],
+      [intraday[0]!, new Map([[WSOL, "75.00000000"]])],
+      [intraday[1]!, new Map([[WSOL, "73.00000000"]])],
     ]);
-    const out = buildHistorySeries(intraday, balances, [solAsset], prices, SOL_FEED);
+    const out = buildHistorySeries(intraday, balances, [solAsset], prices, WSOL);
     expect(out.points).toHaveLength(2);
     expect(utcDayKey(out.points[0]!.at)).toBe(utcDayKey(out.points[1]!.at));
     expect(out.points[0]!.usd).not.toBe(out.points[1]!.usd);
@@ -181,6 +181,52 @@ describe("buildHistorySeries", () => {
     expect(out.approximatedSymbols).toEqual(["jlUSDC"]);
   });
 
+  it("8.64: feed が無くても mint キーに実価格があれば近似扱いにしない", () => {
+    // jlUSDC は Pyth feed が無いが DeFiLlama から過去価格が引ける。残高が
+    // 同じでも **単価が上がる = 利回り** で線が動く (これが 8.64 の目的)
+    const jl: HistoryAsset = {
+      mint: "JL_MINT",
+      symbol: "jlUSDC",
+      decimals: 6,
+      currentUsd8: "1.05372000",
+    };
+    const balances = new Map(
+      stamps.map((at) => [at, new Map([["JL_MINT", 10_000_000n]])])
+    );
+    const prices = new Map([
+      [stamps[0]!, new Map([["JL_MINT", "1.04268784"]])],
+      [stamps[1]!, new Map([["JL_MINT", "1.05372000"]])],
+    ]);
+    const out = buildHistorySeries(stamps, balances, [jl], prices, WSOL);
+    expect(out.points.map((p) => p.usd)).toEqual([
+      "10.42687840",
+      "10.53720000",
+    ]);
+    expect(out.approximatedSymbols).toEqual([]);
+  });
+
+  it("8.64: 系列の途中までしか実価格が無い点は、その点だけ近似に落ちる", () => {
+    const jl: HistoryAsset = {
+      mint: "JL_MINT",
+      symbol: "jlUSDC",
+      decimals: 6,
+      currentUsd8: "1.05372000",
+    };
+    const balances = new Map(
+      stamps.map((at) => [at, new Map([["JL_MINT", 10_000_000n]])])
+    );
+    // 古い方の点だけ実価格が無い (llama が遡れる範囲より前)
+    const prices = new Map([
+      [stamps[1]!, new Map([["JL_MINT", "1.05372000"]])],
+    ]);
+    const out = buildHistorySeries(stamps, balances, [jl], prices, WSOL);
+    expect(out.points.map((p) => p.usd)).toEqual([
+      "10.53720000", // 近似 (現在価格)
+      "10.53720000",
+    ]);
+    expect(out.approximatedSymbols).toEqual(["jlUSDC"]);
+  });
+
   it("価格が全く引けない点は作らない (0 の谷を作らない)", () => {
     const noPrice: HistoryAsset = { mint: "X", symbol: "X", decimals: 6 };
     const balances = new Map([[NOW - 600, new Map([["X", 1_000_000n]])]]);
@@ -189,8 +235,7 @@ describe("buildHistorySeries", () => {
       balances,
       [noPrice],
       new Map(),
-      SOL_FEED
-    );
+      WSOL);
     expect(out.points).toEqual([]);
   });
 
@@ -201,8 +246,7 @@ describe("buildHistorySeries", () => {
       balances,
       [solAsset],
       new Map(),
-      SOL_FEED
-    );
+      WSOL);
     expect(out.points[0]!.usd).toBe("73.00000000"); // 現在価格で近似
     expect(out.points[0]!.sol).toBe("0.00000000");
     expect(out.approximatedSymbols).toEqual(["SOL"]);
@@ -300,8 +344,8 @@ describe("buildHistorySeries — 預入分の同時集計 (8.62)", () => {
         ]),
       ],
     ]);
-    const prices = new Map([[at, new Map([[SOL_FEED, "80.00000000"]])]]);
-    const out = buildHistorySeries([at], balances, [rawSol, jl], prices, SOL_FEED);
+    const prices = new Map([[at, new Map([[WSOL, "80.00000000"]])]]);
+    const out = buildHistorySeries([at], balances, [rawSol, jl], prices, WSOL);
     expect(out.points[0]!.usd).toBe("90.00000000");
     expect(out.points[0]!.deposited_usd).toBe("10.00000000");
     // SOL 建ても同じ SOL 価格で割る
@@ -312,8 +356,8 @@ describe("buildHistorySeries — 預入分の同時集計 (8.62)", () => {
   it("預入がゼロの時点は deposited_usd='0' (全資産は出る)", () => {
     const at = NOW - DAY;
     const balances = new Map([[at, new Map([[WSOL, 1_000_000_000n]])]]);
-    const prices = new Map([[at, new Map([[SOL_FEED, "80.00000000"]])]]);
-    const out = buildHistorySeries([at], balances, [rawSol, jl], prices, SOL_FEED);
+    const prices = new Map([[at, new Map([[WSOL, "80.00000000"]])]]);
+    const out = buildHistorySeries([at], balances, [rawSol, jl], prices, WSOL);
     expect(out.points[0]!.usd).toBe("80.00000000");
     expect(out.points[0]!.deposited_usd).toBe("0.00000000");
   });
@@ -321,7 +365,7 @@ describe("buildHistorySeries — 預入分の同時集計 (8.62)", () => {
   it("全部が預入なら 2 本は一致する", () => {
     const at = NOW - DAY;
     const balances = new Map([[at, new Map([["JL_MINT", 10_000_000n]])]]);
-    const out = buildHistorySeries([at], balances, [jl], new Map(), SOL_FEED);
+    const out = buildHistorySeries([at], balances, [jl], new Map(), WSOL);
     expect(out.points[0]!.deposited_usd).toBe(out.points[0]!.usd);
   });
 });
@@ -342,10 +386,10 @@ describe("buildHistorySeries — ゼロ期間 (8.60)", () => {
       [NOW - DAY, new Map([[WSOL, 1_000_000_000n]])],
     ]);
     const prices = new Map([
-      [NOW - 2 * DAY, new Map([[SOL_FEED, "80.00000000"]])],
-      [NOW - DAY, new Map([[SOL_FEED, "73.00000000"]])],
+      [NOW - 2 * DAY, new Map([[WSOL, "80.00000000"]])],
+      [NOW - DAY, new Map([[WSOL, "73.00000000"]])],
     ]);
-    const out = buildHistorySeries(stamps, balances, [solAsset], prices, SOL_FEED);
+    const out = buildHistorySeries(stamps, balances, [solAsset], prices, WSOL);
     expect(out.points.map((p) => p.usd)).toEqual(["0.00000000", "73.00000000"]);
   });
 
@@ -357,8 +401,7 @@ describe("buildHistorySeries — ゼロ期間 (8.60)", () => {
       balances,
       [noPrice],
       new Map(),
-      SOL_FEED
-    );
+      WSOL);
     expect(out.points).toEqual([]);
   });
 });

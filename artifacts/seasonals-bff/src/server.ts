@@ -92,7 +92,13 @@ import {
   pythFeedIdForSymbol,
 } from "./clients/oracle";
 // 8.58: 過去価格 (Pyth Benchmarks) と履歴組み立ての純関数
-import { fetchPriceSeries, priceAtOrBefore } from "./clients/pyth-history";
+import {
+  fetchPriceSeries,
+  priceAtOrBefore,
+  type PriceSeries,
+} from "./clients/pyth-history";
+// 8.64: Pyth feed が無い token の過去価格 (履歴表示専用。oracle 経路には入れない)
+import { anchorSeries, fetchLlamaPriceSeries } from "./clients/llama-history";
 import { isDepositedMint } from "@workspace/lib/config/deposited-mints";
 import {
   buildHistorySeries,
@@ -574,6 +580,10 @@ export async function buildPortfolioHistory(
   // 取り、各点は「その時刻以前の直近」を引く。点ごとに個別取得すると ~90 本の
   // リクエストになり rate limit で大半が落ちていた (実機で平坦線として露見)
   const step = stamps1.length > 1 ? stamps1[1]! - stamps1[0]! : 86_400;
+  // 先頭の点にも「その時刻以前の bar」が要るので刻み 2 個分手前から
+  // (D 解像度は UTC 深夜境界なので、padding が無いと初日が近似落ちする)
+  const priceFrom = stamps1[0]! - 2 * step;
+  const priceTo = stamps1[stamps1.length - 1]!;
   const pricedSymbols = [
     ...new Set(
       historyAssets
@@ -581,46 +591,55 @@ export async function buildPortfolioHistory(
         .map((a) => (a.symbol === "WSOL" ? "SOL" : a.symbol))
     ),
   ];
-  const seriesBySymbol = new Map(
-    await Promise.all(
+  // 8.64: Pyth feed が無い asset (jlUSDC / LST / vault share) は DeFiLlama から。
+  // これが無いと利回りで単価が上がる token の過去が全部「現在価格」になり、
+  // Deposited のグラフが横一直線になっていた
+  const feedlessMints = historyAssets
+    .filter((a) => !a.feedId)
+    .map((a) => a.mint);
+  const [seriesBySymbol, llamaByMint] = await Promise.all([
+    Promise.all(
       pricedSymbols.map(
         async (symbol) =>
           [
             symbol,
-            await fetchPriceSeries(
-              symbol,
-              // 先頭の点にも「その時刻以前の bar」が要るので刻み 2 個分手前から
-              // (D 解像度は UTC 深夜境界なので、padding が無いと初日が近似落ちする)
-              stamps1[0]! - 2 * step,
-              stamps1[stamps1.length - 1]!,
-              step
-            ),
+            await fetchPriceSeries(symbol, priceFrom, priceTo, step),
           ] as const
       )
-    )
-  );
-  // buildHistorySeries は feedId をキーに価格を引くので、その形に詰め替える
+    ).then((entries) => new Map(entries)),
+    fetchLlamaPriceSeries(feedlessMints, priceFrom, priceTo, step),
+  ]);
+
+  // 8.64: 価格マップは **mint キー**。Pyth (symbol 単位) / llama (mint 単位) の
+  // どちらの出所もここで同じ形に合流する
+  const seriesByMint = new Map<string, PriceSeries>();
+  for (const asset of historyAssets) {
+    if (asset.feedId) {
+      const symbol = asset.symbol === "WSOL" ? "SOL" : asset.symbol;
+      const series = seriesBySymbol.get(symbol);
+      if (series) seriesByMint.set(asset.mint, series);
+      continue;
+    }
+    const llama = llamaByMint.get(asset.mint);
+    // 見出しの現在値 (DAS 価格) と chart の右端を揃える。形は観測値のまま
+    if (llama) seriesByMint.set(asset.mint, anchorSeries(llama, asset.currentUsd8));
+  }
   const pricesByTime = new Map<number, Map<string, string>>();
   for (const at of stamps1) {
     const forPoint = new Map<string, string>();
-    for (const asset of historyAssets) {
-      if (!asset.feedId) continue;
-      const symbol = asset.symbol === "WSOL" ? "SOL" : asset.symbol;
-      const series = seriesBySymbol.get(symbol);
-      if (!series) continue;
+    for (const [mint, series] of seriesByMint) {
       const usd8 = priceAtOrBefore(series, at);
-      if (usd8) forPoint.set(asset.feedId, usd8);
+      if (usd8) forPoint.set(mint, usd8);
     }
     if (forPoint.size > 0) pricesByTime.set(at, forPoint);
   }
 
-  const solFeedId = pythFeedIdForSymbol("SOL");
   const series = buildHistorySeries(
     stamps1,
     balancesByTime,
     historyAssets,
     pricesByTime,
-    solFeedId
+    WSOL_MINT
   );
   const data: PortfolioHistoryResponse = {
     points: series.points,

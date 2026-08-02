@@ -54,9 +54,9 @@ export interface HistoryAsset {
   decimals: number;
   /** 8.62: protocol への預入か (Total / Deposited トグルの集計に使う) */
   deposited?: boolean;
-  /** Pyth feed id (無ければ過去価格を引けない = 現在価格で近似) */
+  /** Pyth feed id。8.64 以降は「Pyth 経路で引けるか」の判定にだけ使う */
   feedId?: string | undefined;
-  /** 現在の USD 単価 (8-dec string)。feed が無い asset の近似に使う */
+  /** 現在の USD 単価 (8-dec string)。実価格が引けない点の近似に使う */
   currentUsd8?: string | undefined;
 }
 
@@ -223,16 +223,22 @@ export function firstFundedTime(
   return null;
 }
 
-/** その asset の、その時点の USD 単価 (8-dec string)。引けなければ null */
+/**
+ * その asset の、その時点の USD 単価 (8-dec string)。引けなければ null。
+ *
+ * 8.64: 価格マップのキーを feedId から **mint** に変えた。feedId キーだと
+ * feed の無い asset (jlUSDC 等) は原理的に実価格を載せられず、Pyth 以外の
+ * 出所を足せない構造だったため。ここは出所を問わず「その点の実価格があるか」
+ * だけを見るので、**点ごとの部分 degrade** (系列の途中までしか持っていない
+ * 場合) も自然に効く。
+ */
 function priceForAsset(
   asset: HistoryAsset,
   pricesOfDay: Map<string, string> | undefined
 ): { usd8: string; approximated: boolean } | null {
-  if (asset.feedId) {
-    const real = pricesOfDay?.get(asset.feedId);
-    if (real) return { usd8: real, approximated: false };
-  }
-  // feed が無い / その日の価格が引けない → 現在価格で近似 (応答で明示する)
+  const real = pricesOfDay?.get(asset.mint);
+  if (real) return { usd8: real, approximated: false };
+  // 実価格が引けない → 現在価格で近似 (応答で明示する)
   if (asset.currentUsd8 && asset.currentUsd8 !== "0") {
     return { usd8: asset.currentUsd8, approximated: true };
   }
@@ -248,13 +254,16 @@ export interface HistorySeries {
 /**
  * 各時点の残高 × その時点の価格 → 評価額の系列。
  * SOL 建ては同じ時点の SOL 価格で割る (SOL の線も歴史的に正しくなる)。
+ *
+ * @param pricesByTime 時刻 → (**mint** → USD 8-dec string)。8.64 で feedId キーから変更
+ * @param solPriceKey  SOL 建て換算に使う mint (= WSOL mint)
  */
 export function buildHistorySeries(
   timestamps: number[],
   balancesByTime: Map<number, Map<string, bigint>>,
   assets: HistoryAsset[],
   pricesByTime: Map<number, Map<string, string>>,
-  solFeedId: string | undefined
+  solPriceKey: string | undefined
 ): HistorySeries {
   const points: HistoryPoint[] = [];
   const approximated = new Set<string>();
@@ -294,8 +303,8 @@ export function buildHistorySeries(
       });
       continue;
     }
-    const solScaled = solFeedId
-      ? usd8ToScaled(pricesOfPoint?.get(solFeedId) ?? "")
+    const solScaled = solPriceKey
+      ? usd8ToScaled(pricesOfPoint?.get(solPriceKey) ?? "")
       : null;
     const toSol = (usd8: bigint) =>
       solScaled && solScaled > 0n ? (usd8 * 100_000_000n) / solScaled : 0n;
