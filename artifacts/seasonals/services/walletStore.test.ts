@@ -5,6 +5,8 @@
  * persist (expo-secure-store) は jest.setup.js で in-memory mock 済。
  */
 
+import * as SecureStore from "expo-secure-store";
+
 import { useWalletStore } from "./walletStore";
 import * as mwa from "./mwa";
 import type { ConnectedAuthorization } from "./mwa";
@@ -160,6 +162,39 @@ describe("reauthorize", () => {
     expect(s.authorization).toBeNull();
     expect(s.status).toBe("error");
     expect(s.error).toBe("auth_revoked");
+  });
+});
+
+describe("rehydrate — 再起動後の復元 (8.67)", () => {
+  const seed = async (payload: unknown) =>
+    SecureStore.setItemAsync(
+      "seasonals.wallet.v1",
+      JSON.stringify({ state: payload, version: 0 })
+    );
+
+  it("保存済 authorization があれば status=connected で戻る", async () => {
+    // persist は authorization だけを保存する (status は session-only)。
+    // 復元後に status を戻さないと、画面ごとに接続状態の判定が割れる
+    await seed({ authorization: FAKE_AUTH });
+    await useWalletStore.persist.rehydrate();
+
+    const s = useWalletStore.getState();
+    expect(s.authorization).toEqual(FAKE_AUTH);
+    expect(s.status).toBe("connected");
+    // wallet アプリを立ち上げる reauthorize は起動時に呼ばない
+    expect(mockedMwa.reauthorizeWallet).not.toHaveBeenCalled();
+  });
+
+  it("保存が無い / authorization=null なら idle のまま (connected を騙らない)", async () => {
+    await SecureStore.deleteItemAsync("seasonals.wallet.v1");
+    await useWalletStore.persist.rehydrate();
+    expect(useWalletStore.getState().status).toBe("idle");
+
+    await seed({ authorization: null });
+    await useWalletStore.persist.rehydrate();
+    const s = useWalletStore.getState();
+    expect(s.authorization).toBeNull();
+    expect(s.status).toBe("idle");
   });
 });
 
