@@ -97,6 +97,13 @@ import {
   priceAtOrBefore,
   type PriceSeries,
 } from "./clients/pyth-history";
+// 8.72: swap quote の償還価値ガード (LST の NAV から不利方向に外れたら署名前に止める)
+import {
+  evaluateFairValue,
+  FAIR_VALUE_LST_SYMBOLS,
+  fairValueGuardBps,
+  type FairValueVerdict,
+} from "./fair-value";
 // 8.64: Pyth feed が無い token の過去価格 (履歴表示専用。oracle 経路には入れない)
 import { anchorSeries, fetchLlamaPriceSeries } from "./clients/llama-history";
 import { isDepositedMint } from "@workspace/lib/config/deposited-mints";
@@ -881,6 +888,46 @@ const COST_BASIS_SHARE_TO_UNDERLYING: Record<string, string> = {
 };
 
 /**
+ * Phase 8.72: quote に償還価値ガードを掛ける (I/O 部分。判定は fair-value.ts の純関数)。
+ *
+ * Sanctum の sol-value 取得に失敗しても **通さない** — 参照を持つはずの LST で値が
+ * 無ければ `evaluateFairValue` が fail-closed 側に倒す (空 Map を渡す)。
+ */
+async function evaluateSwapFairValue(
+  req: FastifyRequest,
+  quote: { inAmount: string; outAmount: string },
+  fairValue: { direction: "deposit" | "withdraw"; shareSymbol: string } | undefined
+): Promise<FairValueVerdict> {
+  if (!fairValue || !FAIR_VALUE_LST_SYMBOLS.has(fairValue.shareSymbol)) {
+    return { status: "no_reference" };
+  }
+  const rates = await fetchSanctumSolValues([...FAIR_VALUE_LST_SYMBOLS]).catch(
+    (err) => {
+      req.log.warn(
+        { err: (err as Error).message },
+        "sanctum sol-value failed - fair value guard fails closed"
+      );
+      return new Map<string, bigint>();
+    }
+  );
+  const verdict = evaluateFairValue({
+    direction: fairValue.direction,
+    inAmount: quote.inAmount,
+    outAmount: quote.outAmount,
+    lamportsPerLst: rates.get(fairValue.shareSymbol),
+    hasReference: true,
+    guardBps: fairValueGuardBps(),
+  });
+  if (verdict.status === "blocked") {
+    req.log.warn(
+      { ...fairValue, reason: verdict.reason, deviation_bps: verdict.deviation_bps },
+      "swap blocked by fair value guard"
+    );
+  }
+  return verdict;
+}
+
+/**
  * Phase 8.15: swap-earn 共通処理。oracle fail-closed gate (§4.6) → Jupiter Swap
  * quote → swap tx を組み立てて返す。Jupiter Lend / 汎用 swap-earn endpoint で共有。
  *   - oracleMint: fail-closed 判定する underlying mint (deposit/withdraw とも underlying)
@@ -896,6 +943,11 @@ async function buildSwapEarnTx(
     oracleMint: string;
     amount: string;
     slippageBps?: number;
+    /**
+     * 8.72: 償還価値ガード。参照レートを持つ LST market だけ share_symbol が渡る。
+     * 渡らない market (jlToken / USD* 等) は参照が無いので対象外
+     */
+    fairValue?: { direction: "deposit" | "withdraw"; shareSymbol: string };
   }
 ): Promise<Record<string, unknown>> {
   // Phase 8.37 (B3): §4.5 API boundary — 他の全 tx-build family と同じ検証。
@@ -916,6 +968,19 @@ async function buildSwapEarnTx(
       amount: p.amount,
       slippageBps: p.slippageBps ?? 50,
     });
+    // 8.72: quote が LST の償還価値からユーザー不利方向に外れていないか。
+    // oracle gate と同じ「署名前に止める」層で、tx を組む前に判定する
+    const fv = await evaluateSwapFairValue(req, quote, p.fairValue);
+    if (fv.status === "blocked") {
+      reply.code(409);
+      return {
+        error: "fair_value_blocked",
+        reason: fv.reason,
+        deviation_bps: fv.deviation_bps,
+        guard_bps: fairValueGuardBps(),
+      };
+    }
+
     const tx = await fetchSwapTransaction({
       quoteResponse: quote,
       userPublicKey: p.user,
@@ -4301,6 +4366,8 @@ export async function buildServer(
       oracleMint: market.underlying_mint,
       amount,
       slippageBps,
+      // 8.72: LST なら償還価値ガードが効く (それ以外は参照が無いので素通り)
+      fairValue: { direction: "deposit", shareSymbol: market.share_symbol },
     });
   });
 
@@ -4346,6 +4413,8 @@ export async function buildServer(
       oracleMint: market.underlying_mint,
       amount,
       slippageBps,
+      // 8.72: LST なら償還価値ガードが効く (それ以外は参照が無いので素通り)
+      fairValue: { direction: "withdraw", shareSymbol: market.share_symbol },
     });
   });
 
