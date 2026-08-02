@@ -10,6 +10,7 @@
 import React, { useMemo } from "react";
 import { StyleSheet, Text, View } from "react-native";
 import Svg, {
+  Circle,
   Defs,
   LinearGradient,
   Path,
@@ -28,6 +29,7 @@ import {
 import type { CurrencyUnit } from "./allocation";
 import {
   chartBounds,
+  flowMarkerIndices,
   formatAxisValue,
   type PortfolioPoint,
 } from "./portfolioTimeSeries";
@@ -47,9 +49,9 @@ const PADDING_TOP = 16;
 const PADDING_BOTTOM = 28;
 
 export function Charts({ data, unit, width, height, testID }: ChartsProps) {
-  const { paths, yLabels, xLabels } = useMemo(() => {
+  const { paths, yLabels, xLabels, flowMarks } = useMemo(() => {
     if (data.length === 0) {
-      return { paths: null, yLabels: [], xLabels: [] };
+      return { paths: null, yLabels: [], xLabels: [], flowMarks: [] };
     }
 
     const { minValue, maxValue } = chartBounds(data);
@@ -123,10 +125,18 @@ export function Charts({ data, unit, width, height, testID }: ChartsProps) {
       xLabelArr.push({ x: xOf(i), date: data[i]!.date });
     }
 
+    // 8.65: 元本の増減 (預入 / 引出) マーカー。段差の理由が読めるようにする
+    const flowMarks = flowMarkerIndices(data).map((idx) => ({
+      x: xOf(idx),
+      y: yOf(data[idx]!.value),
+      inflow: (data[idx]!.flow ?? 0) > 0,
+    }));
+
     return {
       paths: { fillD, pastD, futureD, pivotX, baseY },
       yLabels,
       xLabels: xLabelArr,
+      flowMarks,
     };
   }, [data, width, height]);
 
@@ -196,6 +206,20 @@ export function Charts({ data, unit, width, height, testID }: ChartsProps) {
             strokeLinejoin="round"
           />
         )}
+
+        {/* 8.65: 元本の増減マーカー (預入 = melon / 引出 = cherry)。
+            線の上に白フチの点を重ねて、段差の起点が読めるようにする */}
+        {flowMarks.map((m, i) => (
+          <Circle
+            key={`flow-${i}`}
+            cx={m.x}
+            cy={m.y}
+            r={4}
+            fill={m.inflow ? COLOR.melonText : COLOR.cherryDark}
+            stroke={COLOR.textOnColor}
+            strokeWidth={1.5}
+          />
+        ))}
 
         {/* pivot vertical line at today */}
         {paths.pivotX !== null && (

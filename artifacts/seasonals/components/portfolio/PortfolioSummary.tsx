@@ -68,6 +68,7 @@ import {
   buildPortfolioTimeSeries,
   hasHistory as seriesHasHistory,
   coverageFromKnownStart,
+  flowMarkerIndices,
   historyCoverage,
   rangeExceedsCoverage,
   rangeToDays,
@@ -294,6 +295,11 @@ export function PortfolioSummary({
   // なるのが正しい)。hasHistory の門番は端末スナップショット経路に限る
   const showChart =
     serverSeries.length >= 2 ? true : seriesHasHistory(series);
+  // 8.65: 元本の増減マーカーが 1 つでも出る時だけ凡例を添える (Charts と同じ判定)
+  const hasFlowMarks = useMemo(
+    () => flowMarkerIndices(series).length > 0,
+    [series]
+  );
   const trackingSince = snapshots[0] ? dayKeyToDate(snapshots[0].day) : today;
 
   // Phase 8.4.1: currency 駆動で donut value も切替
@@ -514,6 +520,17 @@ export function PortfolioSummary({
               </>
             )}
           </View>
+        )}
+
+        {/* 8.65: マーカーを打った時だけ凡例を出す。段差が「利回り」ではなく
+            「元本の増減」であることを、この 1 行だけで読めるようにする */}
+        {showChart && hasFlowMarks && (
+          <Text
+            style={styles.approxNote}
+            testID={testID ? `${testID}-flow-note` : undefined}
+          >
+            ● は預入 / 引出 (元本の増減。利回りではない)
+          </Text>
         )}
 
         {/* 8.60: 要求 range より履歴が短い時だけ、どこからの記録かを出す */}

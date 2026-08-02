@@ -40,6 +40,11 @@ export interface PortfolioPoint {
   value: number;
   /** today より未来か (chart の dashed forecast 区間) */
   isFuture: boolean;
+  /**
+   * 8.65: 直前の点からの間に起きた **元本の増減** (預入 / 引出、選択通貨建て、符号付き)。
+   * 価格変動 / 利回りの分は含まない。段差の理由をマーカーで示すために使う。
+   */
+  flow?: number;
 }
 
 /** ポートフォリオ全体の現在 SOL 評価額 (allocation.ts と同じ計算ロジック) */
@@ -182,6 +187,9 @@ export interface ServerHistoryPoint {
   /** 8.62: protocol に預けた分のみ (Total / Deposited トグル) */
   deposited_usd?: string;
   deposited_sol?: string;
+  /** 8.65: 直前の点からの元本の増減 (USD 8-dec、符号付き)。価格変動は含まない */
+  flow_usd?: string;
+  deposited_flow_usd?: string;
 }
 
 /** 8.62: 集計の対象。total = 全資産 / deposited = protocol への預入のみ */
@@ -219,10 +227,45 @@ export function serverHistoryToPoints(
     // 8.60: **0 は落とさない** — 入金前 / 全額引き出し後の「保有ゼロ」は事実。
     // ただし SOL 建てだけ 0 で USD が正の点は「SOL 価格が引けなかった」なので落とす
     if (currency === "SOL" && sol === 0 && usd > 0) continue;
-    out.push({ date: new Date(p.at * 1000), value, isFuture: false });
+    // 8.65: flow は USD で来るので、SOL 表示なら同じ点の USD→SOL 比で換算する
+    // (その時点の SOL 価格。現在価格で割ると過去の段差の大きさが狂う)
+    const flowUsd = Number(
+      (deposited ? p.deposited_flow_usd : p.flow_usd) ?? "0"
+    );
+    const toUnit = currency === "SOL" && usd > 0 ? sol / usd : 1;
+    const flow =
+      Number.isFinite(flowUsd) && flowUsd !== 0 ? flowUsd * toUnit : 0;
+    out.push({ date: new Date(p.at * 1000), value, isFuture: false, flow });
   }
   // 8.63: 入金前のゼロ区間で軸が潰れるので落とす (途中のゼロは残る)
   return trimLeadingZeros(out);
+}
+
+/**
+ * 8.65: **元本の増減マーカー**を打つ点の index。
+ *
+ * Deposited のグラフは「利回りの推移」を読む面なのに、預入 / 引出があると
+ * そこだけ段差になる (実測: 3M で +0.096 jlUSDC の追加預入が、3 ヶ月分の
+ * 利回りとほぼ同じ高さの崖になっていた)。段差を消すのではなく **理由が
+ * 読めるように** マーカーを打つ。
+ *
+ * 拾うのは「グラフ上で見える大きさ」の増減だけ。系列の変動幅に対する比で
+ * 判定するので、dust の出入りでマーカーが散らからない。
+ */
+export function flowMarkerIndices(
+  points: PortfolioPoint[],
+  minSpanRatio = 0.06
+): number[] {
+  if (points.length < 2) return [];
+  const values = points.map((p) => p.value);
+  const span = Math.max(...values) - Math.min(...values);
+  if (!(span > 0)) return [];
+  const threshold = span * minSpanRatio;
+  const out: number[] = [];
+  points.forEach((p, i) => {
+    if (i > 0 && Math.abs(p.flow ?? 0) >= threshold) out.push(i);
+  });
+  return out;
 }
 
 /**

@@ -405,3 +405,105 @@ describe("buildHistorySeries — ゼロ期間 (8.60)", () => {
     expect(out.points).toEqual([]);
   });
 });
+
+describe("buildHistorySeries — flow (元本の増減、8.65)", () => {
+  const jl: HistoryAsset = {
+    mint: "JL_MINT",
+    symbol: "jlUSDC",
+    decimals: 6,
+    deposited: true,
+    currentUsd8: "1.05000000",
+  };
+  const stamps = [NOW - 2 * DAY, NOW - DAY, NOW - 600];
+
+  it("残高が変わった点だけ flow が立つ (価格変動は flow に入らない)", () => {
+    const balances = new Map([
+      [NOW - 2 * DAY, new Map([["JL_MINT", 10_000_000n]])], // 10 jlUSDC
+      [NOW - DAY, new Map([["JL_MINT", 10_000_000n]])], // 変化なし、価格だけ動く
+      [NOW - 600, new Map([["JL_MINT", 11_000_000n]])], // +1 jlUSDC 預入
+    ]);
+    const prices = new Map([
+      [stamps[0]!, new Map([["JL_MINT", "1.00000000"]])],
+      [stamps[1]!, new Map([["JL_MINT", "1.10000000"]])],
+      [stamps[2]!, new Map([["JL_MINT", "1.10000000"]])],
+    ]);
+    const out = buildHistorySeries(stamps, balances, [jl], prices, WSOL);
+    expect(out.points.map((p) => p.usd)).toEqual([
+      "10.00000000",
+      "11.00000000",
+      "12.10000000",
+    ]);
+    // 1 点目は比較対象が無いので 0。2 点目は +1 USD 動いたが **価格変動**なので 0
+    expect(out.points.map((p) => p.flow_usd)).toEqual([
+      "0.00000000",
+      "0.00000000",
+      "1.10000000",
+    ]);
+    // 預入 asset なので deposited 側も同じ
+    expect(out.points.map((p) => p.deposited_flow_usd)).toEqual([
+      "0.00000000",
+      "0.00000000",
+      "1.10000000",
+    ]);
+  });
+
+  it("引き出しは負の flow", () => {
+    const balances = new Map([
+      [stamps[0]!, new Map([["JL_MINT", 10_000_000n]])],
+      [stamps[1]!, new Map([["JL_MINT", 4_000_000n]])],
+      [stamps[2]!, new Map([["JL_MINT", 4_000_000n]])],
+    ]);
+    const prices = new Map(
+      stamps.map((at) => [at, new Map([["JL_MINT", "1.00000000"]])])
+    );
+    const out = buildHistorySeries(stamps, balances, [jl], prices, WSOL);
+    expect(out.points.map((p) => p.flow_usd)).toEqual([
+      "0.00000000",
+      "-6.00000000",
+      "0.00000000",
+    ]);
+  });
+
+  it("全額引き出してゼロになった点は、直前の評価額がまるごと出ていく", () => {
+    const balances = new Map([
+      [stamps[0]!, new Map([["JL_MINT", 10_000_000n]])],
+      [stamps[1]!, new Map([["JL_MINT", 0n]])],
+      [stamps[2]!, new Map([["JL_MINT", 0n]])],
+    ]);
+    const prices = new Map([
+      [stamps[0]!, new Map([["JL_MINT", "1.00000000"]])],
+    ]);
+    const out = buildHistorySeries(stamps, balances, [jl], prices, WSOL);
+    expect(out.points.map((p) => p.usd)).toEqual([
+      "10.00000000",
+      "0.00000000",
+      "0.00000000",
+    ]);
+    expect(out.points.map((p) => p.flow_usd)).toEqual([
+      "0.00000000",
+      "-10.00000000",
+      "0.00000000", // すでにゼロなので二重に引かない
+    ]);
+    expect(out.points[1]!.deposited_flow_usd).toBe("-10.00000000");
+  });
+
+  it("預入でない asset の増減は deposited_flow に入らない", () => {
+    const rawSol: HistoryAsset = {
+      mint: WSOL,
+      symbol: "SOL",
+      decimals: 9,
+      feedId: SOL_FEED,
+    };
+    const two = [stamps[0]!, stamps[1]!];
+    const balances = new Map([
+      [two[0]!, new Map([[WSOL, 1_000_000_000n]])],
+      [two[1]!, new Map([[WSOL, 2_000_000_000n]])],
+    ]);
+    const prices = new Map(
+      two.map((at) => [at, new Map([[WSOL, "80.00000000"]])])
+    );
+    const out = buildHistorySeries(two, balances, [rawSol], prices, WSOL);
+    expect(out.points[1]!.flow_usd).toBe("80.00000000");
+    expect(out.points[1]!.deposited_flow_usd).toBe("0.00000000");
+  });
+});

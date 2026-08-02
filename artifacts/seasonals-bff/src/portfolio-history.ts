@@ -71,6 +71,19 @@ export interface HistoryPoint {
   deposited_usd: string;
   /** 8.62: 同上の SOL 建て */
   deposited_sol: string;
+  /**
+   * 8.65: **直前の点からの間に起きた残高変化**に由来する評価額の増減
+   * (USD 8-dec、符号付き)。価格変動の分は含まない。
+   *
+   * value(i) − value(i−1) = Σ(a_i − a_i−1)·p_i + Σ a_i−1·(p_i − p_i−1)
+   *                          └─── これ (flow) ──┘  └─── 価格変動 ───┘
+   *
+   * 預入 / 引出はグラフに段差を作るが、それは利回りではなく元本の増減。
+   * client はこの値でマーカーを打ち、段差の理由を読めるようにする。
+   */
+  flow_usd: string;
+  /** 8.65: 同上の預入分のみ (Deposited スコープ用) */
+  deposited_flow_usd: string;
 }
 
 const SECONDS_PER_DAY = 86_400;
@@ -267,28 +280,47 @@ export function buildHistorySeries(
 ): HistorySeries {
   const points: HistoryPoint[] = [];
   const approximated = new Set<string>();
+  // 8.65: flow (残高変化に由来する増減) の算出用。**直前に描いた点**の残高と
+  // 評価額を持ち回る (価格が引けず点を作らなかった時刻は挟まない)
+  let prevAmounts: Map<string, bigint> | null = null;
+  let prevUsd = 0n;
+  let prevDepositedUsd = 0n;
   for (const at of timestamps) {
     const balances = balancesByTime.get(at);
     if (!balances) continue;
     const pricesOfPoint = pricesByTime.get(at);
     let usdTotal = 0n; // 8-dec fixed point
     let depositedTotal = 0n; // 8.62: 預入分のみ (同じ 1 パスで集計)
+    // 8.65: Σ(a_i − a_i−1)·p_i。同じ点の価格で両方を評価するので、価格変動の分は入らない
+    let flowTotal = 0n;
+    let depositedFlowTotal = 0n;
     let priced = false;
     let heldAnything = false;
+    const amountsOfPoint = new Map<string, bigint>();
     for (const asset of assets) {
       const amount = balances.get(asset.mint) ?? 0n;
-      if (amount === 0n) continue;
-      heldAnything = true;
+      if (amount !== 0n) amountsOfPoint.set(asset.mint, amount);
+      const prevAmount = prevAmounts?.get(asset.mint) ?? 0n;
+      if (amount === 0n && prevAmount === 0n) continue;
+      if (amount !== 0n) heldAnything = true;
       const price = priceForAsset(asset, pricesOfPoint);
       if (!price) continue;
       // amount(smallest) × price(8-dec) / 10^decimals → USD の 8-dec fixed point
       const scaled = usd8ToScaled(price.usd8);
       if (scaled === null || scaled === 0n) continue;
-      if (price.approximated) approximated.add(asset.symbol);
-      const value = (amount * scaled) / 10n ** BigInt(asset.decimals);
-      usdTotal += value;
-      if (asset.deposited) depositedTotal += value;
-      priced = true;
+      if (price.approximated && amount !== 0n) approximated.add(asset.symbol);
+      const unit = 10n ** BigInt(asset.decimals);
+      const value = (amount * scaled) / unit;
+      const flow = ((amount - prevAmount) * scaled) / unit;
+      if (amount !== 0n) {
+        usdTotal += value;
+        if (asset.deposited) depositedTotal += value;
+        priced = true;
+      }
+      if (prevAmounts !== null) {
+        flowTotal += flow;
+        if (asset.deposited) depositedFlowTotal += flow;
+      }
     }
     // 8.60: 全資産ゼロは **事実** なので 0 の点を描く (入金前 / 全額引き出し後)。
     // 「保有しているが価格が引けない」場合とは区別し、後者は点を作らない
@@ -300,7 +332,15 @@ export function buildHistorySeries(
         sol: "0.00000000",
         deposited_usd: "0.00000000",
         deposited_sol: "0.00000000",
+        // ゼロになった = 直前に持っていた分がまるごと出ていった (全額引き出し)
+        flow_usd: formatUsd8(prevAmounts === null ? 0n : -prevUsd),
+        deposited_flow_usd: formatUsd8(
+          prevAmounts === null ? 0n : -prevDepositedUsd
+        ),
       });
+      prevAmounts = new Map();
+      prevUsd = 0n;
+      prevDepositedUsd = 0n;
       continue;
     }
     const solScaled = solPriceKey
@@ -314,7 +354,12 @@ export function buildHistorySeries(
       sol: formatUsd8(toSol(usdTotal)),
       deposited_usd: formatUsd8(depositedTotal),
       deposited_sol: formatUsd8(toSol(depositedTotal)),
+      flow_usd: formatUsd8(flowTotal),
+      deposited_flow_usd: formatUsd8(depositedFlowTotal),
     });
+    prevAmounts = amountsOfPoint;
+    prevUsd = usdTotal;
+    prevDepositedUsd = depositedTotal;
   }
   return { points, approximatedSymbols: [...approximated].sort() };
 }

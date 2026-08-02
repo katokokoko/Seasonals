@@ -18,6 +18,7 @@ import {
   hasHistory,
   historyCoverage,
   rangeExceedsCoverage,
+  flowMarkerIndices,
   serverHistoryToPoints,
   trimLeadingZeros,
 } from "./portfolioTimeSeries";
@@ -320,6 +321,89 @@ describe("serverHistoryToPoints — scope (8.62)", () => {
     expect(serverHistoryToPoints(allZero, "USDC", "deposited")).toEqual([]);
     const legacy = [{ at: AT, usd: "122.00000000", sol: "1.60000000" }];
     expect(serverHistoryToPoints(legacy, "USDC", "deposited")).toEqual([]);
+  });
+});
+
+describe("flow — 元本の増減 (8.65)", () => {
+  const AT = Math.floor(Date.parse("2026-08-01T00:00:00Z") / 1000);
+  const row = (
+    at: number,
+    usd: string,
+    depUsd: string,
+    flow: string,
+    depFlow: string
+  ) => ({
+    at,
+    usd,
+    sol: (Number(usd) / 80).toFixed(8),
+    deposited_usd: depUsd,
+    deposited_sol: (Number(depUsd) / 80).toFixed(8),
+    flow_usd: flow,
+    deposited_flow_usd: depFlow,
+  });
+
+  it("scope に応じた flow を点に載せる", () => {
+    const server = [
+      row(AT - 86_400, "100.00000000", "10.00000000", "0.00000000", "0.00000000"),
+      row(AT, "180.00000000", "11.00000000", "80.00000000", "1.00000000"),
+    ];
+    expect(serverHistoryToPoints(server, "USDC", "total")[1]!.flow).toBe(80);
+    expect(serverHistoryToPoints(server, "USDC", "deposited")[1]!.flow).toBe(1);
+  });
+
+  it("SOL 建てはその点の USD→SOL 比で換算する (現在価格で割らない)", () => {
+    const server = [
+      row(AT - 86_400, "100.00000000", "10.00000000", "0.00000000", "0.00000000"),
+      row(AT, "180.00000000", "11.00000000", "80.00000000", "1.00000000"),
+    ];
+    // 180 USD = 2.25 SOL の点なので 80 USD の流入は 1 SOL
+    expect(serverHistoryToPoints(server, "SOL", "total")[1]!.flow).toBe(1);
+  });
+
+  it("flow が無い応答 (旧 BFF) でも壊れない", () => {
+    const legacy = [
+      { at: AT - 86_400, usd: "100.00000000", sol: "1.25000000" },
+      { at: AT, usd: "110.00000000", sol: "1.37500000" },
+    ];
+    expect(serverHistoryToPoints(legacy, "USDC").map((p) => p.flow)).toEqual([
+      0, 0,
+    ]);
+  });
+});
+
+describe("flowMarkerIndices (8.65)", () => {
+  const pt = (value: number, flow: number, i: number) => ({
+    date: new Date(Date.parse("2026-08-01T00:00:00Z") + i * 86_400_000),
+    value,
+    isFuture: false,
+    flow,
+  });
+
+  it("変動幅に対して十分大きい増減だけ拾う", () => {
+    // span = 10。閾値 0.6 なので dust (0.1) は拾わず、預入 (5) は拾う
+    const points = [
+      pt(10, 0, 0),
+      pt(10.1, 0.1, 1),
+      pt(15, 5, 2),
+      pt(20, 0, 3), // 価格上昇だけ (flow なし)
+    ];
+    expect(flowMarkerIndices(points)).toEqual([2]);
+  });
+
+  it("引き出し (負の flow) も拾う", () => {
+    const points = [pt(20, 0, 0), pt(10, -10, 1), pt(11, 0, 2)];
+    expect(flowMarkerIndices(points)).toEqual([1]);
+  });
+
+  it("先頭の点は比較対象が無いので拾わない", () => {
+    const points = [pt(10, 10, 0), pt(20, 0, 1)];
+    expect(flowMarkerIndices(points)).toEqual([]);
+  });
+
+  it("平坦な系列 / 1 点以下では何も拾わない", () => {
+    expect(flowMarkerIndices([pt(10, 0, 0), pt(10, 0, 1)])).toEqual([]);
+    expect(flowMarkerIndices([pt(10, 5, 0)])).toEqual([]);
+    expect(flowMarkerIndices([])).toEqual([]);
   });
 });
 
