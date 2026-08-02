@@ -18,12 +18,12 @@ import type { OracleResult } from "@workspace/lib/types";
 import { buildServer } from "./server";
 import { fetchSwapQuote, fetchSwapTransaction } from "./clients/jupiter-swap";
 import { getOracleResult } from "./clients/oracle";
-import { fetchSanctumSolValues } from "./clients/rates";
+import { fetchLstSolValues } from "./clients/lst-rates";
 
 jest.mock("./clients/jupiter-swap");
 jest.mock("./clients/oracle");
-// 8.72: 償還価値ガードの参照レート。実ネットワークは叩かない
-jest.mock("./clients/rates");
+// 8.72/8.73: 償還価値ガードの参照レート (protocol 実データ)。実ネットワークは叩かない
+jest.mock("./clients/lst-rates");
 
 const mockQuote = fetchSwapQuote as jest.MockedFunction<typeof fetchSwapQuote>;
 const mockTx = fetchSwapTransaction as jest.MockedFunction<
@@ -32,8 +32,8 @@ const mockTx = fetchSwapTransaction as jest.MockedFunction<
 const mockOracle = getOracleResult as jest.MockedFunction<
   typeof getOracleResult
 >;
-const mockSolValues = fetchSanctumSolValues as jest.MockedFunction<
-  typeof fetchSanctumSolValues
+const mockSolValues = fetchLstSolValues as jest.MockedFunction<
+  typeof fetchLstSolValues
 >;
 /** 8.72: jitoSOL 1 枚 = 1.2 SOL の想定レート (lamports) */
 const JITO_SOL_VALUE = 1_200_000_000n;
@@ -329,7 +329,7 @@ describe("Phase 8.72 — 償還価値ガード (LST の NAV から不利方向�
   }
 
   it("受取が NAV より不利に外れた deposit は 409 + tx を組まない", async () => {
-    // fair は 1e9 → 833333333。既定 500bps を明確に超える 10% 少ない受取
+    // fair は 1e9 → 833333333。既定 200bps を明確に超える 10% 少ない受取
     quoteReturning("750000000");
     const res = await post("/protocols/swap-earn/deposit-tx", {
       user: VALID_USER,
@@ -341,7 +341,7 @@ describe("Phase 8.72 — 償還価値ガード (LST の NAV から不利方向�
     expect(body.error).toBe("fair_value_blocked");
     expect(body.reason).toBe("fair_value_deviation");
     expect(body.deviation_bps).toBeGreaterThan(900);
-    expect(body.guard_bps).toBe(500);
+    expect(body.guard_bps).toBe(200);
     // 署名前に止める = swap tx を組ませない
     expect(mockTx).not.toHaveBeenCalled();
   });
@@ -358,7 +358,7 @@ describe("Phase 8.72 — 償還価値ガード (LST の NAV から不利方向�
   });
 
   it("Sanctum が落ちても通さない (fail-closed)", async () => {
-    mockSolValues.mockRejectedValue(new Error("sanctum down"));
+    mockSolValues.mockRejectedValue(new Error("lst rate source down"));
     const res = await post("/protocols/swap-earn/deposit-tx", {
       user: VALID_USER,
       shareMint: jito.share_mint,
@@ -372,7 +372,7 @@ describe("Phase 8.72 — 償還価値ガード (LST の NAV から不利方向�
   it("参照を持たない market (jlUSDC) はガードを通さず素通り", async () => {
     // LST の fair からは大きく外れた値でも、参照が無いので判定対象外
     quoteReturning("1");
-    mockSolValues.mockRejectedValue(new Error("sanctum down"));
+    mockSolValues.mockRejectedValue(new Error("lst rate source down"));
     const res = await post("/protocols/swap-earn/deposit-tx", {
       user: VALID_USER,
       shareMint: noRefMarket.share_mint,

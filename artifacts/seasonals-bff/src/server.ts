@@ -97,6 +97,9 @@ import {
   priceAtOrBefore,
   type PriceSeries,
 } from "./clients/pyth-history";
+// 8.73: LST の交換レートを protocol 自身の実データから取る (Sanctum の集計値は
+// 系統的に 1.3-2.1% 低かった。評価額とガードの両方がこれに依存する)
+import { fetchLstSolValues } from "./clients/lst-rates";
 // 8.72: swap quote の償還価値ガード (LST の NAV から不利方向に外れたら署名前に止める)
 import {
   evaluateFairValue,
@@ -158,7 +161,6 @@ import {
   fetchJupiterRateOut,
   fetchLstApys,
   fetchPerenaUsdStarApy,
-  fetchSanctumSolValues,
   type ExponentFullMarket,
 } from "./clients/rates";
 import {
@@ -901,15 +903,16 @@ async function evaluateSwapFairValue(
   if (!fairValue || !FAIR_VALUE_LST_SYMBOLS.has(fairValue.shareSymbol)) {
     return { status: "no_reference" };
   }
-  const rates = await fetchSanctumSolValues([...FAIR_VALUE_LST_SYMBOLS]).catch(
-    (err) => {
-      req.log.warn(
-        { err: (err as Error).message },
-        "sanctum sol-value failed - fair value guard fails closed"
-      );
-      return new Map<string, bigint>();
-    }
-  );
+  // 8.73: 参照は protocol 自身の値 (stake pool / Marinade / Sanctum Infinity の
+  // pool state)。以前使っていた Sanctum の集計値は 1.3-2.1% 低く、幻の乖離を
+  // 生んでいた
+  const rates = await fetchLstSolValues().catch((err) => {
+    req.log.warn(
+      { err: (err as Error).message },
+      "lst rate fetch failed - fair value guard fails closed"
+    );
+    return new Map<string, bigint>();
+  });
   const verdict = evaluateFairValue({
     direction: fairValue.direction,
     inAmount: quote.inAmount,
@@ -3416,12 +3419,12 @@ export async function buildServer(
       // Phase 8.15.x: earnings 実値化用の rate / oracle 価格 (全て失敗許容、並走)。
       const SOL_MINT = "So11111111111111111111111111111111111111112";
       const USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
-      const sanctumPromise = fetchSanctumSolValues(["jitoSOL", "mSOL", "INF"]).catch(
-        (err) => {
-          req.log.warn({ err: (err as Error).message }, "sanctum rates failed");
-          return new Map<string, bigint>();
-        }
-      );
+      // 8.73: LST の SOL 換算は protocol 自身の実データから。Sanctum の集計値を
+      // 使っていた間、jitoSOL / mSOL の保有が 1.3%、INF が 2.1% 低く出ていた
+      const sanctumPromise = fetchLstSolValues().catch((err) => {
+        req.log.warn({ err: (err as Error).message }, "lst rates failed");
+        return new Map<string, bigint>();
+      });
       // Phase 8.23-8.25: yield token 行の supply_rate_bps 用 — Sanctum LST +
       // Exponent (eUSX) + Perena (USD*) を merge (各失敗は他に影響しない)
       const lstApysPromise = Promise.allSettled([

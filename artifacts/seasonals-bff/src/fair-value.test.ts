@@ -145,10 +145,10 @@ describe("evaluateFairValue — 参照の有無 (fail-closed の境目)", () => 
 });
 
 describe("fairValueGuardBps / FAIR_VALUE_LST_SYMBOLS", () => {
-  it("未設定は既定 500bps (実測の平常スプレッド 130-210bps に余裕を取った値)", () => {
+  it("未設定は既定 200bps (実測の平常乖離 |25bps| に約 8 倍の余裕)", () => {
     expect(fairValueGuardBps({})).toBe(DEFAULT_FAIR_VALUE_GUARD_BPS);
-    expect(DEFAULT_FAIR_VALUE_GUARD_BPS).toBe(500);
-    expect(fairValueGuardBps({ SEASONALS_FAIR_VALUE_GUARD_BPS: "  " })).toBe(500);
+    expect(DEFAULT_FAIR_VALUE_GUARD_BPS).toBe(200);
+    expect(fairValueGuardBps({ SEASONALS_FAIR_VALUE_GUARD_BPS: "  " })).toBe(200);
   });
 
   it("整数を読む / 0 も尊重する (明示的な無効化)", () => {
@@ -157,9 +157,9 @@ describe("fairValueGuardBps / FAIR_VALUE_LST_SYMBOLS", () => {
   });
 
   it("壊れた値は既定にフォールバック (無防備にしない)", () => {
-    expect(fairValueGuardBps({ SEASONALS_FAIR_VALUE_GUARD_BPS: "abc" })).toBe(500);
-    expect(fairValueGuardBps({ SEASONALS_FAIR_VALUE_GUARD_BPS: "-10" })).toBe(500);
-    expect(fairValueGuardBps({ SEASONALS_FAIR_VALUE_GUARD_BPS: "1.5" })).toBe(500);
+    expect(fairValueGuardBps({ SEASONALS_FAIR_VALUE_GUARD_BPS: "abc" })).toBe(200);
+    expect(fairValueGuardBps({ SEASONALS_FAIR_VALUE_GUARD_BPS: "-10" })).toBe(200);
+    expect(fairValueGuardBps({ SEASONALS_FAIR_VALUE_GUARD_BPS: "1.5" })).toBe(200);
   });
 
   it("参照を持つのは Sanctum sol-value がある 3 LST", () => {

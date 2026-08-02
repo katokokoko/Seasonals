@@ -35,23 +35,25 @@ export const FAIR_VALUE_LST_SYMBOLS: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * 既定の許容乖離 = **500bps (5%)**。
+ * 既定の許容乖離 = **200bps (2%)**。
  *
- * backlog は 50bps を提案していたが、**実測が通らない**。1 SOL の deposit を実際に
- * quote した結果 (2026-08-03、price impact は 0.0006% 程度でほぼゼロ):
+ * 8.72 では 500bps にしていたが、あれは **参照レートが間違っていた**ため。
+ * Sanctum の集計値を NAV とみなしていて、平常時に 129-209bps の幻の乖離が出ており、
+ * それを飲み込むための数字だった。8.73 で参照を protocol 自身の実データに替えた
+ * 結果、実測はこうなった (2026-08-03、量を 0.1 / 1 / 10 と変えても不変):
  *
- *   jitoSOL  fairOut 783781335 / quoteOut 773629799 → 129 bps
- *   mSOL     fairOut 726402068 / quoteOut 716915846 → 130 bps
- *   INF      fairOut 710309270 / quoteOut 695399459 → 209 bps
+ *   deposit  (SOL → LST)  jitoSOL -10bps / mSOL -21bps / INF -22bps  ← ユーザー有利
+ *   withdraw (LST → SOL)  jitoSOL +10bps / mSOL +21bps / INF +23bps  ← ユーザー不利
  *
- * つまり 130〜210bps は **NAV に対する平常の市場スプレッド** (mint ではなく AMM 経由で
- * 買う以上避けられない)。ここを閾値にすると正常な deposit が全部止まる。
+ * 綺麗に対称で、これは **即時に出入りするための流動性プレミアム** (LST は市場で
+ * NAV よりわずかに安い)。つまり平常の |乖離| は 25bps 以内。
  *
- * このガードが捕まえたいのは平常のスプレッドではなく **ルーティング事故級の乖離**
- * なので、実測の最悪値 (209bps) に十分な余裕を取り、§4.6 の oracle 乖離ブロックと
- * 同じ **5%** に揃える (「5% 外れたら実行を止める」という基準が 1 本になる)。
+ * 200bps は平常のノイズに対して約 8 倍の余裕があり、かつ 2% のデペッグを捕まえる。
+ * §4.6 の oracle 乖離ブロック (5%) より厳しいのは、こちらは 2 つの独立した価格源の
+ * 一致を見るのではなく、**protocol 自身が定義する償還価値**と比べているため、
+ * 平常時のばらつきがそもそも小さいから。
  */
-export const DEFAULT_FAIR_VALUE_GUARD_BPS = 500;
+export const DEFAULT_FAIR_VALUE_GUARD_BPS = 200;
 
 export type FairValueVerdict =
   | { status: "ok"; deviation_bps: number }
@@ -64,7 +66,7 @@ export type FairValueVerdict =
     };
 
 /**
- * env `SEASONALS_FAIR_VALUE_GUARD_BPS` (既定 50)。**0 で無効化**。
+ * env `SEASONALS_FAIR_VALUE_GUARD_BPS` (既定 200)。**0 で無効化**。
  * 不正値は既定にフォールバックする (壊れた env で無防備にしない)。
  */
 export function fairValueGuardBps(
