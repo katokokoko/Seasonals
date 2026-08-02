@@ -21,7 +21,10 @@ import {
 import type {
   AgentPlan,
   ApprovalToken,
+  AutonomousExecutionRecord,
+  AutonomousStatus,
   EarnPositionsResponse,
+  OracleResult,
   Position,
   Protocol,
   UnifiedTimeEvent,
@@ -49,10 +52,20 @@ export const queryKeys = {
     ["wallet-time-events", address] as const,
   /** Phase 8.6: Jupiter Lend Earn の 7 markets */
   jupiterLendMarkets: () => ["jupiter-lend-markets"] as const,
+  /** Phase 8.14: underlying mint 別の oracle 判定 (§4.6) */
+  oracleStatus: (mint: string) => ["oracle-status", mint] as const,
+  /** Phase 8.57: symbol 群の実 USD 価格 */
+  prices: (symbols: readonly string[]) => ["prices", symbols.join(",")] as const,
+  /** Phase 8.58: wallet tx から復元した過去の評価額 */
+  portfolioHistory: (address: string, days: number) =>
+    ["portfolio-history", address, days] as const,
   agentPlan: (planId: string) => ["agent-plan", planId] as const,
   agentPlans: () => ["agent-plans"] as const,
   approvalToken: (tokenId: string) => ["approval-token", tokenId] as const,
   userPolicy: () => ["user-policy"] as const,
+  /** Phase 8.30: 自律オプションの状態 / 監査ログ */
+  autonomousStatus: () => ["autonomous-status"] as const,
+  autonomousLog: () => ["autonomous-log"] as const,
   wallets: () => ["wallets"] as const,
   protocols: () => ["protocols"] as const,
   menuListings: () => ["menu-listings"] as const,
@@ -112,6 +125,22 @@ export function useEarnPositions(
 }
 
 /**
+ * Phase 8.14 §4.6: deposit/withdraw する underlying mint の oracle 判定を取得。
+ * ActionModal が review 時に引いて WarningArea 表示 / CTA gate に使う。
+ * 価格は変動するため staleTime は短く (10s)。mint=null では無効。
+ */
+export function useOracleStatus(
+  mint: string | null
+): UseQueryResult<OracleResult, Error> {
+  return useQuery({
+    queryKey: queryKeys.oracleStatus(mint ?? "disabled"),
+    queryFn: () => api.getOracleStatus(mint as string),
+    enabled: Boolean(mint),
+    staleTime: 10_000,
+  });
+}
+
+/**
  * Phase 8.3: address が渡された時のみ wallet tx 履歴から派生する time events
  * を取得 (deposit / withdraw を calendar に表示する用途)。
  */
@@ -137,6 +166,40 @@ export function useJupiterLendMarkets(): UseQueryResult<
   return useQuery({
     queryKey: queryKeys.jupiterLendMarkets(),
     queryFn: api.getJupiterLendMarkets,
+  });
+}
+
+/**
+ * Phase 8.57: oracle 由来の実 USD 価格 (native SOL 等、DAS に価格が無い asset 用)。
+ * 価格は動くので短めの staleTime。取得失敗は空 map で degrade する。
+ */
+export function usePrices(
+  symbols: readonly string[] = PRICED_SYMBOLS
+): UseQueryResult<Record<string, string>, Error> {
+  const key = [...symbols].sort();
+  return useQuery({
+    queryKey: queryKeys.prices(key),
+    queryFn: () => api.getPrices(key),
+    staleTime: 60_000,
+  });
+}
+
+/** oracle registry にある asset (BFF `/prices` が返せるもの) */
+export const PRICED_SYMBOLS = ["SOL", "USDC", "USDT", "JLP"] as const;
+
+/**
+ * Phase 8.58: wallet の tx から復元した過去の評価額。address が無い
+ * (未接続 / default variant) 時は query 自体を disable する。
+ */
+export function usePortfolioHistory(
+  address: string | null | undefined,
+  days: number
+): UseQueryResult<api.PortfolioHistoryDTO, Error> {
+  return useQuery({
+    queryKey: queryKeys.portfolioHistory(address ?? "", days),
+    queryFn: () => api.getPortfolioHistory(address!, days),
+    enabled: Boolean(address),
+    staleTime: 5 * 60_000,
   });
 }
 
@@ -295,6 +358,80 @@ export function useRejectAgentPlan(): UseMutationResult<
     mutationFn: api.postRejectAgentPlan,
     onSuccess: (plan) => {
       qc.setQueryData(queryKeys.agentPlan(plan.plan_id), plan);
+    },
+  });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Phase 8.30: 自律管制盤 (status / log / kill-resume / policy 編集)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** 自律オプションの現在状態 (armed / daily_count / hard_caps)。頻繁に変わらないので短め staleTime。 */
+export function useAutonomousStatus(): UseQueryResult<AutonomousStatus, Error> {
+  return useQuery({
+    queryKey: queryKeys.autonomousStatus(),
+    queryFn: api.getAutonomousStatus,
+    staleTime: 10_000,
+  });
+}
+
+/** 自律実行の監査ログ (newest-first)。 */
+export function useAutonomousLog(): UseQueryResult<
+  AutonomousExecutionRecord[],
+  Error
+> {
+  return useQuery({
+    queryKey: queryKeys.autonomousLog(),
+    queryFn: api.getAutonomousLog,
+    staleTime: 10_000,
+  });
+}
+
+/** kill switch — 停止後の status を cache に反映。 */
+export function useKillAutonomous(): UseMutationResult<
+  AutonomousStatus,
+  Error,
+  void
+> {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.killAutonomous(),
+    onSuccess: (status) => {
+      qc.setQueryData(queryKeys.autonomousStatus(), status);
+    },
+  });
+}
+
+/** kill 解除 (resume) — status を cache に反映。 */
+export function useResumeAutonomous(): UseMutationResult<
+  AutonomousStatus,
+  Error,
+  void
+> {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.resumeAutonomous(),
+    onSuccess: (status) => {
+      qc.setQueryData(queryKeys.autonomousStatus(), status);
+    },
+  });
+}
+
+/**
+ * UserPolicy を PATCH で永続更新 (§6.4)。成功で userPolicy cache を更新し、
+ * approval_mode 変更が status の enabled 判定に効くため autonomousStatus も invalidate。
+ */
+export function usePatchUserPolicy(): UseMutationResult<
+  UserPolicy,
+  Error,
+  Partial<UserPolicy>
+> {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (patch: Partial<UserPolicy>) => api.patchUserPolicy(patch),
+    onSuccess: (policy) => {
+      qc.setQueryData(queryKeys.userPolicy(), policy);
+      qc.invalidateQueries({ queryKey: queryKeys.autonomousStatus() });
     },
   });
 }

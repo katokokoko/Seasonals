@@ -71,7 +71,17 @@ function spawnBubble(): BubbleEntry {
   };
 }
 
-export function MelonSodaBackground() {
+interface MelonSodaBackgroundProps {
+  /**
+   * Phase 8.36: true でセンサー購読と傾き transform を止めた静的表示にする。
+   * GlassLayer の退避先 (液体演出 off / reduce-motion / センサー不可) として使う。
+   */
+  static?: boolean;
+}
+
+export function MelonSodaBackground({
+  static: isStatic = false,
+}: MelonSodaBackgroundProps = {}) {
   // Phase 7.8: active theme の bgPalette を読み取る (theme 切替で即時 re-render)
   const { bgPalette: palette } = useActiveTheme();
 
@@ -102,8 +112,9 @@ export function MelonSodaBackground() {
     });
   }, []);
 
-  // Accelerometer subscription
+  // Accelerometer subscription (static 時は購読しない — Phase 8.36 退避モード)
   useEffect(() => {
+    if (isStatic) return;
     Accelerometer.setUpdateInterval(50);
     const sub = Accelerometer.addListener(({ x, y, z }) => {
       const clampedX = Math.max(-1, Math.min(1, x));
@@ -121,7 +132,7 @@ export function MelonSodaBackground() {
       }
     });
     return () => sub.remove();
-  }, [gravityX, spawnBurst]);
+  }, [gravityX, spawnBurst, isStatic]);
 
   // Phase 7.2: tilt を ±2° に縮小
   const liquidAnimStyle = useAnimatedStyle(() => ({
@@ -168,10 +179,11 @@ export function MelonSodaBackground() {
 
       {/* Phase 7.3: 液面の細 line は撤去。グラデーション境目だけで自然に見せる */}
 
-      {/* 2. Bubbles */}
-      {bubbles.map((b) => (
-        <Bubble key={b.id} entry={b} gravityX={gravityX} onDone={removeBubble} />
-      ))}
+      {/* 2. Bubbles (static 時は動きを完全に止める = 描画しない、§2.4 退避) */}
+      {!isStatic &&
+        bubbles.map((b) => (
+          <Bubble key={b.id} entry={b} gravityX={gravityX} onDone={removeBubble} />
+        ))}
     </View>
   );
 }

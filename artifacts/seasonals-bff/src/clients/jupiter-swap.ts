@@ -14,6 +14,7 @@
  *   - outAmount / priceImpactPct は string でそのまま保持
  */
 
+import { fetchWithTimeout } from "./http"; // Phase 8.38 (B9): 共通 timeout
 const JUP_BASE = "https://lite-api.jup.ag";
 
 export interface JupSwapQuote {
@@ -48,7 +49,7 @@ export async function fetchSwapQuote(params: {
   )}&outputMint=${encodeURIComponent(params.outputMint)}&amount=${encodeURIComponent(
     params.amount
   )}&slippageBps=${slippage}`;
-  const res = await fetch(url, {
+  const res = await fetchWithTimeout(url, {
     method: "GET",
     headers: { accept: "application/json" },
   });
@@ -66,7 +67,7 @@ export async function fetchSwapTransaction(params: {
   prioritizationFeeLamports?: number | "auto";
   dynamicComputeUnitLimit?: boolean;
 }): Promise<JupSwapTxResponse> {
-  const res = await fetch(`${JUP_BASE}/swap/v1/swap`, {
+  const res = await fetchWithTimeout(`${JUP_BASE}/swap/v1/swap`, {
     method: "POST",
     headers: {
       accept: "application/json",

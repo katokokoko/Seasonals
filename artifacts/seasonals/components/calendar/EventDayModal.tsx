@@ -39,6 +39,12 @@ import {
 
 import { DropletMarker } from "./DropletMarker";
 import {
+  dropletShapeForEvent,
+  eventDirectionLabel,
+  eventHeadline,
+  sortEventsByUrgency,
+} from "./event-display";
+import {
   dateKey,
   useCustomEventsForDay,
   useCustomEventsStore,
@@ -48,6 +54,7 @@ import {
   useThemedStyles,
   type ThemeColors,
 } from "../../stores/theme";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 const CATEGORY_LABELS: Record<TimeEventCategory, string> = {
   [TimeEventCategory.Maturity]: "Maturity",
@@ -113,6 +120,8 @@ export function EventDayModal({
 }: EventDayModalProps) {
   // Phase 8.0: theme 連動 styles
   const styles = useThemedStyles(makeStyles);
+  // 8.45: edge-to-edge の下端 inset
+  const insets = useSafeAreaInsets();
 
   const ref = useRef<BottomSheetModalMethods>(null);
   const snapPoints = useMemo(() => ["55%", "90%"], []);
@@ -160,11 +169,19 @@ export function EventDayModal({
         </Pressable>
       </View>
 
-      <BottomSheetScrollView contentContainerStyle={styles.bodyInner}>
+      {/* 8.45 (edge-to-edge): この sheet は SafeArea 外の BottomSheetModalProvider が
+          宿主なので、下端 inset を自前で足さないとジェスチャーバーに潜る */}
+      <BottomSheetScrollView
+        contentContainerStyle={[
+          styles.bodyInner,
+          { paddingBottom: SPACE.xl + insets.bottom },
+        ]}
+      >
         {events.length === 0 ? (
           <Text style={styles.emptyText}>No protocol events</Text>
         ) : (
-          events.map((event) => (
+          // §5.3: urgency-first — critical を先頭に (8.21)
+          sortEventsByUrgency(events).map((event) => (
             <EventCard
               key={event.id}
               event={event}
@@ -363,18 +380,20 @@ function EventCard({
   // Phase 8.0: sub-component で theme 連動 styles + urgency 配色
   const styles = useThemedStyles(makeStyles);
   const themeColors = useThemeColors();
+  // Phase 8.16: tx 履歴イベントは deposit_history 形状 + "Deposit"/"Withdraw" ラベル
+  const headline = eventHeadline(event);
   return (
     <View style={styles.eventCard} testID={testID}>
       <View style={styles.eventHeader}>
         <DropletMarker
-          category={event.category}
+          category={dropletShapeForEvent(event)}
           urgency={event.urgency}
           size={18}
         />
         <View style={styles.eventTitle}>
           <Text style={styles.eventProtocol}>{event.protocol}</Text>
           <Text style={styles.eventCategory}>
-            {CATEGORY_LABELS[event.category]}
+            {eventDirectionLabel(event) ?? CATEGORY_LABELS[event.category]}
           </Text>
         </View>
         <View
@@ -393,6 +412,17 @@ function EventCard({
           </Text>
         </View>
       </View>
+
+      {/* Phase 8.16: BFF 由来の headline ("Deposited 1.5 jlUSDC on Jupiter Lend" 等) */}
+      {headline && (
+        <Text
+          style={styles.eventHeadline}
+          numberOfLines={2}
+          testID={testID ? `${testID}-headline` : undefined}
+        >
+          {headline}
+        </Text>
+      )}
 
       {event.actions.length > 0 && (
         <View style={styles.actionRow}>
@@ -514,6 +544,13 @@ function makeStyles(c: ThemeColors) {
       textTransform: "capitalize",
     },
     eventCategory: {
+      fontSize: FONT_SIZE.bodySM,
+      fontFamily: FONT.body,
+      color: c.textSubtitle,
+    },
+    // Phase 8.16: BFF headline ("Deposited 1.5 jlUSDC on Jupiter Lend" 等)
+    eventHeadline: {
+      marginTop: SPACE.xs,
       fontSize: FONT_SIZE.bodySM,
       fontFamily: FONT.body,
       color: c.textSubtitle,

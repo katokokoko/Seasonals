@@ -8,14 +8,21 @@
     "dev": "tsx watch src/index.ts",
     "start": "tsx src/index.ts",
     "test": "jest",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "verify:tx": "node scripts/verify-tx-routes.mjs"
   },
   "dependencies": {
+    "@coral-xyz/anchor": "0.32.1",
     "@fastify/cors": "^9.0.1",
+    "@meteora-ag/dlmm": "1.9.12",
+    "@orca-so/whirlpools-sdk": "0.21.0",
+    "@solana/spl-token": "^0.4.15",
     "@solana/web3.js": "^1.95.3",
+    "@solendprotocol/solend-sdk": "0.14.27",
     "@workspace/lib": "workspace:*",
     "dotenv": "^17.4.2",
     "fastify": "^4.28.1",
+    "undici": "^6.25.0",
     "zod": "^3.23.8"
   },
   "devDependencies": {

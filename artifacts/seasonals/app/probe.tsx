@@ -61,7 +61,7 @@ export default function Probe() {
         </View>
 
         <Text style={styles.title}>MWA probe</Text>
-        <Text style={styles.subtitle}>Devnet wallet 接続の動作確認</Text>
+        <Text style={styles.subtitle}>Devnet wallet connection check</Text>
 
         <View style={styles.card}>
           <Row label="Status" value={status} testID="probe-status" />
@@ -97,7 +97,7 @@ export default function Probe() {
               testID="probe-connect"
             >
               <Text style={styles.ctaPrimaryText}>
-                {status === "connecting" ? "接続中…" : "Wallet を接続"}
+                {status === "connecting" ? "Connecting…" : "Connect wallet"}
               </Text>
             </Pressable>
           ) : (
@@ -107,7 +107,7 @@ export default function Probe() {
               style={[styles.cta, styles.ctaSecondary]}
               testID="probe-disconnect"
             >
-              <Text style={styles.ctaSecondaryText}>切断</Text>
+              <Text style={styles.ctaSecondaryText}>Disconnect</Text>
             </Pressable>
           )}
         </View>
@@ -121,11 +121,12 @@ export default function Probe() {
               style={[styles.cta, styles.ctaSecondary]}
               testID="probe-test-push"
             >
-              <Text style={styles.ctaSecondaryText}>テスト push を発射</Text>
+              <Text style={styles.ctaSecondaryText}>Send test push</Text>
             </Pressable>
             <Text style={styles.hint}>
-              fixture の AgentPlan / ApprovalToken で local notification を発火。
-              tap すると /approval/[planId] が開いて MCPApprovalPushCard が表示される。
+              Fires a local notification with a fixture AgentPlan /
+              ApprovalToken. Tapping it opens /approval/[planId] and shows
+              MCPApprovalPushCard.
             </Text>
           </View>
         )}

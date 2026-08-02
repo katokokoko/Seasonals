@@ -115,3 +115,53 @@ jest.mock("react-native-svg", () => {
     Image: mock("SvgImage"),
   };
 });
+
+// ── @shopify/react-native-skia (Phase 8.36) ──────────────────────────────────
+// 公式 jestSetup は canvaskit-wasm (global.CanvasKit) 前提で重いため、
+// react-native-svg と同じ View pass-through 方式の軽量 mock にする。
+// 絵は assert しない (GlassLayer のテストは退避ロジックのみ)。
+jest.mock("@shopify/react-native-skia", () => {
+  const React = require("react");
+  const { View } = require("react-native");
+  const mock = (name) => {
+    const C = ({ children, ...props }) =>
+      React.createElement(View, { ...props, testID: props.testID ?? `skia-${name}` }, children);
+    C.displayName = name;
+    return C;
+  };
+  const makePath = () => ({
+    moveTo: () => undefined,
+    lineTo: () => undefined,
+    close: () => undefined,
+    addCircle: () => undefined,
+    reset: () => undefined,
+  });
+  return {
+    Canvas: mock("Canvas"),
+    Group: mock("Group"),
+    Path: mock("Path"),
+    Rect: mock("Rect"),
+    RoundedRect: mock("RoundedRect"),
+    LinearGradient: mock("SkiaLinearGradient"),
+    RadialGradient: mock("SkiaRadialGradient"),
+    BlurMask: mock("BlurMask"),
+    vec: (x, y) => ({ x, y }),
+    Skia: { Path: { Make: makePath } },
+  };
+});
+
+// ── expo-sensors (Phase 8.36) ────────────────────────────────────────────────
+// Accelerometer (MelonSodaBackground) / DeviceMotion (useTiltRoll)。
+// listener は no-op、availability は false (テストでは静的退避側を通す)。
+jest.mock("expo-sensors", () => ({
+  Accelerometer: {
+    setUpdateInterval: jest.fn(),
+    addListener: jest.fn(() => ({ remove: jest.fn() })),
+  },
+  DeviceMotion: {
+    isAvailableAsync: jest.fn(async () => false),
+    requestPermissionsAsync: jest.fn(async () => ({ granted: true })),
+    setUpdateInterval: jest.fn(),
+    addListener: jest.fn(() => ({ remove: jest.fn() })),
+  },
+}));

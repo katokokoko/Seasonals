@@ -56,6 +56,33 @@ export function isApprovalPushPayload(
   );
 }
 
+/**
+ * Phase 8.29: 自律実行で「資金が動いた」通知の payload (BFF autonomous が送る形)。
+ * approval と違い事前承認を経ない事後通知。機微情報は含めず参照のみ。
+ */
+export interface ExecutionPushPayload {
+  type: "execution";
+  record_id: string;
+  plan_id: string | null;
+  protocol: string | null;
+  action_type: string;
+  amount_usd8: string;
+  tx_signature: string | null;
+  status: "executed" | "failed";
+}
+
+/** ExecutionPushPayload かを runtime check */
+export function isExecutionPushPayload(
+  data: unknown
+): data is ExecutionPushPayload {
+  if (typeof data !== "object" || data === null) return false;
+  const d = data as Record<string, unknown>;
+  return d.type === "execution" && typeof d.record_id === "string";
+}
+
+/** Seasonals の push payload union (approval | execution)。 */
+export type SeasonalsPushPayload = ApprovalPushPayload | ExecutionPushPayload;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Handler 設定 — foreground でも banner / sound を出す
 // ─────────────────────────────────────────────────────────────────────────────
@@ -143,6 +170,21 @@ export async function getInitialApprovalResponse(): Promise<
   if (!last) return null;
   const data = last.notification.request.content.data;
   return isApprovalPushPayload(data) ? data : null;
+}
+
+/**
+ * Phase 8.29: 自律実行の「資金が動いた」通知 tap を受ける (v1 は log のみ、
+ * 専用画面は後続)。ExecutionPushPayload を受け取る generic listener。
+ */
+export function addExecutionResponseListener(
+  handler: (payload: ExecutionPushPayload) => void
+): Subscription {
+  return Notifications.addNotificationResponseReceivedListener((response) => {
+    const data = response.notification.request.content.data;
+    if (isExecutionPushPayload(data)) {
+      handler(data);
+    }
+  });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

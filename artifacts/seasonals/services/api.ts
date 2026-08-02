@@ -28,13 +28,18 @@ import {
   fixtureWallets,
   fixtureProtocols,
   fixtureMenuListings,
+  fixtureAutonomousStatus,
+  fixtureAutonomousLog,
 } from "@workspace/lib/__fixtures__";
 import type { ProtocolMenuEntry } from "@workspace/lib/types";
 import {
   AgentPlanStatus,
   type AgentPlan,
   type ApprovalToken,
+  type AutonomousExecutionRecord,
+  type AutonomousStatus,
   type EarnPositionsResponse,
+  type OracleResult,
   type Position,
   type Protocol,
   type UnifiedTimeEvent,
@@ -86,6 +91,16 @@ async function httpGetJson<T>(path: string): Promise<T> {
 async function httpPostJson<T>(path: string, body?: unknown): Promise<T> {
   const res = await fetch(`${BFF_BASE_URL}${path}`, {
     method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+  });
+  if (!res.ok) throw await bffError(res, path);
+  return (await res.json()) as T;
+}
+
+async function httpPatchJson<T>(path: string, body?: unknown): Promise<T> {
+  const res = await fetch(`${BFF_BASE_URL}${path}`, {
+    method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
@@ -186,6 +201,29 @@ async function fxGetMenuListings(): Promise<ProtocolMenuEntry[]> {
   return cloned(fixtureMenuListings);
 }
 
+// Phase 8.30: 自律管制盤の fixture (status / log / kill / resume / policy patch)
+async function fxGetAutonomousStatus(): Promise<AutonomousStatus> {
+  await nextTick();
+  return cloned(fixtureAutonomousStatus);
+}
+
+async function fxGetAutonomousLog(): Promise<AutonomousExecutionRecord[]> {
+  await nextTick();
+  return cloned(fixtureAutonomousLog);
+}
+
+async function fxSetAutonomousKilled(killed: boolean): Promise<AutonomousStatus> {
+  await nextTick();
+  return { ...cloned(fixtureAutonomousStatus), killed };
+}
+
+async function fxPatchUserPolicy(
+  patch: Partial<UserPolicy>
+): Promise<UserPolicy> {
+  await nextTick();
+  return { ...cloned(fixtureUserPolicyDefault), ...patch };
+}
+
 async function fxApproveAgentPlan(planId: string): Promise<AgentPlan> {
   await nextTick();
   const found = fixtureAgentPlans.find((p) => p.plan_id === planId);
@@ -254,6 +292,8 @@ export async function getEarnPositions(
   walletAddress: string
 ): Promise<EarnPositionsResponse> {
   const path = `/positions/earn?wallet=${encodeURIComponent(walletAddress)}`;
+  // Phase 8.15.x: swapEarn / save は意図的に省略 (undefined)。BFF 不達時は
+  // MenuDrawer が client 側 mint 解決 (heldSwapEarnPositions 等) に fallback する。
   const empty: EarnPositionsResponse = {
     jupiterLend: [],
     kaminoBestEffort: [],
@@ -286,6 +326,59 @@ export interface JupiterLendMarketDTO {
   rewardsRateBps: number;
   totalRateBps: number;
   tvlUnderlying: string;
+}
+
+/**
+ * Phase 8.57: symbol → 実 USD 価格 (8 decimals string)。
+ * 取得できない symbol は **キー自体が返らない** (0 で埋めない = 誤った金額を出さない)。
+ * fixture / BFF 不通時は空 map (呼び手は position の unit_price_usd に落ちる)。
+ */
+export async function getPrices(
+  symbols: string[]
+): Promise<Record<string, string>> {
+  if (symbols.length === 0) return {};
+  const q = encodeURIComponent(symbols.join(","));
+  return tryHttpThenFixture(
+    async () => {
+      const res = await httpGetJson<{ prices?: Record<string, string> }>(
+        `/prices?symbols=${q}`
+      );
+      return res.prices ?? {};
+    },
+    async () => ({}),
+    "/prices"
+  );
+}
+
+/** Phase 8.58: BFF が wallet tx から復元した過去の評価額 */
+export interface PortfolioHistoryDTO {
+  /** 8.59: at は unix 秒 (range によらず ~90 点、1W は日内 2h 刻み) */
+  points: { at: number; usd: string; sol: string }[];
+  oldest_at: number | null;
+  approximated_symbols: string[];
+}
+
+/**
+ * Phase 8.58: 過去の評価額。BFF 不通 / 未接続時は空 (呼び手は端末の
+ * 日次スナップショット (8.56) に落ちる)。
+ */
+export async function getPortfolioHistory(
+  wallet: string,
+  days: number
+): Promise<PortfolioHistoryDTO> {
+  const empty: PortfolioHistoryDTO = {
+    points: [],
+    oldest_at: null,
+    approximated_symbols: [],
+  };
+  return tryHttpThenFixture(
+    () =>
+      httpGetJson<PortfolioHistoryDTO>(
+        `/portfolio/history?wallet=${encodeURIComponent(wallet)}&days=${days}`
+      ),
+    async () => empty,
+    "/portfolio/history"
+  );
 }
 
 export async function getJupiterLendMarkets(): Promise<JupiterLendMarketDTO[]> {
@@ -378,6 +471,289 @@ export async function getJupiterWithdrawTx(input: {
     );
   }
   return (await res.json()) as JupiterDepositTxResponse;
+}
+
+/**
+ * Phase 8.15: protocol 汎用 swap-earn deposit tx (underlying → share)。
+ * shareMint で BFF が SWAP_EARN_MARKETS を解決するので、protocol ごとの分岐不要。
+ * Jupiter Lend を含む全 swap-routable protocol がこの経路に統合される。
+ */
+export async function getSwapEarnDepositTx(input: {
+  user: string;
+  shareMint: string;
+  amount: string;
+  slippageBps?: number;
+}): Promise<JupiterDepositTxResponse> {
+  const res = await fetch(`${BFF_BASE_URL}/protocols/swap-earn/deposit-tx`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as {
+      error?: string;
+      message?: string;
+    };
+    throw new Error(
+      body.message ?? body.error ?? `HTTP ${res.status} ${res.statusText}`
+    );
+  }
+  return (await res.json()) as JupiterDepositTxResponse;
+}
+
+/**
+ * Phase 8.15: protocol 汎用 swap-earn withdraw tx (share → underlying)。
+ */
+export async function getSwapEarnWithdrawTx(input: {
+  user: string;
+  shareMint: string;
+  amount: string;
+  slippageBps?: number;
+}): Promise<JupiterDepositTxResponse> {
+  const res = await fetch(`${BFF_BASE_URL}/protocols/swap-earn/withdraw-tx`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as {
+      error?: string;
+      message?: string;
+    };
+    throw new Error(
+      body.message ?? body.error ?? `HTTP ${res.status} ${res.statusText}`
+    );
+  }
+  return (await res.json()) as JupiterDepositTxResponse;
+}
+
+/** Phase 8.15b: Kamino Lend の unsigned tx (base64)。swap でなく obligation deposit/withdraw。 */
+export interface KaminoTxResponse {
+  transaction: string;
+  reserve: string;
+  market: string;
+  underlyingMint: string;
+}
+
+async function postKaminoTx<T>(
+  path: string,
+  input: Record<string, string>
+): Promise<T> {
+  const res = await fetch(`${BFF_BASE_URL}${path}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as {
+      error?: string;
+      message?: string;
+    };
+    throw new Error(
+      body.message ?? body.error ?? `HTTP ${res.status} ${res.statusText}`
+    );
+  }
+  return (await res.json()) as T;
+}
+
+/** Phase 8.15b: Kamino deposit tx (underlying → reserve、amount = smallest-unit string)。 */
+export function getKaminoDepositTx(input: {
+  user: string;
+  reserve: string;
+  amount: string;
+}): Promise<KaminoTxResponse> {
+  return postKaminoTx<KaminoTxResponse>("/protocols/kamino/deposit-tx", input);
+}
+
+/** Phase 8.15b: Kamino withdraw tx。amount は **underlying smallest-unit** (BFF が underlying_decimals で変換 — 8.38 L9 訂正)。 */
+export function getKaminoWithdrawTx(input: {
+  user: string;
+  reserve: string;
+  amount: string;
+}): Promise<KaminoTxResponse> {
+  return postKaminoTx<KaminoTxResponse>("/protocols/kamino/withdraw-tx", input);
+}
+
+/** Phase 8.15d: Kamino Earn vault (kVault) の unsigned tx。 */
+export interface KaminoVaultTxResponse {
+  transaction: string;
+  vault: string;
+  underlyingMint: string;
+}
+
+/** kVault deposit tx (underlying → vault share、amount = underlying smallest-unit)。 */
+export function getKaminoVaultDepositTx(input: {
+  user: string;
+  vault: string;
+  amount: string;
+}): Promise<KaminoVaultTxResponse> {
+  return postKaminoTx<KaminoVaultTxResponse>(
+    "/protocols/kamino/vault-deposit-tx",
+    input
+  );
+}
+
+/** kVault withdraw tx (share 建て、amount = 保有 share smallest-unit)。 */
+export function getKaminoVaultWithdrawTx(input: {
+  user: string;
+  vault: string;
+  amount: string;
+}): Promise<KaminoVaultTxResponse> {
+  return postKaminoTx<KaminoVaultTxResponse>(
+    "/protocols/kamino/vault-withdraw-tx",
+    input
+  );
+}
+
+/** Phase 8.34: Exponent PT 満期 redeem (wrapper_merge) の unsigned v0 tx。 */
+export interface ExponentRedeemTxResponse {
+  transaction: string;
+  ptMint: string;
+  underlyingMint: string;
+}
+
+/** Exponent PT redeem tx (amount = PT smallest-unit string、満期後のみ 200)。 */
+export function getExponentRedeemTx(input: {
+  user: string;
+  ptMint: string;
+  amount: string;
+}): Promise<ExponentRedeemTxResponse> {
+  return postKaminoTx<ExponentRedeemTxResponse>(
+    "/protocols/exponent/redeem-tx",
+    input
+  );
+}
+
+/**
+ * Phase 8.17: Meteora DLMM LP。deposit の tx は position ephemeral の部分署名済み
+ * (user 署名スロットのみ空 — MWA sign-only で保持される)。
+ */
+export interface MeteoraTxResponse {
+  transactions: string[];
+  position?: string;
+  bps?: number;
+  poolAddress: string;
+}
+
+/** Meteora single-sided deposit txns (amount = deposit token smallest-unit)。 */
+export function getMeteoraDepositTxns(input: {
+  user: string;
+  poolKey: string;
+  amount: string;
+}): Promise<MeteoraTxResponse> {
+  return postKaminoTx<MeteoraTxResponse>("/protocols/meteora/deposit-tx", input);
+}
+
+/** Meteora withdraw txns (amount = deposit token 建て smallest、BFF が bps 換算)。 */
+export function getMeteoraWithdrawTxns(input: {
+  user: string;
+  position: string;
+  amount: string;
+}): Promise<MeteoraTxResponse> {
+  return postKaminoTx<MeteoraTxResponse>("/protocols/meteora/withdraw-tx", input);
+}
+
+/**
+ * Phase 8.18: Orca Whirlpools full-range LP (zap-in)。deposit は 2 tx:
+ * [swap (user 単独), open+increase (position mint ephemeral の部分署名済み —
+ * user 署名スロットのみ空、MWA sign-only で保持される)]。
+ */
+export interface OrcaTxResponse {
+  transactions: string[];
+  /** deposit 時のみ: position mint (NFT) pubkey */
+  position?: string;
+  bps?: number;
+  poolAddress: string;
+}
+
+/** Orca zap-in deposit txns (amount = deposit token smallest-unit、半分 swap)。 */
+export function getOrcaDepositTxns(input: {
+  user: string;
+  poolKey: string;
+  amount: string;
+}): Promise<OrcaTxResponse> {
+  return postKaminoTx<OrcaTxResponse>("/protocols/orca/deposit-tx", input);
+}
+
+/** Orca withdraw txns (amount = deposit token 建て smallest、BFF が bps 換算)。 */
+export function getOrcaWithdrawTxns(input: {
+  user: string;
+  position: string;
+  amount: string;
+}): Promise<OrcaTxResponse> {
+  return postKaminoTx<OrcaTxResponse>("/protocols/orca/withdraw-tx", input);
+}
+
+/**
+ * Phase 8.15c: Save (旧 Solend) の unsigned v0 tx 群 (base64[])。
+ * 複数 tx は MWA 一括署名 → 順次 submit する (ATA 準備 + 本体等)。
+ */
+export interface SaveTxResponse {
+  transactions: string[];
+  reserve: string;
+  ctokenMint: string;
+  underlyingMint: string;
+}
+
+async function postSaveTx(
+  path: string,
+  input: Record<string, string>
+): Promise<SaveTxResponse> {
+  const res = await fetch(`${BFF_BASE_URL}${path}`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as {
+      error?: string;
+      message?: string;
+    };
+    throw new Error(
+      body.message ?? body.error ?? `HTTP ${res.status} ${res.statusText}`
+    );
+  }
+  return (await res.json()) as SaveTxResponse;
+}
+
+/** Save deposit txns (underlying → cToken、amount = underlying smallest-unit string)。 */
+export function getSaveDepositTxns(input: {
+  user: string;
+  reserve: string;
+  amount: string;
+}): Promise<SaveTxResponse> {
+  return postSaveTx("/protocols/save/deposit-tx", input);
+}
+
+/** Save withdraw (redeem) txns (cToken → underlying、amount = cToken smallest-unit string)。 */
+export function getSaveWithdrawTxns(input: {
+  user: string;
+  ctokenMint: string;
+  amount: string;
+}): Promise<SaveTxResponse> {
+  return postSaveTx("/protocols/save/withdraw-tx", input);
+}
+
+/**
+ * Phase 8.14 §4.6: underlying mint の実 oracle 判定 (Pyth→Switchboard)。
+ * ActionModal が deposit/withdraw review 時に引いて WarningArea 表示 / CTA gate に使う。
+ * test 環境では network を呼ばず安全側の ok を返す (fixture path)。
+ */
+export async function getOracleStatus(mint: string): Promise<OracleResult> {
+  if (IS_TEST_ENV) {
+    return {
+      asset_symbol: "TEST",
+      status: "ok",
+      primary: "pyth",
+      price_usd: null,
+      pyth: { available: true, price_usd: null, age_seconds: 0 },
+      switchboard: { available: false, price_usd: null, age_seconds: null },
+      divergence_pct: null,
+      warnings: [],
+      block_reason: null,
+    };
+  }
+  return httpGetJson<OracleResult>(`/oracle/status?mint=${encodeURIComponent(mint)}`);
 }
 
 /**
@@ -510,6 +886,56 @@ export async function getUserPolicy(): Promise<UserPolicy> {
     () => httpGetJson<UserPolicy>("/user-policy"),
     () => fxGetUserPolicy(),
     "/user-policy"
+  );
+}
+
+/**
+ * Phase 8.30: 自律管制盤 — UserPolicy を PATCH で永続更新 (§6.4 editable フィールド)。
+ * §4.5: max_tx_amount / min_tvl は USD string のまま渡す (呼び出し側で検証済み)。
+ */
+export async function patchUserPolicy(
+  patch: Partial<UserPolicy>
+): Promise<UserPolicy> {
+  return tryHttpThenFixture(
+    () => httpPatchJson<UserPolicy>("/user-policy", patch),
+    () => fxPatchUserPolicy(patch),
+    "/user-policy"
+  );
+}
+
+/** Phase 8.30: 自律オプションの現在状態 (armed / daily_count / hard_caps)。 */
+export async function getAutonomousStatus(): Promise<AutonomousStatus> {
+  return tryHttpThenFixture(
+    () => httpGetJson<AutonomousStatus>("/autonomous/status"),
+    () => fxGetAutonomousStatus(),
+    "/autonomous/status"
+  );
+}
+
+/** Phase 8.30: 自律実行の監査ログ (newest-first)。 */
+export async function getAutonomousLog(): Promise<AutonomousExecutionRecord[]> {
+  return tryHttpThenFixture(
+    () => httpGetJson<AutonomousExecutionRecord[]>("/autonomous/log"),
+    () => fxGetAutonomousLog(),
+    "/autonomous/log"
+  );
+}
+
+/** Phase 8.30: kill switch — 自律実行を即時全停止。返り値は更新後 status。 */
+export async function killAutonomous(): Promise<AutonomousStatus> {
+  return tryHttpThenFixture(
+    () => httpPostJson<AutonomousStatus>("/autonomous/kill"),
+    () => fxSetAutonomousKilled(true),
+    "/autonomous/kill"
+  );
+}
+
+/** Phase 8.30: kill 解除 (resume)。返り値は更新後 status。 */
+export async function resumeAutonomous(): Promise<AutonomousStatus> {
+  return tryHttpThenFixture(
+    () => httpPostJson<AutonomousStatus>("/autonomous/resume"),
+    () => fxSetAutonomousKilled(false),
+    "/autonomous/resume"
   );
 }
 

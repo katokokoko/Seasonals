@@ -104,6 +104,31 @@ export function fromBigInt(amount: bigint): string {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// USD 8-decimals (§4.5) — policy 比較用の bigint 変換 (Phase 8.29)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * USD 8-decimals string ("500.00000001") を scale-8 bigint (50000000001n) に変換。
+ * max_tx_amount / min_tvl 等の policy 比較を Number 精度落ちなしで行うため (§4.5)。
+ * 整数のみ ("500") も許容。不正は InvalidAmountError。
+ */
+export function usd8ToBigInt(value: string): bigint {
+  if (!isValidUsdAmount(value)) {
+    throw new InvalidAmountError("usd_amount", value);
+  }
+  const [intPart, fracPart = ""] = value.split(".");
+  const frac = (fracPart + "00000000").slice(0, 8);
+  return BigInt(intPart!) * 100_000_000n + BigInt(frac);
+}
+
+/** USD 8-dec string 2 値を bigint で比較 (-1 / 0 / 1、Number 不使用)。 */
+export function compareUsd8(a: string, b: string): -1 | 0 | 1 {
+  const av = usd8ToBigInt(a);
+  const bv = usd8ToBigInt(b);
+  return av < bv ? -1 : av > bv ? 1 : 0;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // 表示用: smallest unit ↔ human-readable
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -186,11 +211,13 @@ export function formatTokenAmount(
   options: { locale?: string; minFractionDigits?: number; maxFractionDigits?: number } = {}
 ): string {
   const human = toHumanReadable(amount, decimals);
-  // human は decimal string なので Number() で表示用に変換 (precision loss 許容)
-  // ただし amount が極端に大きい (>2^53) と Number() で正確に表示できないため、
-  // その場合は plain string を返す
+  // human は decimal string なので Number() で表示用に変換 (precision loss 許容)。
+  // Phase 8.38 (F8): 整数部 16 桁以上 (2^53 ≈ 9.0e15 超) は Number() で末尾桁が
+  // 化けるため plain string を返す — 旧実装の isFinite guard は Infinity (1.8e308)
+  // でしか発動せず、コメントの約束が実装されていなかった
+  const intDigits = human.split(".")[0]!.length;
   const numericValue = Number(human);
-  if (!Number.isFinite(numericValue)) return human;
+  if (intDigits > 15 || !Number.isFinite(numericValue)) return human;
 
   const { locale = "en-US", minFractionDigits = 0, maxFractionDigits = 6 } = options;
   return new Intl.NumberFormat(locale, {
@@ -209,8 +236,10 @@ export function formatUsd(
   if (!isValidUsdAmount(amount)) {
     throw new InvalidAmountError("usd_amount", amount);
   }
+  // Phase 8.38 (F8): formatTokenAmount と同じ >2^53 guard
+  const usdIntDigits = amount.split(".")[0]!.length;
   const numericValue = Number(amount);
-  if (!Number.isFinite(numericValue)) return amount;
+  if (usdIntDigits > 15 || !Number.isFinite(numericValue)) return amount;
 
   const { locale = "en-US", minFractionDigits = 2, maxFractionDigits = 2 } = options;
   return new Intl.NumberFormat(locale, {

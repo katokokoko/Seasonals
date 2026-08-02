@@ -20,6 +20,7 @@ import {
   View,
 } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
+import { format } from "date-fns";
 import BottomSheet, {
   BottomSheetScrollView,
   type BottomSheetMethods,
@@ -37,34 +38,53 @@ import {
   withAlpha,
 } from "@workspace/lib/design-system";
 import type { Position, Protocol } from "@workspace/lib/types";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import {
   useThemeColors,
   useThemedStyles,
   type ThemeColors,
 } from "../../stores/theme";
+import {
+  usePortfolioHistory,
+  usePrices,
+  useJupiterLendMarkets,
+} from "../../services/queries";
 import { AllocationDonut } from "./AllocationDonut";
 import { Charts } from "./Charts";
 import { SponsoredCard } from "./SponsoredCard";
 import {
   aggregateAllocation,
+  depositedUsdValue,
   positionUsdValue,
-  positionSolValue,
+  solUsdPrice,
   totalUsdValue,
-  SOL_USD_PRICE,
   type AllocationSegment,
   type CurrencyUnit,
 } from "./allocation";
+// 8.55: holdings 行の表示モデル (純関数、単体テスト済)
+import { conversionLine, holdingView, rateLine } from "./holding-view";
 import {
   buildPortfolioTimeSeries,
+  hasHistory as seriesHasHistory,
+  coverageFromKnownStart,
+  flowMarkerIndices,
+  historyCoverage,
+  rangeExceedsCoverage,
+  rangeToDays,
+  serverHistoryToPoints,
   totalSolValue,
   type PortfolioPoint,
+  type PortfolioScope,
   type RangeKey,
 } from "./portfolioTimeSeries";
+// 8.56: 端末に貯めた日次スナップショット (実測のみ)
+import { usePortfolioHistoryStore } from "../../stores/portfolioHistory";
+import { dayKeyToDate } from "./history";
 
 const RANGE_KEYS: RangeKey[] = ["1W", "1M", "3M", "1Y", "ALL"];
 
-// Phase 8.4.1: SOL/USD は allocation.ts SOL_USD_PRICE に集約 (import で参照)。
+// Phase 8.57: SOL/USD は固定値をやめ oracle の実価格 (usePrices) を使う。
 
 const SNAP_INDEX_KEY = "home:bottomSheetSnapIndex"; // Phase 5B.1 persist
 
@@ -76,6 +96,8 @@ export interface PortfolioSummaryProps {
   isPending?: boolean;
   /** 今日として扱う日 (chart の time-series 起点) */
   today?: Date;
+  /** 8.58: 接続中の wallet (BFF から過去の評価額を復元するのに使う)。未接続は null */
+  walletAddress?: string | null;
   /**
    * BottomSheet の animatedPosition を外部に exposeし、DailyView の card 高さ
    * 計算に使えるようにする (Phase 5A.3)。SheetPosition は top からの px。
@@ -89,11 +111,14 @@ export function PortfolioSummary({
   protocols = [],
   isPending,
   today = new Date(),
+  walletAddress,
   animatedPosition,
   testID,
 }: PortfolioSummaryProps) {
   // Phase 7.9: theme 連動 styles
   const styles = useThemedStyles(makeStyles);
+  // 8.45: edge-to-edge の下端 inset (ジェスチャーバー分)
+  const insets = useSafeAreaInsets();
 
   const sheetRef = useRef<BottomSheetMethods>(null);
   // Phase 5B.1: 3 snap points
@@ -126,28 +151,161 @@ export function PortfolioSummary({
 
   const [currency, setCurrency] = useState<CurrencyUnit>("USDC");
   const [range, setRange] = useState<RangeKey>("1M");
+  // 8.62: 全資産 (total) か、protocol に預けた分だけ (deposited) か
+  const [scope, setScope] = useState<PortfolioScope>("total");
 
   // Phase 8.4.1: total を asset_symbol price table から直接計算 (allocation.ts と同じロジック)
-  const totalUsd = useMemo(() => totalUsdValue(positions), [positions]);
-  const totalSol = totalUsd / SOL_USD_PRICE;
+  // 8.57: 実価格 map (native SOL は DAS に価格が無いので oracle から埋める)
+  const { data: priceStrings } = usePrices();
+  const prices = useMemo(() => {
+    const out: Record<string, number> = {};
+    for (const [symbol, value] of Object.entries(priceStrings ?? {})) {
+      const n = Number(value);
+      if (Number.isFinite(n) && n > 0) out[symbol] = n;
+    }
+    return out;
+  }, [priceStrings]);
+  const solUsd = solUsdPrice(prices);
 
-  // 単純 yield: APY 5.7% × range 日数 / 365 × 現在値 (mock、Phase 8.5 で
-  // earn position の supply_rate_bps 加重平均に差替予定)
-  const yieldRatio = 0.057;
-  const yieldDays = 90;
-  const yieldUsd = totalUsd * yieldRatio * (yieldDays / 365);
-  const yieldSol = yieldUsd / SOL_USD_PRICE;
-  const avgYieldDisplay = "—"; // 本物 yield は別 phase で計算
-
-  const series: PortfolioPoint[] = useMemo(
-    () => buildPortfolioTimeSeries(positions, range, today),
-    [positions, range, today]
+  // 8.62: 見出しは scope に追従 (deposited は protocol への預入分のみ)
+  const totalUsd = useMemo(
+    () =>
+      scope === "deposited"
+        ? depositedUsdValue(positions, prices)
+        : totalUsdValue(positions, prices),
+    [positions, prices, scope]
   );
+  const totalSol = solUsd === null ? 0 : totalUsd / solUsd;
+
+  // Phase 8.10: earn position (Jupiter Lend / Kamino) の supply_rate_bps を
+  // USD 重みで加重平均して実効 APR を算出。range 日数で按分して period yield に。
+  // Phase 8.10.1: position 側 supply_rate_bps が 0 / 欠落する場合は markets API
+  // (useJupiterLendMarkets) の値を share_mint で fallback ルックアップ。
+  const rangeDaysByKey: Record<RangeKey, number> = {
+    "1W": 7,
+    "1M": 30,
+    "3M": 90,
+    "1Y": 365,
+    ALL: 730,
+  };
+  const { data: jlMarketsForYield = [] } = useJupiterLendMarkets();
+  const bpsByJlMint = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const mkt of jlMarketsForYield) {
+      m.set(mkt.jlMint, mkt.supplyRateBps);
+    }
+    return m;
+  }, [jlMarketsForYield]);
+  const { yieldUsd, yieldSol, yieldRatio, avgYieldDisplay } = useMemo(() => {
+    let weighted = 0;
+    let earnUsd = 0;
+    for (const p of positions) {
+      // earn position の判定: protocol_id が "jupiter_lend" or "kamino"
+      const isEarn =
+        p.protocol_id === "jupiter_lend" || p.protocol_id === "kamino";
+      if (!isEarn) continue;
+      const rs = (p.raw_state ?? {}) as Record<string, unknown>;
+      const fromRaw =
+        typeof rs.supply_rate_bps === "number" ? rs.supply_rate_bps : 0;
+      // fallback: share_mint で markets を引く
+      const shareMint =
+        typeof rs.share_mint === "string" ? rs.share_mint : null;
+      const fromMarkets =
+        shareMint && bpsByJlMint.has(shareMint)
+          ? bpsByJlMint.get(shareMint)!
+          : 0;
+      const bps = fromRaw > 0 ? fromRaw : fromMarkets;
+      if (bps <= 0) continue;
+      // USD weight = positionUsdValue
+      const usd = positionUsdValue(p, prices);
+      if (!Number.isFinite(usd) || usd <= 0) continue;
+      earnUsd += usd;
+      weighted += usd * (bps / 10000);
+    }
+    const avgApr = earnUsd > 0 ? weighted / earnUsd : 0;
+    const days = rangeDaysByKey[range];
+    const yUsd = earnUsd * avgApr * (days / 365);
+    return {
+      yieldUsd: yUsd,
+      yieldSol: solUsd === null ? 0 : yUsd / solUsd,
+      yieldRatio: avgApr,
+      avgYieldDisplay:
+        avgApr > 0 ? `${(avgApr * 100).toFixed(2)}%` : "—",
+    };
+  }, [positions, range, bpsByJlMint, prices, solUsd]);
+
+  // 8.55: 系列はトグル通貨建てで生成 (chart 縦軸をトグルと一致させる)
+  // 8.56: 実測スナップショット + 今日の現在値。過去は捏造しない
+  const snapshots = usePortfolioHistoryStore((s) => s.snapshots);
+  // 8.58: BFF が wallet の tx から復元した履歴を優先し、無ければ端末の
+  // 日次スナップショットに落ちる (未接続 / fixture / BFF 不通)
+  const { data: serverHistory } = usePortfolioHistory(
+    walletAddress,
+    rangeToDays(range)
+  );
+  const localSeries: PortfolioPoint[] = useMemo(
+    () =>
+      buildPortfolioTimeSeries(
+        snapshots,
+        positions,
+        range,
+        today,
+        currency,
+        prices
+      ),
+    [snapshots, positions, range, today, currency, prices]
+  );
+  const serverSeries: PortfolioPoint[] = useMemo(
+    () => serverHistoryToPoints(serverHistory?.points ?? [], currency, scope),
+    [serverHistory, currency, scope]
+  );
+  // deposited のローカル記録は無い (8.56 の snapshot は全資産) ので、
+  // server 履歴が無ければ現在値カードに落とす (全資産の線を流用しない)
+  const series =
+    serverSeries.length >= 2
+      ? serverSeries
+      : scope === "deposited"
+        ? []
+        : localSeries;
+  const approximatedSymbols = serverHistory?.approximated_symbols ?? [];
+  // 8.60: 履歴がどこまで遡れているか (3M と 1Y が同じに見える理由の説明)
+  const coverage = useMemo(
+    // 8.63: 描いている系列で判定する (先頭ゼロを落とすので生 points とはズレる)
+    () => historyCoverage(serverSeries, range),
+    [serverSeries, range]
+  );
+  // 一度分かった開始日は覚えておく (絶対的な事実なので、短い range に
+  // 切り替えて判定材料が無くなっても淡色表示を保つ)
+  const [knownStart, setKnownStart] = useState<Date | null>(null);
+  useEffect(() => {
+    if (!coverage.partial || !coverage.from) return;
+    setKnownStart((prev) =>
+      prev === null || coverage.from!.getTime() < prev.getTime()
+        ? coverage.from
+        : prev
+    );
+  }, [coverage]);
+  const chipCoverage = useMemo(
+    () => coverageFromKnownStart(knownStart, today),
+    [knownStart, today]
+  );
+  // 変動を観測できていない間は線を描かず現在値カードを出す。
+  // 8.62: ただし **server が復元した実履歴** は平坦でも描く — 「残高が動いて
+  // いない」という事実だからである (Deposited は預入額が変わらなければ平坦に
+  // なるのが正しい)。hasHistory の門番は端末スナップショット経路に限る
+  const showChart =
+    serverSeries.length >= 2 ? true : seriesHasHistory(series);
+  // 8.65: 元本の増減マーカーが 1 つでも出る時だけ凡例を添える (Charts と同じ判定)
+  const hasFlowMarks = useMemo(
+    () => flowMarkerIndices(series).length > 0,
+    [series]
+  );
+  const trackingSince = snapshots[0] ? dayKeyToDate(snapshots[0].day) : today;
 
   // Phase 8.4.1: currency 駆動で donut value も切替
   const allocation: AllocationSegment[] = useMemo(
-    () => aggregateAllocation(positions, protocols, currency),
-    [positions, protocols, currency]
+    () => aggregateAllocation(positions, protocols, currency, prices),
+    [positions, protocols, currency, prices]
   );
 
   // Phase 8.7: wallet 直接保有 (raw token) を separate section で list 表示
@@ -161,6 +319,19 @@ export function PortfolioSummary({
       ),
     [positions]
   );
+
+  // 8.55: 展開中の holdings 行 (position_id の Set、複数展開可)
+  const [expandedHoldings, setExpandedHoldings] = useState<Set<string>>(
+    () => new Set()
+  );
+  const toggleHolding = useCallback((positionId: string) => {
+    setExpandedHoldings((prev) => {
+      const next = new Set(prev);
+      if (next.has(positionId)) next.delete(positionId);
+      else next.add(positionId);
+      return next;
+    });
+  }, []);
 
   const screenWidth = Dimensions.get("window").width;
   const chartWidth = screenWidth - SPACE.md * 2;
@@ -186,7 +357,12 @@ export function PortfolioSummary({
       testID={testID}
     >
       <BottomSheetScrollView
-        contentContainerStyle={styles.body}
+        // 8.45 (edge-to-edge): 下端がジェスチャーバーの裏まで伸びるので、
+        // 最下段が潜らないよう inset を足す
+        contentContainerStyle={[
+          styles.body,
+          { paddingBottom: SPACE.xxl + insets.bottom },
+        ]}
         showsVerticalScrollIndicator={false}
       >
         {/* Top row: PORTFOLIO label + USDC↔SOL toggle */}
@@ -239,14 +415,21 @@ export function PortfolioSummary({
             : `${totalUsd.toLocaleString("en-US", { maximumFractionDigits: 2, minimumFractionDigits: 2 })} USDC`}
         </Text>
 
-        {/* Yield row — Phase 8.4.1: 表示単位を currency に追従 (mock APY 5.7%) */}
+        {/* Phase 8.10: Yield row — earn position supply_rate_bps の加重平均から算出。
+            earn 不在時は "—" で表示。 */}
         <View style={styles.yieldRow}>
           <Text style={styles.yieldText}>
-            +
-            {currency === "SOL"
-              ? `${yieldSol.toFixed(4)} SOL`
-              : `${yieldUsd.toLocaleString("en-US", { maximumFractionDigits: 2, minimumFractionDigits: 2 })} USDC`}{" "}
-            ({(yieldRatio * 100).toFixed(2)}%)
+            {yieldRatio > 0 ? (
+              <>
+                +
+                {currency === "SOL"
+                  ? `${yieldSol.toFixed(4)} SOL`
+                  : `${yieldUsd.toLocaleString("en-US", { maximumFractionDigits: 2, minimumFractionDigits: 2 })} USDC`}{" "}
+                ({(yieldRatio * 100).toFixed(2)}%)
+              </>
+            ) : (
+              "— no earn positions"
+            )}
           </Text>
           <View style={styles.avgYieldPill}>
             <Text style={styles.avgYieldLabel}>AVG YIELD</Text>
@@ -254,49 +437,120 @@ export function PortfolioSummary({
           </View>
         </View>
 
-        {/* Range selector */}
-        <View style={styles.rangeRow}>
-          {RANGE_KEYS.map((k) => (
+        {/* 8.62: 集計対象 (全資産 / 預入分) */}
+        <View style={styles.scopeRow}>
+          {(["total", "deposited"] as const).map((k) => (
             <Pressable
               key={k}
               accessibilityRole="button"
-              accessibilityState={{ selected: range === k }}
-              onPress={() => handleSelectRange(k)}
-              style={[styles.rangeBtn, range === k && styles.rangeBtnActive]}
+              accessibilityState={{ selected: scope === k }}
+              onPress={() => setScope(k)}
+              style={[styles.scopeBtn, scope === k && styles.scopeBtnActive]}
+              testID={testID ? `${testID}-scope-${k}` : undefined}
             >
               <Text
                 style={[
-                  styles.rangeText,
-                  range === k && styles.rangeTextActive,
+                  styles.scopeText,
+                  scope === k && styles.scopeTextActive,
                 ]}
               >
-                {k}
+                {k === "total" ? "Total" : "Deposited"}
               </Text>
             </Pressable>
           ))}
         </View>
 
-        {/* Chart — Phase 8.4: history は wallet tx index 後の phase で実装。
-            positions 空 / series 空 の時は empty state を出して、過去データの
-            偽造をやめる (旧 APY 5.7% mock 撤去済)。 */}
-        {series.length > 0 ? (
+        {/* Range selector */}
+        <View style={styles.rangeRow}>
+          {RANGE_KEYS.map((k) => {
+            // 8.60: 履歴が届かない range は淡色に (押せば同じ全期間が出る)
+            const beyond = rangeExceedsCoverage(k, chipCoverage);
+            return (
+              <Pressable
+                key={k}
+                accessibilityRole="button"
+                accessibilityState={{ selected: range === k }}
+                onPress={() => handleSelectRange(k)}
+                style={[styles.rangeBtn, range === k && styles.rangeBtnActive]}
+              >
+                <Text
+                  style={[
+                    styles.rangeText,
+                    range === k && styles.rangeTextActive,
+                    beyond && range !== k && styles.rangeTextBeyond,
+                  ]}
+                >
+                  {k}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </View>
+
+        {/* Chart — Phase 8.4 / 8.56: 過去データを偽造しない。
+            観測した変動が 2 点以上たまるまでは線を描かず、現在値と
+            「いつから記録しているか」を出す (中身のない目盛りを作らない)。 */}
+        {showChart ? (
           <Charts
             data={series}
+            unit={currency}
             width={chartWidth}
             height={chartHeight}
             testID={testID ? `${testID}-chart` : undefined}
           />
         ) : (
           <View
-            style={[styles.section, { paddingVertical: SPACE.lg }]}
+            style={[styles.chartPlaceholder, { height: chartHeight }]}
             testID={testID ? `${testID}-chart-empty` : undefined}
           >
-            <Text style={styles.empty}>
-              {positions.length === 0
-                ? "Connect a wallet to see your positions"
-                : "Time-series history will appear once tx activity is indexed"}
-            </Text>
+            {positions.length === 0 ? (
+              <Text style={styles.empty}>
+                Connect a wallet to see your positions
+              </Text>
+            ) : (
+              <>
+                <Text style={styles.placeholderValue}>
+                  {currency === "SOL"
+                    ? `${totalSol.toFixed(4)} SOL`
+                    : `${totalUsd.toLocaleString("en-US", { maximumFractionDigits: 2, minimumFractionDigits: 2 })} USDC`}
+                </Text>
+                <Text style={styles.empty}>
+                  {`Tracking since ${format(trackingSince, "MMM d")} · history builds daily`}
+                </Text>
+              </>
+            )}
           </View>
+        )}
+
+        {/* 8.65: マーカーを打った時だけ凡例を出す。段差が「利回り」ではなく
+            「元本の増減」であることを、この 1 行だけで読めるようにする */}
+        {showChart && hasFlowMarks && (
+          <Text
+            style={styles.approxNote}
+            testID={testID ? `${testID}-flow-note` : undefined}
+          >
+            ● deposit / withdrawal — principal, not yield
+          </Text>
+        )}
+
+        {/* 8.60: 要求 range より履歴が短い時だけ、どこからの記録かを出す */}
+        {showChart && coverage.partial && coverage.from && (
+          <Text
+            style={styles.approxNote}
+            testID={testID ? `${testID}-coverage-note` : undefined}
+          >
+            {`History from ${format(coverage.from, "M/d")} · no balance before`}
+          </Text>
+        )}
+
+        {/* 8.58: 過去の実価格が無く現在価格で近似した asset がある時だけ注記 */}
+        {showChart && approximatedSymbols.length > 0 && (
+          <Text
+            style={styles.approxNote}
+            testID={testID ? `${testID}-approx-note` : undefined}
+          >
+            {`${approximatedSymbols.join(", ")} estimated at current price`}
+          </Text>
         )}
 
         {/* Allocation section — donut + legend */}
@@ -342,7 +596,9 @@ export function PortfolioSummary({
           </View>
         )}
 
-        {/* Phase 8.7: Wallet holdings — Allocation section の下に individual token list */}
+        {/* Phase 8.7 → 8.55: Wallet holdings — 行はトークンそのものの量 (ネイティブ
+            単位)。トグル通貨換算だと SOL の行に USDC が並ぶ不整合があった。
+            タップで USDC / SOL 両換算 + 固定レート注記を展開する */}
         {walletHoldings.length > 0 && (
           <View
             style={styles.section}
@@ -350,36 +606,71 @@ export function PortfolioSummary({
           >
             <Text style={styles.sectionLabel}>Wallet holdings</Text>
             <View style={styles.legend}>
-              {walletHoldings.map((h) => (
-                <View key={h.position_id} style={styles.legendRow}>
-                  <View style={styles.legendLeft}>
-                    <View
-                      style={[
-                        styles.holdingBadge,
-                        {
-                          backgroundColor:
-                            h.asset_symbol === "SOL" ||
-                            h.asset_symbol === "WSOL"
-                              ? styles.holdingBadgeSol.backgroundColor
-                              : styles.holdingBadgeStable.backgroundColor,
-                        },
-                      ]}
+              {walletHoldings.map((h) => {
+                const view = holdingView(h, prices);
+                const expanded = expandedHoldings.has(h.position_id);
+                return (
+                  <View key={h.position_id}>
+                    <Pressable
+                      accessibilityRole={view.priced ? "button" : "none"}
+                      accessibilityState={{ expanded }}
+                      onPress={
+                        view.priced
+                          ? () => toggleHolding(h.position_id)
+                          : undefined
+                      }
+                      style={styles.legendRow}
+                      testID={
+                        testID
+                          ? `${testID}-holding-${view.symbol}`
+                          : undefined
+                      }
                     >
-                      <Text style={styles.holdingBadgeText}>
-                        {h.asset_symbol.charAt(0)}
+                      <View style={styles.legendLeft}>
+                        <View
+                          style={[
+                            styles.holdingBadge,
+                            {
+                              backgroundColor:
+                                view.symbol === "SOL"
+                                  ? styles.holdingBadgeSol.backgroundColor
+                                  : styles.holdingBadgeStable.backgroundColor,
+                            },
+                          ]}
+                        >
+                          <Text style={styles.holdingBadgeText}>
+                            {view.symbol.charAt(0)}
+                          </Text>
+                        </View>
+                        <Text style={styles.legendLabel} numberOfLines={1}>
+                          {view.symbol}
+                        </Text>
+                      </View>
+                      <Text style={styles.legendValue}>
+                        {`${view.nativeAmount} ${view.symbol}`}
+                        {view.priced ? (expanded ? "  ⌄" : "  ›") : ""}
                       </Text>
-                    </View>
-                    <Text style={styles.legendLabel} numberOfLines={1}>
-                      {h.asset_symbol === "WSOL" ? "SOL" : h.asset_symbol}
-                    </Text>
+                    </Pressable>
+                    {expanded && view.priced && (
+                      <View
+                        style={styles.holdingDetail}
+                        testID={
+                          testID
+                            ? `${testID}-holding-${view.symbol}-detail`
+                            : undefined
+                        }
+                      >
+                        <Text style={styles.holdingDetailText}>
+                          {conversionLine(view)}
+                        </Text>
+                        <Text style={styles.holdingDetailRate}>
+                          {rateLine(prices)}
+                        </Text>
+                      </View>
+                    )}
                   </View>
-                  <Text style={styles.legendValue}>
-                    {currency === "SOL"
-                      ? `${positionSolValue(h).toFixed(4)} SOL`
-                      : `${positionUsdValue(h).toLocaleString("en-US", { maximumFractionDigits: 2, minimumFractionDigits: 2 })} USDC`}
-                  </Text>
-                </View>
-              ))}
+                );
+              })}
             </View>
           </View>
         )}
@@ -592,6 +883,32 @@ function makeStyles(c: ThemeColors) {
       gap: 4,
       paddingTop: SPACE.xs,
     },
+    // 8.62: 集計対象トグル (Total / Deposited)。通貨トグルと同じ pill 意匠に揃える
+    scopeRow: {
+      flexDirection: "row",
+      alignSelf: "flex-start",
+      borderRadius: RADIUS.pill,
+      backgroundColor: withAlpha(c.textMuted, 0.12),
+      padding: 2,
+      marginTop: SPACE.xs,
+    },
+    scopeBtn: {
+      paddingHorizontal: SPACE.md,
+      paddingVertical: 4,
+      borderRadius: RADIUS.pill,
+    },
+    scopeBtnActive: {
+      backgroundColor: c.sodaText,
+    },
+    scopeText: {
+      fontSize: FONT_SIZE.bodySM,
+      fontFamily: FONT.heading,
+      fontWeight: WEIGHT.semibold,
+      color: c.textSubtitle,
+    },
+    scopeTextActive: {
+      color: c.textOnColor,
+    },
     rangeBtn: {
       paddingHorizontal: SPACE.sm,
       paddingVertical: 4,
@@ -635,6 +952,49 @@ function makeStyles(c: ThemeColors) {
       fontFamily: FONT.heading,
       fontWeight: WEIGHT.bold,
       color: c.textOnColor,
+    },
+    // 8.60: 履歴が届かない range のラベル (淡色。押せないわけではない)
+    rangeTextBeyond: {
+      opacity: 0.35,
+    },
+    // 8.58: 過去価格が無い asset の注記 (chart 下、控えめに)
+    // 8.66: chart の読み方の補足であって主役ではないので、本文より一段小さい
+    // caption (metadata 用 token) にする。2 本並んでも塊に見えない
+    approxNote: {
+      fontSize: FONT_SIZE.caption,
+      fontFamily: FONT.body,
+      color: c.textMuted,
+      textAlign: "center",
+      marginTop: SPACE.xs,
+    },
+    // 8.56: 履歴が貯まるまでの chart 代替 (高さを維持してレイアウトを揺らさない)
+    chartPlaceholder: {
+      alignItems: "center",
+      justifyContent: "center",
+      gap: SPACE.xs,
+    },
+    placeholderValue: {
+      fontSize: FONT_SIZE.displaySM,
+      fontFamily: FONT.heading,
+      fontWeight: WEIGHT.bold,
+      color: c.textPrimary,
+    },
+    // 8.55: holdings 行タップで出す換算の展開行 (badge 幅 + gap 分 indent)
+    holdingDetail: {
+      paddingLeft: 24 + SPACE.sm,
+      paddingTop: 2,
+      paddingBottom: SPACE.xs,
+      gap: 2,
+    },
+    holdingDetailText: {
+      fontSize: FONT_SIZE.bodySM,
+      fontFamily: FONT.body,
+      color: c.textSubtitle,
+    },
+    holdingDetailRate: {
+      fontSize: FONT_SIZE.bodySM,
+      fontFamily: FONT.body,
+      color: c.textMuted,
     },
   });
 }

@@ -39,8 +39,13 @@ export default function ApprovalScreen() {
   const planQuery = useAgentPlan(planId);
   const tokenQuery = useApprovalToken(tokenId);
 
-  const isPending = planQuery.isPending || tokenQuery.isPending;
-  const error = planQuery.error ?? tokenQuery.error;
+  // Phase 8.37 (M2): token なし deep link では useApprovalToken(null) が
+  // disabled query となり isPending が永久 true → 無限 Loading だった。
+  // token がある時だけ token fetch の pending を待ち、無い時はリンク不正表示。
+  const tokenPending = tokenId !== null && tokenQuery.isPending;
+  const isPending = planQuery.isPending || tokenPending;
+  const error =
+    planQuery.error ?? (tokenId !== null ? tokenQuery.error : null);
 
   return (
     <SafeAreaView style={styles.safe} edges={["top", "bottom"]}>
@@ -50,6 +55,16 @@ export default function ApprovalScreen() {
         <View style={styles.center}>
           <ActivityIndicator color={COLOR.sodaText} size="large" />
           <Text style={styles.loadingText}>Loading…</Text>
+        </View>
+      )}
+
+      {!isPending && !error && tokenId === null && (
+        <View style={styles.center} testID="approval-screen-invalid-link">
+          <Text style={styles.errorTitle}>Invalid approval link</Text>
+          <Text style={styles.errorBody}>
+            This link is missing its approval token. Open the approval from the
+            notification again.
+          </Text>
         </View>
       )}
 

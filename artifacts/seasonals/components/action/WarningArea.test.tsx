@@ -48,7 +48,7 @@ const simulationApyWarning: SimulationWarning = {
 function MockCta({ disabled }: { disabled: boolean }) {
   return (
     <Pressable disabled={disabled} testID="cta-button">
-      <Text>署名して実行</Text>
+      <Text>Sign &amp; execute</Text>
     </Pressable>
   );
 }
@@ -90,9 +90,9 @@ describe("WarningArea", () => {
         testID="wa"
       />
     );
-    expect(screen.getByText("価格 oracle に異常を検出")).toBeTruthy();
+    expect(screen.getByText("Price oracle anomaly detected")).toBeTruthy();
     expect(
-      screen.getByText("Pyth と Switchboard の価格が 3.4% 乖離しています")
+      screen.getByText("Pyth and Switchboard prices differ by 3.4%")
     ).toBeTruthy();
   });
 
@@ -104,9 +104,9 @@ describe("WarningArea", () => {
         testID="wa"
       />
     );
-    expect(screen.getByText("Pyth が古い価格を返しています")).toBeTruthy();
+    expect(screen.getByText("Pyth is returning a stale price")).toBeTruthy();
     expect(
-      screen.getByText("Pyth の最終更新から 92 秒経過。Switchboard を使用中")
+      screen.getByText("Pyth last updated 92s ago · using Switchboard")
     ).toBeTruthy();
   });
 
@@ -156,9 +156,9 @@ describe("WarningArea", () => {
         testID="wa"
       />
     );
-    expect(screen.getByText("Switchboard が古い価格を返しています")).toBeTruthy();
+    expect(screen.getByText("Switchboard is returning a stale price")).toBeTruthy();
     expect(
-      screen.getByText("Switchboard の最終更新から 121 秒経過。Pyth を使用中")
+      screen.getByText("Switchboard last updated 121s ago · using Pyth")
     ).toBeTruthy();
   });
 

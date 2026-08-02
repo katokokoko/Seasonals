@@ -128,7 +128,7 @@ export function MCPClientApprovalCard({
     <View
       style={styles.container}
       accessible
-      accessibilityLabel={`${action?.protocol ?? "agent"} 提案`}
+      accessibilityLabel={`${action?.protocol ?? "agent"} proposal`}
       testID={testID}
     >
       <View style={styles.header}>
@@ -168,7 +168,7 @@ export function MCPClientApprovalCard({
         >
           <Text style={styles.warningIcon}>⚠️</Text>
           <Text style={styles.warningText}>
-            {`oracle 乖離 ${divergencePct.toFixed(1)}%`}
+            {`Oracle divergence ${divergencePct.toFixed(1)}%`}
           </Text>
         </View>
       )}
@@ -186,7 +186,7 @@ export function MCPClientApprovalCard({
           testID={testID ? `${testID}-approve` : undefined}
         >
           <Text style={styles.ctaApproveText}>
-            {approve.isPending ? "実行中…" : "実行"}
+            {approve.isPending ? "Executing…" : "Execute"}
           </Text>
         </Pressable>
         <Pressable
@@ -200,7 +200,7 @@ export function MCPClientApprovalCard({
           ]}
           testID={testID ? `${testID}-detail` : undefined}
         >
-          <Text style={styles.ctaSecondaryText}>詳細</Text>
+          <Text style={styles.ctaSecondaryText}>Details</Text>
         </Pressable>
       </View>
     </View>

@@ -9,7 +9,7 @@
  * - mint pubkey は base58 string。Solana mainnet の canonical mint を使う。
  * - decimals は Helius からも返るが、registry に持っておく方が早い (BFF / mobile
  *   どちらでも参照されるため lib に置く)。
- * - 将来 Kamino kToken / Jupiter JLP / Drift Insurance Fund 等を追加する場合は
+ * - 将来 Kamino kToken / Jupiter JLP 等を追加する場合は
  *   ここに entry を増やすだけで OK (BFF / mobile の差分なし)。
  *
  * @see CLAUDE.md §11.3 Position
@@ -56,6 +56,23 @@ export const KNOWN_PROTOCOL_MINTS: Record<string, KnownMint> = {
     protocol_id: "sanctum",
     category: PositionCategory.Staking,
     asset_symbol: "bSOL",
+    decimals: 9,
+  },
+
+  // ── Save (旧 Solend) main pool cToken (Phase 8.15c) ──
+  // deposit (reserve liquidity) で wallet に mint される受取 SPL。decimals は underlying と同一。
+  "993dVFL2uXWYeoXuEBFXR4BijeXdTv4s6BzsCjJZuwqk": {
+    mint: "993dVFL2uXWYeoXuEBFXR4BijeXdTv4s6BzsCjJZuwqk",
+    protocol_id: "savefi",
+    category: PositionCategory.Lending,
+    asset_symbol: "cUSDC",
+    decimals: 6,
+  },
+  "5h6ssFpeDeRbzsEHDbTQNH7nVGgsKrZydxdSTnLm6QdV": {
+    mint: "5h6ssFpeDeRbzsEHDbTQNH7nVGgsKrZydxdSTnLm6QdV",
+    protocol_id: "savefi",
+    category: PositionCategory.Lending,
+    asset_symbol: "cSOL",
     decimals: 9,
   },
 

@@ -133,6 +133,27 @@ export const useWalletStore = create<WalletStore>()(
       storage: createJSONStorage(() => secureStorage),
       // persist 対象は authorization のみ。status / error は session-only。
       partialize: (state) => ({ authorization: state.authorization }),
+      /**
+       * 8.67: 復元後に status を戻す。
+       *
+       * これが無いと再起動後 `status='idle'` のまま authorization だけが戻り、
+       * **接続状態の判定が画面ごとに割れる**:
+       *   - authorization を見る側 (portfolio / WalletPopover) → 接続済
+       *   - isConnected を見る側 (Settings / ActionModal) → 未接続
+       * 実害は表示だけでなく、ActionModal の on-chain CTA が無効になり
+       * **起動のたびに deposit / withdraw が実行できなくなる**こと。
+       *
+       * MWA に「セッション」は無く、authToken は wallet 側で revoke される
+       * まで有効なので「token を保持している = connected」で意味が通る。
+       * 起動時の `reauthorize()` は採らない — transact() 経由で wallet アプリ
+       * が毎回立ち上がるため。revoke 済だった場合は次の署名で失敗する。
+       */
+      onRehydrateStorage: () => (state) => {
+        // state を直接書き換えず setState (subscriber に通知させる)
+        if (state?.authorization) {
+          useWalletStore.setState({ status: "connected" });
+        }
+      },
     }
   )
 );

@@ -20,6 +20,8 @@ import {
   // bigint
   toBigInt,
   fromBigInt,
+  usd8ToBigInt,
+  compareUsd8,
   // human ↔ smallest
   toHumanReadable,
   toSmallestUnit,
@@ -83,6 +85,14 @@ describe("isValidTokenAmount", () => {
     expect(isValidTokenAmount(undefined)).toBe(false);
     expect(isValidTokenAmount("1.5")).toBe(false);
     expect(isValidTokenAmount("-1")).toBe(false);
+  });
+
+  // Phase 8.13: accrued_yield_amount は「magnitude string + sign enum」方式。
+  // 負数 string を許さない (これが magnitude 方式を採った理由) ことを固定する。
+  it("accrued yield: magnitude は valid / 負数 string は invalid", () => {
+    expect(isValidTokenAmount("500000")).toBe(true); // 損失額も magnitude なら valid
+    expect(isValidTokenAmount("0")).toBe(true); // unknown / break-even
+    expect(isValidTokenAmount("-500000")).toBe(false); // 負数 string は禁止
   });
 });
 
@@ -266,6 +276,18 @@ describe("formatTokenAmount", () => {
   });
 });
 
+describe("formatTokenAmount — 8.38 (F8) >2^53 guard", () => {
+  it("整数部 16 桁以上は Number を通さず plain string (末尾桁が化けない)", () => {
+    // 2^53+1 相当 (9007199254740993) — Number() だと …992 に化ける値
+    const out = formatTokenAmount("9007199254740993000000", 6);
+    expect(out).toBe("9007199254740993"); // plain human string、桁化けなし
+  });
+
+  it("15 桁以下は従来通り桁区切り", () => {
+    expect(formatTokenAmount("1500000000", 6)).toBe("1,500");
+  });
+});
+
 describe("formatUsd", () => {
   it("$1,234.57 形式", () => {
     expect(formatUsd("1234.56789012")).toBe("$1,234.57");
@@ -310,5 +332,29 @@ describe("USD constants", () => {
     expect(USD_ZERO).toBe("0.00000000");
     expect(isValidUsdAmount(USD_ONE)).toBe(true);
     expect(isValidUsdAmount(USD_ZERO)).toBe(true);
+  });
+});
+
+describe("usd8ToBigInt / compareUsd8 (§4.5、Phase 8.29)", () => {
+  it("scale-8 bigint に変換 (整数 / 小数 / 端数)", () => {
+    expect(usd8ToBigInt("500.00000001")).toBe(50000000001n);
+    expect(usd8ToBigInt("500")).toBe(50000000000n);
+    expect(usd8ToBigInt("0.00000001")).toBe(1n);
+    expect(usd8ToBigInt("10000000.00000000")).toBe(1000000000000000n);
+  });
+  it("2^53 超も精度落ちしない", () => {
+    // 9,007,199,254,740,993 USD (> Number.MAX_SAFE_INTEGER)
+    expect(usd8ToBigInt("9007199254740993.00000000")).toBe(
+      900719925474099300000000n
+    );
+  });
+  it("不正は throw", () => {
+    expect(() => usd8ToBigInt("1.5.5")).toThrow(InvalidAmountError);
+    expect(() => usd8ToBigInt("-1")).toThrow(InvalidAmountError);
+  });
+  it("compareUsd8: bigint 比較", () => {
+    expect(compareUsd8("500.00000000", "500.00000001")).toBe(-1);
+    expect(compareUsd8("500.00000001", "500.00000000")).toBe(1);
+    expect(compareUsd8("500", "500.00000000")).toBe(0);
   });
 });

@@ -31,8 +31,31 @@ export interface ProtocolPool {
   tvl_usd: number;
   /** lending market のみ。borrowed amount in USD */
   borrowed_usd?: number;
+  /**
+   * lending market の稼働率 (borrow/supply、0..1、§3 display carve-out。Phase 8.26)。
+   * 1.0 近傍は貸出が満杯 = **withdraw が流動性不足で滞る可能性**を示す —
+   * UI は ≥0.9 を警告色で表示する。ソースが無い protocol は undefined。
+   */
+  utilization?: number;
   /** tap → onStartAction(asset) 用の deposit 通貨。未指定なら `asset` を使う */
   deposit_asset?: string;
+  /**
+   * read-only listing (Phase 8.33)。true の pool は deposit 経路を持たない —
+   * MenuDrawer は tap を無効化し、autonomous / MCP compare の候補からも除外する
+   * (実行不能な候補を agent に見せない fail-closed、§32.2)。
+   */
+  display_only?: boolean;
+  /**
+   * 預入枠 (Phase 8.51、現状 Kamino のみ)。protocol が上限概念を持たない / 値を
+   * 取得できない場合は undefined で、UI は何も表示しない。
+   *
+   * - `deposit_cap` … 上限 (smallest unit string、§4.5)。`"0"` は **預入停止中**
+   * - `deposit_used` … 現在の供給量 (同単位)。UI は「used / cap」で残量を見せる
+   * - `deposit_open` … 預入を受け付けるか。false なら CTA を落とす (fail-closed)
+   */
+  deposit_cap?: string;
+  deposit_used?: string;
+  deposit_open?: boolean;
 }
 
 /**

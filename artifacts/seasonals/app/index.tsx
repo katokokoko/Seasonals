@@ -53,6 +53,7 @@ import {
 import { MonthGrid } from "../components/calendar/MonthGrid";
 import { DailyView } from "../components/calendar/DailyView";
 import { EventDayModal } from "../components/calendar/EventDayModal";
+import { syntheticPlanFromEventAction } from "../components/calendar/event-action";
 import { ActionModal } from "../components/action/ActionModal";
 import { PortfolioSummary } from "../components/portfolio/PortfolioSummary";
 import { SettingsDrawer } from "../components/drawer/SettingsDrawer";
@@ -60,12 +61,13 @@ import { MenuDrawer } from "../components/drawer/MenuDrawer";
 import { ViewModeTogglePill } from "../components/header/ViewModeTogglePill";
 import { WalletDrinkButton } from "../components/header/WalletDrinkButton";
 import { WalletPopover } from "../components/wallet/WalletPopover";
-import { MelonSodaBackground } from "../components/decorative/MelonSodaBackground";
+import { GlassLayer } from "../components/glass/GlassLayer";
 import { useAllCustomEvents } from "../services/customEventsStore";
 import {
   useAgentPlans,
   useEarnPositions,
   usePositions,
+  usePrices,
   useWalletTimeEvents,
   useProtocols,
   useTimeEvents,
@@ -89,9 +91,9 @@ import {
 import { useWallet } from "../services/useWallet";
 import { USE_ONCHAIN } from "../services/config";
 import { mergeEarnPositions } from "../services/earn-to-position";
-
-// MVP fixed reference date (CLAUDE.md auto-memory currentDate と整合)。
-const MOCK_TODAY = new Date("2026-05-09T00:00:00.000Z");
+// 8.56: portfolio chart の実履歴 (1 日 1 点の実測スナップショット)
+import { usePortfolioHistoryStore } from "../stores/portfolioHistory";
+import { totalSolValue } from "../components/portfolio/portfolioTimeSeries";
 
 function localDayKey(day: Date): string {
   return `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, "0")}-${String(day.getDate()).padStart(2, "0")}`;
@@ -133,6 +135,19 @@ export default function HomeScreen() {
     () => mergeEarnPositions(basePositions, earnPositionsData),
     [basePositions, earnPositionsData]
   );
+  // Phase 8.56: 評価額を 1 日 1 点だけ記録する (chart の実履歴)。
+  // 8.57: 実価格が揃ってから記録する (SOL 価格が無いと 0 になり、store 側で捨てられる)
+  const { data: priceStrings } = usePrices();
+  useEffect(() => {
+    if (positions.length === 0) return;
+    const prices: Record<string, number> = {};
+    for (const [symbol, value] of Object.entries(priceStrings ?? {})) {
+      const n = Number(value);
+      if (Number.isFinite(n) && n > 0) prices[symbol] = n;
+    }
+    usePortfolioHistoryStore.getState().record(totalSolValue(positions, prices));
+  }, [positions, priceStrings]);
+
   // Phase 8.3 Part B: wallet tx 由来 events + fixture events を merge
   const events = useMemo(
     () => [...fixtureEvents, ...walletEvents],
@@ -185,7 +200,8 @@ export default function HomeScreen() {
   const handleStartActionFromServices = (
     protocol: string,
     asset: string,
-    actionType: "deposit"
+    actionType: "deposit",
+    poolId?: string
   ) => {
     // Phase 8.5: synthetic AgentPlan を生成 — fixture からの lookup は廃止し、
     // pool tap context (protocol / asset / actionType) を直接 plan に詰める。
@@ -208,6 +224,8 @@ export default function HomeScreen() {
         asset,
         action_type: actionType,
         amount,
+        // Phase 8.15d: 同一 asset の reserve/vault pool を判別する dispatch キー
+        metadata: poolId ? { pool_id: poolId } : undefined,
       },
       simulation_result: null,
       created_at: new Date().toISOString(),
@@ -235,6 +253,8 @@ export default function HomeScreen() {
           share_mint: position.share_mint,
           share_decimals: position.share_decimals,
           underlying_decimals: position.underlying_decimals,
+          // Phase 8.16: 部分 withdraw の ≈underlying 換算表示用 (display-only)
+          underlying_amount: position.underlying_amount,
         },
       },
       simulation_result: null,
@@ -262,6 +282,16 @@ export default function HomeScreen() {
     event: UnifiedTimeEvent,
     action: ActionDescriptor
   ) => {
+    // Phase 8.20 (§29.1 event-driven action): claim イベント等の metadata から
+    // synthetic plan を組めるなら、カレンダーから直接 ActionModal を起動する。
+    // day modal close → 130ms 遅延は drawer と同じ choreography (Phase 7.7)。
+    const synthetic = syntheticPlanFromEventAction(event, action);
+    if (synthetic) {
+      setDayModalOpen(false);
+      setTimeout(() => setPendingPlan(synthetic), 130);
+      return;
+    }
+    // fallback: fixture plan lookup (旧経路)
     const exact = plans.find(
       (p) =>
         p.selected_action?.protocol === event.protocol &&
@@ -294,9 +324,14 @@ export default function HomeScreen() {
   const styles = useThemedStyles(makeStyles);
 
   return (
-    <SafeAreaView style={styles.safe} edges={["bottom"]}>
+    // 8.45 (edge-to-edge): edges=[] で全面表示にする。bottom padding があると
+    // GlassLayer / MelonSodaBackground (中の absoluteFill) が下端 inset 分だけ
+    // クリップされ、液面キャンバスがジェスチャーバー手前で切れてしまう。
+    // 下端 inset は各サーフェス側 (シート・トースト等) で個別に消化する
+    <SafeAreaView style={styles.safe} edges={[]}>
       {/* Phase 7.1: melon-soda gravity-aware ambient bg (touch 透過、最背面) */}
-      <MelonSodaBackground />
+      {/* Phase 8.36: 液体演出 (off/reduce-motion 時は内部で MelonSodaBackground static へ退避) */}
+      <GlassLayer />
 
       {/* Row 1: Seasonals | toggle pill | wallet drink */}
       <View style={[styles.row1, { paddingTop: topPad }]}>
@@ -398,10 +433,12 @@ export default function HomeScreen() {
       </Animated.View>
 
       {/* Bottom portfolio panel (glass + chart) */}
+      {/* 8.55: today は実時刻 (旧 MOCK_TODAY=2026-05-09 は chart 右端が 5/9 で止まっていた) */}
       <PortfolioSummary
         positions={positions}
         protocols={protocols}
-        today={MOCK_TODAY}
+        today={new Date()}
+        walletAddress={onchainAddress}
         animatedPosition={sheetPosition}
         testID="home-portfolio"
       />

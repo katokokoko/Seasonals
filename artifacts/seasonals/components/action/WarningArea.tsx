@@ -38,34 +38,16 @@ import {
   RADIUS,
   withAlpha,
 } from "@workspace/lib/design-system";
+// Phase 8.14: OracleWarningKind / OracleWarning は lib canonical に統合 (§32.2)。
+import type { OracleWarning, OracleWarningKind } from "@workspace/lib/types";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Public types
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * oracle warning の種別 (§4.6)。
- * - `oracle_divergence_warning`: Pyth ↔ Switchboard の価格乖離が 2-5%
- * - `oracle_pyth_stale`: Pyth が >60秒 stale、Switchboard を fallback 使用中
- * - `oracle_switchboard_stale`: Switchboard が >60秒 stale、Pyth を使用中 (rare)
- *
- * NOTE: 両 stale / >5% 乖離は §4.6 fail-closed で execute 拒否されるため、
- *       本 component には到達しない。
- */
-export type OracleWarningKind =
-  | "oracle_divergence_warning"
-  | "oracle_pyth_stale"
-  | "oracle_switchboard_stale";
-
-export interface OracleWarning {
-  kind: OracleWarningKind;
-  /** 乖離率 (%)。`oracle_divergence_warning` で必須 */
-  divergencePct?: number;
-  /** Pyth の最終更新からの経過秒数。`oracle_pyth_stale` で必須 */
-  pythAgeSeconds?: number;
-  /** Switchboard の最終更新からの経過秒数。`oracle_switchboard_stale` で必須 */
-  switchboardAgeSeconds?: number;
-}
+// Phase 8.14: oracle warning 種別 (§4.6) は lib/types/oracle.ts に canonical 化。
+// 既存 importer (MCPApprovalPushCard) 互換のため WarningArea からも re-export する。
+export type { OracleWarning, OracleWarningKind };
 
 export interface SimulationWarning {
   /** warning 種別の machine-readable identifier (analytics 用) */
@@ -120,25 +102,25 @@ export interface WarningAreaProps {
 // ─────────────────────────────────────────────────────────────────────────────
 
 const ORACLE_WARNING_HEADLINE: Record<OracleWarningKind, string> = {
-  oracle_divergence_warning: "価格 oracle に異常を検出",
-  oracle_pyth_stale: "Pyth が古い価格を返しています",
-  oracle_switchboard_stale: "Switchboard が古い価格を返しています",
+  oracle_divergence_warning: "Price oracle anomaly detected",
+  oracle_pyth_stale: "Pyth is returning a stale price",
+  oracle_switchboard_stale: "Switchboard is returning a stale price",
 };
 
 function buildOracleWarningBody(w: OracleWarning): string {
   switch (w.kind) {
     case "oracle_divergence_warning":
       return w.divergencePct !== undefined
-        ? `Pyth と Switchboard の価格が ${w.divergencePct.toFixed(1)}% 乖離しています`
-        : "Pyth と Switchboard の価格が乖離しています";
+        ? `Pyth and Switchboard prices differ by ${w.divergencePct.toFixed(1)}%`
+        : "Pyth and Switchboard prices differ";
     case "oracle_pyth_stale":
       return w.pythAgeSeconds !== undefined
-        ? `Pyth の最終更新から ${Math.floor(w.pythAgeSeconds)} 秒経過。Switchboard を使用中`
-        : "Pyth が古いため Switchboard を使用しています";
+        ? `Pyth last updated ${Math.floor(w.pythAgeSeconds)}s ago · using Switchboard`
+        : "Pyth is stale · using Switchboard";
     case "oracle_switchboard_stale":
       return w.switchboardAgeSeconds !== undefined
-        ? `Switchboard の最終更新から ${Math.floor(w.switchboardAgeSeconds)} 秒経過。Pyth を使用中`
-        : "Switchboard が古いため Pyth を使用しています";
+        ? `Switchboard last updated ${Math.floor(w.switchboardAgeSeconds)}s ago · using Pyth`
+        : "Switchboard is stale · using Pyth";
   }
 }
 
@@ -230,7 +212,9 @@ export function WarningArea({
           style={styles.oracleContainer}
           accessible
           accessibilityRole="alert"
-          accessibilityLabel={`価格 oracle に ${oracleWarnings.length} 件の異常があります`}
+          accessibilityLabel={`${oracleWarnings.length} price oracle warning${
+            oracleWarnings.length === 1 ? "" : "s"
+          }`}
           testID={testID ? `${testID}-oracle` : undefined}
         >
           {oracleWarnings.map((w, i) => (

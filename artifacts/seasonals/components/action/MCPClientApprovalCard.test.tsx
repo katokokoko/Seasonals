@@ -66,7 +66,7 @@ describe("MCPClientApprovalCard", () => {
         )
       );
       expect(screen.getByTestId("card-oracle-indicator")).toBeTruthy();
-      expect(screen.getByText("oracle 乖離 3.4%")).toBeTruthy();
+      expect(screen.getByText("Oracle divergence 3.4%")).toBeTruthy();
     });
 
     it("oracle 乖離なし plan では indicator は出ない", () => {

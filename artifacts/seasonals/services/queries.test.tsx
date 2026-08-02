@@ -24,6 +24,7 @@ import {
   useUserPolicy,
   useWallets,
   useProtocols,
+  useMenuListings,
   useApproveAgentPlan,
   useRejectAgentPlan,
   useRegisterPushToken,
@@ -164,6 +165,20 @@ describe("services/queries", () => {
       const trustLevels = new Set(result.current.data!.map((p) => p.trust_level));
       expect(trustLevels.has("S")).toBe(true);
       expect(trustLevels.has("A")).toBe(true);
+    });
+  });
+
+  describe("useMenuListings (8.22 — 本番は BFF /menu-listings が live 値を返す)", () => {
+    it("fixture path で 11 protocol の menu listing を返す", async () => {
+      const { result } = renderHook(() => useMenuListings(), {
+        wrapper: makeWrapper(freshClient()),
+      });
+      await waitFor(() => expect(result.current.isSuccess).toBe(true));
+      const listings = result.current.data!;
+      expect(listings.length).toBe(12); // 8.33: exponent entry 追加 (read-only PT)
+      const orca = listings.find((e) => e.protocol_id === "orca")!;
+      expect(orca.pools.length).toBe(3);
+      expect(queryKeys.menuListings()).toEqual(["menu-listings"]);
     });
   });
 

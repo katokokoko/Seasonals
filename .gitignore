@@ -7,10 +7,33 @@ node_modules/
 !.env.example
 .idea/
 
-# Claude local state; keep shared project commands tracked
+# Claude local state; keep shared project harness tracked
+# (settings.local.json stays ignored — personal overrides)
 .claude/*
 !.claude/commands/
 !.claude/commands/**
+!.claude/settings.json
+!.claude/hooks/
+!.claude/hooks/**
+!.claude/skills/
+!.claude/skills/**
+!.claude/ts-baseline/
+!.claude/ts-baseline/**
+
+# Full v0.2.15 requirements spec — kept local-only (戦略/競合記述を含むため非公開)
+# CLAUDE.md の §参照・/spec・/check はローカルの docs/spec.md で機能する
+docs/spec.md
+
+# 作業ステータス doc — local-only (進捗/確認チェックリスト、公開不要)
+docs/confirm.md
+docs/progress.md
+
+# 統合 backlog doc — local-only (戦略/投資家向け実績づくりの記述を含むため非公開)
+docs/backlog.md
+
+# Local persistence (Phase 8.30 file-backed policy override + autonomous log)
+.data/
+**/.data/
 
 # Build and framework output
 .expo/

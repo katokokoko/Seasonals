@@ -333,3 +333,21 @@ export function useThemedStyles<T extends StyleSheet.NamedStyles<T>>(
   // eslint-disable-next-line react-hooks/exhaustive-deps
   return useMemo(() => factory(colors), [colors]);
 }
+
+/**
+ * Phase 8.45: 背景色が暗いかどうか (edge-to-edge のシステムバーアイコン色に使う)。
+ *
+ * ThemeMeta には明暗フラグが無いので `ui.bgPrimary` の相対輝度から導く。
+ * 暗い背景なら白アイコン (light-content)、明るい背景なら暗色アイコン。
+ * 閾値 0.5 は sRGB 相対輝度 (WCAG の係数) 基準。
+ */
+export function isDarkBackground(hex: string): boolean {
+  const h = hex.replace("#", "");
+  if (h.length < 6) return false;
+  const [r, g, b] = [0, 2, 4].map((i) => parseInt(h.slice(i, i + 2), 16) / 255);
+  const lin = (c: number) =>
+    c <= 0.03928 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+  const luminance =
+    0.2126 * lin(r!) + 0.7152 * lin(g!) + 0.0722 * lin(b!);
+  return luminance < 0.5;
+}

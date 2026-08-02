@@ -10,6 +10,7 @@
 import React, { useMemo } from "react";
 import { StyleSheet, Text, View } from "react-native";
 import Svg, {
+  Circle,
   Defs,
   LinearGradient,
   Path,
@@ -25,13 +26,18 @@ import {
   WEIGHT,
 } from "@workspace/lib/design-system";
 
+import type { CurrencyUnit } from "./allocation";
 import {
   chartBounds,
+  flowMarkerIndices,
+  formatAxisValue,
   type PortfolioPoint,
 } from "./portfolioTimeSeries";
 
 export interface ChartsProps {
   data: PortfolioPoint[];
+  /** 8.55: y 軸ラベルの通貨単位 (USDC ↔ SOL トグルに追従、data と同じ建て) */
+  unit: CurrencyUnit;
   width: number;
   height: number;
   testID?: string;
@@ -42,22 +48,22 @@ const PADDING_RIGHT = 12;
 const PADDING_TOP = 16;
 const PADDING_BOTTOM = 28;
 
-export function Charts({ data, width, height, testID }: ChartsProps) {
-  const { paths, yLabels, xLabels } = useMemo(() => {
+export function Charts({ data, unit, width, height, testID }: ChartsProps) {
+  const { paths, yLabels, xLabels, flowMarks } = useMemo(() => {
     if (data.length === 0) {
-      return { paths: null, yLabels: [], xLabels: [] };
+      return { paths: null, yLabels: [], xLabels: [], flowMarks: [] };
     }
 
-    const { minSol, maxSol } = chartBounds(data);
+    const { minValue, maxValue } = chartBounds(data);
     const innerW = width - PADDING_LEFT - PADDING_RIGHT;
     const innerH = height - PADDING_TOP - PADDING_BOTTOM;
 
     const xOf = (idx: number) =>
       PADDING_LEFT + (idx / (data.length - 1)) * innerW;
-    const yOf = (sol: number) =>
+    const yOf = (value: number) =>
       PADDING_TOP +
       innerH -
-      ((sol - minSol) / (maxSol - minSol)) * innerH;
+      ((value - minValue) / (maxValue - minValue)) * innerH;
 
     const past: PortfolioPoint[] = [];
     const future: PortfolioPoint[] = [];
@@ -80,7 +86,7 @@ export function Charts({ data, width, height, testID }: ChartsProps) {
         .map((p, i) => {
           const idx = offset + i;
           const x = xOf(idx);
-          const y = yOf(p.sol);
+          const y = yOf(p.value);
           return `${i === 0 ? "M" : "L"} ${x.toFixed(1)} ${y.toFixed(1)}`;
         })
         .join(" ");
@@ -102,12 +108,13 @@ export function Charts({ data, width, height, testID }: ChartsProps) {
     // pivot line (今日の縦の参照線)
     const pivotX = past.length > 0 ? xOf(past.length - 1) : null;
 
-    // y 軸 label (4 段)
+    // y 軸 label (4 段)。8.56: 刻み幅から小数桁を決める (隣と同じ文字列にしない)
     const yTicks = 4;
+    const yStep = (maxValue - minValue) / (yTicks - 1);
     const yLabels = Array.from({ length: yTicks }, (_, i) => {
-      const sol = minSol + ((maxSol - minSol) * (yTicks - 1 - i)) / (yTicks - 1);
-      const y = yOf(sol);
-      return { sol, y };
+      const value = minValue + yStep * (yTicks - 1 - i);
+      const y = yOf(value);
+      return { label: formatAxisValue(value, yStep), y };
     });
 
     // x 軸 label (5-7 個間引き)
@@ -118,10 +125,18 @@ export function Charts({ data, width, height, testID }: ChartsProps) {
       xLabelArr.push({ x: xOf(i), date: data[i]!.date });
     }
 
+    // 8.65: 元本の増減 (預入 / 引出) マーカー。段差の理由が読めるようにする
+    const flowMarks = flowMarkerIndices(data).map((idx) => ({
+      x: xOf(idx),
+      y: yOf(data[idx]!.value),
+      inflow: (data[idx]!.flow ?? 0) > 0,
+    }));
+
     return {
       paths: { fillD, pastD, futureD, pivotX, baseY },
       yLabels,
       xLabels: xLabelArr,
+      flowMarks,
     };
   }, [data, width, height]);
 
@@ -192,6 +207,20 @@ export function Charts({ data, width, height, testID }: ChartsProps) {
           />
         )}
 
+        {/* 8.65: 元本の増減マーカー (預入 = melon / 引出 = cherry)。
+            線の上に白フチの点を重ねて、段差の起点が読めるようにする */}
+        {flowMarks.map((m, i) => (
+          <Circle
+            key={`flow-${i}`}
+            cx={m.x}
+            cy={m.y}
+            r={4}
+            fill={m.inflow ? COLOR.melonText : COLOR.cherryDark}
+            stroke={COLOR.textOnColor}
+            strokeWidth={1.5}
+          />
+        ))}
+
         {/* pivot vertical line at today */}
         {paths.pivotX !== null && (
           <Line
@@ -215,8 +244,9 @@ export function Charts({ data, width, height, testID }: ChartsProps) {
             { top: tick.y - 8, left: 4 },
           ]}
         >
-          {tick.sol.toFixed(2)}
-          {"\n"}SOL
+          {tick.label}
+          {"\n"}
+          {unit}
         </Text>
       ))}
 

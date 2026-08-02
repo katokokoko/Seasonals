@@ -13,6 +13,7 @@
  *   - HELIUS_API_KEY env が必須
  */
 
+import { fetchWithTimeout } from "./http"; // Phase 8.38 (B9): 共通 timeout
 const HELIUS_BASE = "https://api.helius.xyz/v0";
 const CACHE_TTL_MS = 60_000;
 
@@ -23,6 +24,37 @@ export interface HeliusTokenTransfer {
   tokenAmount: number; // float (Helius が humanized で返す)
 }
 
+/**
+ * Phase 8.13: Enhanced API は accountData[].tokenBalanceChanges[] に
+ * smallest-unit 整数 string (符号付き) を返す。cost-basis 計算は float の
+ * tokenTransfers.tokenAmount ではなくこちらを使う (§4.5 精度規約)。
+ */
+export interface HeliusRawTokenAmount {
+  /** smallest unit, 符号付き整数 string (wallet 減少なら先頭 "-") */
+  tokenAmount: string;
+  decimals: number;
+}
+
+export interface HeliusTokenBalanceChange {
+  mint: string;
+  /** この balance change の主体 wallet (owner) */
+  userAccount: string;
+  /** token account 自体の address */
+  tokenAccount?: string;
+  rawTokenAmount: HeliusRawTokenAmount;
+}
+
+export interface HeliusAccountData {
+  account: string;
+  /**
+   * Phase 8.19: account の lamports 変化。position account 作成 (open) では rent 分
+   * 正になる — LP cost-basis の「open が tx window 内に見えているか」判定に使う
+   * (>0 比較のみで算術しないため Number で可、§4.5 適用外)。
+   */
+  nativeBalanceChange?: number;
+  tokenBalanceChanges?: HeliusTokenBalanceChange[];
+}
+
 export interface HeliusEnhancedTx {
   signature: string;
   /** unix seconds */
@@ -31,6 +63,8 @@ export interface HeliusEnhancedTx {
   description?: string;
   fee: number;
   tokenTransfers?: HeliusTokenTransfer[];
+  /** Phase 8.13: cost-basis 用の smallest-unit 整数 balance changes */
+  accountData?: HeliusAccountData[];
 }
 
 interface CacheEntry {
@@ -39,6 +73,18 @@ interface CacheEntry {
 }
 
 const cache = new Map<string, CacheEntry>();
+
+// Phase 8.38 (B10): wallet キー cache の上限 — TTL は read 時にしか効かず、
+// 多数 wallet で無制限成長していた。挿入順 (Map) で古い方から落とす
+const CACHE_MAX_ENTRIES = 200;
+function evictOldest(m: Map<string, unknown>): void {
+  while (m.size > CACHE_MAX_ENTRIES) {
+    const oldest = m.keys().next().value;
+    if (oldest === undefined) break;
+    m.delete(oldest);
+  }
+}
+
 
 export function _clearHeliusTxCacheForTest(): void {
   cache.clear();
@@ -55,6 +101,37 @@ function buildUrl(walletAddress: string, limit: number): string {
 }
 
 /**
+ * Phase 8.58: 履歴再構築用のページング取得。`before=<signature>` で 1 ページずつ
+ * 遡る。cache は使わない (呼び手が cutoff まで繰り返すため、ページ単位で持つと
+ * 意味が薄い)。実測: limit=100 / before で 2 ページ目以降も同 shape で返る。
+ */
+export async function fetchEnhancedTransactionsPage(
+  walletAddress: string,
+  opts: { limit?: number; before?: string } = {}
+): Promise<HeliusEnhancedTx[]> {
+  const limit = opts.limit ?? 100;
+  const url =
+    buildUrl(walletAddress, limit) +
+    (opts.before ? `&before=${encodeURIComponent(opts.before)}` : "");
+  const res = await fetchWithTimeout(url, {
+    method: "GET",
+    headers: { accept: "application/json" },
+  });
+  if (!res.ok) {
+    throw new Error(
+      `Helius enhanced-tx HTTP ${res.status} ${res.statusText}: ${await res
+        .text()
+        .catch(() => "")}`
+    );
+  }
+  const json = (await res.json()) as HeliusEnhancedTx[];
+  if (!Array.isArray(json)) {
+    throw new Error("Helius enhanced-tx unexpected shape (not array)");
+  }
+  return json;
+}
+
+/**
  * 指定 wallet の最近の tx 一覧を Enhanced Transactions API で取得。
  * 過去 50 件 (= Helius 1 page default、recent activity を見せる目的なので十分)。
  */
@@ -67,7 +144,7 @@ export async function fetchEnhancedTransactions(
     return cached.data;
   }
 
-  const res = await fetch(buildUrl(walletAddress, limit), {
+  const res = await fetchWithTimeout(buildUrl(walletAddress, limit), {
     method: "GET",
     headers: { accept: "application/json" },
   });
@@ -84,5 +161,6 @@ export async function fetchEnhancedTransactions(
   }
 
   cache.set(walletAddress, { data: json, ts: Date.now() });
+  evictOldest(cache);
   return json;
 }

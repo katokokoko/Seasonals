@@ -64,6 +64,8 @@ import {
   type ThemeColors,
 } from "../../stores/theme";
 import { useComingSoon } from "../../stores/comingSoon";
+import { usePrefsStore } from "../../stores/prefs";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 const SCREEN_WIDTH = Dimensions.get("window").width;
 const DRAWER_WIDTH = Math.min(360, SCREEN_WIDTH * 0.85);
@@ -82,6 +84,8 @@ export function SettingsDrawer({
 }: SettingsDrawerProps) {
   // Phase 7.9: theme 連動 styles
   const styles = useThemedStyles(makeStyles);
+  // 8.45: edge-to-edge の inset (drawer は絶対配置で SafeAreaView の padding が効かない)
+  const insets = useSafeAreaInsets();
 
   const translateX = useSharedValue(-DRAWER_WIDTH);
   const backdropOpacity = useSharedValue(0);
@@ -103,6 +107,10 @@ export function SettingsDrawer({
   useEffect(() => {
     themeHydrate();
   }, [themeHydrate]);
+
+  // Phase 8.36 → 8.41: 背景装飾 3 択 (liquid / static / none、prefs store で永続化)
+  const backgroundMode = usePrefsStore((s) => s.backgroundMode);
+  const setBackgroundMode = usePrefsStore((s) => s.setBackgroundMode);
 
   // Local UI state — 永続化は後続 phase で UserPolicy / preferences API へ
   const [baseCurrency, setBaseCurrency] = useState<"USDC" | "SOL">("SOL");
@@ -179,7 +187,14 @@ export function SettingsDrawer({
 
       {/* Drawer */}
       <GestureDetector gesture={swipeGesture}>
-        <Animated.View style={[styles.drawer, drawerStyle]}>
+        {/* 8.45: edge-to-edge — 固定 56 ではなく inset でステータスバーを逃がす */}
+        <Animated.View
+          style={[
+            styles.drawer,
+            { paddingTop: insets.top + SPACE.md, paddingBottom: insets.bottom },
+            drawerStyle,
+          ]}
+        >
           {/* Header — Pacifico melonText */}
           <View style={styles.header}>
             <Text style={styles.title}>Settings</Text>
@@ -256,6 +271,42 @@ export function SettingsDrawer({
                       SOL
                     </Text>
                   </Pressable>
+                </View>
+              </View>
+              <View style={styles.divider} />
+              {/* Phase 8.36 → 8.41: 背景装飾 3 択 (Liquid = 傾き液体演出 /
+                  Still = 静的ソーダ / Off = うす緑含め装飾なし) */}
+              <View style={styles.row}>
+                <Text style={styles.rowLabel}>Background</Text>
+                <View style={styles.toggle}>
+                  {(
+                    [
+                      { mode: "liquid", label: "Liquid" },
+                      { mode: "static", label: "Still" },
+                      { mode: "none", label: "Off" },
+                    ] as const
+                  ).map(({ mode, label }) => (
+                    <Pressable
+                      key={mode}
+                      accessibilityRole="button"
+                      accessibilityState={{ selected: backgroundMode === mode }}
+                      onPress={() => setBackgroundMode(mode)}
+                      style={[
+                        styles.toggleBtn,
+                        backgroundMode === mode && styles.toggleBtnActive,
+                      ]}
+                      testID={testID ? `${testID}-bg-${mode}` : undefined}
+                    >
+                      <Text
+                        style={[
+                          styles.toggleText,
+                          backgroundMode === mode && styles.toggleTextActive,
+                        ]}
+                      >
+                        {label}
+                      </Text>
+                    </Pressable>
+                  ))}
                 </View>
               </View>
             </View>
@@ -340,6 +391,20 @@ export function SettingsDrawer({
                   <Text style={styles.rowValueMono}>{policy}</Text>
                   <Text style={styles.chevron}>▾</Text>
                 </View>
+              </Pressable>
+              <View style={styles.divider} />
+              {/* Phase 8.30: 自律オプションの管制盤 (status/log/kill + 実 policy 編集) */}
+              <Pressable
+                accessibilityRole="button"
+                onPress={() => {
+                  onClose();
+                  router.push("/autonomous");
+                }}
+                style={styles.row}
+                testID={testID ? `${testID}-autonomous` : undefined}
+              >
+                <Text style={styles.rowLabel}>Autonomous</Text>
+                <Text style={styles.chevron}>›</Text>
               </Pressable>
               <Pressable
                 accessibilityRole="button"

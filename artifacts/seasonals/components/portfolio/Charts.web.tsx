@@ -23,13 +23,18 @@ import {
 
 import { COLOR } from "@workspace/lib/design-system";
 
+import type { CurrencyUnit } from "./allocation";
 import {
   chartBounds,
+  flowMarkerIndices,
+  formatAxisValue,
   type PortfolioPoint,
 } from "./portfolioTimeSeries";
 
 export interface ChartsProps {
   data: PortfolioPoint[];
+  /** 8.55: y 軸ラベルの通貨単位 (USDC ↔ SOL トグルに追従、data と同じ建て) */
+  unit: CurrencyUnit;
   width: number;
   height: number;
   testID?: string;
@@ -37,25 +42,31 @@ export interface ChartsProps {
 
 interface RechartsRow {
   date: string;
-  sol: number;
-  pastSol: number | null;
-  futureSol: number | null;
+  value: number;
+  pastValue: number | null;
+  futureValue: number | null;
+  /** 8.65: 元本の増減 (預入 / 引出) があった点だけ値が入る (native と同じ判定) */
+  flowValue: number | null;
+  flowInflow: boolean;
 }
 
-export function Charts({ data, width, height, testID }: ChartsProps) {
+export function Charts({ data, unit, width, height, testID }: ChartsProps) {
   const { rows, todayLabel, bounds } = useMemo(() => {
     const todayIndex = data.findIndex((p) => p.isFuture) - 1;
     const pivot = todayIndex >= 0 ? data[todayIndex] : null;
 
-    const rows: RechartsRow[] = data.map((p) => ({
+    const flowIdx = new Set(flowMarkerIndices(data));
+    const rows: RechartsRow[] = data.map((p, i) => ({
       date: format(p.date, "M/d"),
-      sol: p.sol,
-      pastSol: p.isFuture ? null : p.sol,
-      futureSol: p.isFuture
-        ? p.sol
+      value: p.value,
+      pastValue: p.isFuture ? null : p.value,
+      futureValue: p.isFuture
+        ? p.value
         : pivot && p === pivot
-          ? p.sol // pivot は past / future 両方に乗せて line を連続させる
+          ? p.value // pivot は past / future 両方に乗せて line を連続させる
           : null,
+      flowValue: flowIdx.has(i) ? p.value : null,
+      flowInflow: (p.flow ?? 0) > 0,
     }));
     return {
       rows,
@@ -80,10 +91,13 @@ export function Charts({ data, width, height, testID }: ChartsProps) {
           />
           <YAxis
             stroke={COLOR.textMuted}
-            domain={[bounds.minSol, bounds.maxSol]}
+            domain={[bounds.minValue, bounds.maxValue]}
             tick={{ fontSize: 9 }}
-            tickFormatter={(v: number) => `${v.toFixed(2)}`}
-            width={42}
+            tickFormatter={(v: number) =>
+              // 8.56: native と同じく刻み幅から小数桁を決める (既定 5 tick 相当)
+              `${formatAxisValue(v, (bounds.maxValue - bounds.minValue) / 4)} ${unit}`
+            }
+            width={54}
           />
           {todayLabel && (
             <ReferenceLine
@@ -94,16 +108,49 @@ export function Charts({ data, width, height, testID }: ChartsProps) {
           )}
           <Line
             type="monotone"
-            dataKey="pastSol"
+            dataKey="pastValue"
             stroke={COLOR.sodaText}
             strokeWidth={3.5}
             dot={false}
             isAnimationActive={false}
             connectNulls={false}
           />
+          {/* 8.65: 元本の増減マーカー。線は描かず dot だけ乗せる */}
+          <Line
+            dataKey="flowValue"
+            stroke="none"
+            isAnimationActive={false}
+            connectNulls={false}
+            dot={(props: {
+              cx?: number;
+              cy?: number;
+              payload?: RechartsRow;
+              index?: number;
+            }) =>
+              props.payload?.flowValue === null ||
+              props.cx === undefined ||
+              props.cy === undefined ? (
+                <g key={`flow-${props.index}`} />
+              ) : (
+                <circle
+                  key={`flow-${props.index}`}
+                  cx={props.cx}
+                  cy={props.cy}
+                  r={4}
+                  fill={
+                    props.payload?.flowInflow
+                      ? COLOR.melonText
+                      : COLOR.cherryDark
+                  }
+                  stroke={COLOR.textOnColor}
+                  strokeWidth={1.5}
+                />
+              )
+            }
+          />
           <Line
             type="monotone"
-            dataKey="futureSol"
+            dataKey="futureValue"
             stroke={COLOR.melonText}
             strokeWidth={3.5}
             strokeDasharray="6 4"

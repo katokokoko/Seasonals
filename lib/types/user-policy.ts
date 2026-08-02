@@ -78,14 +78,16 @@ export interface UserPolicy {
 /**
  * UserPolicy 初期化時の default 値 (§11.6)
  *
- * NOTE: enabled_protocols / enabled_assets は trusted registry 由来のため
- * Server 側で動的に解決する。本オブジェクトは static な default のみ。
+ * NOTE (8.37 訂正): enabled_protocols / enabled_assets の「Server で動的解決
+ * (= all trusted)」は未実装。現行 BFF は fixtureUserPolicyDefault の**保守的
+ * whitelist** (kamino/jito/streamflow/marinade + 主要 7 asset) をそのまま返す。
+ * これは fail-closed としては妥当な default だが、menu の他 protocol は
+ * policy を編集するまで agent 実行不能になる — 拡大は製品判断 (docs/backlog.md)。
  */
 export const USER_POLICY_DEFAULTS = {
   base_currency: "USD" as const,
-  // enabled_protocols: trusted registry の全 enabled protocol — Server で解決
-  // enabled_categories: §5.2 の 10 種すべて — enums.ts の POSITION_CATEGORIES を使う
-  // enabled_assets: trusted asset whitelist の全資産 — Server で解決
+  // enabled_protocols / enabled_assets: 実際は fixtureUserPolicyDefault の
+  // whitelist が生きる (上記 NOTE)。enabled_categories は POSITION_CATEGORIES 全種
   max_tx_amount: null,
   max_daily_executions: null,
   max_lock_days: null,

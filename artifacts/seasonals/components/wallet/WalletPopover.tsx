@@ -154,6 +154,9 @@ export function WalletPopover({
       transparent
       animationType="none"
       onRequestClose={onClose}
+      // 8.45: ActionModal と同じく全画面 window にする。これが無いと Modal の座標系が
+      // ステータスバーを含まず、anchorTop (画面ルート座標) との差分だけ popover が下にズレる
+      statusBarTranslucent
       testID={testID}
     >
       <Animated.View

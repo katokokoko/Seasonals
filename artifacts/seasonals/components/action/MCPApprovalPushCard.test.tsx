@@ -70,10 +70,31 @@ describe("MCPApprovalPushCard", () => {
           />
         )
       );
-      expect(screen.getByText("有効期限 残 4:23")).toBeTruthy();
+      expect(screen.getByText("Expires in 4:23")).toBeTruthy();
     });
 
-    it("expires_at 経過後は CTA disabled + '有効期限切れ' 表示", () => {
+    it("8.37 (M3): expires_at 不正 (NaN) は expired 扱い = CTA disabled (fail-closed)", () => {
+      render(
+        wrap(
+          <MCPApprovalPushCard
+            plan={fixtureAgentPlanSimulated}
+            token={{ ...fixtureApprovalTokenActive, expires_at: "not-a-date" }}
+            now={() => Date.now()}
+            warningGrayoutMs={0}
+            hapticsEnabled={false}
+            testID="push"
+          />
+        )
+      );
+      const cta = screen.getByTestId("push-approve");
+      expect(
+        cta.props.accessibilityState?.disabled ?? cta.props.disabled
+      ).toBeTruthy();
+      // "NaN:NaN" が表示されない
+      expect(screen.queryByText(/NaN/)).toBeNull();
+    });
+
+    it("expires_at 経過後は CTA disabled + 'Expired' 表示", () => {
       render(
         wrap(
           <MCPApprovalPushCard
@@ -90,13 +111,13 @@ describe("MCPApprovalPushCard", () => {
       expect(
         cta.props.accessibilityState?.disabled ?? cta.props.disabled
       ).toBeTruthy();
-      // CTA 内テキストと expires text の両方に「有効期限切れ」が出る
-      expect(screen.getAllByText("有効期限切れ").length).toBeGreaterThanOrEqual(2);
+      // CTA 内テキストと expires text の両方に "Expired" が出る
+      expect(screen.getAllByText("Expired").length).toBeGreaterThanOrEqual(2);
     });
   });
 
   describe("表示内容 (selected_action / simulation_result)", () => {
-    it("protocol / action_type / amount / 推定 out / fee を表示", () => {
+    it("protocol / action_type / amount / Est. out / fee を表示", () => {
       render(
         wrap(
           <MCPApprovalPushCard
@@ -135,7 +156,7 @@ describe("MCPApprovalPushCard", () => {
         )
       );
       expect(screen.getByTestId("push-warning-oracle")).toBeTruthy();
-      expect(screen.getByText("価格 oracle に異常を検出")).toBeTruthy();
+      expect(screen.getByText("Price oracle anomaly detected")).toBeTruthy();
     });
 
     it("oracle warning がない plan では oracle area が出ない", () => {

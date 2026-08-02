@@ -12,7 +12,10 @@
 
 import "dotenv/config";
 
-import { buildServer } from "./server";
+import { buildAutonomousDeps, buildServer } from "./server";
+import { startAutonomousLoop, loadPersistedRecords } from "./autonomous";
+import { loadPersistedPolicy } from "./policy-store";
+import { isObjective } from "@workspace/lib/types";
 
 // 3000 は Next.js dev server の慣例 port なので 3030 を default に。
 // env var で override 可能 (CI / staging / production で別 port にする場合)。
@@ -20,11 +23,39 @@ const PORT = Number(process.env.PORT ?? 3030);
 const HOST = process.env.HOST ?? "0.0.0.0";
 
 async function main(): Promise<void> {
+  // Phase 8.30: 最小永続化 — 既定で .data/ に policy override + 監査ログを保存
+  // (再起動後も残す)。SEASONALS_DATA_DIR で場所を上書き可。テストは main() を
+  // 通らず SEASONALS_DATA_DIR も設定しないので、disk に触れず hermetic なまま。
+  if (!process.env.SEASONALS_DATA_DIR) process.env.SEASONALS_DATA_DIR = ".data";
+  loadPersistedPolicy();
+  loadPersistedRecords();
+
   const app = await buildServer({ logger: true });
   try {
     await app.listen({ port: PORT, host: HOST });
     // eslint-disable-next-line no-console
     console.log(`Seasonals BFF listening on http://${HOST}:${PORT}`);
+
+    // Phase 8.29: 自律 scheduler は opt-in (AUTONOMOUS_LOOP_MS)。buildServer 外
+    // で起動するため test は timer を生まない。flag/devnet/kill は各 cycle が判定。
+    const loopMs = Number(process.env.AUTONOMOUS_LOOP_MS ?? 0);
+    if (loopMs > 0) {
+      const objective = isObjective(process.env.AUTONOMOUS_OBJECTIVE)
+        ? process.env.AUTONOMOUS_OBJECTIVE
+        : "safety_first";
+      // dry_run 既定は安全側 (fail-closed)。実 broadcast は
+      // AUTONOMOUS_LOOP_DRY_RUN=false を明示した時のみ opt-in。
+      const loopDryRun = process.env.AUTONOMOUS_LOOP_DRY_RUN !== "false";
+      startAutonomousLoop(buildAutonomousDeps(app), loopMs, {
+        objective,
+        asset: process.env.AUTONOMOUS_ASSET,
+        dry_run: loopDryRun,
+      });
+      // eslint-disable-next-line no-console
+      console.log(
+        `Autonomous loop enabled (${loopMs}ms, ${objective}, dry_run=${loopDryRun})`
+      );
+    }
   } catch (err) {
     // eslint-disable-next-line no-console
     console.error("Failed to start BFF:", err);

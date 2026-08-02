@@ -354,6 +354,38 @@ skill は `~/.claude/skills/` に展開される。Seasonals リポジトリ固�
   - partial_fill ケースの approval_token 再利用拒否
   - `approval_mode = auto` の feature flag 検証
 
+### 8.1 Phase 完了ゲート (CRITICAL)
+
+multi-file 変更や §21 phase を「完了」と宣言する **前に**、必ず以下を green にすること。トーリングを実際に走らせる前に done と言わない:
+
+```bash
+pnpm -r test        # 全 workspace の jest (現状: 150 mobile / 67 lib / 22 BFF)
+pnpm -r typecheck   # 全 workspace の tsc --noEmit
+```
+
+- 個別 workspace のみ変えた時は該当 workspace の `pnpm test` / `pnpm typecheck` でよいが、`lib/` を触ったら 3 workspace 全部に波及するので `-r` で回す
+- mobile の実機確認が要る変更 (UI / MWA / tx) は Seeker onchain APK で JS reload して logcat エラーなしまで見る (§5)
+
+### 8.2 ts-guard hook (自動 typecheck)
+
+`.claude/settings.json` の PostToolUse hook (`.claude/hooks/ts-guard.sh`) が Edit/Write 毎に **編集した workspace の `tsc --noEmit`** を走らせ、**baseline に無い新規 TS error だけ** を非ブロッキングで通知する (pre-existing の library / config 型エラーは `.claude/ts-baseline/*.txt` に記録済で無視)。
+
+- 新規エラーが出たら phase 完了前に直す
+- 既知エラーを意図的に増減させた時は baseline を refresh (手順は `ts-guard.sh` 冒頭コメント)
+
+### 8.3 jest / metro config の既知パターン (regression 禁止)
+
+過去に試行錯誤して確定した設定。**壊さないこと**:
+
+- `artifacts/seasonals/jest.config.js`:
+  - `transformIgnorePatterns: []` — `@solana/web3.js` の ESM transitive dep (uuid / jayson / `@solana/codecs-*`) が広範なため、許可リストではなく **全 node_modules transform**。cache 後の追加コストはほぼ無し
+  - `transform` に `.mjs` / `.cjs` を明示 — jest-expo preset の default regex は `.mjs` を含まず、`@solana/codecs-numbers` 等が `.native.mjs` を export するため
+  - `moduleNameMapper` で `@workspace/lib/*` を `../../lib` に直結 (ts-jest 不要)
+  - `forceExit: true` — open handle (WarningArea の `setTimeout` 等) での CI hang 防止
+- `artifacts/seasonals/metro.config.js`:
+  - `watchFolders = [workspaceRoot]` + `nodeModulesPaths` 2 段 + `unstable_enableSymlinks` — monorepo で `lib/` を symlink 解決するため。これが無いと emulator/Expo が `@workspace/lib` を解決できない
+- TanStack Query: `gcTime` を過度に短くしない (cache GC で server state が消える)
+
 ---
 
 ## 9. 整合性チェック (§32.2) — PR 前 self-check
@@ -390,6 +422,33 @@ PR を出す前 / コードレビューを依頼する前に、関連する行�
 7. ✅ **MCP approval push handler** — Expo Push Notifications + `seasonals://approval/<planId>?token=<tokenId>` deep link、`app/approval/[planId].tsx` route + `services/push.ts`、test 14 ケース
 8. ✅ **Seed Vault 連携確認** — code grep で `Keypair` / `secretKey` / `mnemonic` 等 0 件、Seeker 実機で MWA round-trip (Phantom 経由) 確認済。Seed Vault path も device 設定で同 probe screen から到達可能
 9. ✅ **EAS Build pipeline** — `eas.json` 3 profiles (dev / preview / production)、Android-only / apk / `appVersionSource: remote`、`pnpm build:{dev,preview,prod}` script、`.easignore` 整備
+
+### 後続 backlog (優先度高)
+
+> 詳細 backlog (v2 Integrator Fee / Tier 2-3 プロトコル選定の突合済リスト) は
+> `docs/backlog.md` (local-only)。本節は Claude Code が常時参照する要約。
+
+- **依存リフレッシュ phase** (Seeker smoke → phase 別コミット完了後の独立 phase として実施。未コミットが積み上がった状態では着手しない):
+  - BFF の Solana SDK 群は **web3.js v1 系に意図的固定** (2026-07 時点): `@orca-so/whirlpools-sdk` 0.21 (legacy 版。kit/v2 版への一本化動向を監視)、root pnpm override `"rpc-websockets@^7": "7.10.0"` (7.11.x の .cjs-only dist regression 回避 — 上流修正を確認したら override 解除)
+  - `@solendprotocol/solend-sdk` 0.14.x が **isomorphic-fetch で global fetch を node-fetch に上書き** → Orca / Meteora の Cloudflare が 403 で弾くため該当 client は undici を明示利用中 (orca-tx.ts / meteora-tx.ts)。恒久対応 (solend-sdk 更新 or fetch 隔離) を検討
+  - 更新時は §8.1 完了ゲートに加えて **全 protocol 経路の live verify (deposit build 署名検査 / positions / withdraw)** を必須とする — SDK major は挙動が変わり得る
+- ✅ **Exponent PT read-only v1 (Phase 8.33 実装済)**: menu に PT 一覧 (implied APY +
+  満期日、`display_only`) / wallet の PT・YT 保有検出 / **maturity time event の初の
+  実データ源** (`mapPtHoldingsToMaturityEvents` → `deriveTimeEvents`)。registry は
+  `lib/config/exponent-markets.ts` (live API 優先、snapshot は degrade + 満期後解決用)
+- ✅ **Exponent PT 満期 redeem (Phase 8.34 実装済)**: maturity イベント → Redeem
+  action → `POST /protocols/exponent/redeem-tx` (wrapper_merge、discriminator [39]
+  手組み)。account 構成は同 vault の直近成功 tx を template に user スロット置換 +
+  vault state cross-check。満期前は server 400 + client disabled の二重 fail-closed。
+  実機での実 redeem 確認は 2026-08-12 (PT xSOL 満期) 以降 (docs/confirm.md)
+- **Exponent PT 売買 (buy)** (backlog、優先度中): 着手条件は (a) Jupiter が PT mint
+  を route し始める (2026-07-22 時点 "not tradable" 実測) か、(b) Exponent の TS SDK
+  が npm 公開される (docs は Core/CLMM/Orderbook SDK に言及するが未公開、GitHub
+  exponent-core は Rust program のみ)。それまで menu は `display_only` で agent
+  候補からも除外 (fail-closed)
+- **Velocity spot-lend adapter** (Phase 8.31 で Drift adapter を撤去した後継、優先度中):
+  - 旧 Drift は 2026-04-01 の exploit 以降 deposit/withdraw 停止のまま **Velocity DEX として fork 再デプロイ** (2026-07-01 リブランド)。program ID `vELoC1audYbSYVRXn1vPaV8Axoa9oU6BYmNGZZBDZ1P` / SDK `@velocity-exchange/sdk` (`VelocityClient`) / **quote 資産は USDT** / spot は collateral + borrow-lend のみ存続
+  - 再実装の着手条件: **公開 relaunch 済** (private beta 解除) + SDK が v0.x churn を抜けて安定 + spot market index / mint 構成を実 SDK で再調査 (旧 Drift の market_index=USDC:0/SOL:1 は引き継がれない前提で確認)
 
 ---
 
