@@ -89,7 +89,7 @@ export function AutonomousStatusCard({
   return (
     <View style={styles.card} testID="autonomous-status-card">
       <View style={styles.headerRow}>
-        <Text style={styles.title}>自律実行の状態</Text>
+        <Text style={styles.title}>Autonomous status</Text>
         <StatusChip label={chip.label} tone={chip.tone} />
       </View>
 
@@ -98,17 +98,17 @@ export function AutonomousStatusCard({
         value={status.feature_flag ? "ON" : "OFF"}
       />
       <Row label="Network" value={status.devnet ? "devnet" : "⚠ non-devnet"} />
-      <Row label="委任鍵" value={truncPubkey(status.delegate_pubkey)} mono />
+      <Row label="Delegate key" value={truncPubkey(status.delegate_pubkey)} mono />
       <Row
-        label="本日の実行"
+        label="Executions today"
         value={`${status.daily_count} / ${status.daily_limit}`}
       />
 
       <View style={styles.capsBox}>
-        <Text style={styles.capsTitle}>ハード上限 (policy と独立)</Text>
-        <Row label="1 tx 上限" value={formatUsd(status.hard_caps.max_tx_usd8)} />
-        <Row label="1 日上限" value={`${status.hard_caps.max_daily} 回`} />
-        <Row label="1 tx lamports" value={`${maxSol} SOL`} />
+        <Text style={styles.capsTitle}>Hard caps (independent of policy)</Text>
+        <Row label="Per tx" value={formatUsd(status.hard_caps.max_tx_usd8)} />
+        <Row label="Per day" value={`${status.hard_caps.max_daily}`} />
+        <Row label="Per tx (lamports)" value={`${maxSol} SOL`} />
       </View>
 
       {status.killed ? (
@@ -120,7 +120,7 @@ export function AutonomousStatusCard({
           testID="autonomous-resume"
         >
           <Text style={styles.ctaResumeText}>
-            {busy ? "…" : "再開 (resume)"}
+            {busy ? "…" : "Resume"}
           </Text>
         </Pressable>
       ) : (
@@ -132,7 +132,7 @@ export function AutonomousStatusCard({
           testID="autonomous-kill"
         >
           <Text style={styles.ctaKillText}>
-            {busy ? "…" : "緊急停止 (kill switch)"}
+            {busy ? "…" : "Kill switch"}
           </Text>
         </Pressable>
       )}

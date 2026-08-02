@@ -99,30 +99,30 @@ export function PolicyEditor({
     // §4.5: USD 値検証
     const maxTxVal = maxTx.trim() === "" ? null : maxTx.trim();
     if (maxTxVal !== null && !isValidUsdAmount(maxTxVal)) {
-      setError("最大 tx 額は USD 8-dec の数値 (例 20.00000000) か空 (無制限)");
+      setError("Max tx must be a USD 8-dec number (e.g. 20.00000000) or empty (no limit)");
       return;
     }
     if (!isValidUsdAmount(minTvl.trim())) {
-      setError("最小 TVL は USD 数値で入力してください");
+      setError("Min TVL must be a USD number");
       return;
     }
     const risk = Number(minRisk);
     if (!Number.isFinite(risk) || risk < 0 || risk > 1) {
-      setError("min_risk_score は 0〜1 の数値");
+      setError("min_risk_score must be a number between 0 and 1");
       return;
     }
     const daily = maxDaily.trim() === "" ? null : Number(maxDaily);
     if (daily !== null && (!Number.isInteger(daily) || daily < 0)) {
-      setError("max_daily_executions は 0 以上の整数か空");
+      setError("max_daily_executions must be an integer ≥ 0 or empty");
       return;
     }
     const lock = maxLock.trim() === "" ? null : Number(maxLock);
     if (lock !== null && (!Number.isInteger(lock) || lock < 0)) {
-      setError("max_lock_days は 0 以上の整数か空");
+      setError("max_lock_days must be an integer ≥ 0 or empty");
       return;
     }
     if (protocols.length === 0 || assets.length === 0) {
-      setError("enabled_protocols / enabled_assets を 1 つ以上選択してください");
+      setError("Select at least one protocol and one asset");
       return;
     }
 
@@ -147,10 +147,10 @@ export function PolicyEditor({
 
   return (
     <View style={styles.card} testID="policy-editor">
-      <Text style={styles.title}>ポリシー (AI が動ける範囲)</Text>
+      <Text style={styles.title}>Policy (what the agent may do)</Text>
 
       {/* approval_mode */}
-      <Text style={styles.fieldLabel}>承認モード</Text>
+      <Text style={styles.fieldLabel}>Approval mode</Text>
       <View style={styles.modeRow}>
         {APPROVAL_MODES.map((m) => (
           <Pressable
@@ -175,43 +175,44 @@ export function PolicyEditor({
       {armed && (
         <View style={styles.warnBox} testID="policy-auto-warning">
           <Text style={styles.warnText}>
-            ⚠ auto = 人のタップなしで AI が実行します (feature flag ON かつ devnet
-            時)。ハード上限内・policy 内に限られますが、無人実行が有効になります。
+            ⚠ auto = the agent executes without a human tap (feature flag ON,
+            devnet only). Still bounded by hard caps and this policy, but
+            unattended execution is enabled.
           </Text>
         </View>
       )}
 
       {/* numeric caps */}
       <NumField
-        label="最大 tx 額 (USD、空=無制限)"
+        label="Max tx amount (USD, empty = no limit)"
         value={maxTx}
         onChange={setMaxTx}
         placeholder="20.00000000"
         testID="policy-max-tx"
       />
       <NumField
-        label="最小 TVL (USD)"
+        label="Min TVL (USD)"
         value={minTvl}
         onChange={setMinTvl}
         placeholder="1000000"
         testID="policy-min-tvl"
       />
       <NumField
-        label="min_risk_score (0〜1)"
+        label="min_risk_score (0–1)"
         value={minRisk}
         onChange={setMinRisk}
         placeholder="0.5"
         testID="policy-min-risk"
       />
       <NumField
-        label="1 日の最大実行数 (空=無制限)"
+        label="Max executions per day (empty = no limit)"
         value={maxDaily}
         onChange={setMaxDaily}
         placeholder="5"
         testID="policy-max-daily"
       />
       <NumField
-        label="最大 lock 日数 (空=無制限)"
+        label="Max lock days (empty = no limit)"
         value={maxLock}
         onChange={setMaxLock}
         placeholder="0"
@@ -254,7 +255,7 @@ export function PolicyEditor({
         style={[styles.saveCta, busy && styles.disabled]}
         testID="policy-save"
       >
-        <Text style={styles.saveCtaText}>{busy ? "保存中…" : "ポリシーを保存"}</Text>
+        <Text style={styles.saveCtaText}>{busy ? "Saving…" : "Save policy"}</Text>
       </Pressable>
     </View>
   );

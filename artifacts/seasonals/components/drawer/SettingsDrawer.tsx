@@ -403,7 +403,7 @@ export function SettingsDrawer({
                 style={styles.row}
                 testID={testID ? `${testID}-autonomous` : undefined}
               >
-                <Text style={styles.rowLabel}>自律オプション</Text>
+                <Text style={styles.rowLabel}>Autonomous</Text>
                 <Text style={styles.chevron}>›</Text>
               </Pressable>
               <Pressable

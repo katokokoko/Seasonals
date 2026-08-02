@@ -101,7 +101,7 @@ export function AutonomousLogList({
   if (records.length === 0) {
     return (
       <View style={styles.empty} testID="autonomous-log-empty">
-        <Text style={styles.emptyText}>まだ自律実行の記録はありません</Text>
+        <Text style={styles.emptyText}>No autonomous runs recorded yet</Text>
       </View>
     );
   }

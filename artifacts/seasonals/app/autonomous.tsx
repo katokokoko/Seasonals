@@ -64,13 +64,13 @@ export default function Autonomous(): React.JSX.Element {
           </Link>
         </View>
 
-        <Text style={styles.title}>自律オプション</Text>
+        <Text style={styles.title}>Autonomous</Text>
         <Text style={styles.subtitle}>
-          AI が policy 内・ハード上限内で自動運用する設定と履歴 (devnet)
+          Agent runs within your policy and hard caps (devnet)
         </Text>
 
         {statusQ.isLoading ? (
-          <Text style={styles.muted}>状態を読み込み中…</Text>
+          <Text style={styles.muted}>Loading status…</Text>
         ) : statusQ.data ? (
           <AutonomousStatusCard
             status={statusQ.data}
@@ -79,12 +79,12 @@ export default function Autonomous(): React.JSX.Element {
             busy={kill.isPending || resume.isPending}
           />
         ) : (
-          <Text style={styles.error}>状態を取得できませんでした</Text>
+          <Text style={styles.error}>Could not load status</Text>
         )}
 
-        <Text style={styles.sectionTitle}>ポリシー</Text>
+        <Text style={styles.sectionTitle}>Policy</Text>
         {policyQ.isLoading ? (
-          <Text style={styles.muted}>ポリシーを読み込み中…</Text>
+          <Text style={styles.muted}>Loading policy…</Text>
         ) : policyQ.data ? (
           <PolicyEditor
             policy={policyQ.data}
@@ -94,22 +94,22 @@ export default function Autonomous(): React.JSX.Element {
             busy={patchPolicy.isPending}
           />
         ) : (
-          <Text style={styles.error}>ポリシーを取得できませんでした</Text>
+          <Text style={styles.error}>Could not load policy</Text>
         )}
         {patchPolicy.isError && (
           <Text style={styles.error} testID="policy-save-error">
-            保存に失敗しました: {patchPolicy.error.message}
+            Save failed: {patchPolicy.error.message}
           </Text>
         )}
         {patchPolicy.isSuccess && !patchPolicy.isPending && (
           <Text style={styles.saved} testID="policy-saved">
-            ✓ ポリシーを保存しました
+            ✓ Policy saved
           </Text>
         )}
 
-        <Text style={styles.sectionTitle}>監査ログ</Text>
+        <Text style={styles.sectionTitle}>Audit log</Text>
         {logQ.isLoading ? (
-          <Text style={styles.muted}>ログを読み込み中…</Text>
+          <Text style={styles.muted}>Loading log…</Text>
         ) : (
           <AutonomousLogList records={logQ.data ?? []} />
         )}
