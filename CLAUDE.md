@@ -428,10 +428,12 @@ PR を出す前 / コードレビューを依頼する前に、関連する行�
 > 詳細 backlog (v2 Integrator Fee / Tier 2-3 プロトコル選定の突合済リスト) は
 > `docs/backlog.md` (local-only)。本節は Claude Code が常時参照する要約。
 
-- **依存リフレッシュ phase** (Seeker smoke → phase 別コミット完了後の独立 phase として実施。未コミットが積み上がった状態では着手しない):
-  - BFF の Solana SDK 群は **web3.js v1 系に意図的固定** (2026-07 時点): `@orca-so/whirlpools-sdk` 0.21 (legacy 版。kit/v2 版への一本化動向を監視)、root pnpm override `"rpc-websockets@^7": "7.10.0"` (7.11.x の .cjs-only dist regression 回避 — 上流修正を確認したら override 解除)
-  - `@solendprotocol/solend-sdk` 0.14.x が **isomorphic-fetch で global fetch を node-fetch に上書き** → Orca / Meteora の Cloudflare が 403 で弾くため該当 client は undici を明示利用中 (orca-tx.ts / meteora-tx.ts)。恒久対応 (solend-sdk 更新 or fetch 隔離) を検討
-  - 更新時は §8.1 完了ゲートに加えて **全 protocol 経路の live verify (deposit build 署名検査 / positions / withdraw)** を必須とする — SDK major は挙動が変わり得る
+- **依存リフレッシュ** — Phase 8.71 で **JS のみ / 実機ビルド不要**の範囲を実施済。以下は 2026-08-03 の実測に基づく現状:
+  - **BFF の Solana SDK は既に最新**: `@solana/web3.js` 1.98.4 (v1 系最新) / `@orca-so/whirlpools-sdk` 0.21.0 (npm 最新) / `@solendprotocol/solend-sdk` 0.14.27 (npm 最新)。「古いまま止めている」ものは無く、残る固定は **v2(kit) ではなく v1 系を使うという設計判断**だけ (バージョン上げではないので別の意思決定)
+  - root pnpm override `"rpc-websockets@^7": "7.10.0"` は **今も load-bearing**。7.11.2 で `main` が `./dist/index.js` → `./dist/index.cjs` に変わる (7.11.0 まではまだ `.js`)。`^7` を要求するのは `@solendprotocol/solend-sdk` → `@pythnetwork/pyth-solana-receiver` → `@solana/web3.js@1.77.4` の経路のみ。**上流がこの packaging を戻すまで外さない** (package.json の `//overrides` に同じ注記あり)
+  - `@solendprotocol/solend-sdk` の **isomorphic-fetch による global fetch 上書き**は上流最新でも未修正 → Orca / Meteora client の undici 明示利用 (orca-tx.ts / meteora-tx.ts) は**継続が必要**
+  - **残っている更新は 3 種類**: ①Expo SDK 51 → 57 (6 世代ジャンプ、RN 本体が動く / 単独 phase) ②native module 群 (`react-native-svg` / `@gorhom/bottom-sheet` / `async-storage` / `react-native-skia` / **MWA**) — **dev-client APK の再ビルドが必須**で、MWA は署名経路なので `docs/confirm.md` A の実署名 round-trip とセットで上げる ③major 跨ぎ (`@types/node` / `@fastify/cors` / `date-fns` / `@babel/runtime`)
+  - 更新時は §8.1 完了ゲートに加えて **`pnpm --filter @seasonals/bff verify:tx`** (全 23 経路を実 registry 値で組んで mainnet simulate、署名も資金移動も無し) を必ず通す — SDK 更新の主検証はこれ
 - ✅ **Exponent PT read-only v1 (Phase 8.33 実装済)**: menu に PT 一覧 (implied APY +
   満期日、`display_only`) / wallet の PT・YT 保有検出 / **maturity time event の初の
   実データ源** (`mapPtHoldingsToMaturityEvents` → `deriveTimeEvents`)。registry は
