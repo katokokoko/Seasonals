@@ -70,17 +70,22 @@ export interface ConnectedAuthorization {
 export interface ConnectOptions {
   chain?: SolanaChain;
   identity?: MwaIdentity;
-  /**
-   * Phase 8.76: association intent の宛先 (https の絶対 URI)。指定すると Android の
-   * 「このアプリで開く」チューザーを介さず、その wallet app を直接開く。
-   * 未指定は従来どおり `solana-wallet://` scheme = OS チューザー。
-   */
-  baseUri?: string;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Internal helpers
 // ─────────────────────────────────────────────────────────────────────────────
+//
+// ⚠ Phase 8.79: `transact(cb, { baseUri })` による wallet 直接起動は**再導入しない**。
+// 8.76 で入れて実機 (Seeker + Phantom, 2026-08-03) で 2 通りとも失敗した:
+//   - 決め打ち `https://phantom.app` → association URL が verified app-link に
+//     入っておらず**ブラウザ**が開く
+//   - 接続時に wallet 自身が報告した `wallet_uri_base` → Phantom は起動するが
+//     MWA association が成立せず、承認画面が出ないまま **null で戻る**
+//     ("Wallet returned no result" エラーの正体)
+// 素の transact (= `solana-wallet://` scheme、必要なら OS チューザー) は同日
+// 承認まで通ることを確認済み。baseUri を再検討する場合は、実機で署名承認まで
+// 通ることを確認してからにすること (mwa.test.ts が第 2 引数なしを固定している)。
 
 /** MWA protocol の base64 encoded address を base58 に変換 */
 function toBase58(addressBase64: string): string {
@@ -90,47 +95,6 @@ function toBase58(addressBase64: string): string {
 /** base58 → base64 (signMessages 等で MWA 側に渡す際に使う) */
 function toBase64(addressBase58: string): string {
   return Buffer.from(new PublicKey(addressBase58).toBytes()).toString("base64");
-}
-
-/**
- * Phase 8.76: transact() の第 2 引数。walletUriBase (接続時に wallet が報告した
- * https URI) があればそこへ直接 association intent を投げる。null/undefined は
- * `undefined` を返し、従来どおり OS チューザーに任せる (Seed Vault 等は報告しない)。
- */
-function baseUriConfig(
-  walletUriBase: string | null | undefined
-): { baseUri: string } | undefined {
-  return walletUriBase ? { baseUri: walletUriBase } : undefined;
-}
-
-/** native 側が投げる「宛先 wallet が見つからない」(アンインストール済等) の判定 */
-function isWalletNotFound(err: unknown): boolean {
-  if (typeof err !== "object" || err === null) return false;
-  const code = (err as { code?: unknown }).code;
-  if (code === "ERROR_WALLET_NOT_FOUND") return true;
-  const message = (err as { message?: unknown }).message;
-  return (
-    typeof message === "string" && /ERROR_WALLET_NOT_FOUND/i.test(message)
-  );
-}
-
-/**
- * Phase 8.76: walletUriBase 付きで transact を試み、宛先 wallet が見つからない時だけ
- * 素の transact (= OS チューザー) に fallback する。接続後に wallet をアンインストール
- * されてもクラッシュせず、ユーザーが別 wallet を選び直せる。
- */
-async function transactPreferring<T>(
-  walletUriBase: string | null | undefined,
-  callback: (wallet: Web3MobileWallet) => Promise<T>
-): Promise<T> {
-  const config = baseUriConfig(walletUriBase);
-  if (!config) return await transact(callback);
-  try {
-    return await transact(callback, config);
-  } catch (err) {
-    if (isWalletNotFound(err)) return await transact(callback);
-    throw err;
-  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -147,8 +111,7 @@ export async function connectWallet(
   const chain = opts.chain ?? "solana:devnet";
   const identity = opts.identity ?? DEFAULT_IDENTITY;
 
-  // 8.76: picker で選ばれた wallet (opts.baseUri) を直接開く。未指定は OS チューザー
-  return await transactPreferring(opts.baseUri, async (wallet: Web3MobileWallet) => {
+  return await transact(async (wallet: Web3MobileWallet) => {
     const result = await wallet.authorize({ chain, identity });
     const account = result.accounts[0];
     if (!account) {
@@ -174,8 +137,7 @@ export async function reauthorizeWallet(
 ): Promise<ConnectedAuthorization> {
   const identity = opts.identity ?? DEFAULT_IDENTITY;
 
-  // 8.76: 前回接続した wallet を直接開く (チューザー抑止)
-  return await transactPreferring(prev.walletUriBase, async (wallet: Web3MobileWallet) => {
+  return await transact(async (wallet: Web3MobileWallet) => {
     const result = await wallet.reauthorize({
       auth_token: prev.authToken,
       identity,
@@ -198,7 +160,7 @@ export async function reauthorizeWallet(
 export async function disconnectWallet(
   auth: ConnectedAuthorization
 ): Promise<void> {
-  await transactPreferring(auth.walletUriBase, async (wallet: Web3MobileWallet) => {
+  await transact(async (wallet: Web3MobileWallet) => {
     await wallet.deauthorize({ auth_token: auth.authToken });
   });
 }
@@ -210,9 +172,7 @@ export async function disconnectWallet(
 export async function signTransactions<
   T extends Transaction | VersionedTransaction
 >(auth: ConnectedAuthorization, transactions: T[]): Promise<T[]> {
-  // 8.76: 接続済み wallet を直接開く — 複数 wallet 併存時に Android チューザーが
-  // 出て「常時」を選ぶと他 wallet を開けなくなる問題の解消
-  return (await transactPreferring(auth.walletUriBase, async (wallet: Web3MobileWallet) => {
+  return (await transact(async (wallet: Web3MobileWallet) => {
     // Phase 8.8: reauthorize 失敗時 (auth_token 期限切れ等) は fresh authorize で fallback
     try {
       await wallet.reauthorize({
@@ -245,7 +205,7 @@ export async function signTransactions<
 export async function signAndSendTransactions<
   T extends Transaction | VersionedTransaction
 >(auth: ConnectedAuthorization, transactions: T[]): Promise<string[]> {
-  return await transactPreferring(auth.walletUriBase, async (wallet: Web3MobileWallet) => {
+  return await transact(async (wallet: Web3MobileWallet) => {
     // Phase 8.6.1: reauthorize は auth_token 検証で失敗するケースがあるため、
     // fresh authorize で session を確立する。Phantom mobile は authorize 後の
     // signAndSendTransactions を確実に処理する。
@@ -280,7 +240,7 @@ export async function signMessages(
   messages: Uint8Array[]
 ): Promise<Uint8Array[]> {
   const addressBase64 = toBase64(auth.address);
-  return await transactPreferring(auth.walletUriBase, async (wallet: Web3MobileWallet) => {
+  return await transact(async (wallet: Web3MobileWallet) => {
     await wallet.reauthorize({
       auth_token: auth.authToken,
       identity: DEFAULT_IDENTITY,
