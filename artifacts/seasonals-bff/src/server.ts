@@ -83,6 +83,7 @@ import {
   fetchStakeAccounts,
   getEpochInfo,
   getTokenSupplyUi,
+  getWalletBalanceSmallest,
   sendTransactionViaHelius,
   type StakeAccountInfo,
 } from "./clients/helius-rpc";
@@ -952,6 +953,27 @@ async function evaluateSwapFairValue(
 }
 
 /**
+ * Phase 8.80: 残高 gate の message 用に input mint の symbol / decimals を引く。
+ * swap-earn 経路の input は「underlying (deposit) か share (withdraw)」なので
+ * SWAP_EARN_MARKETS の両面から逆引きできる。registry 外は raw 表示に degrade
+ * (gate の判定自体は bigint 比較で、ここは表示専用)。
+ */
+function swapInputTokenMeta(mint: string): { symbol: string; decimals: number } {
+  const byShare = findMarketByShareMint(mint);
+  if (byShare) {
+    return { symbol: byShare.share_symbol, decimals: byShare.share_decimals };
+  }
+  const byUnderlying = SWAP_EARN_MARKETS.find((m) => m.underlying_mint === mint);
+  if (byUnderlying) {
+    return {
+      symbol: byUnderlying.underlying_symbol,
+      decimals: byUnderlying.underlying_decimals,
+    };
+  }
+  return { symbol: "tokens", decimals: 0 };
+}
+
+/**
  * Phase 8.15: swap-earn 共通処理。oracle fail-closed gate (§4.6) → Jupiter Swap
  * quote → swap tx を組み立てて返す。Jupiter Lend / 汎用 swap-earn endpoint で共有。
  *   - oracleMint: fail-closed 判定する underlying mint (deposit/withdraw とも underlying)
@@ -991,6 +1013,23 @@ async function buildSwapEarnTx(
       oracle,
     };
   }
+
+  // Phase 8.80: input 残高 gate。残高ゼロの JupUSD deposit が quote → tx build →
+  // Phantom (simulate 失敗の警告) → broadcast 0x1789 まで素通りした実例の再発防止。
+  // Jupiter の quote も swap build も残高を見ないので、ここで見るしかない。
+  // **取得失敗 (null) は素通し** — これは UX ガードであって安全ガードではない
+  // (存在しない資金は動かせない)。瞬断で deposit を誤ブロックしない (8.78 の教訓)
+  const balance = await getWalletBalanceSmallest(p.user, p.inputMint);
+  if (balance !== null && balance < BigInt(p.amount)) {
+    const meta = swapInputTokenMeta(p.inputMint);
+    reply.code(400);
+    return {
+      error: "insufficient_balance",
+      balance: balance.toString(),
+      message: `You hold ${toHumanReadable(balance.toString(), meta.decimals)} ${meta.symbol} — this needs ${toHumanReadable(p.amount, meta.decimals)}. Nothing was signed.`,
+    };
+  }
+
   try {
     const quote = await fetchSwapQuote({
       inputMint: p.inputMint,

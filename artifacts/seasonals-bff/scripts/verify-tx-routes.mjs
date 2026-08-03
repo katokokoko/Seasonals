@@ -82,6 +82,9 @@ const EXPECTED = [
   { match: /AccountNotInitialized/, why: "share/cToken の ATA 未作成 (= 未保有)" },
   { match: /InvalidAccountData/, why: "cToken 未保有" },
   { match: /Custom":6025/, why: "Jupiter: 交換元トークン未保有" },
+  // 8.80: 同じ「未保有」を BFF の残高 gate が Jupiter より手前で 400 にするように
+  // なった (旧 Custom 6025 と同じ意味。むしろ署名前に止まるので改善)
+  { match: /insufficient_balance/, why: "input 残高不足を署名前に 400 で拒否 (8.80 の gate が作動)" },
   { match: /DepositLimitExceeded/, why: "リザーブが預入上限 (on-chain の実状況、我々の不具合ではない)" },
   // 8.51: 上流が「組めるが必ず失敗する tx」を返した場合に BFF が署名前に弾く。
   // ユーザーに doomed な tx を渡さない = 正しい挙動なので想定内に分類する
