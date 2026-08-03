@@ -48,7 +48,6 @@ import {
   useThemedStyles,
   type ThemeColors,
 } from "../../stores/theme";
-import { WalletPickerModal } from "./WalletPickerModal";
 
 function shortenAddress(addr: string): string {
   if (addr.length <= 10) return addr;
@@ -77,7 +76,8 @@ export function WalletPopover({
   const router = useRouter();
   // Phase 7.4: fixture wallets を撤去、MWA authorization のみを表示
   // Phase 8.5.1: disconnect も使えるように expose
-  const { authorization, connect, disconnect } = useWallet();
+  // 8.77: status / error も読む — 接続失敗が UI のどこにも出ていなかった
+  const { authorization, connect, disconnect, status, error } = useWallet();
   // Phase 7.9: theme 連動 styles
   const styles = useThemedStyles(makeStyles);
 
@@ -114,14 +114,16 @@ export function WalletPopover({
     opacity: enter.value * 0.18,
   }));
 
-  // Phase 8.76: 新規接続時にどの wallet アプリを開くか選ぶ picker
-  const [pickerVisible, setPickerVisible] = useState(false);
-
-  const handleAddWallet = () => {
+  const handleAddWallet = async () => {
     // Phase 7.8: 接続済 wallet がある状態での "+ Add Wallet" は multi-wallet
     // 機能 (未実装) の入口として扱い、Coming Soon を表示。未接続なら初回
-    // connect の動線 — 8.76: 直接 connect() せず wallet 選択カードを挟む
-    // (素の solana-wallet:// intent は Android チューザーに落ちるため)。
+    // connect の動線として MWA connect を起動。
+    //
+    // 8.77: 8.76 で挟んだ wallet 選択カードは撤去した。決め打ちの
+    // `https://phantom.app` は Phantom の verified app-link に入っておらず、
+    // **ブラウザで phantom.app が開くだけ**だった (実機で確認)。新規接続は
+    // OS のチューザーに任せる — 接続後の署名は wallet 自身が報告した
+    // walletUriBase で直接起動するので、チューザーが出るのは初回だけ。
     if (authorization) {
       onClose();
       useComingSoon
@@ -130,15 +132,16 @@ export function WalletPopover({
       return;
     }
     onClose();
-    setPickerVisible(true);
-  };
-
-  const handlePickWallet = async (baseUri: string | null) => {
-    setPickerVisible(false);
     try {
-      await connect(baseUri ? { baseUri } : undefined);
-    } catch {
-      // useWallet 内部で error state を持つので silent
+      await connect();
+    } catch (err) {
+      // 8.77: 握り潰さない。walletStore は status:"error" を持つが表示する側が
+      // 居らず、失敗が完全に無言だった (今回の調査で判明)。
+      // toast は "coming soon" 用の命名のまま流用している (汎用リネームは別途)
+      const message = err instanceof Error ? err.message : String(err);
+      useComingSoon
+        .getState()
+        .show(`Wallet connection failed: ${message}`.slice(0, 120));
     }
   };
 
@@ -159,7 +162,6 @@ export function WalletPopover({
   };
 
   return (
-    <>
     <Modal
       visible={renderModal}
       transparent
@@ -190,6 +192,19 @@ export function WalletPopover({
         <View style={styles.cardHighlight} pointerEvents="none" />
 
         <Text style={styles.heading}>Wallets</Text>
+
+        {/* 8.77: 直近の接続失敗をここに残す。toast は 2200ms で消えるので、
+            再試行する場所 (この popover) にも出しておく */}
+        {status === "error" && error && (
+          <View
+            style={styles.errorRow}
+            testID={testID ? `${testID}-error` : undefined}
+          >
+            <Text style={styles.errorText} numberOfLines={3}>
+              Couldn&apos;t connect: {error}
+            </Text>
+          </View>
+        )}
 
         {/* Phase 7.4: 接続済 MWA wallet 1 行のみ。未接続なら section 全省略 (5A.8.5) */}
         {authorization && (
@@ -258,16 +273,6 @@ export function WalletPopover({
         )}
       </Animated.View>
     </Modal>
-
-    {/* Phase 8.76: 新規接続の wallet 選択カード。popover close 後に開くため
-        sibling Modal として常時 mount (WalletPopover 自体は home に常駐) */}
-    <WalletPickerModal
-      visible={pickerVisible}
-      onClose={() => setPickerVisible(false)}
-      onSelect={handlePickWallet}
-      testID={testID ? `${testID}-picker` : undefined}
-    />
-    </>
   );
 }
 
@@ -418,6 +423,20 @@ function makeStyles(c: ThemeColors) {
       fontFamily: FONT.heading,
       fontWeight: WEIGHT.bold,
       color: c.textOnColor,
+    },
+    // 8.77: 接続失敗の残留表示 (toast は 2200ms で消えるため)
+    errorRow: {
+      backgroundColor: withAlpha(c.cherryDark, 0.1),
+      borderRadius: RADIUS.md,
+      borderWidth: 1,
+      borderColor: withAlpha(c.cherryDark, 0.35),
+      padding: 10,
+      marginBottom: SPACE.xs,
+    },
+    errorText: {
+      color: c.cherryDark,
+      fontFamily: FONT.body,
+      fontSize: FONT_SIZE.bodySM,
     },
     // Phase 8.5.1: Disconnect 行 (cherryDark で警告系)
     disconnectRow: {

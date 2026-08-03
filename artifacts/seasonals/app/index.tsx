@@ -89,6 +89,8 @@ import {
   type ThemeColors,
 } from "../stores/theme";
 import { useWallet } from "../services/useWallet";
+// 8.77: wallet の接続状態が変わったら wallet 系クエリを取り直す
+import { useWalletQuerySync } from "../services/useWalletQuerySync";
 import { USE_ONCHAIN } from "../services/config";
 import { mergeEarnPositions } from "../services/earn-to-position";
 // 8.56: portfolio chart の実履歴 (1 日 1 点の実測スナップショット)
@@ -119,6 +121,10 @@ export default function HomeScreen() {
   // Phase 8.1: onchain variant + 接続済 wallet なら address を渡して
   // Helius DAS 経由の実 mainnet 保有を取得。それ以外は fixture。
   const { authorization } = useWallet();
+  // 8.77: 再接続 (disconnect → 同じ wallet で connect) は query key が元に戻る
+  // だけなので、これが無いと staleTime の間キャッシュのままになる
+  // (history は 5 分。「再接続してもグラフが変わらない」の原因)
+  useWalletQuerySync();
   const onchainAddress =
     USE_ONCHAIN && authorization?.address ? authorization.address : null;
   const { data: basePositions = [] } = usePositions(onchainAddress);

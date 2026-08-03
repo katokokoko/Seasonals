@@ -268,104 +268,54 @@ describe("signMessages", () => {
   });
 });
 
+
 // ─────────────────────────────────────────────────────────────────────────────
-// Phase 8.76: baseUri (接続済み wallet を直接開く / Android チューザー抑止)
+// Phase 8.79: transact は**必ず第 2 引数なし**で呼ぶ (baseUri 直接起動の再発防止)
+//
+// 8.76 で `{ baseUri }` を渡す直接起動を入れたが、実機 (Seeker + Phantom) で
+//   - 決め打ち domain → ブラウザが開く
+//   - wallet 報告の wallet_uri_base → アプリは開くが MWA association 不成立
+//     ("Wallet returned no result")
+// と 2 通りとも失敗し、8.79 で撤回した。素の solana-wallet:// scheme が
+// 実機で承認まで通る唯一の経路。この describe は同じ変更の再導入を检知する。
 // ─────────────────────────────────────────────────────────────────────────────
 
-describe("8.76: transact への baseUri 透過", () => {
-  const PHANTOM = "https://phantom.app";
-  const authWithBase: ConnectedAuthorization = {
+describe("8.79: transact は第 2 引数なしで呼ばれる (全 call site)", () => {
+  const auth: ConnectedAuthorization = {
     address: FIXTURE_BASE58,
     label: null,
     authToken: "tok",
-    walletUriBase: PHANTOM,
+    // walletUriBase が保存されていても使わないことが本質
+    walletUriBase: "https://phantom.app/ul/v1",
     chain: "solana:devnet",
   };
 
   beforeEach(() => {
-    mockWallet.reauthorize.mockResolvedValue({
-      accounts: [{ address: FIXTURE_BASE64_INPUT }],
-      auth_token: "tok",
-      wallet_uri_base: PHANTOM,
-    });
-  });
-
-  it("signTransactions は walletUriBase を { baseUri } で渡す", async () => {
-    const txs = [{ tx: 1 }];
-    mockWallet.signTransactions.mockResolvedValue(txs);
-    await signTransactions(authWithBase, txs as never[]);
-    expect(transactMock).toHaveBeenCalledWith(expect.any(Function), {
-      baseUri: PHANTOM,
-    });
-  });
-
-  it("signMessages / disconnectWallet / reauthorizeWallet も同様", async () => {
-    mockWallet.signMessages.mockResolvedValue([new Uint8Array([1])]);
-    await signMessages(authWithBase, [new Uint8Array([1])]);
-    expect(transactMock).toHaveBeenLastCalledWith(expect.any(Function), {
-      baseUri: PHANTOM,
-    });
-
-    mockWallet.deauthorize.mockResolvedValue(undefined);
-    await disconnectWallet(authWithBase);
-    expect(transactMock).toHaveBeenLastCalledWith(expect.any(Function), {
-      baseUri: PHANTOM,
-    });
-
-    await reauthorizeWallet(authWithBase);
-    expect(transactMock).toHaveBeenLastCalledWith(expect.any(Function), {
-      baseUri: PHANTOM,
-    });
-  });
-
-  it("walletUriBase が null なら第 2 引数を渡さない (従来挙動 = OS チューザー)", async () => {
-    const txs = [{ tx: 1 }];
-    mockWallet.signTransactions.mockResolvedValue(txs);
-    await signTransactions(
-      { ...authWithBase, walletUriBase: null },
-      txs as never[]
-    );
-    expect(transactMock.mock.calls[0]!.length).toBe(1);
-  });
-
-  it("connectWallet は picker で選ばれた opts.baseUri を透過する", async () => {
     mockWallet.authorize.mockResolvedValue({
       accounts: [{ address: FIXTURE_BASE64_INPUT }],
       auth_token: "t",
-      wallet_uri_base: PHANTOM,
+      wallet_uri_base: "https://phantom.app/ul/v1",
     });
-    await connectWallet({ baseUri: "https://solflare.com" });
-    expect(transactMock).toHaveBeenCalledWith(expect.any(Function), {
-      baseUri: "https://solflare.com",
+    mockWallet.reauthorize.mockResolvedValue({
+      accounts: [{ address: FIXTURE_BASE64_INPUT }],
+      auth_token: "tok",
+      wallet_uri_base: "https://phantom.app/ul/v1",
     });
+    mockWallet.deauthorize.mockResolvedValue(undefined);
   });
 
-  it("ERROR_WALLET_NOT_FOUND なら素の transact (チューザー) に fallback して結果を返す", async () => {
-    const txs = [{ tx: 1 }];
-    mockWallet.signTransactions.mockResolvedValue(txs);
-    transactMock
-      .mockRejectedValueOnce(
-        Object.assign(new Error("wallet not found"), {
-          code: "ERROR_WALLET_NOT_FOUND",
-        })
-      )
-      .mockImplementationOnce(async (cb) =>
-        cb(mockWallet as unknown as Parameters<typeof cb>[0])
-      );
+  it("connect / reauthorize / disconnect / signTransactions / signMessages", async () => {
+    await connectWallet();
+    await reauthorizeWallet(auth);
+    await disconnectWallet(auth);
+    mockWallet.signTransactions.mockResolvedValue([{ tx: 1 }]);
+    await signTransactions(auth, [{ tx: 1 }] as never[]);
+    mockWallet.signMessages.mockResolvedValue([new Uint8Array([1])]);
+    await signMessages(auth, [new Uint8Array([1])]);
 
-    const out = await signTransactions(authWithBase, txs as never[]);
-
-    expect(out).toBe(txs);
-    expect(transactMock).toHaveBeenCalledTimes(2);
-    expect(transactMock.mock.calls[0]![1]).toEqual({ baseUri: PHANTOM });
-    expect(transactMock.mock.calls[1]!.length).toBe(1); // fallback は config なし
-  });
-
-  it("wallet-not-found 以外のエラーは fallback せずそのまま throw", async () => {
-    transactMock.mockRejectedValueOnce(new Error("user declined"));
-    await expect(
-      signTransactions(authWithBase, [{ tx: 1 }] as never[])
-    ).rejects.toThrow("user declined");
-    expect(transactMock).toHaveBeenCalledTimes(1);
+    expect(transactMock.mock.calls.length).toBeGreaterThanOrEqual(5);
+    for (const call of transactMock.mock.calls) {
+      expect(call.length).toBe(1); // 第 2 引数 (config) を渡していない
+    }
   });
 });
