@@ -15,17 +15,28 @@ import {
 } from "./plan-store";
 import { fetchSwapQuote, fetchSwapTransaction } from "./clients/jupiter-swap";
 import { getOracleResult } from "./clients/oracle";
+import { fetchLstSolValues } from "./clients/lst-rates";
 
 jest.mock("./clients/jupiter-swap");
 // Phase 8.37: simulate / execute が実 oracle gate を通るようになったため mock
 // (無 mock だと live Pyth を叩く = テストが hermetic でなくなる)
 jest.mock("./clients/oracle");
+// Phase 8.75: execute にも償還価値ガードが入り、ACTION は jito/SOL = **jitoSOL market**
+// = ガード対象そのもの。mock が無いと live RPC を叩き、失敗すれば fail-closed で 409 に
+// なって既存テストが落ちる (swap-earn.test.ts と同じ 3 点 mock)
+jest.mock("./clients/lst-rates");
 
 const mockQuote = fetchSwapQuote as jest.MockedFunction<typeof fetchSwapQuote>;
 const mockSwapTx = fetchSwapTransaction as jest.MockedFunction<
   typeof fetchSwapTransaction
 >;
 const mockOracle = getOracleResult as jest.MockedFunction<typeof getOracleResult>;
+const mockLstRates = fetchLstSolValues as jest.MockedFunction<
+  typeof fetchLstSolValues
+>;
+
+/** 実測相当 (2026-08-03) の jitoSOL レート */
+const JITOSOL_LAMPORTS = 1_293_886_836n;
 
 function okOracle(): Awaited<ReturnType<typeof getOracleResult>> {
   return {
@@ -83,6 +94,9 @@ beforeEach(async () => {
     swapTransaction: "UNSIGNED_TX_B64",
     lastValidBlockHeight: 1,
   });
+  // 0.1 SOL の deposit なら fair な受取は約 77,286,510 jitoSOL。既定 quote の
+  // out 95,000,000 はそれより多い = ユーザー有利なので通る (§ ガードは不利方向のみ)
+  mockLstRates.mockResolvedValue(new Map([["jitoSOL", JITOSOL_LAMPORTS]]));
   app = await buildServer({ logger: false });
 });
 afterEach(async () => {
@@ -227,6 +241,85 @@ describe("plan lifecycle (compare → simulate → approve → execute)", () => 
       approval_token: token.token_id,
     });
     expect(retry.statusCode).toBe(200);
+  });
+
+  /**
+   * Phase 8.75: 8.72 の償還価値ガードは human 経路 (buildSwapEarnTx) にしか
+   * 掛かっておらず、agent 経路が素通りしていた。oracle で 8.37 (B1) が直したのと
+   * 同じ drift を、同じ形 (409 + token 温存) で塞いだことを固定する。
+   */
+  it("8.75: execute は fair value blocked で 409、token は消費されない", async () => {
+    const planId = await createSimulatedPlan();
+    await post(`/agent-plans/${planId}/request-approval`);
+    const token = (await post(`/agent-plans/${planId}/approve`)).json()
+      .approval_token;
+
+    // fair = 約 77,286,510 に対し 70,000,000 しか受け取れない quote (約 942bps 不利)
+    mockQuote.mockResolvedValue({
+      inputMint: "in",
+      outputMint: "out",
+      inAmount: "100000000",
+      outAmount: "70000000",
+      otherAmountThreshold: "69000000",
+      swapMode: "ExactIn",
+      slippageBps: 50,
+      priceImpactPct: "0",
+      routePlan: [],
+    });
+    const exec = await post(`/agent-plans/${planId}/execute`, {
+      approval_token: token.token_id,
+    });
+    expect(exec.statusCode).toBe(409);
+    const body = exec.json();
+    expect(body.error).toBe("fair_value_blocked");
+    expect(body.reason).toBe("fair_value_deviation");
+    expect(body.deviation_bps).toBeGreaterThan(body.guard_bps);
+    // 生 code でなく人が読める 1 文が Agent にも届く (8.74 と同じ扱い)
+    expect(body.message).toMatch(/jitoSOL redemption value/);
+    expect(mockSwapTx).not.toHaveBeenCalled(); // 署名可能 tx を作らない
+
+    // token は未消費 — 乖離が戻れば同じ token で execute できる (§29.3)
+    mockQuote.mockResolvedValue({
+      inputMint: "in",
+      outputMint: "out",
+      inAmount: "100000000",
+      outAmount: "77200000", // fair 比 -11bps。平常の流動性プレミアム相当
+      otherAmountThreshold: "77000000",
+      swapMode: "ExactIn",
+      slippageBps: 50,
+      priceImpactPct: "0",
+      routePlan: [],
+    });
+    const retry = await post(`/agent-plans/${planId}/execute`, {
+      approval_token: token.token_id,
+    });
+    expect(retry.statusCode).toBe(200);
+  });
+
+  it("8.75: 参照レートを持たない market (jlUSDC) は素通りする", async () => {
+    const created = await post("/agent-plans", { objective: "max_yield" });
+    const planId = created.json().plan_id as string;
+    // jupiter_lend/USDC → share_symbol "jlUSDC"。LST でないので償還価値の参照が無い
+    const action: ActionSpec = {
+      ...ACTION,
+      protocol: "jupiter_lend",
+      asset: "USDC",
+      amount: "1000000",
+    };
+    expect(
+      (await post(`/agent-plans/${planId}/simulate`, { action_spec: action }))
+        .statusCode
+    ).toBe(200);
+    await post(`/agent-plans/${planId}/request-approval`);
+    const token = (await post(`/agent-plans/${planId}/approve`)).json()
+      .approval_token;
+
+    const exec = await post(`/agent-plans/${planId}/execute`, {
+      approval_token: token.token_id,
+    });
+    expect(exec.statusCode).toBe(200);
+    // 参照を持たない market ではレート取得自体を試みない (無駄な I/O を増やさない)
+    expect(mockLstRates).not.toHaveBeenCalled();
   });
 
   it("§29.3: token 再利用は already_consumed で拒否", async () => {
