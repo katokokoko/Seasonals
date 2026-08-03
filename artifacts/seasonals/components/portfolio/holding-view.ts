@@ -32,15 +32,16 @@ export interface HoldingView {
   priced: boolean;
 }
 
-function decimalsOf(asset: string): number {
+// 8.76: deposited-breakdown.ts でも同じ切り詰め・decimals 解決を使うため export
+export function decimalsOf(asset: string): number {
   if (asset in TOKEN_DECIMALS) {
     return (TOKEN_DECIMALS as Record<string, number>)[asset]!;
   }
   return 6;
 }
 
-/** human 文字列の小数部を最大 4 桁に切り詰める (§4.5: parse しない文字列操作) */
-function trimDecimals(human: string, places: number): string {
+/** human 文字列の小数部を最大 N 桁に切り詰める (§4.5: parse しない文字列操作) */
+export function trimDecimals(human: string, places: number): string {
   const [int = "0", frac = ""] = human.split(".");
   const cut = frac.slice(0, places).replace(/0+$/, "");
   return cut ? `${int}.${cut}` : int;
@@ -74,27 +75,5 @@ export function holdingView(
   };
 }
 
-/** 展開行の換算テキスト (`≈ 50.15 USDC · 0.2975 SOL`) */
-export function conversionLine(view: HoldingView): string {
-  const usd = view.usd.toLocaleString("en-US", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  });
-  // SOL は行のネイティブ表示と同じ**切り捨て**に揃える (toFixed は四捨五入で、
-  // 同じ量が行 0.2975 / 展開 0.2976 と食い違って見えた)
-  const sol = trimDecimals(view.sol.toFixed(6), 4);
-  return `≈ ${usd} USDC · ${sol} SOL`;
-}
-
-/**
- * 展開行のレート注記。8.57: live 価格 (oracle) を出す。
- * 価格が取れていなければ注記自体を出さない (レートを騙らない)。
- */
-export function rateLine(prices: PriceMap): string | null {
-  const sol = solUsdPrice(prices);
-  if (sol === null) return null;
-  return `1 SOL = ${sol.toLocaleString("en-US", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  })} USDC`;
-}
+// 8.76: 展開行は通貨換算 (conversionLine / rateLine) をやめ、預入内訳
+// (deposited-breakdown.ts) に置き換えた。

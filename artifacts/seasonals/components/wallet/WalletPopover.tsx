@@ -48,6 +48,7 @@ import {
   useThemedStyles,
   type ThemeColors,
 } from "../../stores/theme";
+import { WalletPickerModal } from "./WalletPickerModal";
 
 function shortenAddress(addr: string): string {
   if (addr.length <= 10) return addr;
@@ -113,10 +114,14 @@ export function WalletPopover({
     opacity: enter.value * 0.18,
   }));
 
-  const handleAddWallet = async () => {
+  // Phase 8.76: 新規接続時にどの wallet アプリを開くか選ぶ picker
+  const [pickerVisible, setPickerVisible] = useState(false);
+
+  const handleAddWallet = () => {
     // Phase 7.8: 接続済 wallet がある状態での "+ Add Wallet" は multi-wallet
     // 機能 (未実装) の入口として扱い、Coming Soon を表示。未接続なら初回
-    // connect の動線として既存通り MWA connect を起動。
+    // connect の動線 — 8.76: 直接 connect() せず wallet 選択カードを挟む
+    // (素の solana-wallet:// intent は Android チューザーに落ちるため)。
     if (authorization) {
       onClose();
       useComingSoon
@@ -125,8 +130,13 @@ export function WalletPopover({
       return;
     }
     onClose();
+    setPickerVisible(true);
+  };
+
+  const handlePickWallet = async (baseUri: string | null) => {
+    setPickerVisible(false);
     try {
-      await connect();
+      await connect(baseUri ? { baseUri } : undefined);
     } catch {
       // useWallet 内部で error state を持つので silent
     }
@@ -149,6 +159,7 @@ export function WalletPopover({
   };
 
   return (
+    <>
     <Modal
       visible={renderModal}
       transparent
@@ -247,6 +258,16 @@ export function WalletPopover({
         )}
       </Animated.View>
     </Modal>
+
+    {/* Phase 8.76: 新規接続の wallet 選択カード。popover close 後に開くため
+        sibling Modal として常時 mount (WalletPopover 自体は home に常駐) */}
+    <WalletPickerModal
+      visible={pickerVisible}
+      onClose={() => setPickerVisible(false)}
+      onSelect={handlePickWallet}
+      testID={testID ? `${testID}-picker` : undefined}
+    />
+    </>
   );
 }
 
