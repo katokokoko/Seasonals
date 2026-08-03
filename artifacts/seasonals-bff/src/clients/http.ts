@@ -21,3 +21,31 @@ export function fetchWithTimeout(
     signal: init?.signal ?? AbortSignal.timeout(timeoutMs),
   });
 }
+
+/**
+ * Phase 8.78: 上流 timeout / abort を人が読める 1 文にする。
+ *
+ * solend-sdk (isomorphic-fetch) が global fetch を node-fetch に上書きしている
+ * ため (CLAUDE.md §10 既知事項)、AbortSignal 発火時のエラーが
+ * "The user aborted a request." になる。これが tx-build の 502 message として
+ * mobile にそのまま出て、**ユーザーが自分で中断した**ように読めた (Phase 8.78 の
+ * 発端)。実際はサーバー側の上流 timeout であり、署名前に止まっている。
+ *
+ * error code は変えない (machine-readable 契約は 8.74 と同じく不変)。
+ */
+export function readableUpstreamError(
+  err: unknown,
+  upstreamName: string
+): string {
+  const message = err instanceof Error ? err.message : String(err);
+  const name = err instanceof Error ? err.name : "";
+  const isAbort =
+    name === "AbortError" ||
+    name === "TimeoutError" ||
+    /abort/i.test(message) ||
+    /timeout/i.test(message);
+  if (isAbort) {
+    return `${upstreamName} timed out — nothing was signed. Try again.`;
+  }
+  return message;
+}

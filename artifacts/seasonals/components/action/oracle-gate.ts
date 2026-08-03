@@ -137,3 +137,19 @@ export function oracleBlockLabel(
       return "oracle check failed";
   }
 }
+
+/**
+ * Phase 8.78: oracle が blocked の間だけ 15 秒間隔で再チェックする
+ * (`useOracleStatus` の refetchInterval に渡す)。
+ *
+ * これが無いとシートを開いたまま oracle が回復しても banner が消えず、
+ * ユーザーはシートを閉じて開き直すしかなかった (そうとは分からないまま)。
+ * ok / warning / 未取得ではポーリングしない — 正常時に余計な負荷を掛けない。
+ */
+export const ORACLE_BLOCKED_REFETCH_MS = 15_000;
+
+export function oracleRefetchInterval(
+  data: { status?: string } | undefined
+): number | false {
+  return data?.status === "blocked" ? ORACLE_BLOCKED_REFETCH_MS : false;
+}

@@ -8,6 +8,7 @@ import { EXPONENT_MARKETS } from "@workspace/lib/config/exponent-markets";
 import {
   JUPITER_UNDERLYING_MINTS,
   oracleBlockLabel,
+  oracleRefetchInterval,
   resolveOracleMint,
 } from "./oracle-gate";
 
@@ -262,5 +263,17 @@ describe("oracleBlockLabel", () => {
 
   it("null / 未知は generic ラベル", () => {
     expect(oracleBlockLabel(null)).toBe("oracle check failed");
+  });
+});
+
+describe("8.78: oracleRefetchInterval", () => {
+  it("blocked の間だけ 15 秒ポーリング (回復すれば banner が自動で消える)", () => {
+    expect(oracleRefetchInterval({ status: "blocked" })).toBe(15_000);
+  });
+
+  it("ok / warning / 未取得ではポーリングしない", () => {
+    expect(oracleRefetchInterval({ status: "ok" })).toBe(false);
+    expect(oracleRefetchInterval({ status: "warning" })).toBe(false);
+    expect(oracleRefetchInterval(undefined)).toBe(false);
   });
 });
