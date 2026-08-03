@@ -35,6 +35,8 @@ import type { ProtocolMenuEntry } from "@workspace/lib/types";
 
 import * as api from "./api";
 import type { JupiterLendMarketDTO } from "./api";
+// 8.78: oracle blocked 中の自動再チェック間隔 (純関数、oracle-gate.test で担保)
+import { oracleRefetchInterval } from "../components/action/oracle-gate";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Query keys (cache invalidation 用、文字列直書きを避ける)
@@ -137,6 +139,9 @@ export function useOracleStatus(
     queryFn: () => api.getOracleStatus(mint as string),
     enabled: Boolean(mint),
     staleTime: 10_000,
+    // 8.78: blocked の間だけ 15 秒間隔で再チェック。瞬断由来の block なら
+    // シートを開いたままでも回復して CTA が戻る (従来は開き直すしかなかった)
+    refetchInterval: (query) => oracleRefetchInterval(query.state.data),
   });
 }
 

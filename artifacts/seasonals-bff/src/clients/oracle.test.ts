@@ -102,3 +102,114 @@ describe("evaluateOracle — §4.6 decision table", () => {
     expect(r.primary).toBe("pyth");
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Phase 8.78: last-good フォールバック — Hermes/Crossbar の瞬断を §4.6 の
+// staleness 予算 (60 秒) の範囲内でだけ吸収する。USDC は Pyth 片肺なので、
+// これが無いと 1 fetch 失敗 = 即 oracle_unavailable → execution block だった。
+// ─────────────────────────────────────────────────────────────────────────────
+
+import {
+  fetchPyth,
+  fetchSwitchboard,
+  _clearOracleCacheForTest,
+} from "./oracle";
+
+const FEED = "0xfeed";
+
+function hermesOk(price: string, publishTimeSec: number) {
+  return {
+    ok: true,
+    json: async () => ({
+      parsed: [{ price: { price, expo: -8, publish_time: publishTimeSec } }],
+    }),
+  } as unknown as Response;
+}
+
+describe("8.78: fetchPyth last-good フォールバック", () => {
+  const realFetch = global.fetch;
+  beforeEach(() => {
+    jest.useFakeTimers();
+    _clearOracleCacheForTest();
+  });
+  afterEach(() => {
+    jest.useRealTimers();
+    global.fetch = realFetch;
+  });
+
+  it("成功直後の fetch 失敗は last-good で吸収 (age は実時間で再計算)", async () => {
+    const t0 = 1_700_000_000_000;
+    jest.setSystemTime(t0);
+    global.fetch = jest
+      .fn()
+      .mockResolvedValueOnce(hermesOk("9997823600", t0 / 1000 - 2))
+      .mockRejectedValueOnce(new Error("The user aborted a request."));
+
+    const first = await fetchPyth(FEED);
+    expect(first.available).toBe(true);
+
+    // 10 秒後に Hermes が落ちる
+    jest.setSystemTime(t0 + 10_000);
+    const second = await fetchPyth(FEED);
+    expect(second.available).toBe(true);
+    expect(second.price_usd).toBe(first.price_usd);
+    // publish から 12 秒 (2 + 10) — 正直な age
+    expect(second.age_seconds).toBe(12);
+  });
+
+  it("last-good が 60 秒予算を超えていたら使わない (fail-closed 維持)", async () => {
+    const t0 = 1_700_000_000_000;
+    jest.setSystemTime(t0);
+    global.fetch = jest
+      .fn()
+      .mockResolvedValueOnce(hermesOk("9997823600", t0 / 1000))
+      .mockRejectedValue(new Error("timeout"));
+
+    await fetchPyth(FEED);
+    jest.setSystemTime(t0 + 61_000); // publish から 61 秒
+    const r = await fetchPyth(FEED);
+    expect(r.available).toBe(false);
+  });
+
+  it("last-good が無いままの失敗は従来どおり unavailable", async () => {
+    global.fetch = jest.fn().mockRejectedValue(new Error("ECONNRESET"));
+    const r = await fetchPyth(FEED);
+    expect(r.available).toBe(false);
+  });
+});
+
+describe("8.78: fetchSwitchboard last-good フォールバック", () => {
+  const realFetch = global.fetch;
+  beforeEach(() => {
+    jest.useFakeTimers();
+    _clearOracleCacheForTest();
+  });
+  afterEach(() => {
+    jest.useRealTimers();
+    global.fetch = realFetch;
+  });
+
+  it("成功 → 失敗で取得時刻起点の 60 秒以内なら吸収する", async () => {
+    const t0 = 1_700_000_000_000;
+    jest.setSystemTime(t0);
+    global.fetch = jest
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => [{ results: ["71.5"] }],
+      } as unknown as Response)
+      .mockRejectedValue(new Error("timeout"));
+
+    const first = await fetchSwitchboard(FEED);
+    expect(first.available).toBe(true);
+
+    jest.setSystemTime(t0 + 30_000);
+    const second = await fetchSwitchboard(FEED);
+    expect(second.available).toBe(true);
+    expect(second.age_seconds).toBe(30);
+
+    jest.setSystemTime(t0 + 61_000);
+    const third = await fetchSwitchboard(FEED);
+    expect(third.available).toBe(false);
+  });
+});

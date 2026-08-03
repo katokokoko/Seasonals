@@ -38,8 +38,47 @@ export const DIVERGENCE_WARN_PCT = 2;
 /** §4.6 divergence block 閾値 (%、execute 拒否) */
 export const DIVERGENCE_BLOCK_PCT = 5;
 
-const CACHE_TTL_MS = 12_000;
+/**
+ * 8.78: cache TTL を ok / blocked で分離。
+ * blocked を ok と同じ 12 秒キャッシュすると、Hermes の数秒の瞬断が
+ * 「最低 12 秒の execution block」に増幅される (実際にユーザーが踏んだ)。
+ * blocked は 3 秒で切って早く再判定に行く。ok 側は従来どおり。
+ */
+const CACHE_TTL_OK_MS = 12_000;
+const CACHE_TTL_BLOCKED_MS = 3_000;
 const FETCH_TIMEOUT_MS = 8_000;
+
+/**
+ * 8.78: 直近に成功した取得値を feed 単位で保持し、live fetch が失敗した時だけ
+ * **§4.6 の staleness 予算 (60 秒) 以内なら** age を実時間で再計算して使う。
+ *
+ * 背景: USDC / USDT / JLP は Pyth のみ設定 (Switchboard は SOL だけ) なので、
+ * Hermes への 1 fetch 失敗 = 即 `oracle_unavailable` → fail-closed block だった。
+ * dual-oracle の冗長性が stablecoin には無い。
+ *
+ * これは fail-closed の緩和ではない: 60 秒は evaluateOracle の staleness 閾値と
+ * 同じ予算で、「60 秒以内の実測値」は仕様上まだ信頼してよい鮮度。60 秒を超えた
+ * last-good は使わず、従来どおり unavailable → block になる。
+ */
+interface LastGoodSource {
+  price_usd: string;
+  /** Pyth は publish_time、Crossbar は取得時刻 (age 概念が無いため) */
+  publishTimeSec: number;
+}
+const lastGoodPyth = new Map<string, LastGoodSource>();
+const lastGoodSwitchboard = new Map<string, LastGoodSource>();
+
+/** last-good が予算内なら age を再計算して返す。予算超過 / 無しは UNAVAILABLE */
+function lastGoodFallback(
+  map: Map<string, LastGoodSource>,
+  feedKey: string
+): OracleSourceStatus {
+  const good = map.get(feedKey);
+  if (!good) return UNAVAILABLE;
+  const age = Math.floor(Date.now() / 1000) - good.publishTimeSec;
+  if (age < 0 || age > STALENESS_THRESHOLD_S) return UNAVAILABLE;
+  return { available: true, price_usd: good.price_usd, age_seconds: age };
+}
 
 interface FeedConfig {
   symbol: string;
@@ -141,17 +180,26 @@ export async function fetchPyth(
       }>;
     };
     const p = json.parsed?.[0]?.price;
-    if (!p || !/^[0-9]+$/.test(p.price)) return UNAVAILABLE;
+    if (!p || !/^[0-9]+$/.test(p.price)) return lastGoodFallback(lastGoodPyth, feedId);
     const price = Number(p.price) * Math.pow(10, p.expo);
-    if (!Number.isFinite(price) || price <= 0) return UNAVAILABLE;
+    if (!Number.isFinite(price) || price <= 0) {
+      return lastGoodFallback(lastGoodPyth, feedId);
+    }
     const age = Math.floor(Date.now() / 1000) - p.publish_time;
+    // 8.78: 成功値を保持 (次の瞬断で 60 秒予算内なら使う)
+    lastGoodPyth.set(feedId, {
+      price_usd: toPriceString(price),
+      publishTimeSec: p.publish_time,
+    });
     return {
       available: true,
       price_usd: toPriceString(price),
       age_seconds: age >= 0 ? age : 0,
     };
   } catch {
-    return UNAVAILABLE;
+    // 8.78: 瞬断 (timeout / 429 / ネットワーク) は last-good で吸収。
+    // 60 秒を超えていれば UNAVAILABLE のまま = 従来どおり fail-closed
+    return lastGoodFallback(lastGoodPyth, feedId);
   }
 }
 
@@ -168,15 +216,22 @@ export async function fetchSwitchboard(
     const valid = results
       .map((r) => Number(r))
       .filter((n) => Number.isFinite(n) && n > 0);
-    if (valid.length === 0) return UNAVAILABLE;
+    if (valid.length === 0) {
+      return lastGoodFallback(lastGoodSwitchboard, feedHash);
+    }
     // 複数 job の場合は中央値
     valid.sort((a, b) => a - b);
     const mid = Math.floor(valid.length / 2);
     const price =
       valid.length % 2 === 0 ? (valid[mid - 1]! + valid[mid]!) / 2 : valid[mid]!;
+    // 8.78: crossbar は age 概念が無いので取得時刻を publish 扱いで保持
+    lastGoodSwitchboard.set(feedHash, {
+      price_usd: toPriceString(price),
+      publishTimeSec: Math.floor(Date.now() / 1000),
+    });
     return { available: true, price_usd: toPriceString(price), age_seconds: 0 };
   } catch {
-    return UNAVAILABLE;
+    return lastGoodFallback(lastGoodSwitchboard, feedHash);
   }
 }
 
@@ -291,6 +346,9 @@ const cache = new Map<string, CacheEntry>();
 
 export function _clearOracleCacheForTest(): void {
   cache.clear();
+  // 8.78: last-good もテスト間で持ち越さない
+  lastGoodPyth.clear();
+  lastGoodSwitchboard.clear();
 }
 
 /**
@@ -316,8 +374,13 @@ export async function getOracleResult(mint: string): Promise<OracleResult> {
     };
   }
 
+  // 8.78: blocked は短い TTL で早く再判定に行く (瞬断を増幅しない)
   const cached = cache.get(mint);
-  if (cached && Date.now() - cached.ts < CACHE_TTL_MS) return cached.data;
+  if (cached) {
+    const ttl =
+      cached.data.status === "blocked" ? CACHE_TTL_BLOCKED_MS : CACHE_TTL_OK_MS;
+    if (Date.now() - cached.ts < ttl) return cached.data;
+  }
 
   const [pyth, switchboard] = await Promise.all([
     fetchPyth(config.pythFeedId),

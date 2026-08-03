@@ -110,6 +110,8 @@ import {
 } from "./fair-value";
 // 8.64: Pyth feed が無い token の過去価格 (履歴表示専用。oracle 経路には入れない)
 import { anchorSeries, fetchLlamaPriceSeries } from "./clients/llama-history";
+// 8.78: 上流 timeout を「ユーザーが中断した」と読める生文言のまま出さない
+import { readableUpstreamError } from "./clients/http";
 import { isDepositedMint } from "@workspace/lib/config/deposited-mints";
 import {
   buildHistorySeries,
@@ -1036,7 +1038,7 @@ async function buildSwapEarnTx(
       "swap-earn tx build failed"
     );
     reply.code(502);
-    return { error: "jupiter_swap_failed", message: (err as Error).message };
+    return { error: "jupiter_swap_failed", message: readableUpstreamError(err, "Jupiter API") };
   }
 }
 
@@ -1322,7 +1324,7 @@ async function buildKaminoTx(
       };
     }
     reply.code(502);
-    return { error: "kamino_tx_failed", message: (err as Error).message };
+    return { error: "kamino_tx_failed", message: readableUpstreamError(err, "Kamino API") };
   }
 }
 
@@ -1878,7 +1880,7 @@ async function buildKaminoVaultTx(
       };
     }
     reply.code(502);
-    return { error: "kamino_tx_failed", message: (err as Error).message };
+    return { error: "kamino_tx_failed", message: readableUpstreamError(err, "Kamino API") };
   }
 }
 
@@ -1925,7 +1927,7 @@ async function buildSaveTx(
       "save tx build failed"
     );
     reply.code(502);
-    return { error: "save_tx_failed", message: (err as Error).message };
+    return { error: "save_tx_failed", message: readableUpstreamError(err, "Save (Solana RPC)") };
   }
 }
 
@@ -4119,7 +4121,7 @@ export async function buildServer(
       );
       updatePlan(planId, { status: AgentPlanStatus.Failed });
       reply.code(502);
-      return { error: "execute_tx_build_failed", message: (err as Error).message };
+      return { error: "execute_tx_build_failed", message: readableUpstreamError(err, "Jupiter API") };
     }
   });
 
@@ -4717,7 +4719,10 @@ export async function buildServer(
       }
       req.log.error({ err: msg, ptMint }, "exponent redeem tx build failed");
       reply.code(502);
-      return { error: "exponent_tx_failed", message: msg };
+      return {
+        error: "exponent_tx_failed",
+        message: readableUpstreamError(err, "Exponent (Solana RPC)"),
+      };
     }
   });
 
@@ -4773,7 +4778,7 @@ export async function buildServer(
         "meteora deposit tx build failed"
       );
       reply.code(502);
-      return { error: "meteora_tx_failed", message: (err as Error).message };
+      return { error: "meteora_tx_failed", message: readableUpstreamError(err, "Meteora (Solana RPC)") };
     }
   });
 
@@ -4838,7 +4843,7 @@ export async function buildServer(
         "meteora withdraw tx build failed"
       );
       reply.code(502);
-      return { error: "meteora_tx_failed", message: (err as Error).message };
+      return { error: "meteora_tx_failed", message: readableUpstreamError(err, "Meteora (Solana RPC)") };
     }
   });
 
@@ -4895,7 +4900,7 @@ export async function buildServer(
         "orca deposit tx build failed"
       );
       reply.code(502);
-      return { error: "orca_tx_failed", message: (err as Error).message };
+      return { error: "orca_tx_failed", message: readableUpstreamError(err, "Orca (Solana RPC)") };
     }
   });
 
@@ -4957,7 +4962,7 @@ export async function buildServer(
         "orca withdraw tx build failed"
       );
       reply.code(502);
-      return { error: "orca_tx_failed", message: (err as Error).message };
+      return { error: "orca_tx_failed", message: readableUpstreamError(err, "Orca (Solana RPC)") };
     }
   });
 
