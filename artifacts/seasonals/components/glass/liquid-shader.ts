@@ -128,26 +128,28 @@ half4 main(float2 p) {
 
     // ── 2. 泡 (輪郭 stroke 1.1 相当 + ハイライト円) ──
     // 物理側の recycle 条件により alive な泡は常に液面下 (§2.2)。
-    // x の早期 reject (減算 + 比較) で近傍 pixel 以外は即 continue
+    // x/y の早期 reject (減算 + 比較) で近傍 pixel 以外は本体を skip。
+    // NOTE: loop 内で continue を使わない — Seeker (Mali) 実機で continue が
+    // break 同様に振る舞い、slot 0 の泡しか描かれない不具合を確認した (8.82)
     for (int i = 0; i < ${BUBBLE_SLOTS}; i++) {
       float4 b = uBubbles[i];
       float dx = p.x - b.x;
-      if (abs(dx) > b.z + 2.0) { continue; }
       float dy = p.y - b.y;
-      if (abs(dy) > b.z + 2.0) { continue; }
-      float dist = length(float2(dx, dy));
-      // stroke: |dist - r| < 0.55 (幅 1.1) + AA
-      half ring = half(1.0 - smoothstep(0.3, 1.1, abs(dist - b.z)));
-      half4 sc = uBubbleStroke;
-      sc.a *= ring;
-      col = blendOver(col, sc);
-      // ハイライト: 中心を (-0.35r, -0.35r) にずらした半径 0.35r の塗り円
-      float hr = b.z * 0.35;
-      float hd = length(float2(dx + hr, dy + hr));
-      half hi = half(1.0 - smoothstep(hr - 0.75, hr + 0.75, hd));
-      half4 fc = uBubbleFill;
-      fc.a *= hi;
-      col = blendOver(col, fc);
+      if (abs(dx) <= b.z + 2.0 && abs(dy) <= b.z + 2.0) {
+        float dist = length(float2(dx, dy));
+        // stroke: |dist - r| < 0.55 (幅 1.1) + AA
+        half ring = half(1.0 - smoothstep(0.3, 1.1, abs(dist - b.z)));
+        half4 sc = uBubbleStroke;
+        sc.a *= ring;
+        col = blendOver(col, sc);
+        // ハイライト: 中心を (-0.35r, -0.35r) にずらした半径 0.35r の塗り円
+        float hr = b.z * 0.35;
+        float hd = length(float2(dx + hr, dy + hr));
+        half hi = half(1.0 - smoothstep(hr - 0.75, hr + 0.75, hd));
+        half4 fc = uBubbleFill;
+        fc.a *= hi;
+        col = blendOver(col, fc);
+      }
     }
   }
 
@@ -173,18 +175,18 @@ half4 main(float2 p) {
     }
   }
 
-  // ── 4. 飛沫 (存在する時だけ loop) ──
+  // ── 4. 飛沫 (存在する時だけ loop。continue 禁止 — 泡の NOTE 参照) ──
   if (uDropN > 0.5) {
     for (int i = 0; i < ${DROPLET_SLOTS}; i++) {
       float4 dr = uDroplets[i];
       float dx = p.x - dr.x;
-      if (abs(dx) > dr.z + 1.5) { continue; }
       float dy = p.y - dr.y;
-      if (abs(dy) > dr.z + 1.5) { continue; }
-      half cov = half(1.0 - smoothstep(dr.z - 0.75, dr.z + 0.75, length(float2(dx, dy))));
-      half4 dc = uDropletC;
-      dc.a *= cov;
-      col = blendOver(col, dc);
+      if (abs(dx) <= dr.z + 1.5 && abs(dy) <= dr.z + 1.5) {
+        half cov = half(1.0 - smoothstep(dr.z - 0.75, dr.z + 0.75, length(float2(dx, dy))));
+        half4 dc = uDropletC;
+        dc.a *= cov;
+        col = blendOver(col, dc);
+      }
     }
   }
 
