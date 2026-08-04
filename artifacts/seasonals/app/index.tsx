@@ -10,7 +10,7 @@
  * @see Phase 5A spec / docs/visual-reference/header.png
  */
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Dimensions,
   Image,
@@ -185,18 +185,43 @@ export default function HomeScreen() {
   }));
 
   // 左 edge から右 swipe で SettingsDrawer 開閉
-  const edgeLeftGesture = Gesture.Pan()
-    .activeOffsetX([-15, 15])
-    .onEnd((e) => {
-      if (e.translationX > 60) runOnJS(setSettingsOpen)(true);
-    });
+  // 8.81: useMemo 化 (毎レンダーの GestureDetector 再アタッチを止める) +
+  // success flag (CANCELLED でも onEnd が呼ばれ drawer が誤って開いていた)
+  const edgeLeftGesture = useMemo(
+    () =>
+      Gesture.Pan()
+        .activeOffsetX([-15, 15])
+        .onEnd((e, success) => {
+          if (success && e.translationX > 60) runOnJS(setSettingsOpen)(true);
+        }),
+    []
+  );
 
   // 右 edge から左 swipe で MenuDrawer 開閉
-  const edgeRightGesture = Gesture.Pan()
-    .activeOffsetX([-15, 15])
-    .onEnd((e) => {
-      if (e.translationX < -60) runOnJS(setServicesOpen)(true);
-    });
+  const edgeRightGesture = useMemo(
+    () =>
+      Gesture.Pan()
+        .activeOffsetX([-15, 15])
+        .onEnd((e, success) => {
+          if (success && e.translationX < -60) runOnJS(setServicesOpen)(true);
+        }),
+    []
+  );
+
+  // 8.81: today を 1 分間隔で「日付が変わった時だけ」更新する安定参照に。
+  // 旧 today={new Date()} inline prop は毎レンダー新 identity になり、
+  // PortfolioSummary の useMemo (buildPortfolioTimeSeries 等) を月送りの
+  // レンダーごとに無効化してチャート系列を再計算させていた。
+  const [today, setToday] = useState(() => new Date());
+  useEffect(() => {
+    const id = setInterval(() => {
+      setToday((prev) => {
+        const now = new Date();
+        return prev.toDateString() === now.toDateString() ? prev : now;
+      });
+    }, 60_000);
+    return () => clearInterval(id);
+  }, []);
 
   // MenuDrawer から start action: 該当 protocol/asset の plan を解決
   //
@@ -274,15 +299,22 @@ export default function HomeScreen() {
     ? events.filter((e) => eventDayKey(e.triggerAt) === localDayKey(selectedDay))
     : [];
 
-  const handleDayPress = (day: Date) => {
-    setSelectedDay(day);
-    setSelectedIsoDay(dateToIso(day));
-    setDayModalOpen(true);
-  };
+  // 8.81: useCallback 化 — MonthGrid (React.memo) に安定 identity で渡す
+  const handleDayPress = useCallback(
+    (day: Date) => {
+      setSelectedDay(day);
+      setSelectedIsoDay(dateToIso(day));
+      setDayModalOpen(true);
+    },
+    [setSelectedIsoDay]
+  );
 
-  const handleMonthChange = (next: Date) => {
-    setCurrentMonth(dateToYm(next));
-  };
+  const handleMonthChange = useCallback(
+    (next: Date) => {
+      setCurrentMonth(dateToYm(next));
+    },
+    [setCurrentMonth]
+  );
 
   const handleActionPress = (
     event: UnifiedTimeEvent,
@@ -390,7 +422,7 @@ export default function HomeScreen() {
               customEvents={customEvents}
               selectedDay={selectedDay}
               onDayPress={handleDayPress}
-              today={new Date()}
+              today={today}
               testID="home-calendar"
             />
           ) : (
@@ -440,10 +472,11 @@ export default function HomeScreen() {
 
       {/* Bottom portfolio panel (glass + chart) */}
       {/* 8.55: today は実時刻 (旧 MOCK_TODAY=2026-05-09 は chart 右端が 5/9 で止まっていた) */}
+      {/* 8.81: identity 安定な today (上の useState + 分次チェック) — inline new Date() 禁止 */}
       <PortfolioSummary
         positions={positions}
         protocols={protocols}
-        today={new Date()}
+        today={today}
         walletAddress={onchainAddress}
         animatedPosition={sheetPosition}
         testID="home-portfolio"

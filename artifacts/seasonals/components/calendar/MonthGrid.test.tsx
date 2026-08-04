@@ -7,7 +7,13 @@
  * を構造で固定する。実寸の行高さ均一は実機/emulator 目視 (confirm.md §A)。
  */
 import React from "react";
-import { render, screen } from "@testing-library/react-native";
+import { render, screen, waitFor } from "@testing-library/react-native";
+import {
+  fireGestureHandler,
+  getByGestureTestId,
+} from "react-native-gesture-handler/jest-utils";
+import { State } from "react-native-gesture-handler";
+import type { PanGesture } from "react-native-gesture-handler";
 
 import { TimeEventCategory, Urgency } from "@workspace/lib/types";
 import type { CustomEvent, UnifiedTimeEvent } from "@workspace/lib/types";
@@ -92,5 +98,80 @@ describe("MonthGrid — 8.39 cell 高さ安定化", () => {
     ];
     renderGrid(events);
     expect(screen.getByTestId("droplet-crit")).toBeTruthy(); // sort で先頭へ
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 8.81: 月送り swipe — commit-first 方式 (固まりバグの regression 固定)
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("MonthGrid — 8.81 月送り swipe", () => {
+  function renderWithSpy() {
+    const onChangeMonth = jest.fn();
+    render(
+      <MonthGrid
+        month={MONTH}
+        onChangeMonth={onChangeMonth}
+        events={[]}
+        selectedDay={null}
+        onDayPress={() => undefined}
+        today={TODAY}
+        testID="grid"
+      />
+    );
+    return onChangeMonth;
+  }
+
+  const swipe = (translationX: number, finalState: State = State.END) => {
+    fireGestureHandler<PanGesture>(getByGestureTestId("month-swipe"), [
+      { state: State.BEGAN, translationX: 0 },
+      { state: State.ACTIVE, translationX: translationX / 2 },
+      { state: finalState, translationX },
+    ]);
+  };
+
+  // NOTE: onEnd → runOnJS(commitMonth) は JS thread では microtask 経由の
+  // 非同期呼び出しになるため、commit の観測は waitFor で行う
+
+  it("左 swipe (-50px 超) で即座に翌月へ commit する (完了 callback 待ちなし)", async () => {
+    const onChangeMonth = renderWithSpy();
+    swipe(-60);
+    // commit-first: アニメ完了 (旧 140ms slide-out) を待たずに翌月が確定する。
+    // 旧実装 (slide-out 完了 callback で commit) は連打キャンセルで
+    // commit ごと落ちて固まっていた
+    await waitFor(() => expect(onChangeMonth).toHaveBeenCalledTimes(1));
+    expect(onChangeMonth).toHaveBeenCalledWith(new Date(2026, 7, 1)); // 2026-08
+  });
+
+  it("右 swipe (+50px 超) で前月へ", async () => {
+    const onChangeMonth = renderWithSpy();
+    swipe(60);
+    await waitFor(() =>
+      expect(onChangeMonth).toHaveBeenCalledWith(new Date(2026, 5, 1))
+    ); // 2026-06
+  });
+
+  it("threshold 未満 (±50px 以内) では commit しない", async () => {
+    const onChangeMonth = renderWithSpy();
+    swipe(-30);
+    swipe(30);
+    await Promise.resolve(); // runOnJS の microtask を flush
+    expect(onChangeMonth).not.toHaveBeenCalled();
+  });
+
+  it("キャンセルされた pan (FAILED / CANCELLED) では commit しない", async () => {
+    const onChangeMonth = renderWithSpy();
+    swipe(-80, State.FAILED);
+    swipe(-80, State.CANCELLED);
+    await Promise.resolve();
+    expect(onChangeMonth).not.toHaveBeenCalled();
+  });
+
+  it("連打: アニメ中の再 swipe でも毎回 commit される (固まらない)", async () => {
+    const onChangeMonth = renderWithSpy();
+    swipe(-60);
+    swipe(-60); // 1 回目の settle (180ms) 完了を待たずに発火
+    swipe(-60);
+    await waitFor(() => expect(onChangeMonth).toHaveBeenCalledTimes(3));
   });
 });

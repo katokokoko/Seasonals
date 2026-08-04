@@ -8,7 +8,7 @@
  * 静的な grid で MVP を出す。Phase B で gesture pull-to-refresh + animated cell pulse 追加。
  */
 
-import React, { useMemo } from "react";
+import React, { useCallback, useMemo } from "react";
 import {
   Pressable,
   StyleSheet,
@@ -72,24 +72,39 @@ function eventDayKey(triggerAt: UnifiedTimeEvent["triggerAt"]): string {
   return `${ts.getFullYear()}-${String(ts.getMonth() + 1).padStart(2, "0")}-${String(ts.getDate()).padStart(2, "0")}`;
 }
 
-function eventsOnDay(events: UnifiedTimeEvent[], day: Date): UnifiedTimeEvent[] {
-  const key = localDayKey(day);
-  return events.filter((e) => eventDayKey(e.triggerAt) === key);
+/**
+ * 8.81: day-key → events の索引を 1 回だけ構築する (O(events))。
+ * 旧実装はセルごとに全 events を filter (O(42×events) + セル毎 Date 割り当て) で、
+ * 月送りコミットの JS フレームを圧迫していた。
+ */
+function indexEventsByDay(
+  events: UnifiedTimeEvent[]
+): Map<string, UnifiedTimeEvent[]> {
+  const map = new Map<string, UnifiedTimeEvent[]>();
+  for (const e of events) {
+    const key = eventDayKey(e.triggerAt);
+    const arr = map.get(key);
+    if (arr) arr.push(e);
+    else map.set(key, [e]);
+  }
+  return map;
 }
 
-function customEventsOnDay(
-  customEvents: CustomEvent[],
-  day: Date
-): CustomEvent[] {
-  return customEvents.filter((e) => {
-    const [y, m, d] = e.date.split("-").map(Number);
-    return (
-      day.getFullYear() === y &&
-      day.getMonth() + 1 === m &&
-      day.getDate() === d
-    );
-  });
+/** CustomEvent.date は "yyyy-MM-dd" (lib/types/custom-event.ts) — localDayKey と同形式 */
+function indexCustomEventsByDay(
+  customEvents: CustomEvent[]
+): Map<string, CustomEvent[]> {
+  const map = new Map<string, CustomEvent[]>();
+  for (const e of customEvents) {
+    const arr = map.get(e.date);
+    if (arr) arr.push(e);
+    else map.set(e.date, [e]);
+  }
+  return map;
 }
+
+const EMPTY_EVENTS: UnifiedTimeEvent[] = [];
+const EMPTY_CUSTOM: CustomEvent[] = [];
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Props
@@ -113,11 +128,11 @@ export interface MonthGridProps {
 // Component
 // ─────────────────────────────────────────────────────────────────────────────
 
-export function MonthGrid({
+export const MonthGrid = React.memo(function MonthGrid({
   month,
   onChangeMonth,
   events,
-  customEvents = [],
+  customEvents = EMPTY_CUSTOM,
   selectedDay,
   onDayPress,
   today = new Date(),
@@ -137,36 +152,57 @@ export function MonthGrid({
     return out;
   }, [month]);
 
+  // 8.81: day-key 索引 (構築 O(events)、セル側は Map.get のみ)
+  const eventsByDay = useMemo(() => indexEventsByDay(events), [events]);
+  const customByDay = useMemo(
+    () => indexCustomEventsByDay(customEvents),
+    [customEvents]
+  );
+
   // Phase 5A.7 prototype 仕様: discrete slide+fade (peek なし、withTiming 駆動、threshold ±50px)
   const tx = useSharedValue(0);
   const opacity = useSharedValue(1);
 
-  // worklet 経由で date-fns を呼べないため、delta を JS thread に渡してから addMonths
-  const commitMonth = (delta: number) => {
-    onChangeMonth(addMonths(month, delta));
-  };
-
-  const animateChange = (delta: number) => {
-    opacity.value = withTiming(0.3, { duration: 120 });
-    tx.value = withTiming(delta > 0 ? -40 : 40, { duration: 140 }, (finished) => {
-      "worklet";
-      if (!finished) return;
-      runOnJS(commitMonth)(delta);
-      // re-base: 新月を反対側から slide-in
+  /**
+   * 8.81: commit-first 方式 (DailyView.tsx の commit と同型)。
+   *
+   * 旧実装は slide-out (140ms) の完了 callback で月を commit していたが、
+   * アニメ中に次の swipe が来ると withTiming がキャンセルされ
+   * `if (!finished) return` で打ち切られる → 月送りが実行されないまま
+   * opacity=0.3 / tx=±40 で固まる不具合があった (Seeker 実機で再現)。
+   * 先に commit してから re-base → settle する形なら、中断されても
+   * 「settle が途中で切れる」だけで、値は次のアニメが必ず上書きする。
+   */
+  const commitMonth = useCallback(
+    (delta: number) => {
+      onChangeMonth(addMonths(month, delta));
+      // re-base: 新月を反対側から slide-in (JS thread からの sharedValue 代入)
       tx.value = delta > 0 ? 40 : -40;
       tx.value = withTiming(0, { duration: 180 });
+      opacity.value = 0.5;
       opacity.value = withTiming(1, { duration: 220 });
-    });
-  };
+    },
+    [month, onChangeMonth, tx, opacity]
+  );
 
-  const swipeGesture = Gesture.Pan()
-    .activeOffsetX([-12, 12])
-    .failOffsetY([-15, 15])
-    .onEnd((e) => {
-      "worklet";
-      if (e.translationX < -50) runOnJS(animateChange)(1);
-      else if (e.translationX > 50) runOnJS(animateChange)(-1);
-    });
+  // 8.81: gesture は commitMonth が変わる時 (= 月が変わる時) だけ再構築。
+  // 旧実装は毎レンダー再生成で GestureDetector が都度再アタッチされていた。
+  const swipeGesture = useMemo(
+    () =>
+      Gesture.Pan()
+        .withTestId("month-swipe")
+        .activeOffsetX([-12, 12])
+        .failOffsetY([-15, 15])
+        // 8.81: RNGH は FAILED / CANCELLED でも onEnd を呼ぶため success を見る
+        // (外側の edge gesture に負けた pan で月送りが誤発火していた)
+        .onEnd((e, success) => {
+          "worklet";
+          if (!success) return;
+          if (e.translationX < -50) runOnJS(commitMonth)(1);
+          else if (e.translationX > 50) runOnJS(commitMonth)(-1);
+        }),
+    [commitMonth]
+  );
 
   const animStyle = useAnimatedStyle(() => ({
     transform: [{ translateX: tx.value }],
@@ -187,16 +223,19 @@ export function MonthGrid({
 
       {/* Day cells */}
       <View style={styles.grid}>
-        {days.map((day) => {
+        {days.map((day, cellIndex) => {
           const inMonth = isSameMonth(day, month);
           const isToday = isSameDay(day, today);
           const isSelected = selectedDay !== null && isSameDay(day, selectedDay);
-          const dayEvents = eventsOnDay(events, day);
-          const dayCustom = customEventsOnDay(customEvents, day);
+          const dayKey = localDayKey(day);
+          const dayEvents = eventsByDay.get(dayKey) ?? EMPTY_EVENTS;
+          const dayCustom = customByDay.get(dayKey) ?? EMPTY_CUSTOM;
 
           return (
             <Pressable
-              key={day.toISOString()}
+              // 8.81: セル位置ベースの安定 key。旧 key={day.toISOString()} は月送りの
+              // たびに 42 セル + 全 SVG marker を強制再マウントしていた (reconcile 不能)
+              key={cellIndex}
               accessibilityRole="button"
               onPress={() => onDayPress(day)}
               style={[
@@ -259,7 +298,7 @@ export function MonthGrid({
       </Animated.View>
     </GestureDetector>
   );
-}
+});
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Styles
