@@ -99,15 +99,28 @@ describe("MonthGrid — 8.39 cell 高さ安定化", () => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe("gridDaysOfMonth", () => {
-  it("Monday start で月末週まで埋める (2026-07 = 5 週 35 日)", () => {
+  // 8.85: grid 高さを月によらず一定にするため常に 6 週 (42 日)
+  it("5 週で終わる月 (2026-07) も 42 日 — 翌月の 1 週で埋める", () => {
     const days = gridDaysOfMonth(new Date(2026, 6, 1));
-    expect(days).toHaveLength(35);
+    expect(days).toHaveLength(42);
     expect(days[0]!.getDay()).toBe(1); // Mon
-    expect(days[34]!.getDay()).toBe(0); // Sun
+    expect(days[41]!.getDay()).toBe(0); // Sun
+    // 6 行目は 8 月の日 (out-of-month として淡色表示される)
+    expect(days[35]!.getMonth()).toBe(7);
   });
 
-  it("6 週の月 (2026-08) は 42 日", () => {
-    expect(gridDaysOfMonth(new Date(2026, 7, 1))).toHaveLength(42);
+  it("6 週の月 (2026-08) も 42 日", () => {
+    const days = gridDaysOfMonth(new Date(2026, 7, 1));
+    expect(days).toHaveLength(42);
+    // 月内の日が最終週まで入る (2026-08-31 は 6 行目の月曜)
+    expect(days[35]!.getDate()).toBe(31);
+    expect(days[35]!.getMonth()).toBe(7);
+  });
+
+  it("月初の週は前月分で埋まる (2026-08-01 は土曜 → 先頭は 7/27)", () => {
+    const days = gridDaysOfMonth(new Date(2026, 7, 1));
+    expect(days[0]!.getMonth()).toBe(6);
+    expect(days[0]!.getDate()).toBe(27);
   });
 
   it("全要素が 1 日刻み (旧 +86400s 実装の DST ずれ regression 固定)", () => {

@@ -299,6 +299,18 @@ export default function HomeScreen() {
     ? events.filter((e) => eventDayKey(e.triggerAt) === localDayKey(selectedDay))
     : [];
 
+  // 8.85: カレンダー grid 下端の画面絶対 y。下部シートの middle snap を
+  // 週の最下段の少し下に合わせる。8.84 の行圧縮で grid 高さは月によらず一定
+  // なので、この値は月送りでは変わらない (PortfolioSummary の memo も効く)。
+  // 数 px の揺れで snapPoints を作り直さないよう丸めてから set する
+  const [calendarBottomY, setCalendarBottomY] = useState<number | null>(null);
+  const handleGridBottomY = useCallback((bottomY: number) => {
+    const rounded = Math.round(bottomY);
+    setCalendarBottomY((prev) =>
+      prev !== null && Math.abs(prev - rounded) < 4 ? prev : rounded
+    );
+  }, []);
+
   // 8.81: useCallback 化 — MonthGrid (React.memo) に安定 identity で渡す
   const handleDayPress = useCallback(
     (day: Date) => {
@@ -423,6 +435,7 @@ export default function HomeScreen() {
               selectedDay={selectedDay}
               onDayPress={handleDayPress}
               today={today}
+              onGridBottomY={handleGridBottomY}
               testID="home-calendar"
             />
           ) : (
@@ -479,6 +492,7 @@ export default function HomeScreen() {
         today={today}
         walletAddress={onchainAddress}
         animatedPosition={sheetPosition}
+        minTopY={viewMode === "monthly" ? calendarBottomY : null}
         testID="home-portfolio"
       />
 

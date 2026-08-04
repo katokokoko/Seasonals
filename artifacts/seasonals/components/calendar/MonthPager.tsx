@@ -12,7 +12,7 @@
  *     差し替えは低 opacity 中に起きて fade-through に見える
  */
 
-import React, { useCallback, useMemo } from "react";
+import React, { useCallback, useMemo, useRef } from "react";
 import { StyleSheet, View } from "react-native";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import Animated, {
@@ -44,6 +44,12 @@ export interface MonthPagerProps {
   selectedDay: Date | null;
   onDayPress: (day: Date) => void;
   today?: Date;
+  /**
+   * 8.85: grid 下端の画面絶対 y (px)。下部シートの middle snap を
+   * 週の最下段の少し下に合わせるために使う。8.84 の行圧縮で grid 総高さは
+   * 月によらず一定なので、この値は月送りで動かない
+   */
+  onGridBottomY?: (bottomY: number) => void;
   testID?: string;
 }
 
@@ -55,10 +61,22 @@ export function MonthPager({
   selectedDay,
   onDayPress,
   today,
+  onGridBottomY,
   testID,
 }: MonthPagerProps) {
   const tx = useSharedValue(0);
   const opacity = useSharedValue(1);
+
+  // grid の実測下端を通知 (レイアウト確定後に measureInWindow)
+  const gridRef = useRef<View>(null);
+  const reportGridBottom = useCallback(() => {
+    if (!onGridBottomY) return;
+    gridRef.current?.measureInWindow(
+      (_x: number, y: number, _w: number, h: number) => {
+        if (h > 0) onGridBottomY(y + h);
+      }
+    );
+  }, [onGridBottomY]);
 
   const commit = useCallback(
     (dir: 1 | -1) => {
@@ -118,7 +136,11 @@ export function MonthPager({
   return (
     <GestureDetector gesture={pan}>
       <View testID={testID}>
-        <Animated.View style={[styles.body, animStyle]}>
+        <Animated.View
+          ref={gridRef}
+          onLayout={reportGridBottom}
+          style={[styles.body, animStyle]}
+        >
           <MonthGrid
             month={month}
             events={events}

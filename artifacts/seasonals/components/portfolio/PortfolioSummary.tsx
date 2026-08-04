@@ -120,6 +120,13 @@ export interface PortfolioSummaryProps {
    * 計算に使えるようにする (Phase 5A.3)。SheetPosition は top からの px。
    */
   animatedPosition?: SharedValue<number>;
+  /**
+   * 8.85: middle snap 時のシート上端を合わせたい y (画面絶対 px)。
+   * monthly view のカレンダー grid 下端を渡す。8.84 の行圧縮で grid 総高さは
+   * 月によらず一定なので、この値は月送りで動かない (8.83 で不採用だった
+   * 「月ごとにカード位置が上下する」問題は起きない)。null なら 50% 固定
+   */
+  minTopY?: number | null;
   testID?: string;
 }
 
@@ -128,7 +135,7 @@ export interface PortfolioSummaryProps {
  * 再レンダーから chart / donut subtree を切り離す。swipe release の同フレームで
  * ここが再計算されるのが「離した瞬間のスタック感」の主因だった。
  * props は月送りでは全て identity 不変 (positions/protocols = query データ、
- * today = 分次更新、animatedPosition = sharedValue)。
+ * today = 分次更新、animatedPosition = sharedValue、minTopY = 行圧縮により一定)。
  */
 export const PortfolioSummary = React.memo(function PortfolioSummary({
   positions,
@@ -136,6 +143,7 @@ export const PortfolioSummary = React.memo(function PortfolioSummary({
   today = new Date(),
   walletAddress,
   animatedPosition,
+  minTopY = null,
   testID,
 }: PortfolioSummaryProps) {
   // Phase 7.9: theme 連動 styles
@@ -146,13 +154,28 @@ export const PortfolioSummary = React.memo(function PortfolioSummary({
   const sheetRef = useRef<BottomSheetMethods>(null);
   // Phase 5B.1: 3 snap points
   //   25% = collapsed (PORTFOLIO + total + yield + USDC/SOL toggle のみ、上に mascot 露出)
-  //   50% = default (range selector + chart まで visible)
+  //   middle = default (range selector + chart まで visible)
   //   85% = expanded (Allocation + Sponsored まで visible)
   //
-  // 8.84: 8.83 の動的 middle snap (カレンダー下端追従) は「カード基準位置が
-  // 月によって動く」として user 不採用 → 固定 % に戻した。6 週の月は
-  // MonthGrid 側の行圧縮 (aspectRatio 6/5) で 5 週と同じ総高さに収める
-  const snapPoints = useMemo(() => ["25%", "50%", "85%"], []);
+  // 8.85: middle は **カレンダー最下段の少し下** に合わせる (minTopY = grid 下端)。
+  // grid は常に 6 週 (MonthGrid.GRID_WEEKS) なので総高さは月によらず一定 =
+  // 位置は月送りで動かない。minTopY 未指定 (daily view) は従来の 50%。
+  //
+  // 単位に注意 (実機で 50dp ずれた): number snap は
+  // 「containerHeight − シート上端」の px。edge-to-edge なので container は
+  // **全画面** (= Dimensions "screen") で、measureInWindow の y も全画面基準。
+  // Dimensions "window" はシステムバーを除いた値 (実測 840 vs 890) なので使えない。
+  // 昇順保証のため 25%〜85% の間に clamp
+  const containerH = Dimensions.get("screen").height;
+  const snapPoints = useMemo(() => {
+    if (minTopY == null) return ["25%", "50%", "85%"];
+    const MARGIN = 12; // 週の最下段とシート上端の隙間
+    const middlePx = Math.min(
+      Math.max(containerH - (minTopY + MARGIN), containerH * 0.25 + 24),
+      containerH * 0.85 - 24
+    );
+    return ["25%", middlePx, "85%"];
+  }, [minTopY, containerH]);
 
   // 前回 snap を AsyncStorage から復元 (default index = 1 = "50%")
   useEffect(() => {
