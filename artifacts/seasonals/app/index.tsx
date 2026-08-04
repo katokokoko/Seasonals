@@ -441,6 +441,7 @@ export default function HomeScreen() {
           ) : (
             <DailyView
               events={events}
+              customEvents={customEvents}
               sheetPosition={sheetPosition}
               topInset={headerApproxHeight}
               onSelectEvent={(event) => {
