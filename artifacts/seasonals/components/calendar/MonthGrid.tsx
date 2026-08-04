@@ -149,6 +149,12 @@ export const MonthGrid = React.memo(function MonthGrid({
 
   const days = useMemo(() => gridDaysOfMonth(month), [month]);
 
+  // 8.84: 6 週の月は行高さを 5/6 に圧縮し、5 週の月と同じ grid 総高さに収める
+  // (cell は width 基準の aspectRatio なので 6/5 = 1.2 で height が 5/6 倍)。
+  // これで固定 50% のシートの上に 6 行目が見える。全 cell 同値なので
+  // 8.39 の「行高さ均一」不変条件は維持される
+  const isSixRows = days.length / 7 >= 6;
+
   // 8.81: day-key 索引 (構築 O(events)、セル側は Map.get のみ)
   const eventsByDay = useMemo(() => indexEventsByDay(events), [events]);
   const customByDay = useMemo(
@@ -186,6 +192,7 @@ export const MonthGrid = React.memo(function MonthGrid({
               onPress={() => onDayPress(day)}
               style={[
                 styles.cell,
+                isSixRows && styles.cellSixRows,
                 !inMonth && styles.cellOutMonth,
                 isToday && styles.cellToday,
                 isSelected && styles.cellSelected,
@@ -299,6 +306,11 @@ function makeStyles(c: ThemeColors) {
       alignItems: "center",
       justifyContent: "flex-start",
       gap: 2,
+    },
+    // 8.84: 6 週の月は行高さを 5/6 に圧縮 (6/5 = 1.2)。grid 総高さが
+    // 5 週の月と揃い、固定 50% シートの上に 6 行目が収まる
+    cellSixRows: {
+      aspectRatio: 1.2,
     },
     cellOutMonth: {
       opacity: 0.32,

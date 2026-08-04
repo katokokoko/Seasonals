@@ -120,22 +120,22 @@ export interface PortfolioSummaryProps {
    * 計算に使えるようにする (Phase 5A.3)。SheetPosition は top からの px。
    */
   animatedPosition?: SharedValue<number>;
-  /**
-   * 8.83 (Task 2): middle snap 時のシート上端がこの y (画面絶対 px) より
-   * 上に来ないようにする。monthly view のカレンダー grid 下端を渡すことで、
-   * 6 週の月でも 6 行目がシートに被らない。null なら従来の 50% 固定
-   */
-  minTopY?: number | null;
   testID?: string;
 }
 
-export function PortfolioSummary({
+/**
+ * 8.84: React.memo — 月送り commit (calendarMonth store) による HomeScreen
+ * 再レンダーから chart / donut subtree を切り離す。swipe release の同フレームで
+ * ここが再計算されるのが「離した瞬間のスタック感」の主因だった。
+ * props は月送りでは全て identity 不変 (positions/protocols = query データ、
+ * today = 分次更新、animatedPosition = sharedValue)。
+ */
+export const PortfolioSummary = React.memo(function PortfolioSummary({
   positions,
   protocols = [],
   today = new Date(),
   walletAddress,
   animatedPosition,
-  minTopY = null,
   testID,
 }: PortfolioSummaryProps) {
   // Phase 7.9: theme 連動 styles
@@ -146,23 +146,13 @@ export function PortfolioSummary({
   const sheetRef = useRef<BottomSheetMethods>(null);
   // Phase 5B.1: 3 snap points
   //   25% = collapsed (PORTFOLIO + total + yield + USDC/SOL toggle のみ、上に mascot 露出)
-  //   middle = default (range selector + chart まで visible)
+  //   50% = default (range selector + chart まで visible)
   //   85% = expanded (Allocation + Sponsored まで visible)
   //
-  // 8.83 (Task 2): middle は固定 "50%" をやめ、カレンダー grid 下端 (minTopY) の
-  // 直下に来る px 数値で計算する (@gorhom/bottom-sheet の number snap = sheet 高さ px)。
-  // 5 週の月では従来の ≈50% と同等、6 週の月では 1 行ぶん下がって 6 行目が見える。
-  // 昇順保証のため 25%〜85% の間に clamp する
-  const screenH = Dimensions.get("window").height;
-  const snapPoints = useMemo(() => {
-    if (minTopY == null) return ["25%", "50%", "85%"];
-    const MARGIN = 10; // grid 下端とシート上端の隙間
-    const middlePx = Math.min(
-      Math.max(screenH - (minTopY + MARGIN), screenH * 0.25 + 24),
-      screenH * 0.85 - 24
-    );
-    return ["25%", middlePx, "85%"];
-  }, [minTopY, screenH]);
+  // 8.84: 8.83 の動的 middle snap (カレンダー下端追従) は「カード基準位置が
+  // 月によって動く」として user 不採用 → 固定 % に戻した。6 週の月は
+  // MonthGrid 側の行圧縮 (aspectRatio 6/5) で 5 週と同じ総高さに収める
+  const snapPoints = useMemo(() => ["25%", "50%", "85%"], []);
 
   // 前回 snap を AsyncStorage から復元 (default index = 1 = "50%")
   useEffect(() => {
@@ -792,7 +782,7 @@ export function PortfolioSummary({
       </BottomSheetScrollView>
     </BottomSheet>
   );
-}
+});
 
 /**
  * BrewingIndicator — history 読込中のパルス表示 (Phase 8.76)
