@@ -8,7 +8,7 @@
  * 静的な grid で MVP を出す。Phase B で gesture pull-to-refresh + animated cell pulse 追加。
  */
 
-import React, { useCallback, useMemo } from "react";
+import React, { useMemo } from "react";
 import {
   Pressable,
   StyleSheet,
@@ -16,17 +16,7 @@ import {
   View,
 } from "react-native";
 import {
-  Gesture,
-  GestureDetector,
-} from "react-native-gesture-handler";
-import Animated, {
-  runOnJS,
-  useAnimatedStyle,
-  useSharedValue,
-  withTiming,
-} from "react-native-reanimated";
-import {
-  addMonths,
+  addDays,
   endOfMonth,
   endOfWeek,
   isSameDay,
@@ -112,8 +102,6 @@ const EMPTY_CUSTOM: CustomEvent[] = [];
 
 export interface MonthGridProps {
   month: Date;
-  /** swipe で月送りされた時の callback (next month を渡す) */
-  onChangeMonth: (next: Date) => void;
   events: UnifiedTimeEvent[];
   /** ユーザーが追加した CustomEvent (任意) */
   customEvents?: CustomEvent[];
@@ -124,13 +112,31 @@ export interface MonthGridProps {
   testID?: string;
 }
 
+/**
+ * 8.83: 月 grid の日リスト (Monday start、月末週まで埋める)。
+ * MonthPager と共有するため関数化。旧実装の `getTime() + 86400*1000` は
+ * DST 跨ぎで 23h の日にずれるため date-fns addDays に置換。
+ */
+export function gridDaysOfMonth(month: Date): Date[] {
+  const start = startOfWeek(startOfMonth(month), { weekStartsOn: 1 });
+  const end = endOfWeek(endOfMonth(month), { weekStartsOn: 1 });
+  const out: Date[] = [];
+  for (let d = start; d <= end; d = addDays(d, 1)) {
+    out.push(d);
+  }
+  return out;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Component
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * 8.83: swipe gesture / 遷移アニメは MonthPager (指追従 carousel) へ移した。
+ * 本 component は「1 ヶ月ぶんの grid を描くだけ」の純粋描画に戻っている。
+ */
 export const MonthGrid = React.memo(function MonthGrid({
   month,
-  onChangeMonth,
   events,
   customEvents = EMPTY_CUSTOM,
   selectedDay,
@@ -141,16 +147,7 @@ export const MonthGrid = React.memo(function MonthGrid({
   // Phase 8.0: theme 連動 styles
   const styles = useThemedStyles(makeStyles);
 
-  const days = useMemo(() => {
-    // Monday start, fill until end of last week of month
-    const start = startOfWeek(startOfMonth(month), { weekStartsOn: 1 });
-    const end = endOfWeek(endOfMonth(month), { weekStartsOn: 1 });
-    const out: Date[] = [];
-    for (let d = start; d <= end; d = new Date(d.getTime() + 86400 * 1000)) {
-      out.push(new Date(d));
-    }
-    return out;
-  }, [month]);
+  const days = useMemo(() => gridDaysOfMonth(month), [month]);
 
   // 8.81: day-key 索引 (構築 O(events)、セル側は Map.get のみ)
   const eventsByDay = useMemo(() => indexEventsByDay(events), [events]);
@@ -159,61 +156,10 @@ export const MonthGrid = React.memo(function MonthGrid({
     [customEvents]
   );
 
-  // Phase 5A.7 prototype 仕様: discrete slide+fade (peek なし、withTiming 駆動、threshold ±50px)
-  const tx = useSharedValue(0);
-  const opacity = useSharedValue(1);
-
-  /**
-   * 8.81: commit-first 方式 (DailyView.tsx の commit と同型)。
-   *
-   * 旧実装は slide-out (140ms) の完了 callback で月を commit していたが、
-   * アニメ中に次の swipe が来ると withTiming がキャンセルされ
-   * `if (!finished) return` で打ち切られる → 月送りが実行されないまま
-   * opacity=0.3 / tx=±40 で固まる不具合があった (Seeker 実機で再現)。
-   * 先に commit してから re-base → settle する形なら、中断されても
-   * 「settle が途中で切れる」だけで、値は次のアニメが必ず上書きする。
-   */
-  const commitMonth = useCallback(
-    (delta: number) => {
-      onChangeMonth(addMonths(month, delta));
-      // re-base: 新月を反対側から slide-in (JS thread からの sharedValue 代入)
-      tx.value = delta > 0 ? 40 : -40;
-      tx.value = withTiming(0, { duration: 180 });
-      opacity.value = 0.5;
-      opacity.value = withTiming(1, { duration: 220 });
-    },
-    [month, onChangeMonth, tx, opacity]
-  );
-
-  // 8.81: gesture は commitMonth が変わる時 (= 月が変わる時) だけ再構築。
-  // 旧実装は毎レンダー再生成で GestureDetector が都度再アタッチされていた。
-  const swipeGesture = useMemo(
-    () =>
-      Gesture.Pan()
-        .withTestId("month-swipe")
-        .activeOffsetX([-12, 12])
-        .failOffsetY([-15, 15])
-        // 8.81: RNGH は FAILED / CANCELLED でも onEnd を呼ぶため success を見る
-        // (外側の edge gesture に負けた pan で月送りが誤発火していた)
-        .onEnd((e, success) => {
-          "worklet";
-          if (!success) return;
-          if (e.translationX < -50) runOnJS(commitMonth)(1);
-          else if (e.translationX > 50) runOnJS(commitMonth)(-1);
-        }),
-    [commitMonth]
-  );
-
-  const animStyle = useAnimatedStyle(() => ({
-    transform: [{ translateX: tx.value }],
-    opacity: opacity.value,
-  }));
-
   return (
-    <GestureDetector gesture={swipeGesture}>
-      <Animated.View style={[styles.container, animStyle]} testID={testID}>
-        {/* Weekday headers (C3: 土日も中性色) */}
-        <View style={styles.weekdayRow}>
+    <View style={styles.container} testID={testID}>
+      {/* Weekday headers (C3: 土日も中性色) */}
+      <View style={styles.weekdayRow}>
         {WEEKDAYS.map((w) => (
           <Text key={w} style={styles.weekday}>
             {w}
@@ -294,9 +240,8 @@ export const MonthGrid = React.memo(function MonthGrid({
             </Pressable>
           );
         })}
-        </View>
-      </Animated.View>
-    </GestureDetector>
+      </View>
+    </View>
   );
 });
 
