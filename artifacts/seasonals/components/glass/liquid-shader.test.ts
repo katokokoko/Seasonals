@@ -1,22 +1,23 @@
 /**
- * liquid-shader — テスト (Phase 8.81)
+ * liquid-shader — テスト (Phase 8.81 → 8.82 単一 pass 化)
  *
  * SkSL の compile / 描画結果は jest では検証できない (RuntimeEffect は
  * jest.setup.js で stub)。ここで固定するのは:
  *   - colorToVec4 の各入力形式 (flavor は #RRGGBBAA / rgba() 文字列が混在)
- *   - packLiquidUniforms / packFoamUniforms が旧 worklet と同じ式で
- *     uniform を組むこと (surfaceYAt との係数一致は shader 側の責務)
+ *   - packGlassUniforms が旧 worklet と同じ式で uniform を組むこと
+ *     (surfaceYAt との係数一致は shader 側の責務)
+ *   - 泡・飛沫の uniform 配列: 固定長 / 番兵 / 「新しい方から N 個」/
+ *     飛沫の表示半径 (life 減衰)
  */
 
 import { GLASS_TUNING, createGlassState, surfaceSlope } from "./glass-physics";
 import {
-  FOAM_SKSL,
-  LIQUID_SKSL,
+  BUBBLE_SLOTS,
+  DROPLET_SLOTS,
+  GLASS_SKSL,
   colorToVec4,
-  foamColorsFromFlavor,
-  liquidColorsFromFlavor,
-  packFoamUniforms,
-  packLiquidUniforms,
+  glassColorsFromFlavor,
+  packGlassUniforms,
 } from "./liquid-shader";
 import { flavorFromPalette } from "./glass-flavor";
 import type { ThemeBgPalette } from "../../stores/theme";
@@ -66,11 +67,11 @@ describe("flavor → color uniforms", () => {
     pool: "#1E6B48",
   } as ThemeBgPalette;
 
-  it("liquid 6 色 / foam 3 色すべて vec4 に変換される", () => {
+  it("12 色すべて vec4 に変換される", () => {
     const flavor = flavorFromPalette(palette);
-    const liq = liquidColorsFromFlavor(flavor);
-    const foam = foamColorsFromFlavor(flavor);
-    for (const v of [...Object.values(liq), ...Object.values(foam)]) {
+    const colors = glassColorsFromFlavor(flavor);
+    expect(Object.keys(colors)).toHaveLength(12);
+    for (const v of Object.values(colors)) {
       expect(v).toHaveLength(4);
       for (const c of v) {
         expect(c).toBeGreaterThanOrEqual(0);
@@ -78,14 +79,14 @@ describe("flavor → color uniforms", () => {
       }
     }
     // withAlpha(p.mid, 0.5) → alpha ≈ 0.5 が保存されている
-    expect(liq.uLiqTop[3]).toBeCloseTo(0x80 / 255, 2);
+    expect(colors.uLiqTop[3]).toBeCloseTo(0x80 / 255, 2);
   });
 });
 
-describe("packLiquidUniforms", () => {
-  it("静止 state: base = H*fill、slope/振幅ゼロ、creamH = 11", () => {
+describe("packGlassUniforms — スカラー", () => {
+  it("静止 state: base = H*fill、slope/振幅ゼロ、creamH = 11、foam off", () => {
     const st = createGlassState(W, H, 4, seq());
-    const u = packLiquidUniforms(st, W, H);
+    const u = packGlassUniforms(st, W, H);
     expect(u.uSize).toEqual([W, H]);
     expect(u.uBase).toBeCloseTo(H * GLASS_TUNING.fill, 8);
     expect(u.uSlope).toBe(0);
@@ -94,6 +95,9 @@ describe("packLiquidUniforms", () => {
     expect(u.uS2).toBe(0);
     expect(u.uMenisAmp).toBe(0);
     expect(u.uCreamH).toBeCloseTo(11, 8);
+    // fizzState=0: uFoamA=0 + 前線は画面外の番兵 (shader 即 skip)
+    expect(u.uFoamA).toBe(0);
+    expect(u.uEdge).toBeGreaterThan(H);
   });
 
   it("傾き・energy が旧 worklet と同じ式で反映される", () => {
@@ -103,7 +107,7 @@ describe("packLiquidUniforms", () => {
     st.s1 = 12;
     st.s2 = -4;
     st.t = 1.25;
-    const u = packLiquidUniforms(st, W, H);
+    const u = packGlassUniforms(st, W, H);
     expect(u.uSlope).toBeCloseTo(surfaceSlope(0.3), 10);
     expect(u.uAmp).toBeCloseTo(
       GLASS_TUNING.rippleBase + 0.5 * GLASS_TUNING.rippleEnergy,
@@ -122,17 +126,7 @@ describe("packLiquidUniforms", () => {
       8
     );
     st.angle = -0.3;
-    expect(packLiquidUniforms(st, W, H).uMenisX).toBe(W);
-  });
-});
-
-describe("packFoamUniforms", () => {
-  it("fizzState=0: uAlpha=0 + 前線は画面外の番兵 (shader 即 transparent)", () => {
-    const st = createGlassState(W, H, 4, seq());
-    st.foamAlpha = 0.7; // state 0 では読まれない
-    const u = packFoamUniforms(st, W, H);
-    expect(u.uAlpha).toBe(0);
-    expect(u.uEdge).toBeGreaterThan(H);
+    expect(packGlassUniforms(st, W, H).uMenisX).toBe(W);
   });
 
   it("fizzState=1/2: foamEdge / foamAlpha / foamScroll をそのまま渡す", () => {
@@ -141,21 +135,64 @@ describe("packFoamUniforms", () => {
     st.foamEdge = 320;
     st.foamAlpha = 1;
     st.foamScroll = 55;
-    st.t = 2;
-    const u = packFoamUniforms(st, W, H);
+    const u = packGlassUniforms(st, W, H);
     expect(u.uEdge).toBe(320);
-    expect(u.uAlpha).toBe(1);
+    expect(u.uFoamA).toBe(1);
     expect(u.uScroll).toBe(55);
-    expect(u.uT).toBe(2);
+  });
+});
+
+describe("packGlassUniforms — 泡・飛沫の uniform 配列", () => {
+  it("泡: 常に固定長 (BUBBLE_SLOTS×4)、未使用 slot は画面外の番兵", () => {
+    const st = createGlassState(W, H, 3, seq()); // 3 個だけ
+    const u = packGlassUniforms(st, W, H);
+    expect(u.uBubbles).toHaveLength(BUBBLE_SLOTS * 4);
+    // 先頭 3 slot は実データ (x は画面近傍)
+    expect(u.uBubbles[0]).toBe(st.bubbles[0]!.x);
+    expect(u.uBubbles[1]).toBe(st.bubbles[0]!.y);
+    expect(u.uBubbles[2]).toBe(st.bubbles[0]!.r);
+    // 4 slot 目以降は番兵
+    expect(u.uBubbles[3 * 4]).toBeLessThan(-1000);
+  });
+
+  it("泡が slot 超過 (あふれ前兆) の時は新しい方から BUBBLE_SLOTS 個", () => {
+    const st = createGlassState(W, H, BUBBLE_SLOTS + 10, seq());
+    const u = packGlassUniforms(st, W, H);
+    expect(u.uBubbles).toHaveLength(BUBBLE_SLOTS * 4);
+    // 先頭 slot = bubbles[10] (古い 10 個を落とす)
+    expect(u.uBubbles[0]).toBe(st.bubbles[10]!.x);
+    // 最終 slot = 最新の泡
+    const last = st.bubbles[st.bubbles.length - 1]!;
+    expect(u.uBubbles[(BUBBLE_SLOTS - 1) * 4]).toBe(last.x);
+  });
+
+  it("飛沫: 表示半径は r·min(1, life·1.5) (旧 dropletPath と同式)、uDropN 反映", () => {
+    const st = createGlassState(W, H, 2, seq());
+    st.droplets.push(
+      { x: 100, y: 200, vx: 0, vy: 0, r: 3, life: 1 }, // min(1, 1.5)=1 → 3
+      { x: 120, y: 210, vx: 0, vy: 0, r: 4, life: 0.4 } // 0.6 → 2.4
+    );
+    const u = packGlassUniforms(st, W, H);
+    expect(u.uDroplets).toHaveLength(DROPLET_SLOTS * 4);
+    expect(u.uDropN).toBe(2);
+    expect(u.uDroplets[2]).toBeCloseTo(3, 8);
+    expect(u.uDroplets[4 + 2]).toBeCloseTo(4 * 0.6, 8);
+    // 3 slot 目以降は番兵
+    expect(u.uDroplets[2 * 4]).toBeLessThan(-1000);
+  });
+
+  it("飛沫ゼロなら uDropN=0 (shader は loop 全体を skip)", () => {
+    const st = createGlassState(W, H, 2, seq());
+    expect(packGlassUniforms(st, W, H).uDropN).toBe(0);
   });
 });
 
 describe("SkSL source — uniform 宣言と pack の整合", () => {
   it("pack が返す全 key が SkSL に uniform として宣言されている", () => {
     const st = createGlassState(W, H, 4, seq());
-    const dynLiquid = Object.keys(packLiquidUniforms(st, W, H));
-    const colLiquid = Object.keys(
-      liquidColorsFromFlavor(
+    const dyn = Object.keys(packGlassUniforms(st, W, H));
+    const colors = Object.keys(
+      glassColorsFromFlavor(
         flavorFromPalette({
           top: "#FFFFFF",
           mid: "#FFFFFF",
@@ -165,15 +202,17 @@ describe("SkSL source — uniform 宣言と pack の整合", () => {
         } as ThemeBgPalette)
       )
     );
-    for (const k of [...dynLiquid, ...colLiquid]) {
-      expect(LIQUID_SKSL).toMatch(new RegExp(`uniform (float2?|half4) ${k};`));
+    for (const k of [...dyn, ...colors]) {
+      expect(GLASS_SKSL).toMatch(
+        new RegExp(`uniform (float2?|half4|float4) ${k}(\\[\\d+\\])?;`)
+      );
     }
-    const dynFoam = Object.keys(packFoamUniforms(st, W, H));
-    for (const k of dynFoam) {
-      expect(FOAM_SKSL).toMatch(new RegExp(`uniform (float2?|half4) ${k};`));
-    }
-    expect(FOAM_SKSL).toMatch(/uniform half4 uFoamTop;/);
-    expect(FOAM_SKSL).toMatch(/uniform half4 uFoamBottom;/);
-    expect(FOAM_SKSL).toMatch(/uniform half4 uFoamRing;/);
+  });
+
+  it("配列長は GLASS_TUNING の low tier と一致 (loop 反復数の定数性)", () => {
+    expect(BUBBLE_SLOTS).toBe(GLASS_TUNING.bubbleCountLow);
+    expect(DROPLET_SLOTS).toBe(GLASS_TUNING.dropletMaxLow);
+    expect(GLASS_SKSL).toContain(`uniform float4 uBubbles[${BUBBLE_SLOTS}];`);
+    expect(GLASS_SKSL).toContain(`uniform float4 uDroplets[${DROPLET_SLOTS}];`);
   });
 });

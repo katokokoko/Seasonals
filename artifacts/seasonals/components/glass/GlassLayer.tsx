@@ -22,13 +22,7 @@
 
 import React, { useCallback, useEffect, useMemo } from "react";
 import { Dimensions, StyleSheet, View } from "react-native";
-import {
-  Canvas,
-  Fill,
-  Path,
-  Shader,
-  Skia,
-} from "@shopify/react-native-skia";
+import { Canvas, Fill, Shader } from "@shopify/react-native-skia";
 import {
   runOnJS,
   useDerivedValue,
@@ -39,22 +33,13 @@ import * as Haptics from "expo-haptics";
 
 import { MelonSodaBackground } from "../decorative/MelonSodaBackground";
 import { usePrefsStore } from "../../stores/prefs";
-import {
-  GLASS_TUNING,
-  createGlassState,
-  stepGlass,
-  surfaceYAt,
-} from "./glass-physics";
+import { GLASS_TUNING, createGlassState, stepGlass } from "./glass-physics";
 import { useGlassFlavor } from "./glass-flavor";
 import {
-  foamColorsFromFlavor,
-  liquidColorsFromFlavor,
-  makeFoamEffect,
-  makeLiquidEffect,
-  packFoamUniforms,
-  packLiquidUniforms,
-  type FoamDynamicUniforms,
-  type LiquidDynamicUniforms,
+  glassColorsFromFlavor,
+  makeGlassEffect,
+  packGlassUniforms,
+  type GlassDynamicUniforms,
 } from "./liquid-shader";
 import { useReduceMotion } from "./useReduceMotion";
 import { TiltSensorBridge, useTiltRoll } from "./useTiltRoll";
@@ -94,50 +79,30 @@ export function GlassLayer() {
   );
   const state = useSharedValue(initialState);
 
-  // 描画出力 — 8.81: shader uniform 2 組 + CPU path 2 本 (泡・飛沫) に縮小
-  const liquidDyn = useSharedValue<LiquidDynamicUniforms>(
-    packLiquidUniforms(initialState, W, H)
+  // 描画出力 — 8.82: 単一 shader の uniform 1 組のみ (path sharedValue は全廃)
+  const glassDyn = useSharedValue<GlassDynamicUniforms>(
+    packGlassUniforms(initialState, W, H)
   );
-  const foamDyn = useSharedValue<FoamDynamicUniforms>(
-    packFoamUniforms(initialState, W, H)
-  );
-  const bubblePath = useSharedValue(Skia.Path.Make());
-  const bubbleHiPath = useSharedValue(Skia.Path.Make());
-  const dropletPath = useSharedValue(Skia.Path.Make());
 
   // RuntimeEffect は JS thread で 1 回だけ compile
-  const liquidEffect = useMemo(() => makeLiquidEffect(), []);
-  const foamEffect = useMemo(() => makeFoamEffect(), []);
+  const glassEffect = useMemo(() => makeGlassEffect(), []);
 
   // 色 uniform は theme 切替時のみ再計算し、動的 uniform と合成して Shader へ
-  const liquidColors = useMemo(() => liquidColorsFromFlavor(flavor), [flavor]);
-  const foamColors = useMemo(() => foamColorsFromFlavor(flavor), [flavor]);
-  const liquidUniforms = useDerivedValue(
-    () => ({ ...liquidDyn.value, ...liquidColors }),
-    [liquidColors]
-  );
-  const foamUniforms = useDerivedValue(
-    () => ({ ...foamDyn.value, ...foamColors }),
-    [foamColors]
+  const glassColors = useMemo(() => glassColorsFromFlavor(flavor), [flavor]);
+  const glassUniforms = useDerivedValue(
+    () => ({ ...glassDyn.value, ...glassColors }),
+    [glassColors]
   );
 
   // F1: callback は useCallback で安定化し (毎レンダー再登録を防ぐ)、active の
   // 変化は返り値の setActive で追従する — useFrameCallback の第 2 引数 autostart
   // は reanimated 3.10 では初回登録時にしか効かないため (実装確認済)
-  // 8.81: シミュレーション tick の累積時間 (60Hz 間引き用)
-  const simAccMs = useSharedValue(0);
-
   const frameWorklet = useCallback((info: { timeSincePreviousFrame: number | null }) => {
     "worklet";
-    // 8.81: 液体の物理 + uniform/path 更新は **60Hz に間引く**。
-    // 120Hz 端末では毎フレーム redraw を焚くこと自体が UI thread の主コストで
-    // (uniform 書き込み → Skia DOM 再記録が 1 write ごとに走る)、波の動きは
-    // 60fps で視覚的に区別がつかない。表示・ジェスチャは 120Hz のまま。
+    // 8.82: tick は毎フレーム (Seeker では 120Hz)。8.81 の 60Hz 間引きは、
+    // Canvas を Fill 1 node に縮小して tick 単価を下げたことで撤去した
     const dtMs = info.timeSincePreviousFrame ?? 16.7;
-    simAccMs.value += dtMs;
-    if (simAccMs.value < 15) return;
-    const dt = Math.min(0.033, simAccMs.value / 1000);
-    simAccMs.value = 0;
+    const dt = Math.min(0.033, dtMs / 1000);
     const st = state.value;
 
     st.targetA = roll.value;
@@ -156,32 +121,8 @@ export function GlassLayer() {
     if (st.hapticSlosh) runOnJS(fireSloshHaptic)();
     if (st.hapticFizz) runOnJS(fireFizzHaptic)();
 
-    // ── 液面 / クリーム帯 / あふれ覆いは shader (GPU)。uniform 詰め替えのみ ──
-    liquidDyn.value = packLiquidUniforms(st, W, H);
-    foamDyn.value = packFoamUniforms(st, W, H);
-
-    // ── 泡 (液中のみ。輪郭 + ハイライトの 2 path に集約) ──
-    // 8.81: クリーム帯が shader (下層) に移ったため、帯の下端より上の泡は
-    // skip して「泡は帯の後ろに隠れる」旧描画順の見え方を保つ
-    const fh = 11 + st.energy * 7;
-    const bp = Skia.Path.Make();
-    const bh = Skia.Path.Make();
-    for (let i = 0; i < st.bubbles.length; i++) {
-      const b = st.bubbles[i]!;
-      if (b.y < surfaceYAt(st, b.x, W, H, false) + fh) continue;
-      bp.addCircle(b.x, b.y, b.r);
-      bh.addCircle(b.x - b.r * 0.35, b.y - b.r * 0.35, b.r * 0.35);
-    }
-    bubblePath.value = bp;
-    bubbleHiPath.value = bh;
-
-    // ── 飛沫 ──
-    const dp = Skia.Path.Make();
-    for (let i = 0; i < st.droplets.length; i++) {
-      const p = st.droplets[i]!;
-      dp.addCircle(p.x, p.y, p.r * Math.min(1, p.life * 1.5));
-    }
-    dropletPath.value = dp;
+    // ── 描画はすべて shader (GPU)。CPU は uniform 詰め替え 1 回のみ ──
+    glassDyn.value = packGlassUniforms(st, W, H);
     // 依存は全て安定参照 (sharedValue / module const) — callback は 1 回だけ登録される
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -204,7 +145,7 @@ export function GlassLayer() {
   // 退避 (8.41): none = 背景装飾を一切描かない (うす緑も出さない)。
   // static / (liquid だが reduce-motion・センサー不可) → 静的ソーダ背景 (§2.4)。
   // 8.81: RuntimeEffect の compile 失敗 (想定外の SkSL 非互換) も静的側へ fail-safe
-  if (!active || !liquidEffect || !foamEffect) {
+  if (!active || !glassEffect) {
     if (mode === "none") return bridge;
     return (
       <>
@@ -219,23 +160,10 @@ export function GlassLayer() {
       {bridge}
       <View pointerEvents="none" style={StyleSheet.absoluteFill} testID="glass-layer">
       <Canvas style={StyleSheet.absoluteFill}>
-        {/* 1-2. 液体本体 + 底の深み + クリーム帯 (SkSL、8.81 — 旧 path 6 本分) */}
+        {/* 8.82: 全描画を単一 SkSL に統合 (液体 + 泡 + クリーム帯 + 飛沫 + あふれ)。
+            Canvas を Fill 1 node にすることで tick ごとの再記録を最小化する */}
         <Fill>
-          <Shader source={liquidEffect} uniforms={liquidUniforms} />
-        </Fill>
-        {/* 3. 炭酸の泡 (§2.2 — 世界座標上向き。CPU path、low tier 28) */}
-        <Path
-          path={bubblePath}
-          style="stroke"
-          strokeWidth={1.1}
-          color={flavor.bubbleStroke}
-        />
-        <Path path={bubbleHiPath} color={flavor.bubbleFill} />
-        {/* 4. 壁際の飛沫 (CPU path、low tier 16) */}
-        <Path path={dropletPath} color={flavor.droplet} />
-        {/* 5. あふれ覆い (§2.3 — SkSL。通常時は uAlpha=0 で即 transparent) */}
-        <Fill>
-          <Shader source={foamEffect} uniforms={foamUniforms} />
+          <Shader source={glassEffect} uniforms={glassUniforms} />
         </Fill>
       </Canvas>
       </View>
