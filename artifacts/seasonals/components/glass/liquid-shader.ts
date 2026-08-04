@@ -244,6 +244,16 @@ half4 main(float2 p) {
     }
   }
 
+  // ── dither (8.82) ──
+  // 8-bit 出力の量子化で、なだらかなグラデに縞 (banding) が出るのを ±0.5/255 の
+  // 位置ベースノイズで散らす。旧 Skia LinearGradient は内部で dither していたが、
+  // raw な RuntimeEffect には無いので自前で行う。完全透明 pixel は触らない
+  // (液面より上の背景に薄いベールを乗せないため)
+  if (col.a > 0.001) {
+    float n = fract(sin(dot(p, float2(12.9898, 78.233))) * 43758.5453) - 0.5;
+    col.rgb = clamp(col.rgb + half3(half(n / 255.0)), half3(0.0), half3(1.0));
+    col.a = clamp(col.a + half(n / 255.0), 0.0, 1.0);
+  }
   return half4(col.rgb * col.a, col.a); // premultiply
 }
 `;
