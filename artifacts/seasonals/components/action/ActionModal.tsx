@@ -17,6 +17,7 @@ import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   Dimensions,
+  KeyboardAvoidingView,
   Linking,
   Modal,
   Pressable,
@@ -758,7 +759,13 @@ export function ActionModal({
       </Animated.View>
 
       {/* Sheet wrap: 画面下端に固定、sheet 自体だけ translateY で下から上昇 */}
-      <View style={styles.sheetWrap} pointerEvents="box-none">
+      {/* 8.86: amount 入力がキーボードに隠れないよう padding で押し上げる
+          (edge-to-edge では adjustResize が効かないため JS 側で回避) */}
+      <KeyboardAvoidingView
+        behavior="padding"
+        style={styles.sheetWrap}
+        pointerEvents="box-none"
+      >
         {/* 8.45 (edge-to-edge): statusBarTranslucent の全画面 window なので、
             CTA がジェスチャーバーに重ならないよう下端 inset を足す */}
         <Animated.View
@@ -834,7 +841,7 @@ export function ActionModal({
           />
         )}
         </Animated.View>
-      </View>
+      </KeyboardAvoidingView>
     </Modal>
   );
 }

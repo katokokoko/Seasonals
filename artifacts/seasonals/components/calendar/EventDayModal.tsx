@@ -9,11 +9,14 @@
  */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Pressable, StyleSheet, Text, TextInput, View } from "react-native";
+import { Pressable, StyleSheet, Text, View } from "react-native";
 import {
   BottomSheetBackdrop,
   BottomSheetModal,
   BottomSheetScrollView,
+  // 8.86: 素の RN TextInput だと sheet の keyboard 追従 (keyboardBehavior) が
+  // 発動しない — focus 検知が BottomSheetTextInput 経由のため
+  BottomSheetTextInput,
   type BottomSheetBackdropProps,
   type BottomSheetModalMethods,
 } from "@gorhom/bottom-sheet";
@@ -150,6 +153,13 @@ export function EventDayModal({
       backgroundStyle={styles.bg}
       handleIndicatorStyle={styles.grabber}
       enablePanDownToClose
+      // 8.86: キーボードが custom event の入力欄を隠す対策。edge-to-edge
+      // (decorFitsSystemWindows=false) では manifest の adjustResize が効かない
+      // ため、sheet 自身の keyboard 追従が唯一の手段。extend = sheet を
+      // キーボードの上まで引き上げる / blur で元の位置に戻す
+      keyboardBehavior="extend"
+      keyboardBlurBehavior="restore"
+      android_keyboardInputMode="adjustResize"
     >
       <View style={styles.header}>
         <View>
@@ -274,7 +284,7 @@ function CustomEventsSection({
       {adding && (
         <View style={styles.customForm}>
           <View style={styles.customFormRow}>
-            <TextInput
+            <BottomSheetTextInput
               accessibilityLabel="emoji"
               value={emoji}
               onChangeText={setEmoji}
@@ -282,7 +292,7 @@ function CustomEventsSection({
               style={[styles.customInput, styles.customInputEmoji]}
               testID={testID ? `${testID}-custom-emoji` : undefined}
             />
-            <TextInput
+            <BottomSheetTextInput
               accessibilityLabel="title"
               value={title}
               onChangeText={setTitle}
@@ -292,7 +302,7 @@ function CustomEventsSection({
               testID={testID ? `${testID}-custom-title` : undefined}
             />
           </View>
-          <TextInput
+          <BottomSheetTextInput
             accessibilityLabel="amount usd"
             value={amount}
             onChangeText={setAmount}

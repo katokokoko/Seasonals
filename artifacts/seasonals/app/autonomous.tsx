@@ -9,7 +9,13 @@
  * server state は全て TanStack Query hook 経由 (CLAUDE.md §5)。
  */
 
-import { ScrollView, StyleSheet, Text, View } from "react-native";
+import {
+  KeyboardAvoidingView,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+} from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Link } from "expo-router";
 
@@ -57,6 +63,8 @@ export default function Autonomous(): React.JSX.Element {
 
   return (
     <SafeAreaView style={styles.safe} edges={["top", "bottom"]}>
+      {/* 8.86: PolicyEditor の数値入力がキーボードに隠れないよう押し上げる */}
+      <KeyboardAvoidingView behavior="padding" style={styles.kav}>
       <ScrollView contentContainerStyle={styles.container}>
         <View style={styles.headerRow}>
           <Link href="/" asChild>
@@ -114,12 +122,14 @@ export default function Autonomous(): React.JSX.Element {
           <AutonomousLogList records={logQ.data ?? []} />
         )}
       </ScrollView>
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
   safe: { flex: 1, backgroundColor: COLOR.bgPrimary },
+  kav: { flex: 1 },
   container: { padding: SPACE.md, gap: SPACE.md, paddingBottom: SPACE.xxl },
   headerRow: { flexDirection: "row", alignItems: "center" },
   backLink: {
