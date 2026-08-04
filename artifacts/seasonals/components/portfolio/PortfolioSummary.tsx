@@ -120,6 +120,12 @@ export interface PortfolioSummaryProps {
    * 計算に使えるようにする (Phase 5A.3)。SheetPosition は top からの px。
    */
   animatedPosition?: SharedValue<number>;
+  /**
+   * 8.83 (Task 2): middle snap 時のシート上端がこの y (画面絶対 px) より
+   * 上に来ないようにする。monthly view のカレンダー grid 下端を渡すことで、
+   * 6 週の月でも 6 行目がシートに被らない。null なら従来の 50% 固定
+   */
+  minTopY?: number | null;
   testID?: string;
 }
 
@@ -129,6 +135,7 @@ export function PortfolioSummary({
   today = new Date(),
   walletAddress,
   animatedPosition,
+  minTopY = null,
   testID,
 }: PortfolioSummaryProps) {
   // Phase 7.9: theme 連動 styles
@@ -139,9 +146,23 @@ export function PortfolioSummary({
   const sheetRef = useRef<BottomSheetMethods>(null);
   // Phase 5B.1: 3 snap points
   //   25% = collapsed (PORTFOLIO + total + yield + USDC/SOL toggle のみ、上に mascot 露出)
-  //   50% = default (range selector + chart まで visible)
+  //   middle = default (range selector + chart まで visible)
   //   85% = expanded (Allocation + Sponsored まで visible)
-  const snapPoints = useMemo(() => ["25%", "50%", "85%"], []);
+  //
+  // 8.83 (Task 2): middle は固定 "50%" をやめ、カレンダー grid 下端 (minTopY) の
+  // 直下に来る px 数値で計算する (@gorhom/bottom-sheet の number snap = sheet 高さ px)。
+  // 5 週の月では従来の ≈50% と同等、6 週の月では 1 行ぶん下がって 6 行目が見える。
+  // 昇順保証のため 25%〜85% の間に clamp する
+  const screenH = Dimensions.get("window").height;
+  const snapPoints = useMemo(() => {
+    if (minTopY == null) return ["25%", "50%", "85%"];
+    const MARGIN = 10; // grid 下端とシート上端の隙間
+    const middlePx = Math.min(
+      Math.max(screenH - (minTopY + MARGIN), screenH * 0.25 + 24),
+      screenH * 0.85 - 24
+    );
+    return ["25%", middlePx, "85%"];
+  }, [minTopY, screenH]);
 
   // 前回 snap を AsyncStorage から復元 (default index = 1 = "50%")
   useEffect(() => {
@@ -276,13 +297,23 @@ export function PortfolioSummary({
     [serverHistory, currency, scope]
   );
   // deposited のローカル記録は無い (8.56 の snapshot は全資産) ので、
-  // server 履歴が無ければ現在値カードに落とす (全資産の線を流用しない)
-  const series =
-    serverSeries.length >= 2
-      ? serverSeries
-      : scope === "deposited"
-        ? []
-        : localSeries;
+  // server 履歴が無ければ現在値カードに落とす (全資産の線を流用しない)。
+  //
+  // 8.83: server 履歴の **fetch 中は localSeries に fallback しない** (空 series →
+  // chart-state の優先順位で brewing に落ちる)。旧挙動は cold start で疎な
+  // 端末スナップショット (3-4 点) の線を先に描き、完全グラフに差し替わる
+  // 2 段階表示になっていた。localSeries は「fetch が終わっても server 履歴が
+  // 無い」時 (未接続 / fixture / BFF 不通) だけのオフライン fallback とする。
+  // range 切替時の flash は usePortfolioHistory の keepPreviousData 側で防ぐ
+  const series = useMemo(
+    () =>
+      serverSeries.length >= 2
+        ? serverSeries
+        : historyFetching || scope === "deposited"
+          ? []
+          : localSeries,
+    [serverSeries, historyFetching, scope, localSeries]
+  );
   const approximatedSymbols = serverHistory?.approximated_symbols ?? [];
   // 8.60: 履歴がどこまで遡れているか (3M と 1Y が同じに見える理由の説明)
   const coverage = useMemo(

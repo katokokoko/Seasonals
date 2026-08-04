@@ -50,7 +50,7 @@ import {
   type UnifiedTimeEvent,
 } from "@workspace/lib/types";
 
-import { MonthGrid } from "../components/calendar/MonthGrid";
+import { MonthPager } from "../components/calendar/MonthPager";
 import { DailyView } from "../components/calendar/DailyView";
 import { EventDayModal } from "../components/calendar/EventDayModal";
 import { syntheticPlanFromEventAction } from "../components/calendar/event-action";
@@ -299,6 +299,17 @@ export default function HomeScreen() {
     ? events.filter((e) => eventDayKey(e.triggerAt) === localDayKey(selectedDay))
     : [];
 
+  // 8.83 (Task 2): 当月 grid 下端の画面絶対 y。PortfolioSummary の middle snap を
+  // ここより下に置くことで、6 週の月でも 6 行目がシートに被らない。
+  // 数 px 未満の揺れで snapPoints を再計算しないよう丸めてから set する
+  const [calendarBottomY, setCalendarBottomY] = useState<number | null>(null);
+  const handleCalendarBottomY = useCallback((bottomY: number) => {
+    const rounded = Math.round(bottomY);
+    setCalendarBottomY((prev) =>
+      prev !== null && Math.abs(prev - rounded) < 4 ? prev : rounded
+    );
+  }, []);
+
   // 8.81: useCallback 化 — MonthGrid (React.memo) に安定 identity で渡す
   const handleDayPress = useCallback(
     (day: Date) => {
@@ -415,7 +426,7 @@ export default function HomeScreen() {
       <GestureDetector gesture={Gesture.Race(edgeLeftGesture, edgeRightGesture)}>
         <View style={styles.bodyWrap}>
           {viewMode === "monthly" ? (
-            <MonthGrid
+            <MonthPager
               month={monthDate}
               onChangeMonth={handleMonthChange}
               events={events}
@@ -423,6 +434,7 @@ export default function HomeScreen() {
               selectedDay={selectedDay}
               onDayPress={handleDayPress}
               today={today}
+              onCenterBottomY={handleCalendarBottomY}
               testID="home-calendar"
             />
           ) : (
@@ -479,6 +491,7 @@ export default function HomeScreen() {
         today={today}
         walletAddress={onchainAddress}
         animatedPosition={sheetPosition}
+        minTopY={viewMode === "monthly" ? calendarBottomY : null}
         testID="home-portfolio"
       />
 
