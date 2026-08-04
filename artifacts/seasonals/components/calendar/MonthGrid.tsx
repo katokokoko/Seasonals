@@ -94,6 +94,9 @@ function indexCustomEventsByDay(
 const EMPTY_EVENTS: UnifiedTimeEvent[] = [];
 const EMPTY_CUSTOM: CustomEvent[] = [];
 
+/** 8.86: 1 セルに並ぶアイコン (droplet + custom 絵文字) の合計上限 */
+const MAX_MARKERS = 3;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Props
 // ─────────────────────────────────────────────────────────────────────────────
@@ -222,25 +225,31 @@ export const MonthGrid = React.memo(function MonthGrid({
                     : undefined
                 }
               >
-                {/* §5.3: urgency-first — critical が 4 件目以降で隠れないよう sort */}
-                {sortEventsByUrgency(dayEvents).slice(0, 3).map((e) => (
-                  <DropletMarker
-                    key={e.id}
-                    category={dropletShapeForEvent(e)}
-                    urgency={e.urgency}
-                    size={9}
-                    testID={`droplet-${e.id}`}
-                  />
-                ))}
-                {/* 8.39: 1 行 (折返しなし) に収める — custom は 1 個まで */}
-                {dayCustom.slice(0, 1).map((ce) => (
-                  <Text key={ce.id} style={styles.customMarker}>
-                    {ce.marker === "emoji" && ce.emoji ? ce.emoji : "★"}
-                  </Text>
-                ))}
-                {dayEvents.length + dayCustom.length > 4 && (
+                {/* 8.86: アイコンは **合計 3 個まで** (droplet + custom 絵文字)。
+                    §5.3 urgency-first の droplet を優先し、残り枠を custom で
+                    埋める。超過は "+N" (旧実装は閾値 >4 で表示上限 4 と噛み
+                    合わず、4 イベントの日に +1 が出ない off-by-one があった) */}
+                {sortEventsByUrgency(dayEvents)
+                  .slice(0, MAX_MARKERS)
+                  .map((e) => (
+                    <DropletMarker
+                      key={e.id}
+                      category={dropletShapeForEvent(e)}
+                      urgency={e.urgency}
+                      size={9}
+                      testID={`droplet-${e.id}`}
+                    />
+                  ))}
+                {dayCustom
+                  .slice(0, Math.max(0, MAX_MARKERS - dayEvents.length))
+                  .map((ce) => (
+                    <Text key={ce.id} style={styles.customMarker}>
+                      {ce.marker === "emoji" && ce.emoji ? ce.emoji : "★"}
+                    </Text>
+                  ))}
+                {dayEvents.length + dayCustom.length > MAX_MARKERS && (
                   <Text style={styles.moreCount}>
-                    +{dayEvents.length + dayCustom.length - 4}
+                    +{dayEvents.length + dayCustom.length - MAX_MARKERS}
                   </Text>
                 )}
               </View>

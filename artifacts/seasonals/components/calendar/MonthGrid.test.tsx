@@ -64,22 +64,40 @@ describe("MonthGrid — 8.39 cell 高さ安定化", () => {
     expect(screen.getByTestId("grid-day-2026-07-16-markers")).toBeTruthy();
   });
 
-  it("イベント 6 件の日: droplet は 3 個 + '+2' (折返しなしの上限)", () => {
+  it("イベント 6 件の日: droplet は 3 個 + '+3' (8.86: 表示上限 3 と整合)", () => {
     const events = [1, 2, 3, 4, 5, 6].map((i) => event(`e${i}`, 20));
     renderGrid(events);
     const droplets = [1, 2, 3, 4, 5, 6].filter(
       (i) => screen.queryByTestId(`droplet-e${i}`) !== null
     );
     expect(droplets).toHaveLength(3);
-    expect(screen.getByText("+2")).toBeTruthy(); // 6 - 4 表示枠
+    expect(screen.getByText("+3")).toBeTruthy(); // 6 - 3 表示枠
   });
 
-  it("custom event は 1 個まで表示、超過は '+N' に合算される", () => {
-    renderGrid([], [custom("c1", 21), custom("c2", 21), custom("c3", 21)]);
-    // emoji は 1 個だけ
+  it("8.86: custom だけの日は絵文字が 3 個まで並ぶ", () => {
+    renderGrid(
+      [],
+      [custom("c1", 21), custom("c2", 21), custom("c3", 21), custom("c4", 21)]
+    );
+    expect(screen.getAllByText("🎈")).toHaveLength(3);
+    expect(screen.getByText("+1")).toBeTruthy(); // 4 - 3
+  });
+
+  it("8.86: droplet 2 + custom 2 → droplet 2 + 絵文字 1 + '+1' (droplet 優先)", () => {
+    renderGrid(
+      [event("a", 22), event("b", 22)],
+      [custom("c1", 22), custom("c2", 22)]
+    );
+    expect(screen.getByTestId("droplet-a")).toBeTruthy();
+    expect(screen.getByTestId("droplet-b")).toBeTruthy();
     expect(screen.getAllByText("🎈")).toHaveLength(1);
-    // 3 件中 1 件表示 → +N は total(3) - 4 では負…条件は total > 4 なので出ない
-    expect(screen.queryByText(/^\+/)).toBeNull();
+    expect(screen.getByText("+1")).toBeTruthy(); // 4 - 3
+  });
+
+  it("8.86: イベント 4 件 (custom 0) の日も '+1' が出る (旧 off-by-one の regression)", () => {
+    const events = [1, 2, 3, 4].map((i) => event(`e${i}`, 23));
+    renderGrid(events);
+    expect(screen.getByText("+1")).toBeTruthy();
   });
 
   it("urgency-first: critical は 4 件目でも表示枠に入る (§5.3)", () => {
