@@ -11,6 +11,7 @@
  */
 
 import {
+  keepPreviousData,
   useMutation,
   useQuery,
   useQueryClient,
@@ -205,6 +206,13 @@ export function usePortfolioHistory(
     queryFn: () => api.getPortfolioHistory(address!, days),
     enabled: Boolean(address),
     staleTime: 5 * 60_000,
+    // 8.83: range (days) 切替時、新 key の取得中も旧 range のチャートを
+    // 表示し続ける (疎な localSeries / brewing への flash を出さない)
+    placeholderData: keepPreviousData,
+    // 8.83: 永続キャッシュ (app/_layout.tsx の PersistQueryClientProvider) の
+    // 対象なので、gcTime は maxAge (24h) より長くしておく — TanStack の
+    // persist は gc された query を復元しないため
+    gcTime: 24 * 60 * 60_000,
   });
 }
 
