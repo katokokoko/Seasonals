@@ -142,11 +142,18 @@ jest.mock("@shopify/react-native-skia", () => {
     Path: mock("Path"),
     Rect: mock("Rect"),
     RoundedRect: mock("RoundedRect"),
+    Fill: mock("Fill"),
+    Shader: mock("Shader"),
     LinearGradient: mock("SkiaLinearGradient"),
     RadialGradient: mock("SkiaRadialGradient"),
     BlurMask: mock("BlurMask"),
     vec: (x, y) => ({ x, y }),
-    Skia: { Path: { Make: makePath } },
+    // 8.81: RuntimeEffect (liquid-shader)。SkSL の compile はできないので
+    // truthy な stub を返す — shader の実描画は実機で確認する (confirm.md §A)
+    Skia: {
+      Path: { Make: makePath },
+      RuntimeEffect: { Make: (sksl) => ({ __sksl: sksl }) },
+    },
   };
 });
 
