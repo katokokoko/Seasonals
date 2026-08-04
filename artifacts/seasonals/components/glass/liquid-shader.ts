@@ -28,10 +28,20 @@
  * 「泡が増える」演出は泡あふれ本体 (foam) が担う。
  */
 
+import { PixelRatio } from "react-native";
 import { Skia, type SkRuntimeEffect } from "@shopify/react-native-skia";
 
 import { GLASS_TUNING, surfaceSlope, type GlassState } from "./glass-physics";
 import type { GlassFlavor } from "./glass-flavor";
+
+/**
+ * 8.82: AA (エッジのぼかし) 幅の単位補正。
+ * Canvas / shader の座標系は **dp** で、Seeker は 1dp = 3 物理px。SkSL 内の
+ * smoothstep 幅を「1〜1.5 (物理px のつもり)」で書くと実際は 3〜4.5 物理px の
+ * ソフトエッジになり、旧 path 描画 (Skia の解析的 AA ≈1px) より明確に甘く見える
+ * (user 報告「解像感が甘い」の実因)。エッジ幅は uAA = 1 物理px 相当の dp で渡す。
+ */
+const AA_DP = 1 / PixelRatio.get();
 
 /** shader が描く泡・飛沫の slot 数 (SkSL の配列長と一致させる) */
 export const BUBBLE_SLOTS = GLASS_TUNING.bubbleCountLow; // 28
@@ -65,6 +75,7 @@ uniform float uEdge;       // あふれ前線 y (通常時は画面外の番兵)
 uniform float uScroll;     // あふれ内部テクスチャのスクロール量
 uniform float uFoamA;      // あふれ覆いの不透明度 (旧 Group opacity)
 uniform float uDropN;      // 生きている飛沫数 (0 なら loop 全体を skip)
+uniform float uAA;         // 1 物理px 相当の dp (エッジ AA の半幅)
 uniform half4 uLiqTop;
 uniform half4 uLiqMid;
 uniform half4 uLiqBottom;
@@ -120,7 +131,7 @@ half4 main(float2 p) {
     half4 liq = g < 0.45
       ? mix(uLiqTop, uLiqMid, half(g / 0.45))
       : mix(uLiqMid, uLiqBottom, half((g - 0.45) / 0.55));
-    liq.a *= half(smoothstep(-1.5, 1.5, d)); // 液面の AA
+    liq.a *= half(smoothstep(-uAA, uAA, d)); // 液面の AA (~1 物理px)
     col = blendOver(col, liq);
     half4 deep = uDeep;
     deep.a *= half(clamp((p.y - H * 0.55) / (H * 0.45), 0.0, 1.0));
@@ -137,15 +148,15 @@ half4 main(float2 p) {
       float dy = p.y - b.y;
       if (abs(dx) <= b.z + 2.0 && abs(dy) <= b.z + 2.0) {
         float dist = length(float2(dx, dy));
-        // stroke: |dist - r| < 0.55 (幅 1.1) + AA
-        half ring = half(1.0 - smoothstep(0.3, 1.1, abs(dist - b.z)));
+        // stroke: |dist - r| < 0.55 (幅 1.1、旧 strokeWidth と同値) + AA
+        half ring = half(1.0 - smoothstep(0.55 - uAA, 0.55 + uAA, abs(dist - b.z)));
         half4 sc = uBubbleStroke;
         sc.a *= ring;
         col = blendOver(col, sc);
         // ハイライト: 中心を (-0.35r, -0.35r) にずらした半径 0.35r の塗り円
         float hr = b.z * 0.35;
         float hd = length(float2(dx + hr, dy + hr));
-        half hi = half(1.0 - smoothstep(hr - 0.75, hr + 0.75, hd));
+        half hi = half(1.0 - smoothstep(hr - uAA, hr + uAA, hd));
         half4 fc = uBubbleFill;
         fc.a *= hi;
         col = blendOver(col, fc);
@@ -155,8 +166,8 @@ half4 main(float2 p) {
 
   // ── 3. クリーム帯 + ドット (液面近傍のみ) ──
   if (abs(d) < uCreamH + 30.0) {
-    half band = half(smoothstep(-3.0, -1.0, d)
-                   * (1.0 - smoothstep(uCreamH - 1.0, uCreamH + 1.0, d)));
+    half band = half(smoothstep(-2.0 - uAA, -2.0 + uAA, d)
+                   * (1.0 - smoothstep(uCreamH - uAA, uCreamH + uAA, d)));
     half4 cream = uCream;
     cream.a *= band;
     col = blendOver(col, cream);
@@ -167,7 +178,7 @@ half4 main(float2 p) {
       if (abs(p.x - cx) < 12.0) {
         float r = 4.0 + mod(fi * 37.0, 5.0) + sin(uT * 2.0 + fi) * 1.2;
         float cy = surfaceY(cx) + 1.0;
-        half cov = half(1.0 - smoothstep(r - 1.0, r + 1.0, distance(p, float2(cx, cy))));
+        half cov = half(1.0 - smoothstep(r - uAA, r + uAA, distance(p, float2(cx, cy))));
         half4 dotc = uCreamDot;
         dotc.a *= cov;
         col = blendOver(col, dotc);
@@ -182,7 +193,7 @@ half4 main(float2 p) {
       float dx = p.x - dr.x;
       float dy = p.y - dr.y;
       if (abs(dx) <= dr.z + 1.5 && abs(dy) <= dr.z + 1.5) {
-        half cov = half(1.0 - smoothstep(dr.z - 0.75, dr.z + 0.75, length(float2(dx, dy))));
+        half cov = half(1.0 - smoothstep(dr.z - uAA, dr.z + uAA, length(float2(dx, dy))));
         half4 dc = uDropletC;
         dc.a *= cov;
         col = blendOver(col, dc);
@@ -194,7 +205,7 @@ half4 main(float2 p) {
   if (uFoamA > 0.004) {
     float W = uSize.x;
     float ey = edgeY(p.x);
-    float cov = smoothstep(-1.5, 1.5, p.y - ey);
+    float cov = smoothstep(-uAA, uAA, p.y - ey);
     // 前縁 blob 列 (疑似メタボール — 旧 BlurMask blur=5 を smoothstep で置換)。
     // 旧条件: edge > -(fizzCoverOvershoot + 5) = -95
     if (p.y < ey + 40.0 && uEdge > -95.0) {
@@ -222,7 +233,8 @@ half4 main(float2 p) {
           float y = mod(sy * span + span - mod(uScroll, span), span) - 70.0;
           if (y >= ey + 30.0 && y <= H + 20.0) {
             float r = 12.0 + mod(fi * 53.0, 26.0) + sin(uT * 2.0 + fi * 1.7) * 2.0;
-            half ring = half(1.0 - smoothstep(1.0, 2.0, abs(distance(p, float2(sx, y)) - r)));
+            // stroke 幅 2 (旧 strokeWidth) = 半幅 1.0 + AA
+            half ring = half(1.0 - smoothstep(1.0 - uAA, 1.0 + uAA, abs(distance(p, float2(sx, y)) - r)));
             foam.rgb = mix(foam.rgb, uFoamRing.rgb, ring * uFoamRing.a);
           }
         }
@@ -327,6 +339,7 @@ export interface GlassDynamicUniforms {
   uScroll: number;
   uFoamA: number;
   uDropN: number;
+  uAA: number;
   /** flat (x, y, r, 0) × BUBBLE_SLOTS */
   uBubbles: number[];
   /** flat (x, y, 表示半径, 0) × DROPLET_SLOTS */
@@ -388,6 +401,7 @@ export function packGlassUniforms(
     uScroll: st.foamScroll,
     uFoamA: st.fizzState === 0 ? 0 : st.foamAlpha,
     uDropN: dropN,
+    uAA: AA_DP,
     uBubbles: bubbles,
     uDroplets: droplets,
   };
