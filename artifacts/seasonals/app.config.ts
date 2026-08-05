@@ -39,16 +39,11 @@ const config: ExpoConfig = {
     translucent: true,
     barStyle: "dark-content",
   },
-  androidNavigationBar: {
-    backgroundColor: "#00000000",
-    barStyle: "dark-content",
-  },
-  // splash 未指定だと Expo の splash プラグインが既定の #ffffff を
-  // androidStatusBar.backgroundColor に注入する (これが白帯の根)。明示して断つ
-  splash: {
-    backgroundColor: "#FFF8E7",
-    resizeMode: "contain",
-  },
+  // 8.87 (SDK 57): androidNavigationBar は ExpoConfig から削除された
+  // (edge-to-edge 標準化により navigation bar は常に透過)。
+  // バーアイコン色は with-edge-to-edge plugin の windowLight*Bar が引き続き担う
+  // 8.87 (SDK 57): top-level splash は ExpoConfig から削除された。
+  // splash 設定は下の expo-splash-screen plugin (backgroundColor #FFF8E7) が canonical
   android: {
     package: isOnchain ? "app.seasonals.onchain" : "app.seasonals.mobile",
     adaptiveIcon: {
@@ -68,6 +63,7 @@ const config: ExpoConfig = {
   plugins: [
     "expo-router",
     "expo-font",
+    "expo-status-bar",
     "expo-secure-store",
     "expo-notifications",
     // 8.87 (SDK 54): 新 splash (SplashScreenManager) は logo drawable を必須参照する。

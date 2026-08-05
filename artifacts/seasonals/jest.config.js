@@ -21,6 +21,10 @@ module.exports = {
     "react-native-gesture-handler/jestSetup.js",
     "<rootDir>/jest.setup.js",
   ],
+  // 8.87 (worklets 0.10 / SDK 57): worklets の .native 実装 (loadUnpackers) を
+  // jest で読まないよう、同梱 resolver で .native 拡張子を除外する。
+  // これが無いと reanimated を import する全 suite が落ちる
+  resolver: "react-native-worklets/jest/resolver.js",
   // jest-expo / WarningArea の setTimeout 等の open handle があると Jest が
   // 1 秒待機して「did not exit」と警告する。CI hang 防止に forceExit。
   forceExit: true,
