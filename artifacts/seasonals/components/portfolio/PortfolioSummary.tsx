@@ -169,12 +169,17 @@ export const PortfolioSummary = React.memo(function PortfolioSummary({
   const snapPoints = useMemo(() => {
     if (minTopY == null) return ["25%", "50%", "85%"];
     const MARGIN = 12; // 週の最下段とシート上端の隙間
+    // 8.87 (RN 0.86): edge-to-edge 統一で window が全画面 (840→890dp) になり、
+    // measureInWindow の y がステータスバー分 (+insets.top) 大きく返るようになった。
+    // 8.85 で合意した「最下段のちょっと下」位置に合わせるため差し引いて較正する
+    // (実測: 旧 485.67 → 新 523.0、差 = insets.top 37.33)
+    const gridBottom = minTopY - insets.top;
     const middlePx = Math.min(
-      Math.max(containerH - (minTopY + MARGIN), containerH * 0.25 + 24),
+      Math.max(containerH - (gridBottom + MARGIN), containerH * 0.25 + 24),
       containerH * 0.85 - 24
     );
     return ["25%", middlePx, "85%"];
-  }, [minTopY, containerH]);
+  }, [minTopY, containerH, insets.top]);
 
   // 前回 snap を AsyncStorage から復元 (default index = 1 = "50%")
   useEffect(() => {
