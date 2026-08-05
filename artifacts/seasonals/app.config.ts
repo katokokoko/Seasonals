@@ -70,6 +70,16 @@ const config: ExpoConfig = {
     "expo-font",
     "expo-secure-store",
     "expo-notifications",
+    // 8.87 (SDK 54): 新 splash (SplashScreenManager) は logo drawable を必須参照する。
+    // 画像なし backgroundColor のみだと splashscreen_logo 不在で resource link error
+    [
+      "expo-splash-screen",
+      {
+        backgroundColor: "#FFF8E7",
+        image: "./assets/images/icon.png",
+        imageWidth: 150,
+      },
+    ],
     // Phase 8.45: prebuild が書けない edge-to-edge 設定 (contrast scrim / cutout /
     // decorFitsSystemWindows / values-night) を再現可能にする
     "./plugins/with-edge-to-edge",
