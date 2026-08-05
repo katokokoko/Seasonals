@@ -25,6 +25,7 @@
         <category android:name="android.intent.category.DEFAULT"/>
         <category android:name="android.intent.category.BROWSABLE"/>
         <data android:scheme="seasonals"/>
+        <data android:scheme="exp+seasonals"/>
       </intent-filter>
     </activity>
   </application>

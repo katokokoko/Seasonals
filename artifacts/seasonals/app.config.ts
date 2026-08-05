@@ -80,6 +80,10 @@ const config: ExpoConfig = {
   extra: {
     // services/config.ts USE_ONCHAIN が参照
     useOnchain: isOnchain,
+    eas: {
+      // 8.87: EAS プロジェクト紐付け (expo.dev で作成した seasonals プロジェクト)
+      projectId: "6de0c8ab-80b1-491b-8317-cf8b48890496",
+    },
   },
 };
 
