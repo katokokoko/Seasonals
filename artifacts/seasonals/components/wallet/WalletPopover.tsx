@@ -281,7 +281,7 @@ function makeStyles(c: ThemeColors) {
   return StyleSheet.create({
     // Phase 7.6: backdrop は alpha を Animated で駆動するため不透明色 + opacity 分離
     backdropBase: {
-      ...StyleSheet.absoluteFillObject,
+      ...StyleSheet.absoluteFill,
       backgroundColor: "#000",
     },
     card: {
@@ -303,11 +303,11 @@ function makeStyles(c: ThemeColors) {
       elevation: 12,
     },
     cardBlur: {
-      ...StyleSheet.absoluteFillObject,
+      ...StyleSheet.absoluteFill,
       borderRadius: RADIUS.lg,
     },
     cardTint: {
-      ...StyleSheet.absoluteFillObject,
+      ...StyleSheet.absoluteFill,
       backgroundColor: c.bgCard,
       borderRadius: RADIUS.lg,
     },

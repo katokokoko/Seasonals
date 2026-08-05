@@ -98,7 +98,10 @@ export function setupNotificationHandler(): void {
 
   Notifications.setNotificationHandler({
     handleNotification: async () => ({
+      // SDK 54 (expo-notifications 0.32): shouldShowAlert が banner/list に分割された
       shouldShowAlert: true,
+      shouldShowBanner: true,
+      shouldShowList: true,
       shouldPlaySound: true,
       shouldSetBadge: false,
     }),

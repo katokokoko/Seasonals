@@ -280,10 +280,10 @@ PR / コードレビュー前の pitch claim ↔ 実装の対応表は
 完了済みタスクは git log を参照。**未着手の要約だけ**を以下に残す。
 詳細 (経緯 / program ID / バージョン実測) は `docs/backlog.md` §E (local-only) が canonical。
 
-- **依存リフレッシュ** (単独 phase、残り 3 種):
-  ①Expo SDK 51 → 57 ②native module 群 + MWA (**dev-client APK 再ビルド必須**、MWA は実署名 round-trip とセット) ③major 跨ぎ (`@types/node` / `date-fns` 等)
+- **依存リフレッシュ** (残り 1 種): major 跨ぎ (`@types/node` / `date-fns` / `@fastify/cors` / **TypeScript 6.0** — SDK 57 期待、`expo.install.exclude` で保留中)。
+  ✅ Expo SDK 57 + newArch + native module 群 + MWA 2.2.9 は Phase 8.87 で完了 (経緯は docs/expo57-upgrade.md)
   - SDK 更新時は §8.1 完了ゲートに加えて **`pnpm --filter @seasonals/bff verify:tx`** (全 23 経路 mainnet simulate、署名なし) を必ず通す
-  - root pnpm override `"rpc-websockets@^7": "7.10.0"` は **load-bearing、外さない** (経緯は package.json `//overrides` と backlog.md §E)
+  - root pnpm override 3 点 (`rpc-websockets` / `utf-8-validate` / skia の `onlyBuiltDependencies`) は **load-bearing、外さない** (経緯は package.json `//overrides` と backlog.md §E)
   - `@solendprotocol/solend-sdk` の global fetch 上書き問題 → orca-tx.ts / meteora-tx.ts の undici 明示利用は**継続が必要**
 - **Exponent PT 売買 (buy)** (優先度中): 着手条件は Jupiter が PT mint を route し始めるか Exponent TS SDK の npm 公開。それまで menu は `display_only` で agent 候補からも除外 (fail-closed)
 - **Velocity spot-lend adapter** (旧 Drift 後継、優先度中): 着手条件は公開 relaunch + SDK 安定 + spot market 構成の実 SDK 再調査

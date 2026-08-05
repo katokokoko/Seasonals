@@ -126,7 +126,7 @@ const styles = StyleSheet.create({
     elevation: 10,
   },
   tint: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     backgroundColor: "rgba(255,255,255,0.28)",
   },
   highlight: {

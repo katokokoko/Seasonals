@@ -35,6 +35,15 @@ import {
   SafeAreaProvider,
   initialWindowMetrics,
 } from "react-native-safe-area-context";
+import {
+  configureReanimatedLogger,
+  ReanimatedLogLevel,
+} from "react-native-reanimated";
+
+// 8.87 (Reanimated 4): strict mode は navigation ライブラリ内部の
+// 「render 中の .value 読み取り」(Stack) まで警告するため off にする。
+// アプリ自身のコードで .value を render 中に読まない規約は維持
+configureReanimatedLogger({ level: ReanimatedLogLevel.warn, strict: false });
 
 import { createQueryClient } from "../services/queryClient";
 import {

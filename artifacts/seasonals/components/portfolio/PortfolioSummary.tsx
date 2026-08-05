@@ -25,7 +25,6 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { format } from "date-fns";
 import BottomSheet, {
   BottomSheetScrollView,
-  type BottomSheetMethods,
   type BottomSheetBackgroundProps,
 } from "@gorhom/bottom-sheet";
 import type { SharedValue } from "react-native-reanimated";
@@ -151,7 +150,7 @@ export const PortfolioSummary = React.memo(function PortfolioSummary({
   // 8.45: edge-to-edge の下端 inset (ジェスチャーバー分)
   const insets = useSafeAreaInsets();
 
-  const sheetRef = useRef<BottomSheetMethods>(null);
+  const sheetRef = useRef<BottomSheet>(null);
   // Phase 5B.1: 3 snap points
   //   25% = collapsed (PORTFOLIO + total + yield + USDC/SOL toggle のみ、上に mascot 露出)
   //   middle = default (range selector + chart まで visible)
@@ -170,12 +169,17 @@ export const PortfolioSummary = React.memo(function PortfolioSummary({
   const snapPoints = useMemo(() => {
     if (minTopY == null) return ["25%", "50%", "85%"];
     const MARGIN = 12; // 週の最下段とシート上端の隙間
+    // 8.87 (RN 0.86): edge-to-edge 統一で window が全画面 (840→890dp) になり、
+    // measureInWindow の y がステータスバー分 (+insets.top) 大きく返るようになった。
+    // 8.85 で合意した「最下段のちょっと下」位置に合わせるため差し引いて較正する
+    // (実測: 旧 485.67 → 新 523.0、差 = insets.top 37.33)
+    const gridBottom = minTopY - insets.top;
     const middlePx = Math.min(
-      Math.max(containerH - (minTopY + MARGIN), containerH * 0.25 + 24),
+      Math.max(containerH - (gridBottom + MARGIN), containerH * 0.25 + 24),
       containerH * 0.85 - 24
     );
     return ["25%", middlePx, "85%"];
-  }, [minTopY, containerH]);
+  }, [minTopY, containerH, insets.top]);
 
   // 前回 snap を AsyncStorage から復元 (default index = 1 = "50%")
   useEffect(() => {
@@ -406,15 +410,17 @@ export const PortfolioSummary = React.memo(function PortfolioSummary({
       index={1}
       snapPoints={snapPoints}
       enablePanDownToClose={false}
+      // v5 は default true — content 高さ snap が混ざり数値 snapPoints が狂うため明示 off
+      enableDynamicSizing={false}
       animatedPosition={animatedPosition}
       onChange={handleSheetChange}
       backgroundComponent={GlassBackground}
+      // v5 で BottomSheet 自体の testID が消えたので handle 側に付ける
       handleComponent={() => (
-        <View style={styles.handle}>
+        <View style={styles.handle} testID={testID}>
           <View style={styles.grabber} />
         </View>
       )}
-      testID={testID}
     >
       <BottomSheetScrollView
         // 8.45 (edge-to-edge): 下端がジェスチャーバーの裏まで伸びるので、
