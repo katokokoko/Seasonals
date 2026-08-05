@@ -16,19 +16,7 @@ import {
   View,
 } from "react-native";
 import {
-  Gesture,
-  GestureDetector,
-} from "react-native-gesture-handler";
-import Animated, {
-  runOnJS,
-  useAnimatedStyle,
-  useSharedValue,
-  withTiming,
-} from "react-native-reanimated";
-import {
-  addMonths,
-  endOfMonth,
-  endOfWeek,
+  addDays,
   isSameDay,
   isSameMonth,
   startOfMonth,
@@ -72,24 +60,42 @@ function eventDayKey(triggerAt: UnifiedTimeEvent["triggerAt"]): string {
   return `${ts.getFullYear()}-${String(ts.getMonth() + 1).padStart(2, "0")}-${String(ts.getDate()).padStart(2, "0")}`;
 }
 
-function eventsOnDay(events: UnifiedTimeEvent[], day: Date): UnifiedTimeEvent[] {
-  const key = localDayKey(day);
-  return events.filter((e) => eventDayKey(e.triggerAt) === key);
+/**
+ * 8.81: day-key → events の索引を 1 回だけ構築する (O(events))。
+ * 旧実装はセルごとに全 events を filter (O(42×events) + セル毎 Date 割り当て) で、
+ * 月送りコミットの JS フレームを圧迫していた。
+ */
+function indexEventsByDay(
+  events: UnifiedTimeEvent[]
+): Map<string, UnifiedTimeEvent[]> {
+  const map = new Map<string, UnifiedTimeEvent[]>();
+  for (const e of events) {
+    const key = eventDayKey(e.triggerAt);
+    const arr = map.get(key);
+    if (arr) arr.push(e);
+    else map.set(key, [e]);
+  }
+  return map;
 }
 
-function customEventsOnDay(
-  customEvents: CustomEvent[],
-  day: Date
-): CustomEvent[] {
-  return customEvents.filter((e) => {
-    const [y, m, d] = e.date.split("-").map(Number);
-    return (
-      day.getFullYear() === y &&
-      day.getMonth() + 1 === m &&
-      day.getDate() === d
-    );
-  });
+/** CustomEvent.date は "yyyy-MM-dd" (lib/types/custom-event.ts) — localDayKey と同形式 */
+function indexCustomEventsByDay(
+  customEvents: CustomEvent[]
+): Map<string, CustomEvent[]> {
+  const map = new Map<string, CustomEvent[]>();
+  for (const e of customEvents) {
+    const arr = map.get(e.date);
+    if (arr) arr.push(e);
+    else map.set(e.date, [e]);
+  }
+  return map;
 }
+
+const EMPTY_EVENTS: UnifiedTimeEvent[] = [];
+const EMPTY_CUSTOM: CustomEvent[] = [];
+
+/** 8.86: 1 セルに並ぶアイコン (droplet + custom 絵文字) の合計上限 */
+const MAX_MARKERS = 3;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Props
@@ -97,8 +103,6 @@ function customEventsOnDay(
 
 export interface MonthGridProps {
   month: Date;
-  /** swipe で月送りされた時の callback (next month を渡す) */
-  onChangeMonth: (next: Date) => void;
   events: UnifiedTimeEvent[];
   /** ユーザーが追加した CustomEvent (任意) */
   customEvents?: CustomEvent[];
@@ -109,15 +113,42 @@ export interface MonthGridProps {
   testID?: string;
 }
 
+/** 月 grid は常に 6 週 = 42 日 (8.85: grid 高さを月によらず一定にする) */
+export const GRID_WEEKS = 6;
+const GRID_DAYS = GRID_WEEKS * 7;
+
+/**
+ * 8.83: 月 grid の日リスト (Monday start)。
+ * MonthPager と共有するため関数化。旧実装の `getTime() + 86400*1000` は
+ * DST 跨ぎで 23h の日にずれるため date-fns addDays に置換。
+ *
+ * 8.85: **常に 6 週 (42 日) を返す**。5 週で終わる月は翌月の 1 週を足して
+ * 埋める (out-of-month として淡色表示される)。grid の総高さが月によらず
+ * 一定になるので、下部シートの位置が月送りで動かない。
+ * (8.84 の「6 週の月だけ行を圧縮する」案は、セル高さが aspectRatio ではなく
+ *  中身で決まっていたため実機で効いていなかった — 実測で確認)
+ */
+export function gridDaysOfMonth(month: Date): Date[] {
+  const start = startOfWeek(startOfMonth(month), { weekStartsOn: 1 });
+  const out: Date[] = [];
+  for (let i = 0; i < GRID_DAYS; i++) {
+    out.push(addDays(start, i));
+  }
+  return out;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Component
 // ─────────────────────────────────────────────────────────────────────────────
 
-export function MonthGrid({
+/**
+ * 8.83: swipe gesture / 遷移アニメは MonthPager (指追従 carousel) へ移した。
+ * 本 component は「1 ヶ月ぶんの grid を描くだけ」の純粋描画に戻っている。
+ */
+export const MonthGrid = React.memo(function MonthGrid({
   month,
-  onChangeMonth,
   events,
-  customEvents = [],
+  customEvents = EMPTY_CUSTOM,
   selectedDay,
   onDayPress,
   today = new Date(),
@@ -126,58 +157,19 @@ export function MonthGrid({
   // Phase 8.0: theme 連動 styles
   const styles = useThemedStyles(makeStyles);
 
-  const days = useMemo(() => {
-    // Monday start, fill until end of last week of month
-    const start = startOfWeek(startOfMonth(month), { weekStartsOn: 1 });
-    const end = endOfWeek(endOfMonth(month), { weekStartsOn: 1 });
-    const out: Date[] = [];
-    for (let d = start; d <= end; d = new Date(d.getTime() + 86400 * 1000)) {
-      out.push(new Date(d));
-    }
-    return out;
-  }, [month]);
+  const days = useMemo(() => gridDaysOfMonth(month), [month]);
 
-  // Phase 5A.7 prototype 仕様: discrete slide+fade (peek なし、withTiming 駆動、threshold ±50px)
-  const tx = useSharedValue(0);
-  const opacity = useSharedValue(1);
-
-  // worklet 経由で date-fns を呼べないため、delta を JS thread に渡してから addMonths
-  const commitMonth = (delta: number) => {
-    onChangeMonth(addMonths(month, delta));
-  };
-
-  const animateChange = (delta: number) => {
-    opacity.value = withTiming(0.3, { duration: 120 });
-    tx.value = withTiming(delta > 0 ? -40 : 40, { duration: 140 }, (finished) => {
-      "worklet";
-      if (!finished) return;
-      runOnJS(commitMonth)(delta);
-      // re-base: 新月を反対側から slide-in
-      tx.value = delta > 0 ? 40 : -40;
-      tx.value = withTiming(0, { duration: 180 });
-      opacity.value = withTiming(1, { duration: 220 });
-    });
-  };
-
-  const swipeGesture = Gesture.Pan()
-    .activeOffsetX([-12, 12])
-    .failOffsetY([-15, 15])
-    .onEnd((e) => {
-      "worklet";
-      if (e.translationX < -50) runOnJS(animateChange)(1);
-      else if (e.translationX > 50) runOnJS(animateChange)(-1);
-    });
-
-  const animStyle = useAnimatedStyle(() => ({
-    transform: [{ translateX: tx.value }],
-    opacity: opacity.value,
-  }));
+  // 8.81: day-key 索引 (構築 O(events)、セル側は Map.get のみ)
+  const eventsByDay = useMemo(() => indexEventsByDay(events), [events]);
+  const customByDay = useMemo(
+    () => indexCustomEventsByDay(customEvents),
+    [customEvents]
+  );
 
   return (
-    <GestureDetector gesture={swipeGesture}>
-      <Animated.View style={[styles.container, animStyle]} testID={testID}>
-        {/* Weekday headers (C3: 土日も中性色) */}
-        <View style={styles.weekdayRow}>
+    <View style={styles.container} testID={testID}>
+      {/* Weekday headers (C3: 土日も中性色) */}
+      <View style={styles.weekdayRow}>
         {WEEKDAYS.map((w) => (
           <Text key={w} style={styles.weekday}>
             {w}
@@ -187,16 +179,19 @@ export function MonthGrid({
 
       {/* Day cells */}
       <View style={styles.grid}>
-        {days.map((day) => {
+        {days.map((day, cellIndex) => {
           const inMonth = isSameMonth(day, month);
           const isToday = isSameDay(day, today);
           const isSelected = selectedDay !== null && isSameDay(day, selectedDay);
-          const dayEvents = eventsOnDay(events, day);
-          const dayCustom = customEventsOnDay(customEvents, day);
+          const dayKey = localDayKey(day);
+          const dayEvents = eventsByDay.get(dayKey) ?? EMPTY_EVENTS;
+          const dayCustom = customByDay.get(dayKey) ?? EMPTY_CUSTOM;
 
           return (
             <Pressable
-              key={day.toISOString()}
+              // 8.81: セル位置ベースの安定 key。旧 key={day.toISOString()} は月送りの
+              // たびに 42 セル + 全 SVG marker を強制再マウントしていた (reconcile 不能)
+              key={cellIndex}
               accessibilityRole="button"
               onPress={() => onDayPress(day)}
               style={[
@@ -230,36 +225,41 @@ export function MonthGrid({
                     : undefined
                 }
               >
-                {/* §5.3: urgency-first — critical が 4 件目以降で隠れないよう sort */}
-                {sortEventsByUrgency(dayEvents).slice(0, 3).map((e) => (
-                  <DropletMarker
-                    key={e.id}
-                    category={dropletShapeForEvent(e)}
-                    urgency={e.urgency}
-                    size={9}
-                    testID={`droplet-${e.id}`}
-                  />
-                ))}
-                {/* 8.39: 1 行 (折返しなし) に収める — custom は 1 個まで */}
-                {dayCustom.slice(0, 1).map((ce) => (
-                  <Text key={ce.id} style={styles.customMarker}>
-                    {ce.marker === "emoji" && ce.emoji ? ce.emoji : "★"}
-                  </Text>
-                ))}
-                {dayEvents.length + dayCustom.length > 4 && (
+                {/* 8.86: アイコンは **合計 3 個まで** (droplet + custom 絵文字)。
+                    §5.3 urgency-first の droplet を優先し、残り枠を custom で
+                    埋める。超過は "+N" (旧実装は閾値 >4 で表示上限 4 と噛み
+                    合わず、4 イベントの日に +1 が出ない off-by-one があった) */}
+                {sortEventsByUrgency(dayEvents)
+                  .slice(0, MAX_MARKERS)
+                  .map((e) => (
+                    <DropletMarker
+                      key={e.id}
+                      category={dropletShapeForEvent(e)}
+                      urgency={e.urgency}
+                      size={9}
+                      testID={`droplet-${e.id}`}
+                    />
+                  ))}
+                {dayCustom
+                  .slice(0, Math.max(0, MAX_MARKERS - dayEvents.length))
+                  .map((ce) => (
+                    <Text key={ce.id} style={styles.customMarker}>
+                      {ce.marker === "emoji" && ce.emoji ? ce.emoji : "★"}
+                    </Text>
+                  ))}
+                {dayEvents.length + dayCustom.length > MAX_MARKERS && (
                   <Text style={styles.moreCount}>
-                    +{dayEvents.length + dayCustom.length - 4}
+                    +{dayEvents.length + dayCustom.length - MAX_MARKERS}
                   </Text>
                 )}
               </View>
             </Pressable>
           );
         })}
-        </View>
-      </Animated.View>
-    </GestureDetector>
+      </View>
+    </View>
   );
-}
+});
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Styles

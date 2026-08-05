@@ -11,7 +11,11 @@
  * 変換は必ず `toSmallestUnit` (throw する §4.5 バリデータ) 経由。`Number()` は使わない。
  */
 import type { AgentPlan } from "@workspace/lib/types";
-import { TOKEN_DECIMALS, toSmallestUnit } from "@workspace/lib/utils/numeric";
+import {
+  TOKEN_DECIMALS,
+  toHumanReadable,
+  toSmallestUnit,
+} from "@workspace/lib/utils/numeric";
 import {
   findMarketByProtocolAsset,
   findMarketByShareMint,
@@ -167,4 +171,30 @@ export function depositMaxSmallest(
     v = v > SOL_FEE_RESERVE_LAMPORTS ? v - SOL_FEE_RESERVE_LAMPORTS : 0n;
   }
   return v.toString();
+}
+
+/**
+ * Phase 8.80: 入力額が保有残高を超えていないか (deposit の署名前 gate)。
+ *
+ * 背景: 残高ゼロの JupUSD deposit が書式検証だけで素通りし、Phantom の警告 →
+ * broadcast 0x1789 (Jupiter Route 即死) まで到達した。書式 (validateAmountInput)
+ * の後段でこれを連結し、CTA を無効化する。
+ *
+ * - `balanceSmallest === null` は **残高不明** (未接続 / query 未完/失敗) →
+ *   誤ブロックせず ok。BFF 側の insufficient_balance gate が後段で拾う
+ * - 比較は bigint (§4.5)。表示量だけ toHumanReadable
+ */
+export function validateDepositAgainstBalance(
+  smallest: string,
+  balanceSmallest: string | null,
+  symbol: string,
+  decimals: number
+): { ok: true } | { ok: false; error: string } {
+  if (balanceSmallest === null) return { ok: true };
+  if (!/^[0-9]+$/.test(balanceSmallest)) return { ok: true }; // 壊れた残高は不明扱い
+  if (BigInt(smallest) <= BigInt(balanceSmallest)) return { ok: true };
+  return {
+    ok: false,
+    error: `Insufficient ${symbol} — you have ${toHumanReadable(balanceSmallest, decimals)}`,
+  };
 }

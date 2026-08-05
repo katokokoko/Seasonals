@@ -15,7 +15,12 @@ module.exports = {
   testMatch: ["<rootDir>/**/*.test.{ts,tsx}"],
   // setupFiles はテストフレームワーク install 前に実行される。
   // jest.mock() は hoisting で問題なく動作する。
-  setupFiles: ["<rootDir>/jest.setup.js"],
+  // 8.81: RNGH 公式 jestSetup を追加 (jest-expo は含んでいない)。これが無いと
+  // native module mock が入らず、fireGestureHandler のイベントが handler に届かない
+  setupFiles: [
+    "react-native-gesture-handler/jestSetup.js",
+    "<rootDir>/jest.setup.js",
+  ],
   // jest-expo / WarningArea の setTimeout 等の open handle があると Jest が
   // 1 秒待機して「did not exit」と警告する。CI hang 防止に forceExit。
   forceExit: true,

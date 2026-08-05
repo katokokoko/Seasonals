@@ -12,7 +12,7 @@ All AI agents working on this repository should:
    - Oracle fail-closed policy — Pyth primary, Switchboard fallback, fail-closed on dual stale or >5% divergence (§4.6 / CLAUDE.md §4)
    - Client stack — Expo + React Native + `@solana-mobile/mobile-wallet-adapter-protocol-web3js` (§4.2 / CLAUDE.md §5)
    - Design system tokens — Cream Soda palette, Pacifico logo only, Quicksand for headings/body (CLAUDE.md §6)
-   - solana.new skill routing — when to invoke `build-mobile` / `build-defi-protocol` / `build-data-pipeline` (CLAUDE.md §7)
+   - Skill usage rules — CLAUDE.md conventions override any skill's recommendations (CLAUDE.md §7; solana.new skills themselves are disabled as of 2026-08-03)
 2. **Read `docs/spec.md`** for the full specification (Seasonals Requirements v0.2.15, 3300+ lines)
 3. **Read `docs/design-system.md`** for human-readable token reference
 4. **Import shared types from `@workspace/lib/types`** — never define types locally in Mobile / BFF / MCP Server. The `lib/` directory is the canonical source-of-truth for `UnifiedTimeEvent`, `AgentPlan`, `ApprovalToken`, `UserPolicy`, `Position`, and all canonical enums (`TimeEventCategory`, `ActionType`, etc.).
@@ -36,7 +36,7 @@ This `AGENTS.md` ensures all of them route to the same source of truth (`CLAUDE.
 ## Quick start for AI agents
 
 ```
-1. Read CLAUDE.md  (project rules, ~430 lines)
+1. Read CLAUDE.md  (project rules, ~330 lines)
 2. Read docs/spec.md §X.Y as needed (full spec, 3300+ lines)
 3. Use the /spec slash command to extract specific sections
 4. Run `/check` (or apply CLAUDE.md §9 manually) before committing

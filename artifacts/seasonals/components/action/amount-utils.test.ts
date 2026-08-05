@@ -13,6 +13,7 @@ import {
   depositMaxSmallest,
   resolveAmountUnit,
   validateAmountInput,
+  validateDepositAgainstBalance,
 } from "./amount-utils";
 
 type Action = NonNullable<AgentPlan["selected_action"]>;
@@ -129,5 +130,32 @@ describe("depositMaxSmallest", () => {
   });
   it("不正 balance は null", () => {
     expect(depositMaxSmallest("1.5", "USDC")).toBeNull();
+  });
+});
+
+describe("8.80: validateDepositAgainstBalance (残高超過の署名前 gate)", () => {
+  it("残高超過 → error (symbol と保有量が文言に出る)", () => {
+    const r = validateDepositAgainstBalance("100000", "0", "JupUSD", 6);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toBe("Insufficient JupUSD — you have 0");
+  });
+
+  it("保有量は human 表示 (12.34 USDC 持ちで 20 は不足)", () => {
+    const r = validateDepositAgainstBalance("20000000", "12340000", "USDC", 6);
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.error).toContain("12.34");
+  });
+
+  it("同額 / 未満は ok (境界)", () => {
+    expect(validateDepositAgainstBalance("12340000", "12340000", "USDC", 6).ok).toBe(true);
+    expect(validateDepositAgainstBalance("1", "12340000", "USDC", 6).ok).toBe(true);
+  });
+
+  it("残高不明 (null) は誤ブロックしない — BFF gate が後段で拾う", () => {
+    expect(validateDepositAgainstBalance("100000", null, "USDC", 6).ok).toBe(true);
+  });
+
+  it("壊れた残高文字列は不明扱いで ok", () => {
+    expect(validateDepositAgainstBalance("100000", "1.5", "USDC", 6).ok).toBe(true);
   });
 });

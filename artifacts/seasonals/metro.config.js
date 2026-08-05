@@ -6,6 +6,9 @@ const workspaceRoot = path.resolve(projectRoot, "../..");
 
 const config = getDefaultConfig(projectRoot);
 
+// monorepo で `@workspace/lib` を解決するための 3 点セット。
+// watchFolders + nodeModulesPaths 2 段 + symlink 解決のどれが欠けても
+// emulator / Expo が lib/ を見つけられず bundle エラーになる (regression 禁止)。
 config.watchFolders = [workspaceRoot];
 
 config.resolver.nodeModulesPaths = [

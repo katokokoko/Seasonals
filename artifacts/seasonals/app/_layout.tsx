@@ -13,7 +13,9 @@ if (typeof (globalThis as { Buffer?: unknown }).Buffer === "undefined") {
 }
 
 import { useCallback, useEffect, useState } from "react";
-import { QueryClientProvider } from "@tanstack/react-query";
+import AsyncStorage from "@react-native-async-storage/async-storage";
+import { createAsyncStoragePersister } from "@tanstack/query-async-storage-persister";
+import { PersistQueryClientProvider } from "@tanstack/react-query-persist-client";
 import { Stack, useRouter } from "expo-router";
 import {
   Pacifico_400Regular,
@@ -61,6 +63,26 @@ export default function RootLayout() {
   // QueryClient は app lifetime で 1 つ。useState で lazy init し再生成を防ぐ。
   const [client] = useState(() => createQueryClient());
   const router = useRouter();
+
+  // 8.83: portfolio-history query だけ AsyncStorage に永続化する
+  // (stale-while-revalidate)。再起動時は前回の完全グラフが即復元され、
+  // staleTime 超過なら裏で refetch — cold start の brewing は初回起動と
+  // maxAge (24h) 超の離脱時だけになる。他の query の挙動は
+  // shouldDehydrateQuery のフィルタで一切変えない。
+  const [persistOptions] = useState(() => ({
+    persister: createAsyncStoragePersister({
+      storage: AsyncStorage,
+      key: "seasonals.queryCache.v1",
+      // 起動直後の連続書き込みをまとめる (default 1s は RN でも妥当)
+      throttleTime: 1_000,
+    }),
+    maxAge: 24 * 60 * 60_000,
+    dehydrateOptions: {
+      shouldDehydrateQuery: (query: { queryKey: readonly unknown[]; state: { status: string } }) =>
+        query.queryKey[0] === "portfolio-history" &&
+        query.state.status === "success",
+    },
+  }));
 
   // brand wordmark = Pacifico、heading/body = Quicksand (CLAUDE.md §6 デザインシステム規約)
   const [fontsLoaded, fontsError] = useFonts({
@@ -151,7 +173,10 @@ export default function RootLayout() {
     // 渡さないため、初回フレームの inset が 0 → 計測後にヘッダーが落ちる。明示ラップする
     <SafeAreaProvider initialMetrics={initialWindowMetrics}>
       <GestureHandlerRootView style={{ flex: 1, backgroundColor: bg }}>
-        <QueryClientProvider client={client}>
+        <PersistQueryClientProvider
+          client={client}
+          persistOptions={persistOptions}
+        >
           <BottomSheetModalProvider>
             <View
               style={{ flex: 1, backgroundColor: bg }}
@@ -167,7 +192,7 @@ export default function RootLayout() {
               <ComingSoonToast />
             </View>
           </BottomSheetModalProvider>
-        </QueryClientProvider>
+        </PersistQueryClientProvider>
       </GestureHandlerRootView>
     </SafeAreaProvider>
   );

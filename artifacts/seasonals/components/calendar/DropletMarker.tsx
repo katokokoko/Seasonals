@@ -74,7 +74,8 @@ const SHAPE_LABEL: Record<DropletShape, string> = {
 // Component
 // ─────────────────────────────────────────────────────────────────────────────
 
-export function DropletMarker({
+// 8.81: props は全て primitive — memo 化で月送り時の SVG 再レンダーを reconcile に抑える
+export const DropletMarker = React.memo(function DropletMarker({
   category,
   urgency,
   size = 8,
@@ -99,7 +100,7 @@ export function DropletMarker({
       {renderShape(category, color)}
     </Svg>
   );
-}
+});
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Shape rendering

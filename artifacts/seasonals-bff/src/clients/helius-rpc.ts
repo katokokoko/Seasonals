@@ -118,6 +118,86 @@ export async function getEpochInfo(): Promise<EpochInfo> {
   return json.result;
 }
 
+// ── Phase 8.80: wallet の input 残高 (署名前 gate 用) ─────────────────────────
+
+const WSOL_MINT = "So11111111111111111111111111111111111111112";
+
+/**
+ * owner の mint 残高 (smallest unit)。**取得できなければ null** — 呼び手の gate は
+ * null を素通しする。これは「確実に失敗する tx を署名前に止める」UX ガードであって
+ * 安全ガードではない (存在しない資金は動かせない) ので、RPC 瞬断で deposit を
+ * 誤ブロックしない側に倒す (8.78 の教訓)。
+ *
+ * - WSOL mint → native lamports (`getBalance`)。swap-earn の SOL deposit は
+ *   Jupiter が native SOL を wrap するため
+ * - それ以外 → `getTokenAccountsByOwner` (mint 指定) の amount 合計。
+ *   account 無し = 0n (未保有)
+ *
+ * §4.5: 残高は bigint。Number を経由しない。
+ */
+export async function getWalletBalanceSmallest(
+  owner: string,
+  mint: string
+): Promise<bigint | null> {
+  try {
+    if (mint === WSOL_MINT) {
+      const res = await fetchWithTimeout(buildUrl(), {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: "seasonals-balance",
+          method: "getBalance",
+          params: [owner],
+        }),
+      });
+      if (!res.ok) return null;
+      const json = (await res.json()) as { result?: { value?: number } };
+      const lamports = json.result?.value;
+      if (typeof lamports !== "number" || !Number.isFinite(lamports)) {
+        return null;
+      }
+      // lamports は u64 だが JSON-RPC は number で返す。2^53 未満で安全
+      // (>9M SOL の wallet は対象外の規模)
+      return BigInt(Math.floor(lamports));
+    }
+    const res = await fetchWithTimeout(buildUrl(), {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: "seasonals-balance",
+        method: "getTokenAccountsByOwner",
+        params: [owner, { mint }, { encoding: "jsonParsed" }],
+      }),
+    });
+    if (!res.ok) return null;
+    const json = (await res.json()) as {
+      result?: {
+        value?: Array<{
+          account?: {
+            data?: {
+              parsed?: { info?: { tokenAmount?: { amount?: string } } };
+            };
+          };
+        }>;
+      };
+    };
+    const accounts = json.result?.value;
+    if (!Array.isArray(accounts)) return null;
+    let total = 0n;
+    for (const a of accounts) {
+      const amount = a.account?.data?.parsed?.info?.tokenAmount?.amount;
+      if (typeof amount === "string" && /^[0-9]+$/.test(amount)) {
+        total += BigInt(amount);
+      }
+    }
+    return total;
+  } catch {
+    return null;
+  }
+}
+
 // ── Phase 8.26: token supply (Solstice TVL 等の表示用) ────────────────────────
 
 const supplyCache = new Map<string, { at: number; ui: number }>();

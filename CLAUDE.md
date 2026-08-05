@@ -24,62 +24,16 @@
 
 pnpm workspace monorepo。`lib/` の共通型を Mobile / BFF / MCP Server すべてが import することで、TypeScript レベルで "same source of truth" を担保する。
 
-```
-project-root/
-├── lib/                            # Mobile / BFF / MCP Server 共有 (CRITICAL)
-│   ├── types/
-│   │   ├── enums.ts                # canonical enum 全部 (TimeEventCategory / PositionCategory 等)
-│   │   ├── unified-time-event.ts   # §11.4 + ActionDescriptor + CalendarEvent
-│   │   ├── agent-plan.ts           # §11.7 + ActionSpec + SimulationResult + CandidateAction
-│   │   ├── approval-token.ts       # §11.8
-│   │   ├── user-policy.ts          # §11.6 + USER_POLICY_DEFAULTS
-│   │   ├── position.ts             # §11.1 / §11.2 / §11.3 (Wallet / Protocol / Position)
-│   │   └── index.ts                # barrel export
-│   └── utils/
-│       └── numeric.ts              # §4.5 string ↔ bigint 変換 / 検証 / フォーマッタ
-├── artifacts/
-│   ├── seasonals/                  # Mobile アプリ (Expo + Expo Router)
-│   ├── seasonals-bff/              # REST BFF (将来、TypeScript / NestJS or Go)
-│   ├── seasonals-mcp-server/       # MCP Server (将来、TypeScript SDK)
-│   ├── seasonals-adapters/         # Adapter SDK + protocol 実装 (将来)
-│   └── seasonals-pricing/          # Pyth / Switchboard 統合 (将来)
-├── docs/
-│   ├── spec.md                     # 仕様書 v0.2.15 (フル参照用)
-│   ├── design-system.md            # Cream Soda Edition、token reference
-│   ├── backend-core-pipeline.md     # wallet tx → Position → Calendar → Action execution の本番化設計
-│   └── design-system.jsx           # 原典 (DS object source of truth)
-└── replit.md                       # 旧 Replit Agent 用 context (historical)
-```
+構成は `ls` / `find` で確認する (`lib/` = 共有型、`artifacts/` = 各 workspace、`docs/` = 設計文書)。
 
 ### `lib/` からの import 規約 (CRITICAL)
 
-すべての Mobile / BFF / MCP Server コードは:
+すべての Mobile / BFF / MCP Server コードは、型を `@workspace/lib/types` (barrel export `lib/types/index.ts` から全部取れる)、金融値 helper を `@workspace/lib/utils/numeric` から import する。**Mobile / BFF / MCP Server で型をローカル定義しない**。
 
 ```typescript
-import {
-  UnifiedTimeEvent,
-  AgentPlan,
-  ActionSpec,
-  ApprovalToken,
-  UserPolicy,
-  TimeEventCategory,
-  PositionCategory,
-  ActionType,
-  AgentPlanStatus,
-  // ...
-} from "@workspace/lib/types";
-
-import {
-  toBigInt,
-  toHumanReadable,
-  toSmallestUnit,
-  formatUsd,
-  assertTokenAmount,
-  isValidTokenAmount,
-} from "@workspace/lib/utils/numeric";
+import { UnifiedTimeEvent, ActionType /* ... */ } from "@workspace/lib/types";
+import { toBigInt, assertTokenAmount /* ... */ } from "@workspace/lib/utils/numeric";
 ```
-
-の形で `lib/` から型と numeric helper を取得する。**Mobile / BFF / MCP Server で型をローカル定義しない**。
 
 ### 既存プロトタイプの位置づけ
 `artifacts/seasonals/` は **UX リファレンス** として機能する (画面遷移・配置・droplet marker の visual)。
@@ -100,20 +54,8 @@ wallet transaction / account indexing から `Position`、`UnifiedTimeEvent`、M
 - ハイフン区切り (`re-deposit`) / 区切りなし (`redeposit`) は **API / DB レベルで禁止**
 - UI 表示用ラベル (`"Re-deposit (include yield)"`) は presentation layer で `display_label` として保持
 
-### enum (canonical 値の数 / source of truth)
-| enum | 種数 | source |
-|---|---|---|
-| `TimeEventCategory` | 8 | `lib/types/enums.ts` |
-| `PositionCategory` | 10 | `lib/types/enums.ts` |
-| `Urgency` | 3 | `lib/types/enums.ts` |
-| `ApprovalMode` | 4 | `lib/types/enums.ts` |
-| `AgentPlanStatus` | 10 | `lib/types/enums.ts` |
-| `ExecutionJobStatus` | 7 | `lib/types/enums.ts` |
-| `ActionType` | 12 | `lib/types/enums.ts` |
-| `Objective` | 7 | `lib/types/enums.ts` |
-| `TrustLevel` | 4 | `lib/types/enums.ts` |
-
-すべての enum 変更は §32.2 整合性チェックの対象。**`lib/types/enums.ts` の値と仕様書 §X.Y の値は必ず一致させる**。
+### enum
+canonical enum (`TimeEventCategory` / `PositionCategory` / `ActionType` 等 9 種) の source of truth は **`lib/types/enums.ts`**。値はリテラルで書かず import して参照する。すべての enum 変更は §32.2 整合性チェックの対象で、**`lib/types/enums.ts` の値と仕様書 §X.Y の値は必ず一致させる**。
 
 ### 用語表記
 | 用語 | canonical | 補足 |
@@ -219,34 +161,19 @@ oracle 異常時は **常に止める方を選ぶ**。warning だけで素通り
 | 2-5% | 通す + warning (`oracle_divergence_warning`) | 通す + warning |
 | > 5% | 通す + warning | **拒否** (`oracle_divergence_too_large`) |
 
-### 設計意図
-- simulate は情報提供 tool → 警告付きで結果を見せる方が情報量が大きい
-- execute は実資金が動く → >5% 乖離は **flash crash / oracle attack の可能性** として fail-closed で拒否
-- 閾値は trusted protocol registry で override 可能 (§13.2、`Protocol.metadata.oracle_divergence_*_threshold`)
-- すべての block / warning は §17.1 で `oracle_block` / `oracle_warning` イベントとして記録
+設計意図: simulate は情報提供 tool (警告付きで見せる)、execute は実資金が動く (>5% 乖離 = flash crash / oracle attack の可能性として拒否)。閾値は trusted protocol registry で override 可 (§13.2)、全 block / warning は §17.1 でイベント記録。
 
 ---
 
 ## 5. クライアント実装スタック (§4.2)
 
-| レイヤー | 技術 |
-|---|---|
-| Framework | Expo (React Native) |
-| Routing | Expo Router (file-based) |
-| Wallet | `@solana-mobile/mobile-wallet-adapter-protocol-web3js` |
-| local UI state | React hooks (`useState` / `useReducer`) |
-| global state | **Zustand** (Jotai 可) |
-| server state | **TanStack Query** (fetch 直叩き禁止) |
-| 永続化 (non-secret) | AsyncStorage |
-| 秘密鍵 | **保持しない** (Solana Seed Vault に MWA 経由で署名委譲) |
-| Charts | recharts (web) + native fallback (`Charts.tsx` / `Charts.web.tsx`) |
-| Animation | React Native Reanimated 3 |
-| Gesture | React Native Gesture Handler |
-| Haptics | expo-haptics |
-| Blur | expo-blur (`BlurView` で glassmorphism 代替) |
-| Test | jest-expo + `@testing-library/react-native` |
-| Build | EAS Build |
-| 言語 | TypeScript (strict mode) |
+使用ライブラリは `artifacts/seasonals/package.json` を見る。**選択の理由**だけここに残す:
+
+- **server state は TanStack Query** — fetch 直叩き禁止 (cache / 再取得の一元化)
+- **global state は Zustand** (Jotai 可)、local UI state は React hooks
+- **秘密鍵は保持しない** — Solana Seed Vault に MWA 経由で署名委譲
+- Charts は web/native で実装分離 (`Charts.tsx` / `Charts.web.tsx`)
+- TypeScript strict mode
 
 ### Mobile 実装規約
 - 型は **`lib/` から import** (Mobile 内で型をローカル定義しない、§1 参照)
@@ -289,54 +216,13 @@ oracle 異常時は **常に止める方を選ぶ**。warning だけで素通り
 
 ---
 
-## 7. solana.new skills 連携
+## 7. skill 利用時のルール
 
-リポジトリは [solana.new](https://www.solana.new/) (sendaifun/solana-new) でセットアップした **25 journey skills + 77 ecosystem skills + 53 MCPs** を併用する前提で動く。
+> [solana.new](https://www.solana.new/) の 32 skill は 2026-08-03 に `~/.claude/settings.json` の `skillOverrides` で無効化済 (10 か月間ほぼ未使用。`"off"` を消せば復帰)。使える skill は毎セッションの skill 一覧に出る。
 
-インストール:
-```bash
-curl -fsSL https://www.solana.new/setup.sh | bash
-```
-
-skill は `~/.claude/skills/` に展開される。Seasonals リポジトリ固有の規約は本 CLAUDE.md、Solana エコシステム全般の知識は solana.new skill が担う **分業構造**。
-
-### Seasonals に強く効く skill
-
-| skill | 使う場面 | 関連セクション |
-|---|---|---|
-| `build-mobile` | Mobile (Expo + RN + MWA) 実装全般 | §27 (Mobile 構成) |
-| `build-defi-protocol` | Adapter SDK 実装 / token math / CPIs | §13 / §26 (Adapter Pattern) |
-| `build-data-pipeline` | Portfolio Indexer 実装 (account / tx 追跡) | §10.2 Portfolio Indexer |
-| `defillama-research` | Tier S protocol 候補の TVL 調査 | §28 MVP プロトコル選定 |
-| `competitive-landscape` | Jupiter Portfolio との差別化整理 | §31 競合認識 |
-| `scaffold-project` | 新規 artifact 立ち上げ時 (seasonals-bff 等) | §27.1 |
-| `review-and-iterate` | PR 前のコードレビュー | §32.2 整合性チェックと併用 |
-| `cso` | セキュリティ監査前の self-check | §11.6 approval_mode auto 解放条件 |
-| `roast-my-product` | pitch 前のレビュー | §22 / §32 |
-
-### ecosystem skill (77種から Seasonals 関連)
-
-- **Kamino skill** — Tier S protocol、§28.2 名指し (lending / vault adapter 実装)
-- **Jupiter skill** — 競合認識 (§31) + 価格情報 fallback として参照可能
-- **Helius skill** — RPC / DAS API、Portfolio Indexer (§10.2) の wallet position 取得
-- **Marinade / Sanctum / Jito skill** — LST / Restaking 系 protocol adapter 実装
-- **Privy / Phantom skill** — wallet 連携の参考 (Seasonals は MWA 中心だが知識として)
-- **Streamflow skill** — vesting protocol、Tier S protocol の 1 つ
-
-### MCP (53種から Seasonals 関連)
-
-`.mcp.json` でリポジトリ単位で接続するもの:
-- **Helius MCP** — wallet positions / transactions の取得 (Portfolio Indexer 実装時)
-- **Jupiter MCP** — token price / swap routing
-- **Solscan MCP** — transaction 履歴 / address 解析
-- **DexScreener MCP** — token / pool metrics
-
-### skill 利用時のルール
-
-- **Seasonals 固有の規約は本 CLAUDE.md が優先**。solana.new skill が異なる推奨をしてきた場合、本書の規約に従う (例: 数値型、命名、`lib/` 経由 import)
+- **Seasonals 固有の規約は本 CLAUDE.md が優先**。skill が異なる推奨をしてきた場合、本書の規約に従う (例: 数値型、命名、`lib/` 経由 import)
 - skill のコード生成結果は §32.2 整合性チェックを self-apply してから commit
 - skill が `Number()` / `parseInt` を金融値に使うコードを生成したら、必ず `numeric.ts` 経由に書き換える (§4.5)
-- `.superstack/` 配下の context ファイル (skill 間 handoff) は `.gitignore` 入りでもよいが、`.superstack/idea-context.md` だけは pitch 文脈との整合性確認用に commit する判断もあり
 
 ---
 
@@ -356,7 +242,7 @@ skill は `~/.claude/skills/` に展開される。Seasonals リポジトリ固�
 
 ### 8.1 Phase 完了ゲート (CRITICAL)
 
-multi-file 変更や §21 phase を「完了」と宣言する **前に**、必ず以下を green にすること。トーリングを実際に走らせる前に done と言わない:
+multi-file 変更や §21 phase を「完了」と宣言する **前に**、必ず以下を green にすること。ツーリングを実際に走らせる前に done と言わない:
 
 ```bash
 pnpm -r test        # 全 workspace の jest (現状: 150 mobile / 67 lib / 22 BFF)
@@ -375,82 +261,32 @@ pnpm -r typecheck   # 全 workspace の tsc --noEmit
 
 ### 8.3 jest / metro config の既知パターン (regression 禁止)
 
-過去に試行錯誤して確定した設定。**壊さないこと**:
+`artifacts/seasonals/jest.config.js` と `metro.config.js` は過去の試行錯誤で確定した設定で、**論拠は各 config 自身のコメントに書いてある。変更する前に必ずコメントを読むこと** (transformIgnorePatterns / .mjs transform / forceExit / monorepo symlink 解決など、消すと壊れる)。
 
-- `artifacts/seasonals/jest.config.js`:
-  - `transformIgnorePatterns: []` — `@solana/web3.js` の ESM transitive dep (uuid / jayson / `@solana/codecs-*`) が広範なため、許可リストではなく **全 node_modules transform**。cache 後の追加コストはほぼ無し
-  - `transform` に `.mjs` / `.cjs` を明示 — jest-expo preset の default regex は `.mjs` を含まず、`@solana/codecs-numbers` 等が `.native.mjs` を export するため
-  - `moduleNameMapper` で `@workspace/lib/*` を `../../lib` に直結 (ts-jest 不要)
-  - `forceExit: true` — open handle (WarningArea の `setTimeout` 等) での CI hang 防止
-- `artifacts/seasonals/metro.config.js`:
-  - `watchFolders = [workspaceRoot]` + `nodeModulesPaths` 2 段 + `unstable_enableSymlinks` — monorepo で `lib/` を symlink 解決するため。これが無いと emulator/Expo が `@workspace/lib` を解決できない
 - TanStack Query: `gcTime` を過度に短くしない (cache GC で server state が消える)
 
 ---
 
 ## 9. 整合性チェック (§32.2) — PR 前 self-check
 
-PR を出す前 / コードレビューを依頼する前に、関連する行を self-check すること。
-
-| pitch claim | 実装での担保 |
-|---|---|
-| "one tap" | §5.7 execution flow が同一 bottom sheet で完結 |
-| "same source of truth" | `lib/types/` を Mobile / BFF / MCP すべてが import |
-| "different primitive" | Snapshot vs Schedule の論点維持 (§31) |
-| "8 categories of time" | `TimeEventCategory` が `lib/types/enums.ts` で 8 種、§11.4 / §25.2 / §26 で同一 |
-| "agent end-to-end" | `plan_id` ベースの compare → simulate → approve → execute |
-| "policy-aware execution" | §6.4 制約と `UserPolicy` フィールドが 1:1 対応 |
-| "auditable agent actions" | MCPAuditLog と AgentPlan ライフサイクルが `plan_id` でリンク |
-| "fail-closed safety" | 両 stale / >5% 乖離で execute 拒否 (§29.3) |
-| "accurate amounts" | smallest unit を `NUMERIC(38, 0)` で格納、`numeric.ts` 経由 |
-| "warning は素通りしない" | 2-5% 乖離が CTA 直上に強警告 + 1 秒グレーアウト |
-| "string と数値が壊れない" | API boundary 検証 → bigint → NUMERIC、`Number()` 不使用 |
-| "秘密鍵を保持しない" | Mobile / lib コードに `Keypair` / `secretKey` / `mnemonic` 等 0 件 (grep)、署名は MWA `transact()` 経由で Seed Vault / Phantom に完全委譲、authToken は expo-secure-store (Android Keystore) に暗号保存 |
+PR / コードレビュー前の pitch claim ↔ 実装の対応表は
+**`.claude/skills/consistency-check/`** に移した (PR 前にだけ使うので遅延読み込み)。
+規約そのもの (§3 数値表現 / §4 Oracle fail-closed / 秘密鍵禁止) は本書に常駐。
 
 ---
 
 ## 10. 直近の実装タスク (§21、優先順位順)
 
-既存プロトタイプを起点とした **本番化フェーズの差分タスク**。依存関係が小さい順:
+完了済みタスクは git log を参照。**未着手の要約だけ**を以下に残す。
+詳細 (経緯 / program ID / バージョン実測) は `docs/backlog.md` §E (local-only) が canonical。
 
-1. ✅ **`lib/` 共通型整備** — `lib/types/*.ts` + `lib/utils/numeric.ts` 完了
-2. ✅ **TanStack Query 導入** — `services/{queryClient,api,queries}.ts`、6 query hook + 4 mutation hook、fixture path / HTTP path を `IS_TEST_ENV` で切替
-3. ✅ **`WarningArea` component** — §8.5 / §8.7、oracle warning + CTA 1 秒グレーアウト、test 18 ケース
-4. ✅ **MWA 実接続** — `@solana-mobile/mobile-wallet-adapter-protocol-web3js` v2.2.8、Zustand walletStore + expo-secure-store persist、Seeker での Phantom Devnet round-trip 確認済 (#8 と一体)
-5. ✅ **AsyncStorage mock → BFF API 接続** — `artifacts/seasonals-bff/` (Fastify + zod) 11 endpoint、Mobile `services/api.ts` を fetch 経由に書換、BFF integration test 18 ケース
-6. ✅ **MCPClientApprovalCard / MCPApprovalPushCard** — §8.6 / §8.7、PushCard は WarningArea + expires_at counter 内蔵、test 16 ケース
-7. ✅ **MCP approval push handler** — Expo Push Notifications + `seasonals://approval/<planId>?token=<tokenId>` deep link、`app/approval/[planId].tsx` route + `services/push.ts`、test 14 ケース
-8. ✅ **Seed Vault 連携確認** — code grep で `Keypair` / `secretKey` / `mnemonic` 等 0 件、Seeker 実機で MWA round-trip (Phantom 経由) 確認済。Seed Vault path も device 設定で同 probe screen から到達可能
-9. ✅ **EAS Build pipeline** — `eas.json` 3 profiles (dev / preview / production)、Android-only / apk / `appVersionSource: remote`、`pnpm build:{dev,preview,prod}` script、`.easignore` 整備
-
-### 後続 backlog (優先度高)
-
-> 詳細 backlog (v2 Integrator Fee / Tier 2-3 プロトコル選定の突合済リスト) は
-> `docs/backlog.md` (local-only)。本節は Claude Code が常時参照する要約。
-
-- **依存リフレッシュ** — Phase 8.71 で **JS のみ / 実機ビルド不要**の範囲を実施済。以下は 2026-08-03 の実測に基づく現状:
-  - **BFF の Solana SDK は既に最新**: `@solana/web3.js` 1.98.4 (v1 系最新) / `@orca-so/whirlpools-sdk` 0.21.0 (npm 最新) / `@solendprotocol/solend-sdk` 0.14.27 (npm 最新)。「古いまま止めている」ものは無く、残る固定は **v2(kit) ではなく v1 系を使うという設計判断**だけ (バージョン上げではないので別の意思決定)
-  - root pnpm override `"rpc-websockets@^7": "7.10.0"` は **今も load-bearing**。7.11.2 で `main` が `./dist/index.js` → `./dist/index.cjs` に変わる (7.11.0 まではまだ `.js`)。`^7` を要求するのは `@solendprotocol/solend-sdk` → `@pythnetwork/pyth-solana-receiver` → `@solana/web3.js@1.77.4` の経路のみ。**上流がこの packaging を戻すまで外さない** (package.json の `//overrides` に同じ注記あり)
-  - `@solendprotocol/solend-sdk` の **isomorphic-fetch による global fetch 上書き**は上流最新でも未修正 → Orca / Meteora client の undici 明示利用 (orca-tx.ts / meteora-tx.ts) は**継続が必要**
-  - **残っている更新は 3 種類**: ①Expo SDK 51 → 57 (6 世代ジャンプ、RN 本体が動く / 単独 phase) ②native module 群 (`react-native-svg` / `@gorhom/bottom-sheet` / `async-storage` / `react-native-skia` / **MWA**) — **dev-client APK の再ビルドが必須**で、MWA は署名経路なので `docs/confirm.md` A の実署名 round-trip とセットで上げる ③major 跨ぎ (`@types/node` / `@fastify/cors` / `date-fns` / `@babel/runtime`)
-  - 更新時は §8.1 完了ゲートに加えて **`pnpm --filter @seasonals/bff verify:tx`** (全 23 経路を実 registry 値で組んで mainnet simulate、署名も資金移動も無し) を必ず通す — SDK 更新の主検証はこれ
-- ✅ **Exponent PT read-only v1 (Phase 8.33 実装済)**: menu に PT 一覧 (implied APY +
-  満期日、`display_only`) / wallet の PT・YT 保有検出 / **maturity time event の初の
-  実データ源** (`mapPtHoldingsToMaturityEvents` → `deriveTimeEvents`)。registry は
-  `lib/config/exponent-markets.ts` (live API 優先、snapshot は degrade + 満期後解決用)
-- ✅ **Exponent PT 満期 redeem (Phase 8.34 実装済)**: maturity イベント → Redeem
-  action → `POST /protocols/exponent/redeem-tx` (wrapper_merge、discriminator [39]
-  手組み)。account 構成は同 vault の直近成功 tx を template に user スロット置換 +
-  vault state cross-check。満期前は server 400 + client disabled の二重 fail-closed。
-  実機での実 redeem 確認は 2026-08-12 (PT xSOL 満期) 以降 (docs/confirm.md)
-- **Exponent PT 売買 (buy)** (backlog、優先度中): 着手条件は (a) Jupiter が PT mint
-  を route し始める (2026-07-22 時点 "not tradable" 実測) か、(b) Exponent の TS SDK
-  が npm 公開される (docs は Core/CLMM/Orderbook SDK に言及するが未公開、GitHub
-  exponent-core は Rust program のみ)。それまで menu は `display_only` で agent
-  候補からも除外 (fail-closed)
-- **Velocity spot-lend adapter** (Phase 8.31 で Drift adapter を撤去した後継、優先度中):
-  - 旧 Drift は 2026-04-01 の exploit 以降 deposit/withdraw 停止のまま **Velocity DEX として fork 再デプロイ** (2026-07-01 リブランド)。program ID `vELoC1audYbSYVRXn1vPaV8Axoa9oU6BYmNGZZBDZ1P` / SDK `@velocity-exchange/sdk` (`VelocityClient`) / **quote 資産は USDT** / spot は collateral + borrow-lend のみ存続
-  - 再実装の着手条件: **公開 relaunch 済** (private beta 解除) + SDK が v0.x churn を抜けて安定 + spot market index / mint 構成を実 SDK で再調査 (旧 Drift の market_index=USDC:0/SOL:1 は引き継がれない前提で確認)
+- **依存リフレッシュ** (単独 phase、残り 3 種):
+  ①Expo SDK 51 → 57 ②native module 群 + MWA (**dev-client APK 再ビルド必須**、MWA は実署名 round-trip とセット) ③major 跨ぎ (`@types/node` / `date-fns` 等)
+  - SDK 更新時は §8.1 完了ゲートに加えて **`pnpm --filter @seasonals/bff verify:tx`** (全 23 経路 mainnet simulate、署名なし) を必ず通す
+  - root pnpm override `"rpc-websockets@^7": "7.10.0"` は **load-bearing、外さない** (経緯は package.json `//overrides` と backlog.md §E)
+  - `@solendprotocol/solend-sdk` の global fetch 上書き問題 → orca-tx.ts / meteora-tx.ts の undici 明示利用は**継続が必要**
+- **Exponent PT 売買 (buy)** (優先度中): 着手条件は Jupiter が PT mint を route し始めるか Exponent TS SDK の npm 公開。それまで menu は `display_only` で agent 候補からも除外 (fail-closed)
+- **Velocity spot-lend adapter** (旧 Drift 後継、優先度中): 着手条件は公開 relaunch + SDK 安定 + spot market 構成の実 SDK 再調査
 
 ---
 
@@ -480,16 +316,7 @@ PR を出す前 / コードレビューを依頼する前に、関連する行�
 - `lib/utils/numeric.ts` — 金融値の string ↔ bigint 変換 helper
 
 ### 外部
-- [solana.new](https://www.solana.new/) — SendAI + Superteam の curated skills (§7)
-- [GitHub: sendaifun/solana-new](https://github.com/sendaifun/solana-new)
-- **Solana Mobile Wallet Adapter (MWA)**:
-  - [GitHub: solana-mobile/mobile-wallet-adapter](https://github.com/solana-mobile/mobile-wallet-adapter) — 公式 monorepo (`js/packages/mobile-wallet-adapter-protocol-web3js` を Seasonals が採用)
-  - [RN setup](https://docs.solanamobile.com/react-native/setup) / [RN quickstart](https://docs.solanamobile.com/react-native/quickstart)
-  - [example-react-native-app](https://github.com/solana-mobile/mobile-wallet-adapter/tree/main/examples/example-react-native-app) — RN 統合の参照実装。`services/mwa.ts` 実装時の primary reference
-  - [プロトコル仕様](https://solana-mobile.github.io/mobile-wallet-adapter/spec/spec.html)
-- [Solana Mobile Stack](https://github.com/solana-mobile/solana-mobile-stack-sdk) — Seed Vault / dApp Store 含む全体
-- [Expo Router](https://expo.github.io/router/) — file-based routing
-- [TanStack Query](https://tanstack.com/query) — server state management
+- **MWA**: [solana-mobile/mobile-wallet-adapter](https://github.com/solana-mobile/mobile-wallet-adapter) (公式 monorepo、`mobile-wallet-adapter-protocol-web3js` を採用。examples/ に RN 参照実装) + [RN docs](https://docs.solanamobile.com/react-native/setup)
 
 ### 既存
 - `artifacts/seasonals/` — 既存プロトタイプ (UX リファレンスとしてのみ参照)

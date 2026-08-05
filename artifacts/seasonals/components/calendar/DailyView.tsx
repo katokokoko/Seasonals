@@ -67,6 +67,7 @@ import {
 } from "@workspace/lib/design-system";
 import {
   TimeEventCategory,
+  type CustomEvent,
   type UnifiedTimeEvent,
 } from "@workspace/lib/types";
 
@@ -132,13 +133,26 @@ function localDayKey(day: Date): string {
 }
 
 function eventDayKey(triggerAt: UnifiedTimeEvent["triggerAt"]): string {
+  // 8.86: **local TZ** で日付 key を生成 (MonthGrid.tsx と同一実装)。
+  // 旧実装は UTC getter を使っており、cell 側の localDayKey と食い違って
+  // JST ではイベントが前日のカードに出ていた (8.3.1 で MonthGrid だけ直され、
+  // こちらに残っていた)
   const ts = triggerAt instanceof Date ? triggerAt : new Date(triggerAt);
-  return `${ts.getUTCFullYear()}-${String(ts.getUTCMonth() + 1).padStart(2, "0")}-${String(ts.getUTCDate()).padStart(2, "0")}`;
+  return `${ts.getFullYear()}-${String(ts.getMonth() + 1).padStart(2, "0")}-${String(ts.getDate()).padStart(2, "0")}`;
 }
 
 function eventsOnDay(events: UnifiedTimeEvent[], day: Date): UnifiedTimeEvent[] {
   const key = localDayKey(day);
   return events.filter((e) => eventDayKey(e.triggerAt) === key);
+}
+
+/** 8.86: CustomEvent.date は "yyyy-MM-dd" (local) — localDayKey とそのまま突合 */
+function customEventsOnDay(
+  customEvents: CustomEvent[],
+  day: Date
+): CustomEvent[] {
+  const key = localDayKey(day);
+  return customEvents.filter((e) => e.date === key);
 }
 
 function dayOrdinalSuffix(d: number): string {
@@ -168,6 +182,8 @@ function tickHaptic(steps: number): void {
 
 export interface DailyViewProps {
   events: UnifiedTimeEvent[];
+  /** 8.86: ユーザー追加の CustomEvent (月 grid と同じソース) */
+  customEvents?: CustomEvent[];
   /** BottomSheet animatedPosition (top からの px)。card 高さに連動 */
   sheetPosition?: SharedValue<number>;
   screenHeight?: number;
@@ -177,8 +193,11 @@ export interface DailyViewProps {
   testID?: string;
 }
 
+const EMPTY_CUSTOM: CustomEvent[] = [];
+
 export function DailyView({
   events,
+  customEvents = EMPTY_CUSTOM,
   sheetPosition,
   screenHeight = Dimensions.get("window").height,
   topInset = 0,
@@ -263,8 +282,10 @@ export function DailyView({
   // ── Center card tap ────────────────────────────────────────────────────
   const handleCenterTap = () => {
     const dayEvents = eventsOnDay(events, selectedDate);
-    if (dayEvents.length === 0) return;
-    if (dayEvents.length === 1 && onSelectEvent) {
+    const dayCustoms = customEventsOnDay(customEvents, selectedDate);
+    // 8.86: custom event だけの日もタップで day modal を開けるようにする
+    if (dayEvents.length + dayCustoms.length === 0) return;
+    if (dayEvents.length === 1 && dayCustoms.length === 0 && onSelectEvent) {
       onSelectEvent(dayEvents[0]!);
       return;
     }
@@ -278,6 +299,7 @@ export function DailyView({
           {OFFSETS.map((offset) => {
             const date = addDays(selectedDate, offset);
             const dayEvents = eventsOnDay(events, date);
+            const dayCustoms = customEventsOnDay(customEvents, date);
             const isCenter = offset === 0;
             return (
               <DayCard
@@ -290,6 +312,7 @@ export function DailyView({
                 heightSV={heightSV}
                 isCenter={isCenter}
                 dayEvents={dayEvents}
+                dayCustoms={dayCustoms}
                 onPress={isCenter ? handleCenterTap : undefined}
                 testID={
                   isCenter && testID ? `${testID}-card` : undefined
@@ -314,6 +337,7 @@ interface DayCardProps {
   heightSV: SharedValue<number>;
   isCenter: boolean;
   dayEvents: UnifiedTimeEvent[];
+  dayCustoms: CustomEvent[];
   onPress?: () => void;
   testID?: string;
 }
@@ -327,6 +351,7 @@ function DayCard({
   heightSV,
   isCenter,
   dayEvents,
+  dayCustoms,
   onPress,
   testID,
 }: DayCardProps) {
@@ -376,7 +401,12 @@ function DayCard({
         ]}
         testID={testID}
       >
-        <DayCardContent date={date} dayEvents={dayEvents} compact={!isCenter} />
+        <DayCardContent
+          date={date}
+          dayEvents={dayEvents}
+          dayCustoms={dayCustoms}
+          compact={!isCenter}
+        />
       </Pressable>
     </Animated.View>
   );
@@ -385,10 +415,16 @@ function DayCard({
 interface DayCardContentProps {
   date: Date;
   dayEvents: UnifiedTimeEvent[];
+  dayCustoms: CustomEvent[];
   compact?: boolean;
 }
 
-function DayCardContent({ date, dayEvents, compact }: DayCardContentProps) {
+function DayCardContent({
+  date,
+  dayEvents,
+  dayCustoms,
+  compact,
+}: DayCardContentProps) {
   // Phase 8.0: sub-component が parent の styles を参照していたので自身で取得
   const styles = useThemedStyles(makeStyles);
   const themeColors = useThemeColors();
@@ -410,8 +446,9 @@ function DayCardContent({ date, dayEvents, compact }: DayCardContentProps) {
         </Text>
       </View>
 
-      {/* Middle: events list (vertical scroll if overflow) */}
-      {dayEvents.length === 0 ? (
+      {/* Middle: events list (vertical scroll if overflow)。
+          8.86: custom event も protocol イベントの後に描く */}
+      {dayEvents.length + dayCustoms.length === 0 ? (
         <View style={styles.emptyWrap}>
           <Text style={styles.emptyText}>No events</Text>
         </View>
@@ -450,11 +487,35 @@ function DayCardContent({ date, dayEvents, compact }: DayCardContentProps) {
               </View>
             </View>
           ))}
+          {dayCustoms.map((ce, idx) => (
+            <View
+              key={ce.id}
+              style={[
+                styles.eventRow,
+                (dayEvents.length > 0 || idx > 0) && styles.eventRowDivider,
+              ]}
+              testID={`daily-custom-${ce.id}`}
+            >
+              <Text style={styles.customEmoji}>
+                {ce.marker === "emoji" && ce.emoji ? ce.emoji : "★"}
+              </Text>
+              <View style={styles.eventMain}>
+                <Text style={styles.eventName} numberOfLines={1}>
+                  {ce.title}
+                </Text>
+                {ce.amount_usd != null && (
+                  <Text style={styles.customAmount} numberOfLines={1}>
+                    ${ce.amount_usd.toFixed(2)}
+                  </Text>
+                )}
+              </View>
+            </View>
+          ))}
         </ScrollView>
       )}
 
       {/* Sticky bottom-right: Tap to open → */}
-      {!compact && dayEvents.length > 0 && (
+      {!compact && dayEvents.length + dayCustoms.length > 0 && (
         <View style={styles.tapToOpenAbsolute} pointerEvents="none">
           <Text style={styles.tapToOpen}>Tap to open →</Text>
         </View>
@@ -565,6 +626,18 @@ function makeStyles(c: ThemeColors) {
       fontSize: FONT_SIZE.bodySM,
       fontFamily: FONT.heading,
       fontWeight: WEIGHT.semibold,
+    },
+    // 8.86: custom event 行 (絵文字 + title + $amount)
+    customEmoji: {
+      fontSize: 18,
+      width: 28,
+      textAlign: "center",
+    },
+    customAmount: {
+      fontSize: FONT_SIZE.bodySM,
+      fontFamily: FONT.heading,
+      fontWeight: WEIGHT.semibold,
+      color: c.textMuted,
     },
     emptyWrap: {
       flex: 1,

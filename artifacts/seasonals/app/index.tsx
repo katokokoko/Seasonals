@@ -10,7 +10,7 @@
  * @see Phase 5A spec / docs/visual-reference/header.png
  */
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Dimensions,
   Image,
@@ -50,7 +50,7 @@ import {
   type UnifiedTimeEvent,
 } from "@workspace/lib/types";
 
-import { MonthGrid } from "../components/calendar/MonthGrid";
+import { MonthPager } from "../components/calendar/MonthPager";
 import { DailyView } from "../components/calendar/DailyView";
 import { EventDayModal } from "../components/calendar/EventDayModal";
 import { syntheticPlanFromEventAction } from "../components/calendar/event-action";
@@ -185,18 +185,43 @@ export default function HomeScreen() {
   }));
 
   // 左 edge から右 swipe で SettingsDrawer 開閉
-  const edgeLeftGesture = Gesture.Pan()
-    .activeOffsetX([-15, 15])
-    .onEnd((e) => {
-      if (e.translationX > 60) runOnJS(setSettingsOpen)(true);
-    });
+  // 8.81: useMemo 化 (毎レンダーの GestureDetector 再アタッチを止める) +
+  // success flag (CANCELLED でも onEnd が呼ばれ drawer が誤って開いていた)
+  const edgeLeftGesture = useMemo(
+    () =>
+      Gesture.Pan()
+        .activeOffsetX([-15, 15])
+        .onEnd((e, success) => {
+          if (success && e.translationX > 60) runOnJS(setSettingsOpen)(true);
+        }),
+    []
+  );
 
   // 右 edge から左 swipe で MenuDrawer 開閉
-  const edgeRightGesture = Gesture.Pan()
-    .activeOffsetX([-15, 15])
-    .onEnd((e) => {
-      if (e.translationX < -60) runOnJS(setServicesOpen)(true);
-    });
+  const edgeRightGesture = useMemo(
+    () =>
+      Gesture.Pan()
+        .activeOffsetX([-15, 15])
+        .onEnd((e, success) => {
+          if (success && e.translationX < -60) runOnJS(setServicesOpen)(true);
+        }),
+    []
+  );
+
+  // 8.81: today を 1 分間隔で「日付が変わった時だけ」更新する安定参照に。
+  // 旧 today={new Date()} inline prop は毎レンダー新 identity になり、
+  // PortfolioSummary の useMemo (buildPortfolioTimeSeries 等) を月送りの
+  // レンダーごとに無効化してチャート系列を再計算させていた。
+  const [today, setToday] = useState(() => new Date());
+  useEffect(() => {
+    const id = setInterval(() => {
+      setToday((prev) => {
+        const now = new Date();
+        return prev.toDateString() === now.toDateString() ? prev : now;
+      });
+    }, 60_000);
+    return () => clearInterval(id);
+  }, []);
 
   // MenuDrawer から start action: 該当 protocol/asset の plan を解決
   //
@@ -274,15 +299,34 @@ export default function HomeScreen() {
     ? events.filter((e) => eventDayKey(e.triggerAt) === localDayKey(selectedDay))
     : [];
 
-  const handleDayPress = (day: Date) => {
-    setSelectedDay(day);
-    setSelectedIsoDay(dateToIso(day));
-    setDayModalOpen(true);
-  };
+  // 8.85: カレンダー grid 下端の画面絶対 y。下部シートの middle snap を
+  // 週の最下段の少し下に合わせる。8.84 の行圧縮で grid 高さは月によらず一定
+  // なので、この値は月送りでは変わらない (PortfolioSummary の memo も効く)。
+  // 数 px の揺れで snapPoints を作り直さないよう丸めてから set する
+  const [calendarBottomY, setCalendarBottomY] = useState<number | null>(null);
+  const handleGridBottomY = useCallback((bottomY: number) => {
+    const rounded = Math.round(bottomY);
+    setCalendarBottomY((prev) =>
+      prev !== null && Math.abs(prev - rounded) < 4 ? prev : rounded
+    );
+  }, []);
 
-  const handleMonthChange = (next: Date) => {
-    setCurrentMonth(dateToYm(next));
-  };
+  // 8.81: useCallback 化 — MonthGrid (React.memo) に安定 identity で渡す
+  const handleDayPress = useCallback(
+    (day: Date) => {
+      setSelectedDay(day);
+      setSelectedIsoDay(dateToIso(day));
+      setDayModalOpen(true);
+    },
+    [setSelectedIsoDay]
+  );
+
+  const handleMonthChange = useCallback(
+    (next: Date) => {
+      setCurrentMonth(dateToYm(next));
+    },
+    [setCurrentMonth]
+  );
 
   const handleActionPress = (
     event: UnifiedTimeEvent,
@@ -383,19 +427,21 @@ export default function HomeScreen() {
       <GestureDetector gesture={Gesture.Race(edgeLeftGesture, edgeRightGesture)}>
         <View style={styles.bodyWrap}>
           {viewMode === "monthly" ? (
-            <MonthGrid
+            <MonthPager
               month={monthDate}
               onChangeMonth={handleMonthChange}
               events={events}
               customEvents={customEvents}
               selectedDay={selectedDay}
               onDayPress={handleDayPress}
-              today={new Date()}
+              today={today}
+              onGridBottomY={handleGridBottomY}
               testID="home-calendar"
             />
           ) : (
             <DailyView
               events={events}
+              customEvents={customEvents}
               sheetPosition={sheetPosition}
               topInset={headerApproxHeight}
               onSelectEvent={(event) => {
@@ -440,12 +486,14 @@ export default function HomeScreen() {
 
       {/* Bottom portfolio panel (glass + chart) */}
       {/* 8.55: today は実時刻 (旧 MOCK_TODAY=2026-05-09 は chart 右端が 5/9 で止まっていた) */}
+      {/* 8.81: identity 安定な today (上の useState + 分次チェック) — inline new Date() 禁止 */}
       <PortfolioSummary
         positions={positions}
         protocols={protocols}
-        today={new Date()}
+        today={today}
         walletAddress={onchainAddress}
         animatedPosition={sheetPosition}
+        minTopY={viewMode === "monthly" ? calendarBottomY : null}
         testID="home-portfolio"
       />
 

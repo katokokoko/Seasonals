@@ -83,6 +83,7 @@ import {
   fetchStakeAccounts,
   getEpochInfo,
   getTokenSupplyUi,
+  getWalletBalanceSmallest,
   sendTransactionViaHelius,
   type StakeAccountInfo,
 } from "./clients/helius-rpc";
@@ -501,8 +502,10 @@ async function loadWalletHistoryInputs(
   if (historyAssets.length === 0) return null;
 
   // native SOL は DAS が価格を持たない。過去価格が引けない点の保険として
-  // oracle の現在価格を currentUsd8 に入れておく (/prices と同じ出所)
-  await Promise.all(
+  // oracle の現在価格を currentUsd8 に入れておく (/prices と同じ出所)。
+  // 8.83: pagination の入力には不要なので、tx 遡りと並走させる (直列だと
+  // oracle round-trip の分だけ cold start が延びる)
+  const fillOraclePrices = Promise.all(
     historyAssets
       .filter((a) => !a.currentUsd8 && a.feedId)
       .map(async (a) => {
@@ -515,43 +518,54 @@ async function loadWalletHistoryInputs(
       })
   );
 
-  // 2. tx を cutoff まで遡って符号付き差分を集める
+  // 2. tx を cutoff まで遡って符号付き差分を集める (cursor 連鎖なので直列)
   const cutoff = nowSeconds - days * 86_400;
-  const deltas: BalanceDelta[] = [];
-  let before: string | undefined;
-  let oldestSeen = nowSeconds;
-  for (let page = 0; page < HISTORY_MAX_TX_PAGES; page++) {
-    const txs = await fetchEnhancedTransactionsPage(wallet, {
-      limit: 100,
-      ...(before ? { before } : {}),
-    });
-    if (txs.length === 0) break;
-    for (const tx of txs) {
-      oldestSeen = Math.min(oldestSeen, tx.timestamp);
-      for (const account of tx.accountData ?? []) {
-        // native SOL: wallet 自身の account の lamports 変化 (fee 込みの実変化)
-        if (account.account === wallet && account.nativeBalanceChange) {
-          deltas.push({
-            timestamp: tx.timestamp,
-            mint: WSOL_MINT,
-            amount: BigInt(account.nativeBalanceChange),
-          });
-        }
-        for (const change of account.tokenBalanceChanges ?? []) {
-          if (change.userAccount !== wallet) continue;
-          const raw = change.rawTokenAmount?.tokenAmount;
-          if (typeof raw !== "string" || !/^-?[0-9]+$/.test(raw)) continue;
-          deltas.push({
-            timestamp: tx.timestamp,
-            mint: change.mint,
-            amount: BigInt(raw),
-          });
+  const collectDeltas = async (): Promise<{
+    deltas: BalanceDelta[];
+    oldestSeen: number;
+  }> => {
+    const deltas: BalanceDelta[] = [];
+    let before: string | undefined;
+    let oldestSeen = nowSeconds;
+    for (let page = 0; page < HISTORY_MAX_TX_PAGES; page++) {
+      const txs = await fetchEnhancedTransactionsPage(wallet, {
+        limit: 100,
+        ...(before ? { before } : {}),
+      });
+      if (txs.length === 0) break;
+      for (const tx of txs) {
+        oldestSeen = Math.min(oldestSeen, tx.timestamp);
+        for (const account of tx.accountData ?? []) {
+          // native SOL: wallet 自身の account の lamports 変化 (fee 込みの実変化)
+          if (account.account === wallet && account.nativeBalanceChange) {
+            deltas.push({
+              timestamp: tx.timestamp,
+              mint: WSOL_MINT,
+              amount: BigInt(account.nativeBalanceChange),
+            });
+          }
+          for (const change of account.tokenBalanceChanges ?? []) {
+            if (change.userAccount !== wallet) continue;
+            const raw = change.rawTokenAmount?.tokenAmount;
+            if (typeof raw !== "string" || !/^-?[0-9]+$/.test(raw)) continue;
+            deltas.push({
+              timestamp: tx.timestamp,
+              mint: change.mint,
+              amount: BigInt(raw),
+            });
+          }
         }
       }
+      before = txs[txs.length - 1]?.signature;
+      if (!before || oldestSeen <= cutoff) break;
     }
-    before = txs[txs.length - 1]?.signature;
-    if (!before || oldestSeen <= cutoff) break;
-  }
+    return { deltas, oldestSeen };
+  };
+
+  const [{ deltas, oldestSeen }] = await Promise.all([
+    collectDeltas(),
+    fillOraclePrices,
+  ]);
 
   const data: WalletHistoryInputs = {
     current,
@@ -564,6 +578,9 @@ async function loadWalletHistoryInputs(
   return data;
 }
 
+/** 8.83: SWR の背景再計算が同一 key で多重に走らないためのガード */
+const historyRefreshing = new Set<string>();
+
 export async function buildPortfolioHistory(
   wallet: string,
   days: number,
@@ -571,10 +588,37 @@ export async function buildPortfolioHistory(
 ): Promise<PortfolioHistoryResponse> {
   const cacheKey = `${wallet}|${days}`;
   const cached = historyCache.get(cacheKey);
-  if (cached && Date.now() - cached.at < HISTORY_CACHE_TTL_MS) {
+  if (cached) {
+    if (Date.now() - cached.at < HISTORY_CACHE_TTL_MS) {
+      return cached.data;
+    }
+    // 8.83: stale-while-revalidate — TTL 超過でも即返し、裏で作り直す。
+    // チャートは display-only なので bounded staleness は許容 (§4.6 の
+    // oracle fail-closed 系とは別経路で、実行判定には一切使われない)
+    if (!historyRefreshing.has(cacheKey)) {
+      historyRefreshing.add(cacheKey);
+      void computePortfolioHistory(wallet, days, Math.floor(Date.now() / 1000))
+        .then((data) => {
+          historyCache.set(cacheKey, { at: Date.now(), data });
+        })
+        .catch(() => undefined)
+        .finally(() => {
+          historyRefreshing.delete(cacheKey);
+        });
+    }
     return cached.data;
   }
 
+  const data = await computePortfolioHistory(wallet, days, nowSeconds);
+  historyCache.set(cacheKey, { at: Date.now(), data });
+  return data;
+}
+
+async function computePortfolioHistory(
+  wallet: string,
+  days: number,
+  nowSeconds: number
+): Promise<PortfolioHistoryResponse> {
   const cutoff = nowSeconds - days * 86_400;
   const inputs = await loadWalletHistoryInputs(wallet, days, nowSeconds);
   if (!inputs) {
@@ -666,13 +710,12 @@ export async function buildPortfolioHistory(
     pricesByTime,
     WSOL_MINT
   );
-  const data: PortfolioHistoryResponse = {
+  // cache 書き込みは buildPortfolioHistory (SWR wrapper) 側の責務 (8.83)
+  return {
     points: series.points,
     oldest_at: series.points[0]?.at ?? null,
     approximated_symbols: series.approximatedSymbols,
   };
-  historyCache.set(cacheKey, { at: Date.now(), data });
-  return data;
 }
 
 /**
@@ -952,6 +995,27 @@ async function evaluateSwapFairValue(
 }
 
 /**
+ * Phase 8.80: 残高 gate の message 用に input mint の symbol / decimals を引く。
+ * swap-earn 経路の input は「underlying (deposit) か share (withdraw)」なので
+ * SWAP_EARN_MARKETS の両面から逆引きできる。registry 外は raw 表示に degrade
+ * (gate の判定自体は bigint 比較で、ここは表示専用)。
+ */
+function swapInputTokenMeta(mint: string): { symbol: string; decimals: number } {
+  const byShare = findMarketByShareMint(mint);
+  if (byShare) {
+    return { symbol: byShare.share_symbol, decimals: byShare.share_decimals };
+  }
+  const byUnderlying = SWAP_EARN_MARKETS.find((m) => m.underlying_mint === mint);
+  if (byUnderlying) {
+    return {
+      symbol: byUnderlying.underlying_symbol,
+      decimals: byUnderlying.underlying_decimals,
+    };
+  }
+  return { symbol: "tokens", decimals: 0 };
+}
+
+/**
  * Phase 8.15: swap-earn 共通処理。oracle fail-closed gate (§4.6) → Jupiter Swap
  * quote → swap tx を組み立てて返す。Jupiter Lend / 汎用 swap-earn endpoint で共有。
  *   - oracleMint: fail-closed 判定する underlying mint (deposit/withdraw とも underlying)
@@ -991,6 +1055,23 @@ async function buildSwapEarnTx(
       oracle,
     };
   }
+
+  // Phase 8.80: input 残高 gate。残高ゼロの JupUSD deposit が quote → tx build →
+  // Phantom (simulate 失敗の警告) → broadcast 0x1789 まで素通りした実例の再発防止。
+  // Jupiter の quote も swap build も残高を見ないので、ここで見るしかない。
+  // **取得失敗 (null) は素通し** — これは UX ガードであって安全ガードではない
+  // (存在しない資金は動かせない)。瞬断で deposit を誤ブロックしない (8.78 の教訓)
+  const balance = await getWalletBalanceSmallest(p.user, p.inputMint);
+  if (balance !== null && balance < BigInt(p.amount)) {
+    const meta = swapInputTokenMeta(p.inputMint);
+    reply.code(400);
+    return {
+      error: "insufficient_balance",
+      balance: balance.toString(),
+      message: `You hold ${toHumanReadable(balance.toString(), meta.decimals)} ${meta.symbol} — this needs ${toHumanReadable(p.amount, meta.decimals)}. Nothing was signed.`,
+    };
+  }
+
   try {
     const quote = await fetchSwapQuote({
       inputMint: p.inputMint,

@@ -19,11 +19,14 @@ import { buildServer } from "./server";
 import { fetchSwapQuote, fetchSwapTransaction } from "./clients/jupiter-swap";
 import { getOracleResult } from "./clients/oracle";
 import { fetchLstSolValues } from "./clients/lst-rates";
+import { getWalletBalanceSmallest } from "./clients/helius-rpc";
 
 jest.mock("./clients/jupiter-swap");
 jest.mock("./clients/oracle");
 // 8.72/8.73: 償還価値ガードの参照レート (protocol 実データ)。実ネットワークは叩かない
 jest.mock("./clients/lst-rates");
+// 8.80: 残高 gate。mock が無いと live RPC を叩く
+jest.mock("./clients/helius-rpc");
 
 const mockQuote = fetchSwapQuote as jest.MockedFunction<typeof fetchSwapQuote>;
 const mockTx = fetchSwapTransaction as jest.MockedFunction<
@@ -34,6 +37,9 @@ const mockOracle = getOracleResult as jest.MockedFunction<
 >;
 const mockSolValues = fetchLstSolValues as jest.MockedFunction<
   typeof fetchLstSolValues
+>;
+const mockBalance = getWalletBalanceSmallest as jest.MockedFunction<
+  typeof getWalletBalanceSmallest
 >;
 /** 8.72: jitoSOL 1 枚 = 1.2 SOL の想定レート (lamports) */
 const JITO_SOL_VALUE = 1_200_000_000n;
@@ -83,6 +89,8 @@ beforeEach(async () => {
   jest.clearAllMocks();
   mockOracle.mockResolvedValue(okOracle());
   mockSolValues.mockResolvedValue(new Map([["jitoSOL", JITO_SOL_VALUE]]));
+  // 8.80: 既定は潤沢な残高 (gate を通す)。不足系は専用 describe で上書き
+  mockBalance.mockResolvedValue(1_000_000_000_000_000n);
   mockQuote.mockImplementation(async (params) => ({
     inputMint: params.inputMint,
     outputMint: params.outputMint,
@@ -384,5 +392,68 @@ describe("Phase 8.72 — 償還価値ガード (LST の NAV から不利方向�
     });
     expect(res.statusCode).toBe(200);
     expect(mockTx).toHaveBeenCalled();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Phase 8.80: input 残高 gate — 残高ゼロの JupUSD deposit が quote → tx →
+// Phantom 警告 → broadcast 0x1789 まで素通りした実例の再発防止。
+// gate は「確実に失敗する tx を署名前に止める」UX ガードなので、
+// **残高が取れない時 (null) は素通し** (瞬断で誤ブロックしない、8.78 の教訓)。
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("8.80: input 残高 gate", () => {
+  const jl = SWAP_EARN_MARKETS.find((m) => m.share_symbol === "jlUSDC")!;
+
+  it("残高不足 → 400 insufficient_balance、quote を呼ばない", async () => {
+    mockBalance.mockResolvedValue(0n); // 未保有
+    const res = await post("/protocols/swap-earn/deposit-tx", {
+      user: VALID_USER,
+      shareMint: jl.share_mint,
+      amount: "100000", // 0.1 USDC
+    });
+    expect(res.statusCode).toBe(400);
+    const body = res.json();
+    expect(body.error).toBe("insufficient_balance");
+    expect(body.balance).toBe("0");
+    // 人が読める message (8.74 方針)。保有量と必要量の両方が出る
+    expect(body.message).toContain("You hold 0 USDC");
+    expect(body.message).toContain("0.1");
+    expect(mockQuote).not.toHaveBeenCalled();
+    expect(mockTx).not.toHaveBeenCalled();
+  });
+
+  it("ちょうど同額は通す (境界)", async () => {
+    mockBalance.mockResolvedValue(100000n);
+    const res = await post("/protocols/swap-earn/deposit-tx", {
+      user: VALID_USER,
+      shareMint: jl.share_mint,
+      amount: "100000",
+    });
+    expect(res.statusCode).toBe(200);
+  });
+
+  it("残高が取れない (null) 時は素通し — UX ガードであり安全ガードではない", async () => {
+    mockBalance.mockResolvedValue(null);
+    const res = await post("/protocols/swap-earn/deposit-tx", {
+      user: VALID_USER,
+      shareMint: jl.share_mint,
+      amount: "100000",
+    });
+    expect(res.statusCode).toBe(200);
+    expect(mockTx).toHaveBeenCalled();
+  });
+
+  it("withdraw は share 残高を見る (share が input)", async () => {
+    mockBalance.mockResolvedValue(0n);
+    const res = await post("/protocols/swap-earn/withdraw-tx", {
+      user: VALID_USER,
+      shareMint: jl.share_mint,
+      amount: "500000",
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toBe("insufficient_balance");
+    // input は share なので share symbol で表示される
+    expect(res.json().message).toContain("jlUSDC");
   });
 });

@@ -17,6 +17,7 @@ import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   Dimensions,
+  KeyboardAvoidingView,
   Linking,
   Modal,
   Pressable,
@@ -59,7 +60,9 @@ import {
   depositMaxSmallest,
   resolveAmountUnit,
   validateAmountInput,
+  validateDepositAgainstBalance,
   type AmountUnit,
+  type AmountValidation,
 } from "./amount-utils";
 import { WarningArea } from "./WarningArea";
 import { oracleBlockLabel, resolveOracleMint } from "./oracle-gate";
@@ -169,16 +172,18 @@ export function ActionModal({
     // amountUnit は plan から導出されるので plan だけを依存にする
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [plan]);
-  const amountValidation = useMemo(
+  // 書式 / 正数の検証 (8.80: 残高検証は depositBalance 確定後に連結する)
+  const formatValidation = useMemo(
     () => validateAmountInput(amountInput, amountUnit.decimals),
     [amountInput, amountUnit]
   );
 
   // deposit の残高 (wallet 系 raw position、TanStack cache 再利用)
   const isDeposit = plan?.selected_action?.action_type === "deposit";
-  const { data: rawPositions = [] } = usePositions(
-    USE_ONCHAIN && isConnected && authorization ? authorization.address : null
-  );
+  const onchainWallet =
+    USE_ONCHAIN && isConnected && authorization ? authorization.address : null;
+  const { data: rawPositions = [], isSuccess: positionsLoaded } =
+    usePositions(onchainWallet);
   const depositBalance = useMemo(() => {
     const asset = plan?.selected_action?.asset;
     if (!isDeposit || !asset) return null;
@@ -186,8 +191,30 @@ export function ActionModal({
       (pos) =>
         pos.asset_symbol === asset && pos.protocol_id.startsWith("wallet_")
     );
-    return p?.current_amount ?? null;
-  }, [isDeposit, plan, rawPositions]);
+    if (p) return p.current_amount;
+    // 8.80: onchain 接続済みで positions が取得**成功**しているのに行が無い =
+    // 保有ゼロ (DAS は保有 token を全部返す)。"0" を返して残高検証を効かせる。
+    // query 未完 / 失敗 / 未接続は従来どおり null (= 不明、誤ブロックしない)
+    if (onchainWallet && positionsLoaded) return "0";
+    return null;
+  }, [isDeposit, plan, rawPositions, onchainWallet, positionsLoaded]);
+
+  // 8.80: 書式 OK でも保有残高を超える deposit は error にする。
+  // 残高ゼロの JupUSD deposit が Phantom 警告 → broadcast 0x1789 まで素通りした
+  // 実例の再発防止 (BFF 側 insufficient_balance gate と二重の fail-closed)
+  const amountValidation = useMemo((): AmountValidation => {
+    if (!formatValidation.ok || !isDeposit) return formatValidation;
+    const asset = plan?.selected_action?.asset ?? "";
+    const balanceCheck = validateDepositAgainstBalance(
+      formatValidation.smallest,
+      depositBalance,
+      asset,
+      amountUnit.decimals
+    );
+    return balanceCheck.ok
+      ? formatValidation
+      : { ok: false, error: balanceCheck.error };
+  }, [formatValidation, isDeposit, plan, depositBalance, amountUnit]);
 
   const handlePressMax = useCallback(() => {
     const action = plan?.selected_action;
@@ -732,7 +759,13 @@ export function ActionModal({
       </Animated.View>
 
       {/* Sheet wrap: 画面下端に固定、sheet 自体だけ translateY で下から上昇 */}
-      <View style={styles.sheetWrap} pointerEvents="box-none">
+      {/* 8.86: amount 入力がキーボードに隠れないよう padding で押し上げる
+          (edge-to-edge では adjustResize が効かないため JS 側で回避) */}
+      <KeyboardAvoidingView
+        behavior="padding"
+        style={styles.sheetWrap}
+        pointerEvents="box-none"
+      >
         {/* 8.45 (edge-to-edge): statusBarTranslucent の全画面 window なので、
             CTA がジェスチャーバーに重ならないよう下端 inset を足す */}
         <Animated.View
@@ -808,7 +841,7 @@ export function ActionModal({
           />
         )}
         </Animated.View>
-      </View>
+      </KeyboardAvoidingView>
     </Modal>
   );
 }
