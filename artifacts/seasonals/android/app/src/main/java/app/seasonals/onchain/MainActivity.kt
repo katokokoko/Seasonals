@@ -24,6 +24,14 @@ class MainActivity : ReactActivity() {
     super.onCreate(null)
     // Phase 8.45: edge-to-edge — コンテンツをシステムバーの裏まで広げる
     WindowCompat.setDecorFitsSystemWindows(window, false)
+    // Phase 8.88: max refresh rate — RN の省電力カテゴリ投票 (90Hz) を Window の明示要求で上書きする
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+      val maxHz = display?.supportedModes?.maxOfOrNull { it.refreshRate } ?: 0f
+      if (maxHz > 0f) {
+        window.attributes = window.attributes.apply { preferredRefreshRate = maxHz }
+      }
+    }
+    // Phase 8.88 end
   }
 
   /**
