@@ -18,7 +18,6 @@ import {
   // 発動しない — focus 検知が BottomSheetTextInput 経由のため
   BottomSheetTextInput,
   type BottomSheetBackdropProps,
-  type BottomSheetModalMethods,
 } from "@gorhom/bottom-sheet";
 import { format } from "date-fns";
 
@@ -126,7 +125,7 @@ export function EventDayModal({
   // 8.45: edge-to-edge の下端 inset
   const insets = useSafeAreaInsets();
 
-  const ref = useRef<BottomSheetModalMethods>(null);
+  const ref = useRef<BottomSheetModal>(null);
   const snapPoints = useMemo(() => ["55%", "90%"], []);
 
   // visible boolean を imperative present/dismiss にブリッジ
@@ -146,6 +145,8 @@ export function EventDayModal({
   return (
     <BottomSheetModal
       ref={ref}
+      // v5 は default true — content 高さ snap が混ざるため数値 snapPoints を優先
+      enableDynamicSizing={false}
       snapPoints={snapPoints}
       index={0}
       onChange={handleChange}

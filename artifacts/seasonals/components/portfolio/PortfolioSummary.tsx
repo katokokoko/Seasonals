@@ -25,7 +25,6 @@ import AsyncStorage from "@react-native-async-storage/async-storage";
 import { format } from "date-fns";
 import BottomSheet, {
   BottomSheetScrollView,
-  type BottomSheetMethods,
   type BottomSheetBackgroundProps,
 } from "@gorhom/bottom-sheet";
 import type { SharedValue } from "react-native-reanimated";
@@ -151,7 +150,7 @@ export const PortfolioSummary = React.memo(function PortfolioSummary({
   // 8.45: edge-to-edge の下端 inset (ジェスチャーバー分)
   const insets = useSafeAreaInsets();
 
-  const sheetRef = useRef<BottomSheetMethods>(null);
+  const sheetRef = useRef<BottomSheet>(null);
   // Phase 5B.1: 3 snap points
   //   25% = collapsed (PORTFOLIO + total + yield + USDC/SOL toggle のみ、上に mascot 露出)
   //   middle = default (range selector + chart まで visible)
@@ -406,15 +405,17 @@ export const PortfolioSummary = React.memo(function PortfolioSummary({
       index={1}
       snapPoints={snapPoints}
       enablePanDownToClose={false}
+      // v5 は default true — content 高さ snap が混ざり数値 snapPoints が狂うため明示 off
+      enableDynamicSizing={false}
       animatedPosition={animatedPosition}
       onChange={handleSheetChange}
       backgroundComponent={GlassBackground}
+      // v5 で BottomSheet 自体の testID が消えたので handle 側に付ける
       handleComponent={() => (
-        <View style={styles.handle}>
+        <View style={styles.handle} testID={testID}>
           <View style={styles.grabber} />
         </View>
       )}
-      testID={testID}
     >
       <BottomSheetScrollView
         // 8.45 (edge-to-edge): 下端がジェスチャーバーの裏まで伸びるので、

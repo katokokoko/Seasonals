@@ -29,7 +29,8 @@ const config: ExpoConfig = {
   orientation: "portrait",
   scheme: "seasonals",
   userInterfaceStyle: "automatic",
-  newArchEnabled: false,
+  // 8.87: SDK 54 で New Architecture へ移行 (SDK 55 で legacy 廃止のため前倒し)。
+  // 未指定 = newArch 有効が SDK 54 の既定
   icon: "./assets/images/icon.png",
   // Phase 8.45: edge-to-edge。バーを透明にしてアプリ描画領域を画面全体へ広げる。
   // translucent:true → styles.xml の android:statusBarColor = @android:color/transparent
@@ -66,6 +67,7 @@ const config: ExpoConfig = {
   },
   plugins: [
     "expo-router",
+    "expo-font",
     "expo-secure-store",
     "expo-notifications",
     // Phase 8.45: prebuild が書けない edge-to-edge 設定 (contrast scrim / cutout /
