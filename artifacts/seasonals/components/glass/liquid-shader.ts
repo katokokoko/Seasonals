@@ -76,6 +76,7 @@ uniform float uScroll;     // あふれ内部テクスチャのスクロール�
 uniform float uFoamA;      // あふれ覆いの不透明度 (旧 Group opacity)
 uniform float uDropN;      // 生きている飛沫数 (0 なら loop 全体を skip)
 uniform float uAA;         // 1 物理px 相当の dp (エッジ AA の半幅)
+uniform float uScale;      // canvas dp → glass 空間 dp の倍率 (低解像度レンダ用、通常 1)
 uniform half4 uLiqTop;
 uniform half4 uLiqMid;
 uniform half4 uLiqBottom;
@@ -120,6 +121,9 @@ half4 blendOver(half4 dst, half4 src) {
 }
 
 half4 main(float2 p) {
+  // 低解像度レンダ時: 縮小 canvas の座標をフルサイズの glass 空間へ写像する。
+  // 物理・uniform はすべてフル空間の dp なので、以降の式は uScale を意識しない
+  p *= uScale;
   float H = uSize.y;
   float ys = surfaceY(p.x);
   float d = p.y - ys; // > 0 = 液中
@@ -350,6 +354,8 @@ export interface GlassDynamicUniforms {
   uFoamA: number;
   uDropN: number;
   uAA: number;
+  /** canvas dp → glass 空間 dp の倍率 (低解像度レンダ用、通常 1) */
+  uScale: number;
   /** flat (x, y, r, 0) × BUBBLE_SLOTS */
   uBubbles: number[];
   /** flat (x, y, 表示半径, 0) × DROPLET_SLOTS */
@@ -369,7 +375,10 @@ export interface GlassDynamicUniforms {
 export function packGlassUniforms(
   st: GlassState,
   W: number,
-  H: number
+  H: number,
+  // 低解像度レンダ時の倍率 (canvas を 1/scale で描き view で scale 倍に拡大)。
+  // AA 半幅は縮小 canvas の 1 物理px がフル空間で scale 倍になるため連動させる
+  scale: number = 1
 ): GlassDynamicUniforms {
   "worklet";
   const T = GLASS_TUNING;
@@ -411,7 +420,8 @@ export function packGlassUniforms(
     uScroll: st.foamScroll,
     uFoamA: st.fizzState === 0 ? 0 : st.foamAlpha,
     uDropN: dropN,
-    uAA: AA_DP,
+    uAA: AA_DP * scale,
+    uScale: scale,
     uBubbles: bubbles,
     uDroplets: droplets,
   };

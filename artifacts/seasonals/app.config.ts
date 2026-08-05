@@ -79,6 +79,9 @@ const config: ExpoConfig = {
     // Phase 8.45: prebuild が書けない edge-to-edge 設定 (contrast scrim / cutout /
     // decorFitsSystemWindows / values-night) を再現可能にする
     "./plugins/with-edge-to-edge",
+    // Phase 8.88: liquid 120fps — パネル最高リフレッシュレートの明示要求
+    // (RN 0.86 の省電力投票で 90Hz に落ちるのを防ぐ)
+    "./plugins/with-frame-rate",
   ],
   experiments: {
     typedRoutes: false,

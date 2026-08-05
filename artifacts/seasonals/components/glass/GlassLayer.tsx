@@ -47,6 +47,14 @@ import { TiltSensorBridge, useTiltRoll } from "./useTiltRoll";
 const W = Dimensions.get("window").width;
 const H = Dimensions.get("window").height;
 
+// 8.88: liquid は 1/2 解像度で描き view の scale で全画面に拡大する (採用済)。
+// 根拠 (実測 2026-08-05): フル解像度の全画面 SkSL は GPU 中央値 9ms で 120Hz 予算
+// (8.3ms) を超え 68〜87fps に落ちるが、半解像度 (画素 1/4) なら 119〜120fps に
+// 張り付く。画質差は液体内部のエッジがわずかに柔らかくなるのみ (ズーム比較で
+// 確認、UI レイヤーは無影響) — user 確認済み「許容範囲内」。
+// 1 に戻すとフル解像度 (画質優先・90fps 上限) になる
+const RES_DIVISOR = 2;
+
 function fireSloshHaptic(): void {
   Haptics.selectionAsync().catch(() => undefined);
 }
@@ -81,7 +89,7 @@ export function GlassLayer() {
 
   // 描画出力 — 8.82: 単一 shader の uniform 1 組のみ (path sharedValue は全廃)
   const glassDyn = useSharedValue<GlassDynamicUniforms>(
-    packGlassUniforms(initialState, W, H)
+    packGlassUniforms(initialState, W, H, RES_DIVISOR)
   );
 
   // RuntimeEffect は JS thread で 1 回だけ compile
@@ -122,7 +130,7 @@ export function GlassLayer() {
     if (st.hapticFizz) runOnJS(fireFizzHaptic)();
 
     // ── 描画はすべて shader (GPU)。CPU は uniform 詰め替え 1 回のみ ──
-    glassDyn.value = packGlassUniforms(st, W, H);
+    glassDyn.value = packGlassUniforms(st, W, H, RES_DIVISOR);
     // 依存は全て安定参照 (sharedValue / module const) — callback は 1 回だけ登録される
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -159,7 +167,18 @@ export function GlassLayer() {
     <>
       {bridge}
       <View pointerEvents="none" style={StyleSheet.absoluteFill} testID="glass-layer">
-      <Canvas style={StyleSheet.absoluteFill}>
+      <Canvas
+        style={{
+          position: "absolute",
+          left: 0,
+          top: 0,
+          width: W / RES_DIVISOR,
+          height: H / RES_DIVISOR,
+          // 縮小 canvas を左上原点で拡大して全画面に敷く (低解像度レンダ)
+          transformOrigin: "0% 0%",
+          transform: [{ scale: RES_DIVISOR }],
+        }}
+      >
         {/* 8.82: 全描画を単一 SkSL に統合 (液体 + 泡 + クリーム帯 + 飛沫 + あふれ)。
             Canvas を Fill 1 node にすることで tick ごとの再記録を最小化する */}
         <Fill>
