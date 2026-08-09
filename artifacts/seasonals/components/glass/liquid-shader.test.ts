@@ -188,25 +188,51 @@ describe("packGlassUniforms — 泡・飛沫の uniform 配列", () => {
 });
 
 describe("SkSL source — uniform 宣言と pack の整合", () => {
-  it("pack が返す全 key が SkSL に uniform として宣言されている", () => {
+  /** 実行時に Shader へ渡される uniform key の全体 (動的 + 色) */
+  const suppliedKeys = (): string[] => {
     const st = createGlassState(W, H, 4, seq());
-    const dyn = Object.keys(packGlassUniforms(st, W, H));
-    const colors = Object.keys(
-      glassColorsFromFlavor(
-        flavorFromPalette({
-          top: "#FFFFFF",
-          mid: "#FFFFFF",
-          deep: "#FFFFFF",
-          bottom: "#FFFFFF",
-          pool: "#FFFFFF",
-        } as ThemeBgPalette)
-      )
+    return [
+      ...Object.keys(packGlassUniforms(st, W, H)),
+      ...Object.keys(
+        glassColorsFromFlavor(
+          flavorFromPalette({
+            top: "#FFFFFF",
+            mid: "#FFFFFF",
+            deep: "#FFFFFF",
+            bottom: "#FFFFFF",
+            pool: "#FFFFFF",
+          } as ThemeBgPalette)
+        )
+      ),
+    ];
+  };
+
+  /** SkSL が宣言している uniform 名 (配列は添字を落として名前だけ) */
+  const declaredKeys = (): string[] =>
+    [...GLASS_SKSL.matchAll(/^uniform\s+\w+\s+(\w+)\s*(?:\[\d+\])?\s*;/gm)].map(
+      (m) => m[1]!
     );
-    for (const k of [...dyn, ...colors]) {
+
+  it("pack が返す全 key が SkSL に uniform として宣言されている", () => {
+    for (const k of suppliedKeys()) {
       expect(GLASS_SKSL).toMatch(
         new RegExp(`uniform (float2?|half4|float4) ${k}(\\[\\d+\\])?;`)
       );
     }
+  });
+
+  /**
+   * 逆方向 — こちらが破れると **jest は green のまま実機だけが赤画面**になる。
+   * Skia は宣言済み uniform に値が無いと描画時に throw する
+   * ("Exception in HostFunction: Missing uniform value for: X")。
+   * 2026-08-05 に uScale で同メッセージを実機で踏んだのが追加の動機
+   * (その時は Fast Refresh のステール状態が原因でコード欠陥ではなかったが、
+   *  SkSL に uniform を足して pack を書き忘れれば同じ結末になる)。
+   */
+  it("SkSL が宣言した全 uniform に値が供給されている", () => {
+    const supplied = new Set(suppliedKeys());
+    const unsupplied = declaredKeys().filter((k) => !supplied.has(k));
+    expect(unsupplied).toEqual([]);
   });
 
   it("配列長は GLASS_TUNING の low tier と一致 (loop 反復数の定数性)", () => {
