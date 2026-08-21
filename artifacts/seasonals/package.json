@@ -17,7 +17,7 @@
     "build:prod": "eas build --platform android --profile production"
   },
   "dependencies": {
-    "@babel/runtime": "^7.29.2",
+    "@babel/runtime": "^7.29.7",
     "@expo-google-fonts/pacifico": "^0.2.3",
     "@expo-google-fonts/quicksand": "^0.2.3",
     "@expo/metro-runtime": "~57.0.8",
