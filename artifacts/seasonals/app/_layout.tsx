@@ -45,7 +45,10 @@ import {
 // アプリ自身のコードで .value を render 中に読まない規約は維持
 configureReanimatedLogger({ level: ReanimatedLogLevel.warn, strict: false });
 
-import { createQueryClient } from "../services/queryClient";
+import {
+  attachAppStateFocus,
+  createQueryClient,
+} from "../services/queryClient";
 import {
   addApprovalResponseListener,
   addExecutionResponseListener,
@@ -72,6 +75,10 @@ export default function RootLayout() {
   // QueryClient は app lifetime で 1 つ。useState で lazy init し再生成を防ぐ。
   const [client] = useState(() => createQueryClient());
   const router = useRouter();
+
+  // 8.93: AppState → focusManager 配線。フォアグラウンド復帰を focus として
+  // stale query を refetch する (refetchOnWindowFocus: true とセット)
+  useEffect(() => attachAppStateFocus(), []);
 
   // 8.83: portfolio-history query だけ AsyncStorage に永続化する
   // (stale-while-revalidate)。再起動時は前回の完全グラフが即復元され、

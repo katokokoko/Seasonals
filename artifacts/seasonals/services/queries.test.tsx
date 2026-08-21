@@ -329,7 +329,8 @@ describe("services/queries", () => {
       const opts = client.getDefaultOptions();
       expect(opts.queries?.retry).toBe(5);
       // override しなかった field は default を維持
-      expect(opts.queries?.refetchOnWindowFocus).toBe(false);
+      // (8.93: focusManager 配線とセットで refetchOnWindowFocus は true が default)
+      expect(opts.queries?.refetchOnWindowFocus).toBe(true);
       expect(opts.queries?.staleTime).toBe(30_000);
     });
   });
