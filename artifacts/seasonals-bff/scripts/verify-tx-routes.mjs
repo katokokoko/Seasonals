@@ -84,6 +84,14 @@ const EXPECTED = [
     match: /redeem_template_unavailable/,
     why: "満期直後で redeem template 未生成 (最初の redeem 発生までの想定内 409)",
   },
+  // 8.94: template 生成後 (誰かが 1 件目を redeem した後) は BFF が redeem tx を
+  // 組めるようになるが、verify wallet は PT 未保有なので simulate が burn する PT
+  // が無く Exponent program の 0x1 で落ちる — 他経路の「ポジション未保有」と同クラス。
+  // Exponent program id との複合 match で他経路の Custom:1 を誤吸収しない
+  {
+    match: /InstructionError.*"Custom":1.*Exponentn/,
+    why: "PT 未保有の redeem simulate (tx 構築まで成功 = 経路は生きている)",
+  },
   // 8.53: 上流の 400 を BFF が position_not_found に翻訳するので、文言ではなく
   // code で判定する (翻訳前の生メッセージも残す — 未翻訳の経路が出たら気付ける)
   { match: /obligation does not exist/, why: "Kamino のポジション未保有 (生の上流メッセージ)" },

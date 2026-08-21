@@ -10,7 +10,7 @@
  * active 一覧から消えた PT の解決用 backstop。market は 1〜4 ヶ月で世代交代するため、
  * snapshot は docs/confirm.md §D の期限 (最短 maturity) 毎に refresh する。
  *
- * mint / decimals は 2026-08-09 の live API 実測値 (捏造禁止)。
+ * mint / decimals は 2026-08-21 の live API 実測値 (捏造禁止)。
  * implied_apy / total_market_size は §3 display carve-out (表示専用 number)。
  */
 
@@ -97,14 +97,17 @@ const mk = (
 });
 
 /**
- * live 全 market snapshot (2026-08-09 実測、12 markets の full mirror)。
+ * live 全 market snapshot の full mirror + 満期済み旧世代 (2026-08-21 実測、17 entries)。
  * 初版 (2026-07-22) は規模上位の旗艦 4 のみだったが、backstop 目的 (b) — 満期後に
  * live から消えた PT の redeem 解決 — には保有され得る全 market が必要なため全量に
- * 切り替えた。**満期を過ぎても entry は削除しない** (backstop がこの registry の存在
- * 理由)。menu 表示は activeExponentMarkets が常に filter するので死蔵 entry は出ない。
+ * 切り替えた (8.90)。**満期を過ぎても entry は削除しない** (backstop がこの registry の
+ * 存在理由)。menu 表示は activeExponentMarkets が常に filter するので死蔵 entry は出ない。
+ *
+ * 8.94 (2026-08-21 probe): 旧世代 4 件 (xSOL / hyloSOL / hyloSOL+ / hyUSD = 08-12 満期、
+ * stSLX = 08-21 満期) が live から消え、同 5 ticker の次世代 market が出現 → 末尾に追記。
  */
 export const EXPONENT_MARKETS: ExponentMarket[] = [
-  // USX (Solstice) — $36.5M、2026-09-16 満期
+  // USX (Solstice) — $33.9M、2026-09-16 満期
   mk(
     "USX",
     "6FrrzDk5mQARGc1TDYoyVnSyRdds1t4PbtohCD6p3tgG",
@@ -114,11 +117,11 @@ export const EXPONENT_MARKETS: ExponentMarket[] = [
     "CdUviheAUJaXUryT7JCRDUoNdPXdVvkxNQY1okC6uY8S",
     6,
     1789552700,
-    0.0472,
-    36_491_925,
+    0.0424,
+    33_930_766,
     "USD"
   ),
-  // ONyc (OnRe) — $32.6M、2026-09-10 満期
+  // ONyc (OnRe) — $34.6M、2026-09-10 満期 (snapshot 最短 active = refresh 期限)
   mk(
     "ONyc",
     "5Y8NV33Vv7WbnLfq3zBcKSdYPrk7g2KoiQoe7M2tcxp5",
@@ -128,12 +131,12 @@ export const EXPONENT_MARKETS: ExponentMarket[] = [
     "66R3TcKjaUqxQwYV31BS4nD2s7YH4V7ENuvdwYbQMXCm",
     9,
     1789034299,
-    0.1488,
-    32_615_057,
+    0.1537,
+    34_649_710,
     "USD"
   ),
-  // xSOL (Hylo leveraged SOL) — 24.6M xSOL 建て、2026-08-12 満期。
-  // 08-09 probe 時点で次世代 xSOL market は未出現 — 満期後の probe で要再確認
+  // xSOL (Hylo leveraged SOL) — 24.6M xSOL 建て、2026-08-12 **満期済**。
+  // 08-21 probe で live から消滅を確認 (backstop として保持)。次世代 12-12 は末尾
   mk(
     "xSOL",
     "4sWNB8zGWHkh6UnmwiEtzNxL4XrN7uK9tosbESbJFfVs",
@@ -157,12 +160,12 @@ export const EXPONENT_MARKETS: ExponentMarket[] = [
     "B78XAMSpB5KQqykw9oEec1nFSPeRqYtbTmsxo9EPwAUW",
     6,
     1789552700,
-    0.0611,
-    5_796_069,
+    0.0524,
+    5_443_068,
     "USX" // ≈$1 stable quote
   ),
   // ── 以下 2026-08-09 probe で追加 (maturity 順) ──
-  // hyloSOL (Hylo staked SOL) — 6,918 SOL 建て、2026-08-12 満期
+  // hyloSOL (Hylo staked SOL) — 6,918 SOL 建て、2026-08-12 **満期済** (次世代は末尾)
   mk(
     "hyloSOL",
     "hy1oXYgrBW6PVcJ4s6s2FKavRdwgWTXdfE69AxT7kPT",
@@ -176,7 +179,7 @@ export const EXPONENT_MARKETS: ExponentMarket[] = [
     6_918,
     "SOL"
   ),
-  // hyloSOL+ (Hylo boosted) — 2,278 SOL 建て、2026-08-12 満期
+  // hyloSOL+ (Hylo boosted) — 2,278 SOL 建て、2026-08-12 **満期済** (次世代は末尾)
   // pool_id は "+" → "plus" 置換で hyloSOL と衝突しない (exponentPoolId 参照)
   mk(
     "hyloSOL+",
@@ -191,7 +194,7 @@ export const EXPONENT_MARKETS: ExponentMarket[] = [
     2_278,
     "SOL"
   ),
-  // hyUSD (Hylo stable) — $0.48M、2026-08-12 満期
+  // hyUSD (Hylo stable) — $0.48M、2026-08-12 **満期済** (次世代は末尾)
   mk(
     "hyUSD",
     "5YMkXAYccHSGnHn9nob9xEvv6Pvka9DZWH7nTbotTu9E",
@@ -205,7 +208,7 @@ export const EXPONENT_MARKETS: ExponentMarket[] = [
     482_538,
     "USD"
   ),
-  // stSLX (Solstice staked SLX) — 3.06M SLX 建て、2026-08-21 満期 (snapshot 最短 active = refresh 期限)
+  // stSLX (Solstice staked SLX) — 3.06M SLX 建て、2026-08-21 **満期済** (次世代は末尾)
   mk(
     "stSLX",
     "GxHksENo754dKj6kv5d2z7ey9KwE7YSRYgRCtoFYd2yq",
@@ -219,7 +222,7 @@ export const EXPONENT_MARKETS: ExponentMarket[] = [
     3_063_179,
     "SLX" // 非 USD quote = 換算不能 (menu tvl は 0 表示)
   ),
-  // srONyc (OnRe senior tranche) — $0.39M、2026-09-10 満期
+  // srONyc (OnRe senior tranche) — $0.93M、2026-09-10 満期
   mk(
     "srONyc",
     "9J8VvigcjFTkN3jhZH2ieTi2hdGVBVpEXbcA1JDo7QpA",
@@ -229,11 +232,11 @@ export const EXPONENT_MARKETS: ExponentMarket[] = [
     "FLWUHWccnouW4EkB4dgczX9ZkSTA4FTnADiKSCkJvLp5",
     9,
     1789034280,
-    0.1007,
-    389_156,
+    0.1253,
+    932_593,
     "USD"
   ),
-  // BulkSOL — 127k SOL 建て、2026-10-31 満期 (旧世代 78MLjM… vault の次世代)
+  // BulkSOL — 140k SOL 建て、2026-10-31 満期 (旧世代 78MLjM… vault の次世代)
   mk(
     "BulkSOL",
     "BULKoNSGzxtCqzwTvg5hFJg8fx6dqZRScyXe5LYMfxrn",
@@ -243,11 +246,11 @@ export const EXPONENT_MARKETS: ExponentMarket[] = [
     "BwBn7Sro6RzDp3A59cDC7WoxWdT7yTaWuaHwvR7Gvypa",
     9,
     1793440800,
-    0.0766,
-    127_028,
+    0.0635,
+    139_705,
     "SOL"
   ),
-  // rkuSOL (Rakurai) — 33k SOL 建て、2026-10-31 満期
+  // rkuSOL (Rakurai) — 34k SOL 建て、2026-10-31 満期
   mk(
     "rkuSOL",
     "rkubjTrZYioRSeXwDnhwGQzvW3qkcin72JSxUt3WMVp",
@@ -257,8 +260,8 @@ export const EXPONENT_MARKETS: ExponentMarket[] = [
     "5PvEneipr7VLDoPXdQBY7G2J3Wtzrdhg7WU181J9eXBy",
     9,
     1793440800,
-    0.0643,
-    32_955,
+    0.0663,
+    33_703,
     "SOL"
   ),
   // fragSOL (Fragmetric restaked SOL / Jito Restaking) — 6.5k SOL 建て、2026-12-15 満期
@@ -271,9 +274,80 @@ export const EXPONENT_MARKETS: ExponentMarket[] = [
     "4VSKfVxMnnNGLhf5NgZDvnKi6DUPk3gXULkx9Mnfwwss",
     9,
     1797332300,
-    0.0787,
-    6_555,
+    0.0766,
+    6_521,
     "SOL"
+  ),
+  // ── 以下 2026-08-21 probe で追加 (次世代 5 件、maturity 順) ──
+  // stSLX 次世代 — 558k SLX 建て、2026-12-04 満期
+  mk(
+    "stSLX",
+    "GxHksENo754dKj6kv5d2z7ey9KwE7YSRYgRCtoFYd2yq",
+    6,
+    "D7jEo9hPMFiz9yNYSFVoqH5fMsjPren7UvEJjjzpBLk",
+    "GvJ8HtPYqaNDTn21NVjzvGwAGtASPCWctSMhQJ9uQzZb",
+    "CBiRdkydZnSP1FUfWknnwg2JrdkidVZ9CKnVFac5NGxo",
+    6,
+    1796378400,
+    0.2037,
+    557_880,
+    "SLX" // 非 USD quote = 換算不能 (menu tvl は 0 表示)
+  ),
+  // xSOL 次世代 — 5.65M xSOL 建て、2026-12-12 満期 (8.90 で「未出現」だったもの)
+  mk(
+    "xSOL",
+    "4sWNB8zGWHkh6UnmwiEtzNxL4XrN7uK9tosbESbJFfVs",
+    6,
+    "3bFbFU1dtap35fgBY6ityikjv41YSyxHCWnJkAiEteWR",
+    "4BsEMum8uxSgZZ5THRiiHomPwy4vKXAMfxvHn5GgevUe",
+    "ETZmEX6eH1FaRStkPMXiW2jocK8nRGfa9AkeDbRjo1un",
+    6,
+    1797069600,
+    0.2214,
+    5_651_202,
+    "xSOL" // quote が xSOL 自身 = USD 換算不能 (menu tvl は 0 表示)
+  ),
+  // hyloSOL 次世代 — 2,123 SOL 建て、2026-12-12 満期
+  mk(
+    "hyloSOL",
+    "hy1oXYgrBW6PVcJ4s6s2FKavRdwgWTXdfE69AxT7kPT",
+    9,
+    "6gE8vCsnmF37e2cT6PTafNLP5MtPhChfJHJbckAXsq6r",
+    "n2Wvw1GQVSNvj7BYvq2NGfjuT69nSr2xPcJDKQMtVZc",
+    "Ciz4yqREYbMH4dtQvB3Rc2mSVEGMs8jFfE97qj6nXAPu",
+    9,
+    1797069600,
+    0.0818,
+    2_123,
+    "SOL"
+  ),
+  // hyloSOL+ 次世代 — 1,119 SOL 建て、2026-12-12 満期
+  mk(
+    "hyloSOL+",
+    "hy1opf2bqRDwAxoktyWAj6f3UpeHcLydzEdKjMYGs2u",
+    9,
+    "8aUSDnpp5kjCuWtJqaAahNGtvC8HSgFQpUR731CNwMVd",
+    "ABGshYCjgD6hAtcnj9F69ccuLpR7KVUeGz6eEnxXwHv3",
+    "DNPKdJwQ7bcBivrVDBHt7McQtiZyMU7FC53hguQwVMgT",
+    9,
+    1797069600,
+    0.1026,
+    1_119,
+    "SOL"
+  ),
+  // hyUSD 次世代 — $0.19M、2026-12-12 満期
+  mk(
+    "hyUSD",
+    "5YMkXAYccHSGnHn9nob9xEvv6Pvka9DZWH7nTbotTu9E",
+    6,
+    "6Q8t9F7Ygv5kUjV5Gj2DfszL6Y33qCSKNYa7MKSsVeUJ",
+    "2i7LpCeTpeAqw6M3i7JSEez2SJEM8gjxjJwsRyLWqpV5",
+    "DCeWUSsQ89tE6i6oVtampERVBHbSEivuKzf6ANqtFtmw",
+    6,
+    1797069600,
+    0.0943,
+    185_029,
+    "USD"
   ),
 ];
 
