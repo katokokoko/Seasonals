@@ -183,10 +183,10 @@ describe("GET /protocols/save/reserves", () => {
     });
   });
 
-  it("REST 失敗時は空配列 (graceful degrade)", async () => {
+  it("8.95: REST 失敗時は 503 (200-空で client キャッシュを上書きしない)", async () => {
     mockRates.mockRejectedValue(new Error("boom"));
     const res = await app.inject({ method: "GET", url: "/protocols/save/reserves" });
-    expect(res.statusCode).toBe(200);
-    expect(res.json().reserves).toEqual([]);
+    expect(res.statusCode).toBe(503);
+    expect(res.json().error).toBe("save_reserves_unavailable");
   });
 });

@@ -3619,6 +3619,27 @@ export async function buildServer(
           fetchKaminoReserveMetrics(KAMINO_MAIN_MARKET),
         ]);
 
+      // 8.95: 主要 5 upstream が**全滅**なら 503 — 200 全空は「真に空の wallet」と
+      // 区別できず、client (8.93 で throw 受け皿済) の正常キャッシュを上書きして
+      // しまう。部分失敗は従来どおり per-protocol degrade で 200 (意図的設計)
+      const mainResults = [jupRes, heliusRes, txRes, kaminoObRes, kaminoResRes];
+      if (mainResults.every((r) => r.status === "rejected")) {
+        req.log.warn(
+          {
+            errors: mainResults.map((r) =>
+              r.status === "rejected" ? String(r.reason) : ""
+            ),
+            wallet,
+          },
+          "earn positions: all upstreams failed"
+        );
+        reply.code(503);
+        return {
+          error: "earn_positions_unavailable",
+          message: "all upstream sources failed",
+        };
+      }
+
       const kvaultPositions = await kvaultPosPromise;
       const kvaultMetricsByVault = new Map<string, KaminoVaultMetrics>();
       for (const r of await kvaultMetricsPromise) {
@@ -4220,23 +4241,32 @@ export async function buildServer(
   /**
    * Phase 8.6: Jupiter Lend Earn の 7 markets (jlUSDC / jlWSOL / jlUSDT 等) を
    * lite API から正規化して返す。MenuDrawer の Jupiter drill-down 動的化用。
-   * 失敗時は空配列を返し、UI は fixture pools fallback (Phase 6) で表示。
+   * 8.95: 失敗は 503 — 200-[] を返すと client (TanStack Query) が「成功した空」
+   * としてキャッシュを上書きし、BFF 再起動直後の cold cache 等で yield 表示が
+   * 消える実害があった (8.94 E2E)。8.93 で mobile はエラー時にキャッシュ保持 +
+   * 自動再試行するので、失敗は失敗として返すのが正しい。
    */
-  app.get("/protocols/jupiter-lend/markets", async (req) => {
+  app.get("/protocols/jupiter-lend/markets", async (req, reply) => {
     try {
       return await fetchEarnMarkets();
     } catch (err) {
       req.log.warn(
         { err: (err as Error).message },
-        "jupiter lend markets fetch failed; returning empty"
+        "jupiter lend markets fetch failed"
       );
-      return [] as JupiterLendMarket[];
+      reply.code(503);
+      return {
+        error: "jupiter_lend_markets_unavailable",
+        message: readableUpstreamError(err, "Jupiter Lend API"),
+      };
     }
   });
 
-  app.get("/protocols/kamino/reserves", async (req) => {
+  app.get("/protocols/kamino/reserves", async (req, reply) => {
     // Phase 8.15b: 実 Kamino API の reserve metrics (supported reserve のみ、実 APY/TVL)。
     // 失敗時は mock adapter に fallback (fixture、graceful degrade)。
+    // 8.95: adapter も無い場合は 200-空でなく 503 (空の「成功」で client キャッシュを
+    // 上書きしない — fixture fallback の意図的 degrade とは区別する)
     try {
       const metrics = await fetchKaminoReserveMetrics(KAMINO_MAIN_MARKET);
       return { reserves: kaminoMetricsToSummary(metrics) };
@@ -4246,7 +4276,13 @@ export async function buildServer(
         "kamino reserves fetch failed, falling back to adapter fixture"
       );
       const adapter = getRegistry().getLending("kamino");
-      if (!adapter) return { reserves: [] };
+      if (!adapter) {
+        reply.code(503);
+        return {
+          error: "kamino_reserves_unavailable",
+          message: readableUpstreamError(err, "Kamino API"),
+        };
+      }
       return {
         reserves: await adapter.fetchReserves({
           wallet_address: "stub",
@@ -4280,7 +4316,8 @@ export async function buildServer(
    * その日の実価格 (Pyth Benchmarks) で値付けする。端末側の日次スナップショット
    * (8.56) より前の期間を埋めるのが目的。
    *
-   * 上流が落ちた時は **空 points** で返す (fixture の履歴を捏造しない)。
+   * 8.95: 上流が落ちた時は 503 (履歴を捏造しない、かつ空の「成功」で client の
+   * 永続キャッシュ (8.83) を上書きしない — 旧: 200 空 points)。
    */
   app.get<{ Querystring: { wallet?: string; days?: string } }>(
     "/portfolio/history",
@@ -4299,9 +4336,13 @@ export async function buildServer(
       } catch (err) {
         req.log.warn(
           { err: (err as Error).message, wallet },
-          "portfolio history failed; returning empty"
+          "portfolio history failed"
         );
-        return { points: [], oldest_at: null, approximated_symbols: [] };
+        reply.code(503);
+        return {
+          error: "portfolio_history_unavailable",
+          message: readableUpstreamError(err, "Portfolio history sources"),
+        };
       }
     }
   );
@@ -4315,6 +4356,9 @@ export async function buildServer(
    *
    * §4.6 fail-closed の一貫性: blocked / 価格不明の symbol は **返さない**。
    * 0 を返すと呼び手が「0 円」と誤解するため、キー自体を落とす。
+   * 8.95: blocked による drop (意図的) と lookup の throw (上流断) を区別し、
+   * **全 symbol が throw で欠けた**場合のみ 503 — 200 `{}` は「成功した空」として
+   * client キャッシュを上書きしてしまうため。
    */
   app.get<{ Querystring: { symbols?: string } }>(
     "/prices",
@@ -4330,6 +4374,7 @@ export async function buildServer(
         .filter(Boolean)
         .slice(0, 20); // 上限 (registry は 4 asset なので実質十分)
       const prices: Record<string, string> = {};
+      let thrown = 0;
       await Promise.all(
         symbols.map(async (symbol) => {
           const mint = oracleMintForSymbol(symbol);
@@ -4340,6 +4385,7 @@ export async function buildServer(
               prices[symbol] = result.price_usd;
             }
           } catch (err) {
+            thrown++;
             req.log.warn(
               { err: (err as Error).message, symbol },
               "price lookup failed"
@@ -4347,6 +4393,15 @@ export async function buildServer(
           }
         })
       );
+      // 8.95: 1 つも価格が引けず、かつ throw が原因 (= 上流断) なら 503。
+      // blocked drop のみ (thrown 0) は従来どおり 200 {} (§4.6 の意図的挙動)
+      if (Object.keys(prices).length === 0 && thrown > 0) {
+        reply.code(503);
+        return {
+          error: "prices_unavailable",
+          message: "all price lookups failed (upstream error)",
+        };
+      }
       return { prices };
     }
   );
@@ -5056,7 +5111,7 @@ export async function buildServer(
   });
 
   /** Phase 8.15c: Save reserve 実 rates (supply APY + cToken exchange rate)。失敗時は空。 */
-  app.get("/protocols/save/reserves", async (req) => {
+  app.get("/protocols/save/reserves", async (req, reply) => {
     try {
       const rates = await fetchSaveReserveRates(SAVE_MARKETS.map((m) => m.reserve));
       const bySymbol = new Map(SAVE_MARKETS.map((m) => [m.reserve, m]));
@@ -5073,7 +5128,12 @@ export async function buildServer(
         { err: (err as Error).message },
         "save reserves fetch failed"
       );
-      return { reserves: [] };
+      // 8.95: 200-空でなく 503 (空の「成功」で client キャッシュを上書きしない)
+      reply.code(503);
+      return {
+        error: "save_reserves_unavailable",
+        message: readableUpstreamError(err, "Save API"),
+      };
     }
   });
 
