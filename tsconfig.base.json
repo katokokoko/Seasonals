@@ -34,7 +34,8 @@
     "incremental": true,
 
     // ── path alias: lib/ 共通型を `@workspace/lib/*` で参照 ──
-    "baseUrl": ".",
+    // (8.96: baseUrl は TS6 deprecated / TS7 廃止。TS5+ は paths を「宣言した
+    //  tsconfig の位置」基準で解決するので、この base が repo root にある限り同義)
     "paths": {
       "@workspace/lib": ["./lib"],
       "@workspace/lib/*": ["./lib/*"]

@@ -1,10 +1,10 @@
 {
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
-    "module": "CommonJS",
-    "moduleResolution": "Node",
+    // 8.96: module/moduleResolution は base の ESNext/Bundler を継承。
+    // BFF の実行は tsx (esbuild) で bundler 的に解決するため、Node16-CJS で
+    // 型検査すると ESM-only 依存 (@solana/spl-token 等) が実態と乖離して赤くなる
     "types": ["jest", "node"],
-    "baseUrl": "..",
     "noEmit": true,
     "esModuleInterop": true
   },
