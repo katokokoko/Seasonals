@@ -28,7 +28,6 @@ import {
   Text,
   TextInput,
   View,
-  type ImageRequireSource,
 } from "react-native";
 import {
   Gesture,
@@ -82,6 +81,7 @@ import {
 } from "../../services/queries";
 // 8.44: protocol ロゴの require マップは登録漏れをテストで防ぐため別モジュールへ
 import { ICON_BY_ID, scaleOf } from "./protocol-icons";
+import { AssetBadge } from "../icons/AssetBadge";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 // 8.51 の預入枠表示 (deposit-cap.ts) は 8.54 で vault-rows 経由に集約
 // 8.54: カード行のモデルと出し分け判断 (純関数、単体テスト済)
@@ -226,38 +226,11 @@ function sortByPrimaryOrder(rows: VaultRow[]): VaultRow[] {
   return [...rows].sort((a, b) => indexOf(a.assetSymbol) - indexOf(b.assetSymbol));
 }
 
-/** per-asset brand color (asset 固有 branding、CLAUDE.md §6 例外として AssetBadge 内に閉じ込め) */
-const ASSET_BADGE_COLOR: Record<string, string> = {
-  USDC: "#2775CA",
-  USDT: "#26A17B",
-  USDS: "#F59E0B",
-  USDG: "#4F46E5",
-  EURC: "#3578E5",
-  JupUSD: "#F97316",
-  jupUSD: "#F97316",
-  SOL: "#7C3AED",
-};
-
-function assetBadgeColor(asset: string): string {
-  return ASSET_BADGE_COLOR[asset] ?? COLOR.sodaText;
-}
-
 function displayJupiterAsset(symbol: string): string {
   if (symbol === "WSOL") return "SOL";
   if (symbol === "jupUSD") return "JupUSD";
   return symbol;
 }
-
-/** Phase 8.12: per-asset 公式ロゴ PNG (assets/brands/tokens/) */
-const ASSET_ICON_BY_SYMBOL: Record<string, ImageRequireSource> = {
-  USDC: require("../../assets/brands/tokens/usdc.png"),
-  USDT: require("../../assets/brands/tokens/usdt.png"),
-  SOL: require("../../assets/brands/tokens/sol.png"),
-  EURC: require("../../assets/brands/tokens/eurc.png"),
-  USDS: require("../../assets/brands/tokens/usds.png"),
-  USDG: require("../../assets/brands/tokens/usdg.png"),
-  JupUSD: require("../../assets/brands/tokens/jupusd.png"),
-};
 
 /**
  * Jupiter の行は fixture pool ではなく **live markets** から組む (8.6)。
@@ -349,50 +322,6 @@ function formatHumanAmount(amount: number): string {
   if (amount === 0) return "0";
   if (amount >= 1) return amount.toFixed(2);
   return amount.toFixed(4);
-}
-
-function AssetBadge({ asset, size = 36 }: { asset: string; size?: number }) {
-  const iconSrc = ASSET_ICON_BY_SYMBOL[asset];
-  if (iconSrc) {
-    return (
-      <Image
-        source={iconSrc}
-        resizeMode="contain"
-        style={{
-          width: size,
-          height: size,
-          borderRadius: size / 2,
-        }}
-      />
-    );
-  }
-  // Fallback: per-asset brand color circle + letter
-  const bg = assetBadgeColor(asset);
-  const letter = (asset[0] ?? "?").toUpperCase();
-  return (
-    <View
-      style={{
-        width: size,
-        height: size,
-        borderRadius: size / 2,
-        alignItems: "center",
-        justifyContent: "center",
-        backgroundColor: bg,
-      }}
-    >
-      <Text
-        style={{
-          fontSize: size * 0.42,
-          fontFamily: FONT.heading,
-          fontWeight: WEIGHT.bold,
-          color: COLOR.textOnColor,
-          includeFontPadding: false,
-        }}
-      >
-        {letter}
-      </Text>
-    </View>
-  );
 }
 
 /**

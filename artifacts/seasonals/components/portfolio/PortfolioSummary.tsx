@@ -14,6 +14,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Dimensions,
+  Image,
   Pressable,
   StyleSheet,
   Text,
@@ -73,6 +74,13 @@ import {
 } from "./allocation";
 // 8.55: holdings 行の表示モデル (純関数、単体テスト済)
 import { holdingView } from "./holding-view";
+import { AssetBadge } from "../icons/AssetBadge";
+import {
+  ICON_BY_ID,
+  iconBgOf,
+  iconIdOfProtocol,
+  scaleOf,
+} from "../drawer/protocol-icons";
 // 8.76: チャート領域の状態 (chart / brewing / connect / placeholder)
 import { chartAreaState } from "./chart-state";
 // 8.76: holdings タップ展開の預入内訳
@@ -721,23 +729,12 @@ export const PortfolioSummary = React.memo(function PortfolioSummary({
                       }
                     >
                       <View style={styles.legendLeft}>
-                        <View
-                          style={[
-                            styles.holdingBadge,
-                            {
-                              backgroundColor:
-                                view.symbol === "SOL"
-                                  ? styles.holdingBadgeSol.backgroundColor
-                                  : styles.holdingBadgeStable.backgroundColor,
-                            },
-                          ]}
-                        >
-                          <Text style={styles.holdingBadgeText}>
-                            {view.symbol.charAt(0)}
-                          </Text>
-                        </View>
+                        {/* 8.92: 丸文字バッジ → 公式トークンロゴ (MenuDrawer と共有) */}
+                        <AssetBadge asset={view.symbol} size={22} />
+                        {/* 8.92: stable 行のラベルは通貨名でなく family 名。
+                            右側の数量表示 (`12.34 USDC`) がトークンの正体を示す */}
                         <Text style={styles.legendLabel} numberOfLines={1}>
-                          {view.symbol}
+                          {family === "stable" ? "STABLE" : view.symbol}
                         </Text>
                       </View>
                       <Text style={styles.legendValue}>
@@ -767,7 +764,11 @@ export const PortfolioSummary = React.memo(function PortfolioSummary({
                               </Text>
                             );
                           }
-                          return rows.map((row) => (
+                          return rows.map((row) => {
+                            // 8.92: 預け先 protocol の丸アイコン (jlUSDC → Jupiter 等)
+                            const iconId = iconIdOfProtocol(row.protocolId);
+                            const iconSrc = ICON_BY_ID[iconId];
+                            return (
                             <View
                               key={row.key}
                               style={styles.holdingDetailRow}
@@ -777,9 +778,40 @@ export const PortfolioSummary = React.memo(function PortfolioSummary({
                                   : undefined
                               }
                             >
-                              <Text style={styles.holdingDetailText}>
-                                {row.shareSymbol}
-                              </Text>
+                              <View style={styles.holdingDetailLeft}>
+                                {iconSrc ? (
+                                  <View
+                                    style={[
+                                      styles.protocolMini,
+                                      iconBgOf(iconId)
+                                        ? { backgroundColor: iconBgOf(iconId)! }
+                                        : null,
+                                    ]}
+                                  >
+                                    <Image
+                                      source={iconSrc}
+                                      resizeMode="contain"
+                                      style={[
+                                        styles.protocolMiniImg,
+                                        {
+                                          transform: [
+                                            { scale: scaleOf(iconId) },
+                                          ],
+                                        },
+                                      ]}
+                                    />
+                                  </View>
+                                ) : (
+                                  <View style={styles.protocolMini}>
+                                    <Text style={styles.protocolMiniLetter}>
+                                      {row.protocolId.charAt(0).toUpperCase()}
+                                    </Text>
+                                  </View>
+                                )}
+                                <Text style={styles.holdingDetailText}>
+                                  {row.shareSymbol}
+                                </Text>
+                              </View>
                               <Text style={styles.holdingDetailText}>
                                 {row.amountLine}
                                 {/* stable は underlying 量が既に USDC 換算なので
@@ -791,7 +823,8 @@ export const PortfolioSummary = React.memo(function PortfolioSummary({
                                 )}
                               </Text>
                             </View>
-                          ));
+                            );
+                          });
                         })()}
                       </View>
                     )}
@@ -1085,26 +1118,6 @@ function makeStyles(c: ThemeColors) {
       textAlign: "center",
       paddingVertical: SPACE.lg,
     },
-    // Phase 8.7: Wallet holdings token badge
-    holdingBadge: {
-      width: 22,
-      height: 22,
-      borderRadius: 11,
-      alignItems: "center",
-      justifyContent: "center",
-    },
-    holdingBadgeStable: {
-      backgroundColor: c.sodaText,
-    },
-    holdingBadgeSol: {
-      backgroundColor: c.caramel,
-    },
-    holdingBadgeText: {
-      fontSize: 11,
-      fontFamily: FONT.heading,
-      fontWeight: WEIGHT.bold,
-      color: c.textOnColor,
-    },
     // 8.60: 履歴が届かない range のラベル (淡色。押せないわけではない)
     rangeTextBeyond: {
       opacity: 0.35,
@@ -1146,12 +1159,39 @@ function makeStyles(c: ThemeColors) {
       paddingBottom: SPACE.xs,
       gap: 2,
     },
-    // 8.76: 内訳 1 行 (share symbol 左 / 換算量 右)
+    // 8.76 → 8.92: 内訳 1 行 (protocol icon + share symbol 左 / 換算量 右)。
+    // icon が入ったので baseline → center 揃え
     holdingDetailRow: {
       flexDirection: "row",
-      alignItems: "baseline",
+      alignItems: "center",
       justifyContent: "space-between",
       paddingRight: SPACE.sm,
+    },
+    holdingDetailLeft: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: 6,
+    },
+    // 8.92: 預け先 protocol の丸ミニアイコン。ロゴ PNG は地色焼き込み規約
+    // (protocol-icons.ts) なので icon_bg を敷いて丸抜き。未解決時は頭文字 fallback
+    protocolMini: {
+      width: 16,
+      height: 16,
+      borderRadius: 8,
+      overflow: "hidden",
+      alignItems: "center",
+      justifyContent: "center",
+      backgroundColor: c.sodaText,
+    },
+    protocolMiniImg: {
+      width: 16,
+      height: 16,
+    },
+    protocolMiniLetter: {
+      fontSize: 9,
+      fontFamily: FONT.heading,
+      fontWeight: WEIGHT.bold,
+      color: c.textOnColor,
     },
     holdingDetailText: {
       fontSize: FONT_SIZE.bodySM,

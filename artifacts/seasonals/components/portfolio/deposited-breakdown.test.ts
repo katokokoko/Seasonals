@@ -72,6 +72,8 @@ describe("depositedBreakdown", () => {
     expect(rows.map((r) => r.shareSymbol)).toEqual(["jlUSDC", "sHYUSD"]);
     expect(rows[0]!.amountLine).toBe("≈ 12.34 USDC");
     expect(rows[1]!.amountLine).toBe("≈ 5 USDC");
+    // 8.92: protocol アイコン解決用に protocol_id を素通しする
+    expect(rows.map((r) => r.protocolId)).toEqual(["jupiter_lend", "hylo"]);
   });
 
   it("sol family: jitoSOL が ≈ x.xxxx SOL (4 桁切捨て) で出る", () => {

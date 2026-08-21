@@ -48,6 +48,8 @@ export interface DepositedBreakdownRow {
   key: string;
   /** "jlUSDC" / "jitoSOL" / "cUSDC" / "PT-xSOL" … 引けなければ protocol 名 */
   shareSymbol: string;
+  /** protocol アイコン解決用 (8.92)。icon_id へは iconIdOfProtocol で読み替える */
+  protocolId: string;
   /** "≈ 12.34 USDC" / "≈ 0.5000 SOL" (underlying 換算量) */
   amountLine: string;
   /** USD 換算 (display only、sol family の併記と sort に使う) */
@@ -102,6 +104,7 @@ export function depositedBreakdown(
     rows.push({
       key: p.position_id,
       shareSymbol: shareSymbolOf(p),
+      protocolId: p.protocol_id,
       amountLine: `≈ ${amount} ${underlying}`,
       usd: positionUsdValue(
         underlying === p.asset_symbol

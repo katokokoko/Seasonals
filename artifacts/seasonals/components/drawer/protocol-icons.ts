@@ -17,6 +17,8 @@
 
 import type { ImageRequireSource } from "react-native";
 
+import { fixtureMenuListings } from "@workspace/lib/__fixtures__/menu-listings";
+
 export const ICON_BY_ID: Record<string, ImageRequireSource> = {
   jupiter: require("../../assets/brands/jupiter.png"),
   kamino: require("../../assets/brands/kamino.png"),
@@ -44,4 +46,28 @@ const ICON_SCALE_BY_ID: Record<string, number> = {
 
 export function scaleOf(id: string): number {
   return ICON_SCALE_BY_ID[id] ?? 1.0;
+}
+
+/**
+ * Phase 8.92: Position.protocol_id → icon_id。registry の protocol_id は
+ * `jupiter_lend` 以外 icon_id と一致する (jito / marinade / sanctum / perena /
+ * solstice / hylo / savefi / kamino / exponent — 2026-08-21 突合)。
+ * 未登録 id はそのまま返し、呼び手が ICON_BY_ID ヒット有無で fallback する。
+ */
+const ICON_ID_BY_PROTOCOL: Record<string, string> = {
+  jupiter_lend: "jupiter",
+};
+
+export function iconIdOfProtocol(protocolId: string): string {
+  return ICON_ID_BY_PROTOCOL[protocolId] ?? protocolId;
+}
+
+/**
+ * icon_id → icon_bg (8.92)。ロゴ PNG は「地色焼き込み・角丸 crop 前提」(冒頭コメント)
+ * なので、menu 以外で丸く抜く時も fixture の icon_bg を敷かないと角に別色が覗く。
+ * fixture (menu-listings) が唯一のソース。未登録 id は null。
+ */
+export function iconBgOf(iconId: string): string | null {
+  const entry = fixtureMenuListings.find((e) => e.icon_id === iconId);
+  return entry?.icon_bg ?? null;
 }

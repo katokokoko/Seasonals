@@ -7,7 +7,12 @@
  */
 import { fixtureMenuListings } from "@workspace/lib/__fixtures__/menu-listings";
 
-import { ICON_BY_ID, scaleOf } from "./protocol-icons";
+import {
+  ICON_BY_ID,
+  iconBgOf,
+  iconIdOfProtocol,
+  scaleOf,
+} from "./protocol-icons";
 
 describe("protocol-icons", () => {
   it("menu fixture の全 protocol にロゴが登録されている", () => {
@@ -26,5 +31,38 @@ describe("protocol-icons", () => {
     expect(scaleOf("hylo")).toBe(1.0);
     expect(scaleOf("does-not-exist")).toBe(1.0);
     expect(scaleOf("jupiter")).toBe(1.5); // 既存の補正は維持
+  });
+
+  // 8.92: Wallet holdings 展開行の protocol アイコン解決
+  it("iconIdOfProtocol は jupiter_lend → jupiter に読み替え、他は素通し", () => {
+    expect(iconIdOfProtocol("jupiter_lend")).toBe("jupiter");
+    expect(iconIdOfProtocol("jito")).toBe("jito");
+    expect(iconIdOfProtocol("savefi")).toBe("savefi");
+    expect(iconIdOfProtocol("unknown_protocol")).toBe("unknown_protocol");
+  });
+
+  it("registry 系 protocol_id は読み替え後に必ずロゴが引ける", () => {
+    // deposited-breakdown が返しうる protocol_id (share_mint registry 群のもの)
+    const registryProtocolIds = [
+      "jupiter_lend",
+      "jito",
+      "marinade",
+      "sanctum",
+      "perena",
+      "solstice",
+      "hylo",
+      "savefi",
+      "kamino",
+      "exponent",
+    ];
+    const missing = registryProtocolIds.filter(
+      (id) => ICON_BY_ID[iconIdOfProtocol(id)] === undefined
+    );
+    expect(missing).toEqual([]);
+  });
+
+  it("iconBgOf は fixture の icon_bg を返し、未登録 id は null", () => {
+    expect(iconBgOf("jupiter")).toBe("#0E1F3A"); // fixture ICON_BG_DARK
+    expect(iconBgOf("does-not-exist")).toBeNull();
   });
 });
