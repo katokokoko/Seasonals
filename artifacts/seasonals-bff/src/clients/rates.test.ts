@@ -17,10 +17,10 @@ const VALID_ENTRY = {
   vaultAddress: "CdUviheAUJaXUryT7JCRDUoNdPXdVvkxNQY1okC6uY8S",
   decimals: 6,
   maturityDateUnixTs: 1789552700,
-  impliedApy: 0.0471800067292476, // 2026-08-09 実測 (registry snapshot と同期)
-  underlyingApy: 0.048, // live は 0 (08-09 実測) — passthrough 検証のため非 0 を維持
-  totalMarketSize: 36491925.305853,
-  ptPriceInAsset: 0.9952155641931288,
+  impliedApy: 0.04237192635479747, // 2026-08-21 実測 (registry snapshot と同期)
+  underlyingApy: 0.048, // live は 0 (08-21 実測) — passthrough 検証のため非 0 を維持
+  totalMarketSize: 33930766.403566,
+  ptPriceInAsset: 0.9970651336253856,
   marketStatus: "active",
 };
 
@@ -51,11 +51,11 @@ describe("fetchExponentFullMarkets (Phase 8.33)", () => {
       vault_address: VALID_ENTRY.vaultAddress,
       pt_decimals: 6,
       maturity_ts: 1789552700,
-      implied_apy: 0.0471800067292476,
+      implied_apy: 0.04237192635479747,
       underlying_apy: 0.048,
-      total_market_size: 36491925.305853,
+      total_market_size: 33930766.403566,
       quote_ticker: "USD",
-      pt_price_in_asset: 0.9952155641931288,
+      pt_price_in_asset: 0.9970651336253856,
       market_status: "active",
     });
   });

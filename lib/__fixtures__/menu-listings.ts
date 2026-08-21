@@ -412,8 +412,8 @@ export const fixtureMenuListings: ProtocolMenuEntry[] = [
 
   // ─── 12. Exponent (Phase 8.33 — read-only PT 一覧) ─────────
   // pools は BFF /menu-listings が live markets (api.exponent.finance) で置換する。
-  // 本 fixture は offline/test 用 snapshot (2026-08-09 実測、lib/config/exponent-markets.ts
-  // の 12 market full mirror と同期)。PT market は 1〜4 ヶ月で世代交代するため満期を
+  // 本 fixture は offline/test 用 snapshot (2026-08-21 実測、lib/config/exponent-markets.ts
+  // の 17 entries と同期)。PT market は 1〜4 ヶ月で世代交代するため満期を
   // 過ぎた pool は buildExponentMenuPools の maturity filter で除外される
   // (menu に腐った pool は出ない)。
   {
@@ -442,8 +442,8 @@ export const fixtureMenuListings: ProtocolMenuEntry[] = [
         name: "PT USX · 2026-09-16",
         category: PositionCategory.PTYT,
         asset: "USX",
-        apy: 0.0472, // implied APY = PT 固定利回り
-        tvl_usd: 36_500_000,
+        apy: 0.0424, // implied APY = PT 固定利回り
+        tvl_usd: 33_900_000,
         display_only: true,
       },
       {
@@ -451,8 +451,8 @@ export const fixtureMenuListings: ProtocolMenuEntry[] = [
         name: "PT ONyc · 2026-09-10",
         category: PositionCategory.PTYT,
         asset: "ONyc",
-        apy: 0.1488,
-        tvl_usd: 32_600_000,
+        apy: 0.1537,
+        tvl_usd: 34_600_000,
         display_only: true,
       },
       {
@@ -469,8 +469,8 @@ export const fixtureMenuListings: ProtocolMenuEntry[] = [
         name: "PT eUSX · 2026-09-16",
         category: PositionCategory.PTYT,
         asset: "eUSX",
-        apy: 0.0611,
-        tvl_usd: 5_800_000,
+        apy: 0.0524,
+        tvl_usd: 5_400_000,
         display_only: true,
       },
       // ── 以下 2026-08-09 probe で追加 (maturity 順)。SOL/SLX quote は
@@ -516,8 +516,8 @@ export const fixtureMenuListings: ProtocolMenuEntry[] = [
         name: "PT srONyc · 2026-09-10",
         category: PositionCategory.PTYT,
         asset: "srONyc",
-        apy: 0.1007,
-        tvl_usd: 390_000,
+        apy: 0.1253,
+        tvl_usd: 930_000,
         display_only: true,
       },
       {
@@ -525,7 +525,7 @@ export const fixtureMenuListings: ProtocolMenuEntry[] = [
         name: "PT BulkSOL · 2026-10-31",
         category: PositionCategory.PTYT,
         asset: "BulkSOL",
-        apy: 0.0766,
+        apy: 0.0635,
         tvl_usd: 0, // SOL quote
         display_only: true,
       },
@@ -534,7 +534,7 @@ export const fixtureMenuListings: ProtocolMenuEntry[] = [
         name: "PT rkuSOL · 2026-10-31",
         category: PositionCategory.PTYT,
         asset: "rkuSOL",
-        apy: 0.0643,
+        apy: 0.0663,
         tvl_usd: 0, // SOL quote
         display_only: true,
       },
@@ -543,8 +543,54 @@ export const fixtureMenuListings: ProtocolMenuEntry[] = [
         name: "PT fragSOL · 2026-12-15",
         category: PositionCategory.PTYT,
         asset: "fragSOL",
-        apy: 0.0787,
+        apy: 0.0766,
         tvl_usd: 0, // SOL quote
+        display_only: true,
+      },
+      // ── 以下 2026-08-21 probe で追加 (次世代 5 件、maturity 順) ──
+      {
+        pool_id: "exponent_pt_stslx_20261204",
+        name: "PT stSLX · 2026-12-04",
+        category: PositionCategory.PTYT,
+        asset: "stSLX",
+        apy: 0.2037,
+        tvl_usd: 0, // SLX quote
+        display_only: true,
+      },
+      {
+        pool_id: "exponent_pt_xsol_20261212",
+        name: "PT xSOL · 2026-12-12",
+        category: PositionCategory.PTYT,
+        asset: "xSOL",
+        apy: 0.2214,
+        tvl_usd: 0, // xSOL quote
+        display_only: true,
+      },
+      {
+        pool_id: "exponent_pt_hylosol_20261212",
+        name: "PT hyloSOL · 2026-12-12",
+        category: PositionCategory.PTYT,
+        asset: "hyloSOL",
+        apy: 0.0818,
+        tvl_usd: 0, // SOL quote
+        display_only: true,
+      },
+      {
+        pool_id: "exponent_pt_hylosolplus_20261212",
+        name: "PT hyloSOL+ · 2026-12-12",
+        category: PositionCategory.PTYT,
+        asset: "hyloSOL+",
+        apy: 0.1026,
+        tvl_usd: 0, // SOL quote
+        display_only: true,
+      },
+      {
+        pool_id: "exponent_pt_hyusd_20261212",
+        name: "PT hyUSD · 2026-12-12",
+        category: PositionCategory.PTYT,
+        asset: "hyUSD",
+        apy: 0.0943,
+        tvl_usd: 190_000,
         display_only: true,
       },
     ],
