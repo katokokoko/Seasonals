@@ -153,9 +153,11 @@ beforeEach(async () => {
     .mockResolvedValue(new Map());
   (fetchMeteoraPoolStats as jest.MockedFunction<typeof fetchMeteoraPoolStats>)
     .mockResolvedValue(new Map());
-  // 実 network 時代の「fetch 失敗 → degrade」挙動を再現
+  // 実 network 時代の「fetch 失敗 → degrade」挙動を再現。
+  // 8.95: 主要 5 upstream 全滅は 503 になったため、1 つ (jupiter earn) だけ
+  // 成功させて「部分失敗の per-protocol degrade は 200」の経路に乗せる
+  (fetchEarnPositions as jest.Mock).mockResolvedValue([]);
   for (const fn of [
-    fetchEarnPositions,
     fetchAssetsByOwner,
     fetchEnhancedTransactions,
     fetchKaminoObligations,
