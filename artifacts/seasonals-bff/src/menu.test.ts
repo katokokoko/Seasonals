@@ -334,6 +334,43 @@ describe("GET /menu-listings — live overlay", () => {
     expect(usdc.deposit_open).toBe(false);
   });
 
+  it("8.91: used >= cap は deposit_closed_reason=full", async () => {
+    mockCaps.mockResolvedValue([
+      { reserve: KAMINO_SOL.reserve, limit: 1_000_000_000n }, // 1 SOL < 供給 2 SOL
+    ]);
+    const menu = await getMenu();
+    const sol = pool(menu, "kamino", "kamino_sol_main");
+    expect(sol.deposit_open).toBe(false);
+    expect(sol.deposit_closed_reason).toBe("full");
+  });
+
+  it("8.91: 上限 0 は deposit_closed_reason=suspended (registry block の無い market で見る)", async () => {
+    mockCaps.mockResolvedValue([{ reserve: KAMINO_SOL.reserve, limit: 0n }]);
+    const menu = await getMenu();
+    const sol = pool(menu, "kamino", "kamino_sol_main");
+    expect(sol.deposit_open).toBe(false);
+    expect(sol.deposit_closed_reason).toBe("suspended");
+  });
+
+  it("8.91: deposit_blocked_reason は blocked (枠に空きがあっても優先)、open な market は理由なし", async () => {
+    // default mock: USDC は枠 (200/1) に空きがあるが registry で塞がれている
+    const menu = await getMenu();
+    expect(pool(menu, "kamino", "kamino_usdc_main").deposit_closed_reason).toBe(
+      "blocked"
+    );
+    expect(
+      pool(menu, "kamino", "kamino_sol_main").deposit_closed_reason
+    ).toBeUndefined();
+  });
+
+  it("8.91: 枠が取れない日でも blocked は付く (8.52 と同じ独立性)", async () => {
+    mockCaps.mockResolvedValue([]);
+    const menu = await getMenu();
+    const usdc = pool(menu, "kamino", "kamino_usdc_main");
+    expect(usdc.deposit_cap).toBeUndefined();
+    expect(usdc.deposit_closed_reason).toBe("blocked");
+  });
+
   it("8.51: 枠の取得に失敗しても menu は degrade して返る", async () => {
     mockCaps.mockRejectedValue(new Error("rpc down"));
     const menu = await getMenu();

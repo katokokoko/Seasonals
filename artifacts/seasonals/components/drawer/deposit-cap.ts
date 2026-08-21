@@ -22,9 +22,11 @@ export interface DepositCapView {
    * closed の理由。文言を変えるために使う:
    *   paused      … 上限 0 = protocol 側が預入を止めている
    *   full        … 枠が埋まった
-   *   unavailable … 枠に空きがあるのに BFF が閉じた (上流の不具合等、8.52)
+   *   blocked     … 上流不具合で必ず失敗する market (BFF の
+   *                 deposit_closed_reason="blocked"、8.91。残高不足とは別物)
+   *   unavailable … 理由不明のまま BFF が閉じた (数値も理由も無い時の fallback)
    */
-  reason?: "paused" | "full" | "unavailable";
+  reason?: "paused" | "full" | "blocked" | "unavailable";
 }
 
 /**
@@ -64,22 +66,33 @@ function compact(human: string): string {
 export function depositCapView(
   pool: Pick<
     ProtocolPool,
-    "deposit_cap" | "deposit_used" | "deposit_open" | "asset"
+    "deposit_cap" | "deposit_used" | "deposit_open" | "deposit_closed_reason" | "asset"
   >,
   decimals: number
 ): DepositCapView | null {
   const { deposit_cap: cap, deposit_used: used } = pool;
   const blocked = pool.deposit_open === false;
+  // 8.91: BFF が理由を明示した場合はそれを優先 (数値の有無と独立に効く)
+  const bffReason = pool.deposit_closed_reason;
   const valid =
     typeof cap === "string" &&
     typeof used === "string" &&
     /^[0-9]+$/.test(cap) &&
     /^[0-9]+$/.test(used);
   if (!valid) {
-    // 数値は無いが「閉じている」ことだけは分かる場合 (§4.5: 不正な値は無視する)
-    return blocked
-      ? { label: "Deposits unavailable", ratio: 1, closed: true, reason: "unavailable" }
-      : null;
+    // 数値は無いが「閉じている」ことだけは分かる場合 (§4.5: 不正な値は無視する)。
+    // 8.91: BFF の理由があれば文言を具体化する (取れない日でも理由は出す、8.52 と同じ発想)
+    if (!blocked) return null;
+    if (bffReason === "blocked") {
+      return { label: "Deposits blocked · upstream issue", ratio: 1, closed: true, reason: "blocked" };
+    }
+    if (bffReason === "suspended") {
+      return { label: "Deposits paused", ratio: 1, closed: true, reason: "paused" };
+    }
+    if (bffReason === "full") {
+      return { label: "Deposits full", ratio: 1, closed: true, reason: "full" };
+    }
+    return { label: "Deposits unavailable", ratio: 1, closed: true, reason: "unavailable" };
   }
 
   const capBig = BigInt(cap);
@@ -87,7 +100,23 @@ export function depositCapView(
   const amounts = `${compact(formatTokenAmount(used, decimals))} / ${compact(
     formatTokenAmount(cap, decimals)
   )} ${pool.asset}`;
-  // 上限 0 = 預入停止中。分母 0 の割り算を避けつつ「満杯」として見せる
+  // 割合は bigint で 4 桁精度まで出してから小数へ (Number() で桁落ちさせない)。
+  // 上限 0 (預入停止中) は分母 0 を避けて満杯 (1) 扱い
+  const ratio =
+    capBig === 0n
+      ? 1
+      : Math.max(0, Math.min(1, Number((usedBig * 10_000n) / capBig) / 10_000));
+  // 8.91: 上流不具合 (blocked) は満杯/停止より根本原因なので最優先で出す
+  // (BFF 側も blocked を full/suspended より優先して上書きする)
+  if (bffReason === "blocked") {
+    return {
+      label: "Deposits blocked · upstream issue",
+      ratio,
+      closed: true,
+      reason: "blocked",
+    };
+  }
+  // 上限 0 = 預入停止中
   if (capBig === 0n) {
     return {
       label: `Deposits paused · ${compact(formatTokenAmount(used, decimals))} ${pool.asset}`,
@@ -96,9 +125,6 @@ export function depositCapView(
       reason: "paused",
     };
   }
-  // 割合は bigint で 4 桁精度まで出してから小数へ (Number() で桁落ちさせない)
-  const permyriad = Number((usedBig * 10_000n) / capBig) / 10_000;
-  const ratio = Math.max(0, Math.min(1, permyriad));
   if (usedBig >= capBig) {
     return { label: `Deposits full · ${amounts}`, ratio, closed: true, reason: "full" };
   }
