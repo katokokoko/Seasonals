@@ -6,10 +6,11 @@
     "moduleResolution": "Bundler",
     "noEmit": true,
     "types": ["jest", "node"],
-    "baseUrl": "../..",
+    // 8.96: baseUrl は TS6 deprecated。paths は base (repo root) の宣言を継承
+    // (@workspace/lib → ./lib、宣言ファイル基準で解決されるため同義)
     "paths": {
-      "@workspace/lib": ["./lib/index.ts"],
-      "@workspace/lib/*": ["./lib/*"]
+      "@workspace/lib": ["../../lib/index.ts"],
+      "@workspace/lib/*": ["../../lib/*"]
     }
   },
   "include": ["**/*.ts", "**/*.tsx"],

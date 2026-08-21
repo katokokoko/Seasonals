@@ -10,12 +10,14 @@
   "packageManager": "pnpm@10.33.4",
   "//overrides": {
     "rpc-websockets@^7": "Phase 8.71 実測: 7.11.2 で main が ./dist/index.js → ./dist/index.cjs に変わる (7.11.0 まではまだ .js)。^7 を要求するのは @solendprotocol/solend-sdk → @pythnetwork/pyth-solana-receiver → @solana/web3.js@1.77.4 の経路のみ。上流がこの packaging を戻したら override を外せる",
-    "utf-8-validate": "Phase 8.87: ws の optional peer が ^5 と ^6 で分岐し、hoisted linker が artifacts/seasonals/node_modules/react-native/ 配下に入れ子を作る (autolinking が『壊れた react-native 重複』と誤認する)。6.0.6 に統一して入れ子を根絶。utf-8-validate は ws の native 高速化 addon で、無くても純 JS fallback で動くため片側の peer 警告は無害"
+    "utf-8-validate": "Phase 8.87: ws の optional peer が ^5 と ^6 で分岐し、hoisted linker が artifacts/seasonals/node_modules/react-native/ 配下に入れ子を作る (autolinking が『壊れた react-native 重複』と誤認する)。6.0.6 に統一して入れ子を根絶。utf-8-validate は ws の native 高速化 addon で、無くても純 JS fallback で動くため片側の peer 警告は無害",
+    "avsc": "Phase 8.96: solend-sdk 経由の avsc 5.4.7 は module load 時に new buffer.SlowBuffer を実行し、SlowBuffer が削除された Node 24+ で BFF の import ごと落ちる (jest 13 suites / runtime 双方)。5.7.9 は Buffer.allocUnsafeSlow ガード済 (lib/utils.js newSlowBuffer 実確認)。上流 solend-sdk が avsc 依存を上げたら外せる"
   },
   "pnpm": {
     "overrides": {
       "rpc-websockets@^7": "7.10.0",
-      "utf-8-validate": "6.0.6"
+      "utf-8-validate": "6.0.6",
+      "avsc": "5.7.9"
     },
     "onlyBuiltDependencies": [
       "@shopify/react-native-skia"
