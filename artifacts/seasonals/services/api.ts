@@ -114,11 +114,19 @@ async function httpPatchJson<T>(path: string, body?: unknown): Promise<T> {
  *   - local device APK (`BFF_BASE_URL` が localhost 系): HTTP を試行 → 失敗時に fixture へ fallback
  *     (Seeker から Mac の BFF に届かない場合でも UI が空にならないため)
  *   - production real BFF URL: HTTP のみ。失敗は error として propagate
+ *
+ * 8.93 `onFail`: dev fallback 時の失敗の扱い。
+ *   - `"fixture"` (default) … fixture/空を resolve (menu 等、実 fixture に preview 価値がある getter)
+ *   - `"throw"` … devFallbackLog へ記録した上で **reject** する。positions / prices 等の
+ *     wallet 実データは、空の「成功」で TanStack Query の正常キャッシュを上書きすると
+ *     一時的な BFF 断 (tsx watch 再起動等) で portfolio が 0.00 に落ちて戻らなくなる —
+ *     reject ならキャッシュ (直前の正常データ) が保持され、retry / エラー時ポーリングが効く
  */
 async function tryHttpThenFixture<T>(
   http: () => Promise<T>,
   fixture: () => Promise<T>,
-  route?: string
+  route?: string,
+  onFail: "fixture" | "throw" = "fixture"
 ): Promise<T> {
   if (IS_TEST_ENV) return fixture();
   try {
@@ -133,7 +141,7 @@ async function tryHttpThenFixture<T>(
       useDevFallbackLog
         .getState()
         .record(route ?? "(unknown)", (err as Error).message);
-      return fixture();
+      if (onFail === "fixture") return fixture();
     }
     throw err;
   }
@@ -292,10 +300,13 @@ export async function getPositions(
   const path = walletAddress
     ? `/positions?wallet=${encodeURIComponent(walletAddress)}`
     : "/positions";
+  // 8.93: 空の「成功」で正常キャッシュを上書きしない (fixture は非 test では [] を
+  // 返すだけで preview 価値なし) — 失敗は reject してキャッシュ保持 + 自動再試行
   return tryHttpThenFixture(
     () => httpGetJson<Position[]>(path),
     () => fxGetPositions(),
-    path
+    path,
+    "throw"
   );
 }
 
@@ -317,7 +328,8 @@ export async function getEarnPositions(
   return tryHttpThenFixture(
     () => httpGetJson<EarnPositionsResponse>(path),
     async () => empty,
-    path
+    path,
+    "throw" // 8.93: 空 resolve で保有表示を消さない
   );
 }
 
@@ -362,7 +374,8 @@ export async function getPrices(
       return res.prices ?? {};
     },
     async () => ({}),
-    "/prices"
+    "/prices",
+    "throw" // 8.93: {} の「成功」で実価格キャッシュを消さない
   );
 }
 
@@ -393,7 +406,8 @@ export async function getPortfolioHistory(
         `/portfolio/history?wallet=${encodeURIComponent(wallet)}&days=${days}`
       ),
     async () => empty,
-    "/portfolio/history"
+    "/portfolio/history",
+    "throw" // 8.93: 空 points で chart 履歴キャッシュを消さない
   );
 }
 
@@ -401,7 +415,8 @@ export async function getJupiterLendMarkets(): Promise<JupiterLendMarketDTO[]> {
   return tryHttpThenFixture(
     () => httpGetJson<JupiterLendMarketDTO[]>("/protocols/jupiter-lend/markets"),
     async () => [],
-    "/protocols/jupiter-lend/markets"
+    "/protocols/jupiter-lend/markets",
+    "throw" // 8.93: [] の「成功」で live markets キャッシュを消さない
   );
 }
 

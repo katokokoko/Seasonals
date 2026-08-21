@@ -100,6 +100,18 @@ export function useTimeEvents(): UseQueryResult<UnifiedTimeEvent[], Error> {
  * variant 判定 + walletStore からの address を解決して渡す責務を持つ。
  * 未指定 (default variant or 未接続) は従来通り fixture/BFF fixture path。
  */
+/**
+ * 8.93: エラー時のみ 30 秒間隔で自動再試行する refetchInterval。
+ * 正常時はポーリングしない (Helius 負荷を増やさない)。api.ts の "throw" 化と
+ * セットで、一時的な BFF 断 (tsx watch 再起動等) からアプリ再起動なしで復帰する。
+ * useOracleStatus の data-driven interval (8.78) と同型。
+ */
+export function errorRetryInterval(query: {
+  state: { status: string };
+}): number | false {
+  return query.state.status === "error" ? 30_000 : false;
+}
+
 export function usePositions(
   address?: string | null
 ): UseQueryResult<Position[], Error> {
@@ -107,6 +119,7 @@ export function usePositions(
   return useQuery({
     queryKey: queryKeys.positions(effectiveAddress),
     queryFn: () => api.getPositions(effectiveAddress ?? undefined),
+    refetchInterval: errorRetryInterval, // 8.93
   });
 }
 
@@ -124,6 +137,7 @@ export function useEarnPositions(
         ? api.getEarnPositions(address)
         : Promise.resolve({ jupiterLend: [], kaminoBestEffort: [] }),
     enabled: Boolean(address),
+    refetchInterval: errorRetryInterval, // 8.93
   });
 }
 
@@ -187,6 +201,7 @@ export function usePrices(
     queryKey: queryKeys.prices(key),
     queryFn: () => api.getPrices(key),
     staleTime: 60_000,
+    refetchInterval: errorRetryInterval, // 8.93
   });
 }
 
@@ -213,6 +228,7 @@ export function usePortfolioHistory(
     // 対象なので、gcTime は maxAge (24h) より長くしておく — TanStack の
     // persist は gc された query を復元しないため
     gcTime: 24 * 60 * 60_000,
+    refetchInterval: errorRetryInterval, // 8.93
   });
 }
 
