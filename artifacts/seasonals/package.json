@@ -31,7 +31,7 @@
     "@tanstack/react-query-persist-client": "5.101.4",
     "@workspace/lib": "workspace:*",
     "buffer": "^6.0.3",
-    "date-fns": "^3.6.0",
+    "date-fns": "^4.4.0",
     "expo": "~57.0.10",
     "expo-blur": "~57.0.2",
     "expo-constants": "~57.0.9",
