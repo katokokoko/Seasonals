@@ -186,6 +186,9 @@ export function useJupiterLendMarkets(): UseQueryResult<
   return useQuery({
     queryKey: queryKeys.jupiterLendMarkets(),
     queryFn: api.getJupiterLendMarkets,
+    // 8.96: cold start の初回失敗が focus まで固まる取りこぼし (8.93 では
+    // portfolio 系 4 hook のみ対象だった)。yield 表示がこの query 依存
+    refetchInterval: errorRetryInterval,
   });
 }
 
@@ -305,6 +308,7 @@ export function useMenuListings(): UseQueryResult<ProtocolMenuEntry[], Error> {
     queryKey: queryKeys.menuListings(),
     queryFn: api.getMenuListings,
     staleTime: 60_000,
+    refetchInterval: errorRetryInterval, // 8.96: cold start 初回失敗の自己回復
   });
 }
 
@@ -319,6 +323,7 @@ export function useKaminoReserves(): UseQueryResult<
     queryFn: api.getKaminoReserves,
     // reserve metadata は短時間で大きく変わらないため staleTime を長めに
     staleTime: 60_000,
+    refetchInterval: errorRetryInterval, // 8.96: cold start 初回失敗の自己回復
   });
 }
 
