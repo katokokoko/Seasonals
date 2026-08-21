@@ -35,7 +35,9 @@ const ENV = Object.fromEntries(
     .map((l) => [l.slice(0, l.indexOf("=")).trim(), l.slice(l.indexOf("=") + 1).trim()])
 );
 
-const BFF = process.env.BFF_BASE_URL ?? "http://localhost:3030";
+// 8.90: 既定は 127.0.0.1 — localhost だと Node が ::1 (IPv6) を先に解決し、
+// IPv4 で listen している BFF に届かない (8.71 実測)
+const BFF = process.env.BFF_BASE_URL ?? "http://127.0.0.1:3030";
 const RPC = `https://mainnet.helius-rpc.com/?api-key=${ENV.HELIUS_API_KEY}`;
 const argIdx = process.argv.indexOf("--wallet");
 const WALLET =
@@ -76,6 +78,12 @@ const CASES = [
 const EXPECTED = [
   { match: /position_not_found/, why: "ポジション未保有 (BFF が 400 で弾く正しい挙動)" },
   { match: /not_matured/, why: "満期前 (Exponent は満期後のみ redeem 可)" },
+  // 8.90: PT xSOL (CASES の redeem 対象) は 2026-08-12 満期。満期後は誰かが最初に
+  // redeem するまで template が無く 409 になる (confirm.md §D 8.34) — 配線は正しい
+  {
+    match: /redeem_template_unavailable/,
+    why: "満期直後で redeem template 未生成 (最初の redeem 発生までの想定内 409)",
+  },
   // 8.53: 上流の 400 を BFF が position_not_found に翻訳するので、文言ではなく
   // code で判定する (翻訳前の生メッセージも残す — 未翻訳の経路が出たら気付ける)
   { match: /obligation does not exist/, why: "Kamino のポジション未保有 (生の上流メッセージ)" },
@@ -160,7 +168,8 @@ async function run(name, route, extra) {
       body: JSON.stringify(body),
     });
   } catch (e) {
-    return { name, ok: false, detail: `BFF 未起動? ${e.message}` };
+    // 試行 URL を出す — 「BFF 未起動」と「別 host/port を叩いていた」を区別できるように (8.90)
+    return { name, ok: false, detail: `BFF 未起動? ${BFF + route} — ${e.message}` };
   }
   const j = await res.json().catch(() => ({}));
   if (!res.ok) {
