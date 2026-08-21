@@ -1389,12 +1389,15 @@ function ctaForRow(row: VaultRow): {
   }
   if (row.displayOnly) return null;
   if (row.capView?.closed) {
+    // 8.91: blocked (上流不具合) は Unavailable と区別して表示
     const label =
       row.capView.reason === "paused"
         ? "Paused"
         : row.capView.reason === "full"
           ? "Full"
-          : "Unavailable";
+          : row.capView.reason === "blocked"
+            ? "Blocked"
+            : "Unavailable";
     return { label, kind: "deposit", disabled: true };
   }
   return { label: "Deposit", kind: "deposit", disabled: false };

@@ -56,6 +56,15 @@ export interface ProtocolPool {
   deposit_cap?: string;
   deposit_used?: string;
   deposit_open?: boolean;
+  /**
+   * 8.91: `deposit_open === false` の理由 (現状 Kamino のみ)。UI 文言の出し分け用:
+   *   - `"full"`      … `used >= cap` で枠が埋まっている
+   *   - `"suspended"` … `cap === 0` (protocol 側が預入停止中、JLP が該当)
+   *   - `"blocked"`   … registry の `deposit_blocked_reason` (上流不具合で必ず失敗、8.52)
+   * `deposit_open` の真偽は従来どおり単独で成立する — 本 field は補助情報で、
+   * 消費側 (autonomous / MCP の候補除外) は `deposit_open` だけを見続ける。
+   */
+  deposit_closed_reason?: "full" | "suspended" | "blocked";
 }
 
 /**

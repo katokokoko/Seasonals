@@ -3058,11 +3058,19 @@ export function applyMenuLiveOverlays(
             out.deposit_cap = cap.toString();
             out.deposit_used = used;
             out.deposit_open = cap > 0n && BigInt(used) < cap;
+            // 8.91: 閉じている場合は理由を併記 (UI 文言の出し分け用、
+            // deposit_open の真偽自体は上の 1 行のまま)
+            if (cap === 0n) out.deposit_closed_reason = "suspended";
+            else if (BigInt(used) >= cap) out.deposit_closed_reason = "full";
           }
         }
         // 8.52: 上流の都合で必ず失敗する market は、枠の取得可否と**独立**に塞ぐ
         // (metric / cap が取れない日でも doomed な導線を出さない、§32.2)
-        if (reserve?.deposit_blocked_reason) out.deposit_open = false;
+        // 8.91: 理由も blocked で上書き — full/suspended より根本原因が先
+        if (reserve?.deposit_blocked_reason) {
+          out.deposit_open = false;
+          out.deposit_closed_reason = "blocked";
+        }
         const vault = KAMINO_VAULTS.find((v) => v.pool_id === pool.pool_id);
         const vm = vault ? s.kaminoVaults?.get(vault.vault) : undefined;
         if (vm) {

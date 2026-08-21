@@ -77,4 +77,49 @@ describe("depositCapView", () => {
     expect(usdc("1.5", "1")).toBeNull();
     expect(usdc("100", "-1")).toBeNull();
   });
+
+  // 8.91: BFF の deposit_closed_reason で文言を出し分ける
+  it("8.91: blocked は枠に空きがあっても upstream issue と表示 (unavailable と区別)", () => {
+    const v = depositCapView(
+      {
+        deposit_cap: "1000000000000000",
+        deposit_used: "106376882000000",
+        deposit_open: false,
+        deposit_closed_reason: "blocked",
+        asset: "USDC",
+      },
+      6
+    );
+    expect(v?.closed).toBe(true);
+    expect(v?.reason).toBe("blocked");
+    expect(v?.label).toBe("Deposits blocked · upstream issue");
+  });
+
+  it("8.91: blocked は cap 0 (停止中) より優先 (BFF の上書き順と一致)", () => {
+    const v = depositCapView(
+      {
+        deposit_cap: "0",
+        deposit_used: "527485000000",
+        deposit_open: false,
+        deposit_closed_reason: "blocked",
+        asset: "USDC",
+      },
+      6
+    );
+    expect(v?.reason).toBe("blocked");
+    expect(v?.ratio).toBe(1);
+  });
+
+  it("8.91: 数値が取れない日も BFF 理由で文言を具体化する", () => {
+    const base = { deposit_open: false as const, asset: "USDC" };
+    expect(
+      depositCapView({ ...base, deposit_closed_reason: "blocked" }, 6)?.label
+    ).toBe("Deposits blocked · upstream issue");
+    expect(
+      depositCapView({ ...base, deposit_closed_reason: "suspended" }, 6)
+    ).toMatchObject({ label: "Deposits paused", reason: "paused", ratio: 1 });
+    expect(
+      depositCapView({ ...base, deposit_closed_reason: "full" }, 6)
+    ).toMatchObject({ label: "Deposits full", reason: "full", ratio: 1 });
+  });
 });
