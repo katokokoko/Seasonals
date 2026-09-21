@@ -7,7 +7,11 @@
  *   2. dev default: `http://localhost:3030`
  *      - port 3030 は Seasonals BFF 専用 (3000 は Next.js dev server 慣例で衝突回避)
  *      - Android (emulator / 実機 Seeker 共通): `adb reverse tcp:3030 tcp:3030` を
- *        Mac で実行しておく必要あり (Seeker localhost:3030 → Mac localhost:3030)
+ *        Mac で実行しておく必要あり (Seeker localhost:3030 → Mac localhost:3030)。
+ *        dev-client を使う場合は Metro の `tcp:8081` も同様に転送する。
+ *        この転送は端末スリープ / USB 抜き差しで黙って消えるため、実機作業中は
+ *        `pnpm dev:device` (scripts/adb-reverse-keepalive.sh) を常駐させて
+ *        自動で張り直す。消えた時の症状と対処はそのヘッダに書いてある
  *      - iOS simulator / web: localhost で直接届く
  *
  * test 環境 (typeof jest !== 'undefined') では fixture path を強制使用するため、

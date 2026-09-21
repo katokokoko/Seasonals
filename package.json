@@ -5,7 +5,8 @@
   "description": "Seasonals — Solana DeFi time primitive (monorepo root)",
   "scripts": {
     "test": "pnpm -r test",
-    "typecheck": "pnpm -r typecheck"
+    "typecheck": "pnpm -r typecheck",
+    "dev:device": "bash scripts/adb-reverse-keepalive.sh"
   },
   "packageManager": "pnpm@10.33.4",
   "//overrides": {
