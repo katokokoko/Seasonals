@@ -106,3 +106,9 @@ Web 側 (`artifacts/seasonals-web`) は `BFF_URL` (Vite dev proxy 先、node 側
   - BFF dev log に `infura` / key 文字列が 0 件
   - BFF 402 tests (新規 8: sanitize / env 優先順位 / 3 adapter の derive / 400 / status に URL を含まない)、`pnpm -r test` green、全 workspace 新規 TS エラー 0
 - 未実装: CCA indexer (B6)、提案 (B7)、unsigned plan / MCP (B8)、Uniswap (B9)、fork 実行 (B10)、USD 価格 (Ethena / Lido は価格を出さない。Pendle のみ API の indicative valuation)
+
+### B1–B4 — `8c4e8db` (push 済み)
+
+### B5 — Web を Ethereum 実データに接続
+- 実装済み: watchlist を複数 address 化 (最大 6、Solana / Ethereum 混在、接続 wallet を先頭に重複排除)、`useTimeline` が公開イベント + address ごとの `/eth/events` / `/time-events/wallet` を並列取得して id merge、source ごとの状態を card footer に表示、`useNow` (データ更新 + 30s で現在時刻を更新し status を再導出)、status 文言の具体化 (Claimable now / Pending / Overdue)、詳細カードは owner と一致する address を閲覧中の時だけ action を出す、nav に被らない配置
+- 検証: 実 address 3 件を watch した状態で Home Timeline / 詳細カード (Lido claimable = Claim ETH が available、Ethena cooldown = Claim USDe は not_yet と理由表示) を screenshot で確認。e2e 43/43 pass

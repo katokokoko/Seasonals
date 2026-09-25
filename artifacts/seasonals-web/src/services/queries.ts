@@ -9,8 +9,9 @@ import { useQueries, useQuery } from "@tanstack/react-query";
 import { useMemo } from "react";
 import { fromUnifiedTimeEventDTO, mergeTimelineEvents, sortTimeline } from "@workspace/lib/derive/timeline";
 import type { TimelineEvent } from "@workspace/lib/types";
-import { activeAddresses, useSession } from "../state/session";
+import { useActiveAddresses } from "../state/session";
 import { api, ApiError } from "./api";
+import { shortAddress } from "../ui/format";
 
 export const queryKeys = {
   ethPublic: ["eth", "public-events"] as const,
@@ -42,40 +43,33 @@ function errorText(e: unknown): string {
 }
 
 export function useTimeline(): TimelineData {
-  const watch = useSession((s) => s.watch);
-  const connectedEvm = useSession((s) => s.connectedEvm);
-  const addrs = activeAddresses({ watch, connectedEvm });
+  const active = useActiveAddresses();
 
   const specs = [
     {
       key: "eth-public",
       label: "Ethereum public events",
-      queryKey: queryKeys.ethPublic,
+      queryKey: queryKeys.ethPublic as readonly unknown[],
       queryFn: async () => (await api.ethPublicEvents()).events,
     },
-    ...(addrs.ethereum
-      ? [
-          {
-            key: "eth-wallet",
-            label: "Ethereum wallet events",
-            queryKey: queryKeys.ethEvents(addrs.ethereum),
-            queryFn: async () => (await api.ethEvents(addrs.ethereum!)).events,
-          },
-        ]
-      : []),
-    ...(addrs.solana
-      ? [
-          {
-            key: "sol-wallet",
-            label: "Solana wallet events",
-            queryKey: queryKeys.solEvents(addrs.solana),
+    ...active.map((a) =>
+      a.chain === "ethereum"
+        ? {
+            key: `eth:${a.address}`,
+            label: `Ethereum ${shortAddress(a.address)}`,
+            queryKey: queryKeys.ethEvents(a.address) as readonly unknown[],
+            queryFn: async () => (await api.ethEvents(a.address)).events,
+          }
+        : {
+            key: `sol:${a.address}`,
+            label: `Solana ${shortAddress(a.address)}`,
+            queryKey: queryKeys.solEvents(a.address) as readonly unknown[],
             queryFn: async () => {
               const observedAt = new Date().toISOString();
-              return (await api.solanaWalletEvents(addrs.solana!)).map((d) => fromUnifiedTimeEventDTO(d, observedAt));
+              return (await api.solanaWalletEvents(a.address)).map((d) => fromUnifiedTimeEventDTO(d, observedAt));
             },
-          },
-        ]
-      : []),
+          }
+    ),
   ];
 
   const results = useQueries({
@@ -110,7 +104,7 @@ export function useTimeline(): TimelineData {
     events,
     sources,
     isLoading: results.some((r) => r.isPending),
-    hasWallet: Object.keys(addrs).length > 0,
+    hasWallet: active.length > 0,
   };
 }
 

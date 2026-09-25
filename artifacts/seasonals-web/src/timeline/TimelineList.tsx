@@ -11,7 +11,7 @@ import { STATUS_COLOR } from "../styles/tokens";
 import { fmtAmount, fmtMonthDay, fmtTime, fmtUsd, parseDayKey } from "../ui/format";
 import { ProtocolBadge } from "../ui/ProtocolBadge";
 import { Droplet } from "./Droplet";
-import { CLASS_LABEL, KIND_LABEL, shapeForKind } from "./labels";
+import { CLASS_LABEL, KIND_LABEL, shapeForKind, statusText } from "./labels";
 import { StatusBadge } from "./StatusBadge";
 
 export function TimelineList({
@@ -87,7 +87,7 @@ export function TimelineList({
                           </>
                         )}
                         <span className="cell-status">
-                          <StatusBadge status={st} label={status === "due" ? "Due today" : undefined} />
+                          <StatusBadge status={st} label={statusText(e, status)} />
                         </span>
                       </button>
                     </li>

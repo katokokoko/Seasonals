@@ -20,6 +20,7 @@ import { CLASS_LABEL } from "../timeline/labels";
 import { fmtFullDate, fmtMonthYear, parseDayKey } from "../ui/format";
 import { IconChevronDown, IconChevronLeft, IconChevronRight } from "../ui/icons";
 import { TimelineWorkspace } from "./TimelineWorkspace";
+import { useNow } from "../ui/useNow";
 import { DayPanel } from "./DayPanel";
 import { WeekView } from "./WeekView";
 import "./calendar.css";
@@ -42,8 +43,8 @@ export default function CalendarWorkspace() {
   const dateParam = params.get("date");
   const anchor = dateParam && /^\d{4}-\d{2}-\d{2}$/.test(dateParam) ? parseDayKey(dateParam) : new Date();
   const selectedDay = dateParam ?? dayKey(new Date());
-  const [now] = useState(() => new Date());
   const timeline = useTimeline();
+  const now = useNow(timeline.events);
   const open = useDetail((s) => s.open);
   const [filters, setFilters] = useState<Filters>({
     classes: new Set(["protocol", "user_plan", "executed"]),

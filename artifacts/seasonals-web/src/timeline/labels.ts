@@ -1,5 +1,5 @@
 /** 表示ラベル / 形状の対応 (presentation layer、値は lib の enum) */
-import type { TimelineDisplayStatus, TimelineEventClass, TimelineEventKind } from "@workspace/lib/types";
+import type { TimelineDisplayStatus, TimelineEvent, TimelineEventClass, TimelineEventKind, TimelineStatus } from "@workspace/lib/types";
 
 export const KIND_LABEL: Record<TimelineEventKind, string> = {
   maturity: "Maturity",
@@ -75,4 +75,15 @@ export function shapeForKind(kind: TimelineEventKind, cls: TimelineEventClass): 
     default:
       return kind;
   }
+}
+
+/** status badge の文言を event の文脈で具体化する (色 / icon は表示 status のまま) */
+export function statusText(e: TimelineEvent, status: TimelineStatus): string | undefined {
+  if (status === "due") {
+    return e.actions.some((a) => a.availability === "available" && /claim|unstake/.test(a.actionType)) ? "Claimable now" : "Due today";
+  }
+  if (status === "overdue") return "Overdue";
+  if (status === "upcoming" && e.at === null) return "Pending";
+  if (status === "cancelled") return "Cancelled";
+  return undefined;
 }

@@ -5,7 +5,7 @@
  */
 import { useEffect, useId, useRef, useState, type FormEvent } from "react";
 import { chainOfAddress } from "@workspace/lib/config/chains";
-import { activeAddresses, useSession } from "../state/session";
+import { MAX_WATCH, useActiveAddresses, useSession } from "../state/session";
 import { connectInjected, injectedProvider, onAccountsChanged } from "../services/evmWallet";
 import { ChainIcon } from "../ui/ChainIcon";
 import { IconChevronDown, IconClose, IconWallet } from "../ui/icons";
@@ -13,15 +13,14 @@ import { shortAddress } from "../ui/format";
 import { OPEN_WALLET_EVENT } from "../timeline/detailStore";
 
 export function WalletControl() {
-  const { watch, connectedEvm, setWatch, setConnectedEvm } = useSession();
+  const { addWatch, removeWatch, setConnectedEvm } = useSession();
+  const active = useActiveAddresses();
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
   const inputId = useId();
-  const addrs = activeAddresses({ watch, connectedEvm });
-  const entries = Object.entries(addrs) as Array<["solana" | "ethereum", string]>;
 
   useEffect(() => onAccountsChanged((a) => setConnectedEvm(a)), [setConnectedEvm]);
   useEffect(() => {
@@ -68,12 +67,12 @@ export function WalletControl() {
       setError("Enter a Solana or Ethereum (0x…) address.");
       return;
     }
-    setWatch(chain, v);
+    addWatch({ chain, address: v });
     setDraft("");
     setError(null);
   }
 
-  const first = entries[0];
+  const first = active[0];
   return (
     <div className="wallet" ref={ref}>
       <button
@@ -85,10 +84,10 @@ export function WalletControl() {
       >
         {first ? (
           <>
-            <ChainIcon chain={first[0]} size={16} />
-            <span className="mono">{shortAddress(first[1])}</span>
-            {first[0] === "ethereum" && connectedEvm ? null : <span className="tag">watching</span>}
-            {entries.length > 1 && <span className="tag">+{entries.length - 1}</span>}
+            <ChainIcon chain={first.chain} size={16} />
+            <span className="mono">{shortAddress(first.address)}</span>
+            {!first.connected && <span className="tag">watching</span>}
+            {active.length > 1 && <span className="tag">+{active.length - 1}</span>}
             <IconChevronDown size={14} />
           </>
         ) : (
@@ -100,18 +99,18 @@ export function WalletControl() {
       </button>
       {open && (
         <div className="popover wallet-popover" role="dialog" aria-label="Wallet">
-          {entries.length > 0 && (
+          {active.length > 0 && (
             <ul className="wallet-list">
-              {entries.map(([chain, a]) => (
-                <li key={chain}>
-                  <ChainIcon chain={chain} size={16} />
-                  <span className="mono">{shortAddress(a)}</span>
-                  <span className="tag">{chain === "ethereum" && connectedEvm === a ? "connected" : "watching"}</span>
+              {active.map((a) => (
+                <li key={`${a.chain}:${a.address}`}>
+                  <ChainIcon chain={a.chain} size={16} />
+                  <span className="mono">{shortAddress(a.address)}</span>
+                  <span className="tag">{a.connected ? "connected" : "watching"}</span>
                   <button
                     type="button"
                     className="icon-button small"
-                    aria-label={`Disconnect ${chain} address`}
-                    onClick={() => (chain === "ethereum" && connectedEvm === a ? setConnectedEvm(null) : setWatch(chain, null))}
+                    aria-label={`Remove ${shortAddress(a.address)}`}
+                    onClick={() => (a.connected ? setConnectedEvm(null) : removeWatch(a))}
                   >
                     <IconClose size={14} />
                   </button>
@@ -123,7 +122,7 @@ export function WalletControl() {
             <h3 className="popover-title">Browser wallet (Ethereum)</h3>
             {injectedProvider() ? (
               <button type="button" className="btn btn-primary" onClick={onConnect} disabled={busy}>
-                {connectedEvm ? "Reconnect" : "Connect browser wallet"}
+                {active.some((a) => a.connected) ? "Reconnect" : "Connect browser wallet"}
               </button>
             ) : (
               <p className="muted small">No browser wallet detected. You can still watch an address below.</p>
@@ -132,7 +131,7 @@ export function WalletControl() {
           </section>
           <form onSubmit={onWatch}>
             <label className="popover-title" htmlFor={inputId}>
-              Watch an address (read-only)
+              Watch an address (read-only, up to {MAX_WATCH})
             </label>
             <div className="input-row">
               <input

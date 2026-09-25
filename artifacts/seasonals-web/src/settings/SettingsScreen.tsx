@@ -4,7 +4,7 @@
  */
 import { useEffect, useState } from "react";
 import { SUPPORTED_CHAINS } from "@workspace/lib/config/chains";
-import { activeAddresses, useSession } from "../state/session";
+import { useActiveAddresses } from "../state/session";
 import { useEthStatus } from "../services/queries";
 import { WorkspaceShell, Notice } from "../shell/WorkspaceShell";
 import { requestOpenWallet } from "../timeline/detailStore";
@@ -13,8 +13,7 @@ import { shortAddress } from "../ui/format";
 import "../agent/agent.css";
 
 export default function SettingsScreen() {
-  const { watch, connectedEvm } = useSession();
-  const addrs = activeAddresses({ watch, connectedEvm });
+  const active = useActiveAddresses();
   const status = useEthStatus();
   const reduced = useReducedMotion();
 
@@ -23,15 +22,15 @@ export default function SettingsScreen() {
       <div className="agent-grid">
         <section className="panel-block">
           <h2>Wallets</h2>
-          {Object.keys(addrs).length === 0 ? (
+          {active.length === 0 ? (
             <p className="muted">No wallet connected or watched.</p>
           ) : (
             <ul className="settings-list">
-              {Object.entries(addrs).map(([chain, a]) => (
-                <li key={chain}>
-                  <ChainIcon chain={chain as "solana" | "ethereum"} size={16} />
-                  <span className="mono">{shortAddress(a)}</span>
-                  <span className="tag">{chain === "ethereum" && connectedEvm === a ? "connected" : "watching"}</span>
+              {active.map((a) => (
+                <li key={`${a.chain}:${a.address}`}>
+                  <ChainIcon chain={a.chain} size={16} />
+                  <span className="mono">{shortAddress(a.address)}</span>
+                  <span className="tag">{a.connected ? "connected" : "watching"}</span>
                 </li>
               ))}
             </ul>

@@ -15,6 +15,7 @@ import { TimelineList } from "../timeline/TimelineList";
 import { fmtMonthYear } from "../ui/format";
 import { IconChevronLeft, IconChevronRight, IconExpand } from "../ui/icons";
 import { SourceStatusLine } from "../timeline/SourceStatusLine";
+import { useNow } from "../ui/useNow";
 
 type Mode = "calendar" | "timeline";
 const PREVIEW_ROWS = 7;
@@ -25,8 +26,8 @@ export function HomeCalendarCard() {
     const n = new Date();
     return new Date(n.getFullYear(), n.getMonth(), 1);
   });
-  const [now] = useState(() => new Date());
   const timeline = useTimeline();
+  const now = useNow(timeline.events);
   const open = useDetail((s) => s.open);
 
   const upcoming = useMemo(

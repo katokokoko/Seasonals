@@ -12,7 +12,7 @@ import { Link } from "react-router";
 import { chainInfo } from "@workspace/lib/config/chains";
 import { deriveTimelineStatus, displayStatus, dayKey } from "@workspace/lib/derive/timeline";
 import type { TimelineAction, TimelineEvent } from "@workspace/lib/types";
-import { activeAddresses, useSession } from "../state/session";
+import { useActiveAddresses } from "../state/session";
 import { ChainIcon } from "../ui/ChainIcon";
 import { fmtAmount, fmtFullDate, fmtMetric, fmtTime, fmtUsd, parseDayKey } from "../ui/format";
 import { IconClose, IconExternal } from "../ui/icons";
@@ -20,9 +20,10 @@ import { ProtocolBadge } from "../ui/ProtocolBadge";
 import { STATUS_COLOR } from "../styles/tokens";
 import { Droplet } from "./Droplet";
 import { requestOpenWallet, useDetail } from "./detailStore";
-import { CLASS_LABEL, KIND_LABEL, shapeForKind } from "./labels";
+import { CLASS_LABEL, KIND_LABEL, shapeForKind, statusText } from "./labels";
 import { StatusBadge } from "./StatusBadge";
 import { ActionPreview } from "./ActionPreview";
+import { useNow } from "../ui/useNow";
 import "./timeline.css";
 
 const CARD_W = 400;
@@ -33,7 +34,7 @@ export function EventDetailCard({ events }: { events: TimelineEvent[] }) {
   const cardRef = useRef<HTMLDivElement>(null);
   const titleId = useId();
   const [pos, setPos] = useState<CSSProperties>({});
-  const [now] = useState(() => new Date());
+  const now = useNow(events);
 
   // 配置: trigger の右 → 左 → 中央
   useLayoutEffect(() => {
@@ -44,8 +45,11 @@ export function EventDetailCard({ events }: { events: TimelineEvent[] }) {
     const h = Math.min(card?.offsetHeight ?? 480, vh - 2 * GAP);
     const r = trigger?.isConnected ? trigger.getBoundingClientRect() : null;
     let next: CSSProperties = { left: (vw - CARD_W) / 2, top: Math.max(GAP, (vh - h) / 2) };
+    // global nav (上端 ~100px) には被せない。入らない時だけ上へ詰める
+    const navBottom = document.querySelector(".global-nav")?.getBoundingClientRect().bottom ?? 0;
+    const minTop = vh - h - GAP >= navBottom + GAP ? navBottom + GAP : GAP;
     if (r && vw >= 900) {
-      const top = Math.min(Math.max(GAP, r.top + r.height / 2 - h / 2), vh - h - GAP);
+      const top = Math.min(Math.max(minTop, r.top + r.height / 2 - h / 2), vh - h - GAP);
       if (r.right + GAP + CARD_W <= vw - GAP) next = { left: r.right + GAP, top };
       else if (r.left - GAP - CARD_W >= GAP) next = { left: r.left - GAP - CARD_W, top };
     }
@@ -193,10 +197,11 @@ function DayBody({
 }
 
 function EventBody({ event, titleId, now, onDone }: { event: TimelineEvent; titleId: string; now: Date; onDone: () => void }) {
-  const watch = useSession((s) => s.watch);
-  const connectedEvm = useSession((s) => s.connectedEvm);
-  const addrs = activeAddresses({ watch, connectedEvm });
-  const hasWalletForChain = Boolean(addrs[event.chain]);
+  const active = useActiveAddresses();
+  // owner のある event は、その address を閲覧 (watch) または接続している時だけ action を出す
+  const hasWalletForChain = active.some(
+    (a) => a.chain === event.chain && (!event.owner || a.address.toLowerCase() === event.owner.toLowerCase())
+  );
   const status = deriveTimelineStatus(event, now);
   const st = displayStatus(event, status);
   const at = event.at ? new Date(event.at) : null;
@@ -216,7 +221,7 @@ function EventBody({ event, titleId, now, onDone }: { event: TimelineEvent; titl
       <div className="tag-row">
         <span className={`class-tag class-${event.class}`}>{CLASS_LABEL[event.class]}</span>
         <span className="tag">{KIND_LABEL[event.kind]}</span>
-        <StatusBadge status={st} label={status === "due" ? "Due today" : undefined} />
+        <StatusBadge status={st} label={statusText(event, status)} />
       </div>
       <dl className="detail-grid">
         <dt>Date</dt>

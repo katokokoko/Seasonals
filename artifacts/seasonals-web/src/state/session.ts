@@ -1,8 +1,8 @@
 /**
  * Session store — 閲覧対象 address と browser wallet 接続状態 (Zustand)。
  *
- * - watch address: 署名権限なし。読み取り (events / positions) のみ
- * - connected EVM address: injected EIP-1193 wallet から eth_requestAccounts で取得。
+ * - watchlist: 署名権限なしの読み取り対象 (Solana / Ethereum、最大 6 件)
+ * - connectedEvm: injected EIP-1193 wallet から eth_requestAccounts で取得した address。
  *   Seasonals は秘密鍵を保持しない (CLAUDE.md §5)。署名は wallet 側
  * localStorage 永続化は per-viewer の利便性のみ (失敗しても動く)。
  */
@@ -10,12 +10,25 @@ import { create } from "zustand";
 import { persist, createJSONStorage } from "zustand/middleware";
 import type { ChainId } from "@workspace/lib/config/chains";
 
+export interface WatchEntry {
+  chain: ChainId;
+  address: string;
+}
+export interface ActiveAddress extends WatchEntry {
+  connected: boolean;
+}
+
+export const MAX_WATCH = 6;
+
 export interface SessionState {
-  watch: Partial<Record<ChainId, string>>;
+  watchlist: WatchEntry[];
   connectedEvm: string | null;
-  setWatch: (chain: ChainId, address: string | null) => void;
+  addWatch: (entry: WatchEntry) => void;
+  removeWatch: (entry: WatchEntry) => void;
   setConnectedEvm: (address: string | null) => void;
 }
+
+const same = (a: WatchEntry, b: WatchEntry) => a.chain === b.chain && a.address.toLowerCase() === b.address.toLowerCase();
 
 const safeStorage = createJSONStorage(() => {
   try {
@@ -36,29 +49,26 @@ const safeStorage = createJSONStorage(() => {
 export const useSession = create<SessionState>()(
   persist(
     (set) => ({
-      watch: {},
+      watchlist: [],
       connectedEvm: null,
-      setWatch: (chain, address) =>
-        set((s) => {
-          const watch = { ...s.watch };
-          if (address) watch[chain] = address;
-          else delete watch[chain];
-          return { watch };
-        }),
+      addWatch: (entry) =>
+        set((s) => (s.watchlist.some((w) => same(w, entry)) ? s : { watchlist: [...s.watchlist, entry].slice(-MAX_WATCH) })),
+      removeWatch: (entry) => set((s) => ({ watchlist: s.watchlist.filter((w) => !same(w, entry)) })),
       setConnectedEvm: (address) => set({ connectedEvm: address }),
     }),
-    { name: "seasonals-web-session", storage: safeStorage, partialize: (s) => ({ watch: s.watch }) }
+    { name: "seasonals-web-session-v2", storage: safeStorage, partialize: (s) => ({ watchlist: s.watchlist }) }
   )
 );
 
-/** 読み取り対象の address (接続 wallet 優先、無ければ watch) */
-export function activeAddresses(s: Pick<SessionState, "watch" | "connectedEvm">): Partial<Record<ChainId, string>> {
-  return {
-    ...(s.watch.solana ? { solana: s.watch.solana } : {}),
-    ...(s.connectedEvm ? { ethereum: s.connectedEvm } : s.watch.ethereum ? { ethereum: s.watch.ethereum } : {}),
-  };
+/** 読み取り対象 (接続 wallet を先頭、watchlist と重複排除) */
+export function activeAddresses(s: Pick<SessionState, "watchlist" | "connectedEvm">): ActiveAddress[] {
+  const out: ActiveAddress[] = s.connectedEvm ? [{ chain: "ethereum", address: s.connectedEvm, connected: true }] : [];
+  for (const w of s.watchlist) if (!out.some((o) => same(o, w))) out.push({ ...w, connected: false });
+  return out;
 }
 
-export function hasAnyWallet(s: Pick<SessionState, "watch" | "connectedEvm">): boolean {
-  return Object.keys(activeAddresses(s)).length > 0;
+export function useActiveAddresses(): ActiveAddress[] {
+  const watchlist = useSession((s) => s.watchlist);
+  const connectedEvm = useSession((s) => s.connectedEvm);
+  return activeAddresses({ watchlist, connectedEvm });
 }

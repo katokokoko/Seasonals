@@ -3,7 +3,7 @@
  * 表示するのは timeline から導出できる件数のみ。残高・ポジション評価額は
  * 接続されるまで出さない (架空値を出さない)。
  */
-import { useState } from "react";
+import { useNow } from "../ui/useNow";
 import { deriveTimelineStatus } from "@workspace/lib/derive/timeline";
 import { useTimeline } from "../services/queries";
 import { WorkspaceShell, Notice } from "../shell/WorkspaceShell";
@@ -13,7 +13,7 @@ import "../agent/agent.css";
 
 export default function DashboardWorkspace() {
   const t = useTimeline();
-  const [now] = useState(() => new Date());
+  const now = useNow(t.events);
   const count = (pred: (s: ReturnType<typeof deriveTimelineStatus>) => boolean) =>
     t.events.filter((e) => e.class !== "executed" && pred(deriveTimelineStatus(e, now))).length;
   const week = t.events.filter((e) => {
