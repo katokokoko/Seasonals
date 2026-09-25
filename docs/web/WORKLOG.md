@@ -179,3 +179,11 @@ Web 側 (`artifacts/seasonals-web`) は `BFF_URL` (Vite dev proxy 先、node 側
   - Explore の Ethereum / Solana 混在表示と chain 切替を screenshot で確認
   - BFF 420 tests (quote 要約 / UniswapX・CHAINED は実行不可 / 小数 amount を 400 / key 無しは外部を呼ばず 502)、`pnpm -r test` green、新規 TS エラー 0、e2e 43/43 (公開 CCA event で calendar に "+3 more" が出たため e2e の More selector を exact に修正)
 - 未実装: Uniswap `/swap`・`/order` の実行、Chainlink 価格ガード、Aqua、Aave
+
+### B9 — `2931077` (push 済み)
+
+### 追加検証 — Pendle redeem の実経路 + README
+- `find` の getLogs 範囲を Infura 上限 (10k) に合わせて再探索し、満期済み PT を持つ実 EOA `0x1121aFF29666B91181568264Ab0F2Bc58Bf90a11` を特定。13 本の満期済み未 redeem PT が **overdue** として並ぶ
+- `pendle_redeem` (PT-wstETH, 2026-08-27 満期): Pendle Hosted SDK Convert が `redeem-py` route + approve 2 件を返し、step 1 の eth_call が mainnet で成功 → **fork で approve ×2 + redeem 実行、receipt 3 件とも success**。fork 上の PT 残高 0、mainnet は 0.0134 PT のまま (cast で確認)
+- これで Pendle / Ethena / Lido / Uniswap CCA の 4 経路すべてで「実 mainnet 状態 → unsigned plan → fork 実行」を確認
+- `README.md` (repo root): 概要、ETHGlobal の申告 (既存コード再利用、Classic 適格性は主張しない)、起動方法、env、実 address の例、protocol 呼び出し箇所、未実装、AI 利用表記。MultiBaas は不使用と明記、Team 欄は提出者が記入
