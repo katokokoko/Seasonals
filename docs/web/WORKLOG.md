@@ -232,3 +232,32 @@ Web 側 (`artifacts/seasonals-web`) は `BFF_URL` (Vite dev proxy 先、node 側
 - 検証: `reserveHolders` で見つけた実 V4 利用者 `0x59cCC403…F2A7` → Bluechip spoke、supplied $5,112,220.98 / debt $1,371,270.60 / HF 3.15 / net APY -1.53% を Dashboard で確認
 - 途中経過: `tsx watch` が CCA indexer の background loop を抱えたまま再起動せず、新しい route が 404 になっていた → BFF を手動で再起動 (README の起動手順は変わらない)
 - 未実装: Aave への supply / borrow action、hidden concentration warning
+
+### Aave — `84e6b74` (push 済み)
+
+## 最終状態 (2026-09-26 05:30 JST 時点)
+
+| 領域 | 状態 | 実際に確認したこと |
+|---|---|---|
+| desktop Web (Home lobby / 共通 nav / Explore / Calendar・Timeline workspace / Agent / Dashboard / Settings) | 実装済み | e2e 43/43 (1440×900・1280×800)。screenshot 54 枚 (`artifacts/seasonals-web/.screenshots/`、gitignore) |
+| WebGL water 背景 (quiet zone / calm preset / reduced motion / fallback) | 実装済み | `animating` / `still` / `fallback` を e2e で確認。backdrop-filter 0 |
+| Pendle / Ethena / Lido の実イベント | 実装済み | 実 mainnet address で表示。overdue (満期済み PT 13 本) も表示 |
+| 提案 | rule-based で実装済み | 実データ (Lido SMA APR / Ethena 30 日平均 / Pendle implied APY)。LLM は key 無しのため未使用 |
+| 署名前 preview | 実装済み | mainnet eth_call: Lido claim / Pendle Convert redeem (step 1) / CCA exitBid が成功 |
+| MCP | 実装済み | stdio で list_events → get_proposal → build_action → iCal resource を実 BFF に対して実行。ship_lp_strategy 追加 |
+| fork 実行 | 実装済み (fork のみ) | Lido claim / Ethena unstake / Pendle redeem / CCA refund exit / Uniswap USDC→USDe swap / Aqua ship・fill・dock の receipt success |
+| Uniswap CCA | 実装済み | 330 auction を index、実 bidder の exit / claim / refund |
+| Uniswap Trading API | quote・swap plan・fork 実行 | 実 API 応答、peg guard 付き |
+| 1inch Aqua | fork のみ | ship → fill → review event → dock |
+| Aave V4 | context のみ | 実 V4 利用者の health factor 等 |
+| Chainlink peg guard | 実装済み | 実 feed で 1 bps、stale / 欠損 / 乖離は unit test で refuse |
+
+未実装 / 未検証:
+- mainnet への送信 (意図的に経路なし)、browser wallet 署名
+- CCA `exitPartiallyFilledBid`
+- Uniswap の UniswapX `/order`
+- Aqua の mainnet 実行
+- Aave action
+- LLM 提案、hidden concentration warning
+- mobile 幅 (<1100px は 2×2 まで)
+- Explore の「Add to calendar」(user plan 作成 UI は無い。user_plan は Aqua の review event のみ)
