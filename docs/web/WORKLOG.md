@@ -87,3 +87,22 @@ Web 側 (`artifacts/seasonals-web`) は `BFF_URL` (Vite dev proxy 先、node 側
   - Agent portal card に focus → Enter で `/agent`、tier-2 switch で `?view=timeline`
   - reduced motion で `still`、既定で `animating`、`--disable-webgl` で `fallback`、page error 0
   - screenshot 14 枚 + 3 枚を `.screenshots/` に保存し目視 (中央カードの文字は quiet zone 上で可読、work screen 下部の caustic は calm)
+
+### A4–A7 — `d6e8ffe` (push 済み)
+
+### B1–B4 — BFF: Ethereum 読み取り client + Pendle / Ethena / Lido adapter + /eth/* route
+- 公式資料で確認した仕様 (2026-09-26):
+  - Pendle API (api-v2.pendle.finance/core/docs 埋め込み OpenAPI): `GET /v2/markets/all?chainId=1&isActive=`、`GET /v1/dashboard/positions/database/{user}` (PT 残高は wei string、valuation は USD number)、`POST /v3/sdk/{chainId}/convert`
+  - Ethena sUSDe `cooldownDuration()` = 86400 秒 (実測、動的なので毎回読む)、`cooldowns(address)` = (cooldownEnd uint104, underlyingAmount uint152)
+  - Lido WithdrawalQueueERC721 `0x889edC2e…F9B1` (docs.lido.fi/deployed-contracts)、`getWithdrawalRequests` / `getWithdrawalStatus`
+  - Uniswap CCA (github.com/Uniswap/continuous-clearing-auction、tag v1.1.0〜v2.1.0): `AuctionCreated(address indexed auction, address indexed token, uint256 amount, bytes configData)`、`BidSubmitted(uint256 indexed id, address indexed owner, uint256 priceQ96, uint128 amount)` — **v3 記載の `uint128 amount, bytes parameters` とは型が異なる** (公式を採用)。AuctionParameters は全 version 同一
+- 実装済み: `src/ethereum/client.ts` (RPC URL は env からのみ、`sanitizeError` で key / URL を除去、undici fetch)、adapter 3 種 (pure derive + fetch)、`/eth/status` (boolean のみ)、`/eth/public-events` (Pendle 流動性上位 12 market の満期)、`/eth/events?address=` (adapter ごとに allSettled で隔離、id merge、cache)
+- 検証 (mainnet 実データ、Infura):
+  - `/eth/status` → chainId 1、latestBlock 取得、rpc / uniswap configured
+  - `scripts/find-eth-demo-addresses.mjs` で getLogs から実在 address を抽出し、`/eth/events` で確認:
+    - `0xA7a71E78128F6e3f6dB404ec47806E472F280ef8`: Ethena cooldown_end + Pendle PT maturity
+    - `0x1B7a4C3797236A1C37f8741c0Be35c2c72736fFf`: Lido withdrawal_pending ×4
+    - `0x0cA88aeB92357A00CDFAC815d5e11C4eEEefc2b5`: Lido withdrawal_claimable
+  - BFF dev log に `infura` / key 文字列が 0 件
+  - BFF 402 tests (新規 8: sanitize / env 優先順位 / 3 adapter の derive / 400 / status に URL を含まない)、`pnpm -r test` green、全 workspace 新規 TS エラー 0
+- 未実装: CCA indexer (B6)、提案 (B7)、unsigned plan / MCP (B8)、Uniswap (B9)、fork 実行 (B10)、USD 価格 (Ethena / Lido は価格を出さない。Pendle のみ API の indicative valuation)

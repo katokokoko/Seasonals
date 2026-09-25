@@ -23,6 +23,7 @@
     "dotenv": "^17.4.2",
     "fastify": "^5.12.1",
     "undici": "^6.25.0",
+    "viem": "^2.56.9",
     "zod": "^3.23.8"
   },
   "devDependencies": {
