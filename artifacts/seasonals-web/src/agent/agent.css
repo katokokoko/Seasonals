@@ -117,3 +117,32 @@ code {
   text-align: right;
   font-variant-numeric: tabular-nums;
 }
+.aqua-panel {
+  display: grid;
+  gap: var(--sp-sm);
+}
+.aqua-form {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--sp-sm);
+  align-items: end;
+}
+.aqua-form label {
+  display: grid;
+  gap: 2px;
+}
+.aqua-form .input,
+.aqua-form .select {
+  width: 100%;
+}
+.aqua-buttons {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-sm);
+}
+.fill-row {
+  display: grid;
+  gap: var(--sp-xs);
+  margin-top: var(--sp-sm);
+}

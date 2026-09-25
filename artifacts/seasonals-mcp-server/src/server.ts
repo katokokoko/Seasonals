@@ -607,6 +607,36 @@ export function buildMcpServer(
     }
   );
 
+  server.registerTool(
+    "ship_lp_strategy",
+    {
+      description:
+        "Prepare an UNSIGNED plan to ship a 1inch Aqua LP strategy. Only the PEGGED_STABLE template (USDC/USDe) is accepted; " +
+        "the server validates the parameters and refuses if the Chainlink USDe/USDC peg is stale or off by more than 0.5%. " +
+        "It never signs or broadcasts. After the human ships it, a strategy review event appears on the calendar on reviewAt.",
+      inputSchema: {
+        maker: EVM_ADDRESS,
+        template: z.enum(["PEGGED_STABLE"]),
+        usdcAmount: z.string().regex(/^[0-9]+$/).describe("USDC in smallest units (6 decimals)"),
+        usdeAmount: z.string().regex(/^[0-9]+$/).describe("USDe in smallest units (18 decimals)"),
+        bandBps: z.number().int().min(10).max(200),
+        feeBps: z.number().int().min(1).max(30).optional().describe("Fee on the taker's input token, default 5 bps"),
+        reviewAt: z.string().datetime(),
+      },
+    },
+    async (args) => {
+      const t0 = Date.now();
+      try {
+        const plan = await bff.post("/eth/aqua/ship-plan", args);
+        audit("ship_lp_strategy", null, "ok", t0);
+        return jsonContent(plan);
+      } catch (err) {
+        audit("ship_lp_strategy", null, "rejected", t0);
+        throw err;
+      }
+    }
+  );
+
   server.registerResource(
     "calendar",
     new ResourceTemplate("seasonals://calendar/{address}", { list: undefined }),

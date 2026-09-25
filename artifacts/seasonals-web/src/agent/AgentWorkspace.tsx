@@ -13,6 +13,7 @@ import { statusText } from "../timeline/labels";
 import { displayStatus } from "@workspace/lib/derive/timeline";
 import { fmtFullDate } from "../ui/format";
 import { useNow } from "../ui/useNow";
+import { AquaPanel } from "./AquaPanel";
 import "./agent.css";
 
 const WEEK = 7 * 86_400_000;
@@ -75,9 +76,13 @@ export default function AgentWorkspace() {
         <section className="panel-block">
           <h2>Humans read the calendar. Agents read the API.</h2>
           <p className="muted small">
-            The Seasonals MCP Server serves the same events: <code>list_events</code>, <code>get_proposal</code>, <code>build_action</code> (unsigned
-            plans only) and the <code>seasonals://calendar/&#123;address&#125;</code> iCal feed. It never signs or sends a transaction.
+            The Seasonals MCP Server serves the same events: <code>list_events</code>, <code>get_proposal</code>, <code>build_action</code> and{" "}
+            <code>ship_lp_strategy</code> (unsigned plans only) and the <code>seasonals://calendar/&#123;address&#125;</code> iCal feed. It never signs or
+            sends a transaction.
           </p>
+          <h2>LP sleeve (1inch Aqua)</h2>
+          <AquaPanel />
+          <h2>MCP client</h2>
           <pre className="code-block" aria-label="MCP client configuration">
             {`{
   "mcpServers": {

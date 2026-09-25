@@ -60,6 +60,14 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ swapper, tokenIn, tokenOut, amount, approvedBy: "user" }),
     }),
+  aquaShipPlan: (input: AquaShipInput) => request<AquaShipPlan>("/eth/aqua/ship-plan", { method: "POST", body: JSON.stringify(input) }),
+  aquaShipOnFork: (input: AquaShipInput) =>
+    request<{ plan: AquaShipPlan; txs: ForkExecution["txs"] }>("/eth/aqua/ship", { method: "POST", body: JSON.stringify({ ...input, approvedBy: "user" }) }),
+  aquaFillOnFork: (strategyHash: string, taker: string, usdcIn: string) =>
+    request<{ txs: ForkExecution["txs"]; usdeOut: string }>("/eth/aqua/fill", {
+      method: "POST",
+      body: JSON.stringify({ strategyHash, taker, usdcIn, approvedBy: "user" }),
+    }),
   uniswapQuote: (swapper: string, tokenIn: string, tokenOut: string, amount: string) =>
     request<UniswapPreview>("/eth/uniswap/quote", { method: "POST", body: JSON.stringify({ swapper, tokenIn, tokenOut, amount }) }),
   ethProposal: (address: string, eventId: string) =>
@@ -146,5 +154,23 @@ export interface UniswapSwapPlan {
   amountOut: string | null;
   peg: { ok: boolean; deviationBps: number | null; bandBps: number; reason: string };
   steps: ActionPlan["steps"];
+  broadcast: false;
+}
+
+export interface AquaShipInput {
+  maker: string;
+  template: "PEGGED_STABLE";
+  usdcAmount: string;
+  usdeAmount: string;
+  bandBps: number;
+  reviewAt: string;
+}
+export interface AquaShipPlan {
+  template: "PEGGED_STABLE";
+  maker: string;
+  peg: { ok: boolean; deviationBps: number | null; bandBps: number; reason: string };
+  strategyHash: string;
+  steps: ActionPlan["steps"];
+  reviewAt: string;
   broadcast: false;
 }

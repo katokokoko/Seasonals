@@ -213,6 +213,14 @@ export async function buildActionPlan(input: { owner: string; eventId: string; a
       source = "uniswap-cca";
       break;
     }
+    case "aqua_dock": {
+      // 循環 import を避けて遅延読み込み (aqua.ts は PlanError / TxStep を使う)
+      const { buildAquaDockStep } = await import("./aqua");
+      steps = [buildAquaDockStep(action.params.strategyHash ?? "")];
+      summary = "Dock the Aqua USDC/USDe strategy.";
+      source = "1inch-aqua-sdk";
+      break;
+    }
     default:
       throw new PlanError("unsupported_action", "This action has no transaction builder yet.");
   }

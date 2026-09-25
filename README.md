@@ -18,6 +18,7 @@ This monorepo has four parts:
 | Ethena | sUSDe cooldown end. `cooldownDuration()` is read live, never assumed to be 7 days. | `unstake` | Executed on the fork after advancing fork time past a real cooldown. |
 | Lido | Withdrawal queue: pending (no ETA), or finalized and claimable | `claimWithdrawal` | `eth_call` on mainnet, then executed on the fork (`isClaimed=true`). |
 | Uniswap CCA | Auction start / end / claim; per-bid exit, claim and refund | `exitBid` / `claimTokens` | A real refund `exitBid` checked on mainnet and executed on the fork. |
+| 1inch Aqua + SwapVM | Strategy review date, set when a strategy ships (a "your plan" event) | Ship a PEGGED_STABLE USDC/USDe strategy (SwapVM `AquaPeggedAmmStrategy` + fee + salt) behind the peg guard. Dock it from the review event. | On the fork: ship → one fill by a real USDC-holding EOA (10 USDC → 9.9886 USDe) → review event on the calendar → dock. |
 | Uniswap Trading API | Route USDC → USDe before an Ethena deposit | `/check_approval` → `/quote` → `/swap` behind a fail-closed Chainlink USDe/USDC peg guard | Real API responses. Swap executed on a fresh fork: approve → Permit2 transaction → swap, all receipts success. |
 
 Every calendar entry belongs to one of three classes, kept visually and type-separate (`lib/types/timeline.ts`):
@@ -93,7 +94,8 @@ State changes over time, so these addresses may not show the same events later.
 | Chainlink prices + fail-closed peg guard | `artifacts/seasonals-bff/src/ethereum/pricing.ts` (Feed Registry `latestRoundData`, `evaluatePeg`) |
 | Pendle / Ethena / Lido readers | `artifacts/seasonals-bff/src/ethereum/{pendle,ethena,lido}.ts` |
 | Fork execution (Anvil only, user approval required) | `artifacts/seasonals-bff/src/ethereum/execute.ts` |
-| MCP tools `list_events` / `get_proposal` / `build_action` | `artifacts/seasonals-mcp-server/src/server.ts` |
+| 1inch Aqua (template validation, peg guard, ship / fill / dock, review event) | `artifacts/seasonals-bff/src/ethereum/aqua.ts` |
+| MCP tools `list_events` / `get_proposal` / `build_action` / `ship_lp_strategy` | `artifacts/seasonals-mcp-server/src/server.ts` |
 | Shared model (`TimelineEvent`, status derivation) | `lib/types/timeline.ts`, `lib/derive/timeline.ts` |
 | Desktop Web | `artifacts/seasonals-web/` (Home lobby, Calendar/Timeline workspace, Explore, Agent, Dashboard, Settings, WebGL water background) |
 
@@ -110,7 +112,7 @@ node artifacts/seasonals-web/e2e/run.mjs   # needs the web dev server; uses the 
 
 ## Not built (yet)
 
-- 1inch Aqua / SwapVM LP sleeve
+- Aqua on mainnet. Takers there are KYB-gated resolvers, so ship / fill / dock run only on the fork.
 - Aave V4 context
 - Uniswap on mainnet, and UniswapX `/order`. Swaps run only on the fork, and only for USDC ⇄ USDe.
 - Browser-wallet signing on mainnet

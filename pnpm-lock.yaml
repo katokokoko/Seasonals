@@ -169,6 +169,12 @@ importers:
 
   artifacts/seasonals-bff:
     dependencies:
+      '@1inch/aqua-sdk':
+        specifier: 0.3.4
+        version: 0.3.4(assert@2.1.0)(bufferutil@4.1.0)(typescript@6.0.3)(utf-8-validate@6.0.6)(zod@3.25.76)
+      '@1inch/swap-vm-sdk':
+        specifier: 0.4.4
+        version: 0.4.4(assert@2.1.0)(bufferutil@4.1.0)(typescript@6.0.3)(utf-8-validate@6.0.6)(viem@2.56.9(bufferutil@4.1.0)(typescript@6.0.3)(utf-8-validate@6.0.6)(zod@3.25.76))(zod@3.25.76)
       '@coral-xyz/anchor':
         specifier: 0.32.1
         version: 0.32.1(bufferutil@4.1.0)(typescript@6.0.3)(utf-8-validate@6.0.6)
@@ -332,6 +338,39 @@ packages:
     peerDependenciesMeta:
       graphql:
         optional: true
+
+  '@1inch/aqua-sdk@0.3.4':
+    resolution: {integrity: sha512-XrIuUX5FFPf6nEsV+8fCbfNhVDhEQKOGTCQhpFnxNst4ik3IXZTcT6LfCcUfCY/8QWXBlOpI0s1VrZe4fMlf3A==}
+
+  '@1inch/byte-utils@3.1.9':
+    resolution: {integrity: sha512-IedsEDTt7wY411R0cgwoMelsHaDyoyBrrIT6YDl0jgHpXnDKadruy0p71xwHGxG4ZELVAKeow8pQ9YM5KQ/i4A==}
+    engines: {node: '>=22'}
+    peerDependencies:
+      assert: ^2.0.0
+    peerDependenciesMeta:
+      assert:
+        optional: true
+
+  '@1inch/sdk-core@0.1.5':
+    resolution: {integrity: sha512-8if32OdJrSnHUnipbdIBGS9zTFnnuCpM/YnSptkL1+p+2iPwlh13yYsI5LGb6GiLk1Z/mfltWqmqReC1yyYrEQ==}
+    peerDependencies:
+      assert: '*'
+    peerDependenciesMeta:
+      assert:
+        optional: true
+
+  '@1inch/sdk-core@0.1.6':
+    resolution: {integrity: sha512-QoffcMImIGlFIxcbf1xogzFmMW2HKePsd5g1Eb+pCG9GH9LbfSTfiueuao+39OvZsqF9yLpjg6XR1s6zDibi0w==}
+    peerDependencies:
+      assert: '*'
+    peerDependenciesMeta:
+      assert:
+        optional: true
+
+  '@1inch/swap-vm-sdk@0.4.4':
+    resolution: {integrity: sha512-BDANFEPwEdS0sJnZAHhkdYzVDVvZbax7ailEFPlycAqyAUoi6cH2jsEHrWJNZCdrXQsSOnmlIt1N8wkSuo80PA==}
+    peerDependencies:
+      viem: ^2.21.0
 
   '@adobe/css-tools@4.5.0':
     resolution: {integrity: sha512-6OzddxPio9UiWTCemp4N8cYLV2ZN1ncRnV1cVGtve7dhPOtRkleRyx32GQCYSwDYgaHU3USMm84tNsvKzRCa1Q==}
@@ -8614,6 +8653,61 @@ snapshots:
   '@0no-co/graphql.web@1.2.0(graphql@16.8.1)':
     optionalDependencies:
       graphql: 16.8.1
+
+  '@1inch/aqua-sdk@0.3.4(assert@2.1.0)(bufferutil@4.1.0)(typescript@6.0.3)(utf-8-validate@6.0.6)(zod@3.25.76)':
+    dependencies:
+      '@1inch/sdk-core': 0.1.5(assert@2.1.0)(bufferutil@4.1.0)(typescript@6.0.3)(utf-8-validate@6.0.6)(zod@3.25.76)
+      tslib: 2.8.1
+      viem: 2.56.9(bufferutil@4.1.0)(typescript@6.0.3)(utf-8-validate@6.0.6)(zod@3.25.76)
+    transitivePeerDependencies:
+      - assert
+      - bufferutil
+      - typescript
+      - utf-8-validate
+      - zod
+
+  '@1inch/byte-utils@3.1.9(assert@2.1.0)':
+    optionalDependencies:
+      assert: 2.1.0
+
+  '@1inch/sdk-core@0.1.5(assert@2.1.0)(bufferutil@4.1.0)(typescript@6.0.3)(utf-8-validate@6.0.6)(zod@3.25.76)':
+    dependencies:
+      '@1inch/byte-utils': 3.1.9(assert@2.1.0)
+      tslib: 2.8.1
+      viem: 2.56.9(bufferutil@4.1.0)(typescript@6.0.3)(utf-8-validate@6.0.6)(zod@3.25.76)
+    optionalDependencies:
+      assert: 2.1.0
+    transitivePeerDependencies:
+      - bufferutil
+      - typescript
+      - utf-8-validate
+      - zod
+
+  '@1inch/sdk-core@0.1.6(assert@2.1.0)(bufferutil@4.1.0)(typescript@6.0.3)(utf-8-validate@6.0.6)(zod@3.25.76)':
+    dependencies:
+      '@1inch/byte-utils': 3.1.9(assert@2.1.0)
+      tslib: 2.8.1
+      viem: 2.56.9(bufferutil@4.1.0)(typescript@6.0.3)(utf-8-validate@6.0.6)(zod@3.25.76)
+    optionalDependencies:
+      assert: 2.1.0
+    transitivePeerDependencies:
+      - bufferutil
+      - typescript
+      - utf-8-validate
+      - zod
+
+  '@1inch/swap-vm-sdk@0.4.4(assert@2.1.0)(bufferutil@4.1.0)(typescript@6.0.3)(utf-8-validate@6.0.6)(viem@2.56.9(bufferutil@4.1.0)(typescript@6.0.3)(utf-8-validate@6.0.6)(zod@3.25.76))(zod@3.25.76)':
+    dependencies:
+      '@1inch/byte-utils': 3.1.9(assert@2.1.0)
+      '@1inch/sdk-core': 0.1.6(assert@2.1.0)(bufferutil@4.1.0)(typescript@6.0.3)(utf-8-validate@6.0.6)(zod@3.25.76)
+      tslib: 2.8.1
+      viem: 2.56.9(bufferutil@4.1.0)(typescript@6.0.3)(utf-8-validate@6.0.6)(zod@3.25.76)
+    transitivePeerDependencies:
+      - assert
+      - bufferutil
+      - typescript
+      - utf-8-validate
+      - zod
 
   '@adobe/css-tools@4.5.0': {}
 

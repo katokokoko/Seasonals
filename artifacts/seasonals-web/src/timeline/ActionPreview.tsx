@@ -65,8 +65,13 @@ export function ActionPreview({ event, action, onBack }: { event: TimelineEvent;
           <p className="muted small">Unsigned plan for {shortAddress(q.data.owner)}. Nothing has been signed or sent.</p>
 
           {exec.isSuccess ? (
-            <div className="sim sim-ok small" role="status">
-              <strong>Executed on the local fork.</strong> No real funds moved.
+            <div className={`sim ${exec.data.txs.every((t) => t.status === "success") ? "sim-ok" : "sim-fail"} small`} role="status">
+              <strong>
+                {exec.data.txs.every((t) => t.status === "success")
+                  ? "Executed on the local fork."
+                  : "Reverted on the local fork; the action did not complete."}
+              </strong>{" "}
+              No real funds moved.
               <ul className="plain-list">
                 {exec.data.txs.map((t) => (
                   <li key={t.hash} className="mono">

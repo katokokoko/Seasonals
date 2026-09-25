@@ -14,6 +14,7 @@ import { advanceFork, executeOnFork, mineFork } from "../ethereum/execute";
 import { ensureIndexing, indexProgress } from "../ethereum/cca";
 import { UniswapError, buildUniswapSwapPlan, executeUniswapSwapOnFork, uniswapPreview } from "../ethereum/uniswap";
 import { getEthMenu } from "../ethereum/menu";
+import { buildAquaShipPlan, fillAquaOnFork, shipAquaOnFork, type AquaShipInput } from "../ethereum/aqua";
 import { checkPeg, getChainlinkPrice, PRICE_ASSETS, type PriceAsset } from "../ethereum/pricing";
 import { assertTokenAmount, InvalidAmountError } from "@workspace/lib/utils/numeric";
 
@@ -226,6 +227,61 @@ async function ethRoutes(app: FastifyInstance): Promise<void> {
       if (e instanceof UniswapError) return reply.code(e.status >= 500 ? 502 : e.status).send({ error: "uniswap_error", message: sanitizeError(e) });
       if (e instanceof PlanError) return reply.code(e.code === "rpc_unavailable" ? 502 : 409).send({ error: e.code, message: e.message });
       throw e;
+    }
+  });
+
+  // ── 1inch Aqua (PEGGED_STABLE template のみ、peg guard fail-closed、実行は fork のみ) ──
+  const aquaInput = (b: Partial<AquaShipInput> | undefined): AquaShipInput | null => {
+    if (!b || !isEvmAddress(b.maker ?? "")) return null;
+    return {
+      maker: b.maker!,
+      template: String(b.template ?? ""),
+      usdcAmount: String(b.usdcAmount ?? ""),
+      usdeAmount: String(b.usdeAmount ?? ""),
+      bandBps: Number(b.bandBps),
+      reviewAt: String(b.reviewAt ?? ""),
+      ...(b.feeBps !== undefined ? { feeBps: Number(b.feeBps) } : {}),
+    };
+  };
+  const planErr = (reply: import("fastify").FastifyReply, e: unknown) => {
+    if (e instanceof PlanError) {
+      const code = e.code === "event_not_found" ? 404 : e.code === "rpc_unavailable" || e.code === "upstream_error" ? 502 : 409;
+      return reply.code(code).send({ error: e.code, message: e.message });
+    }
+    throw e;
+  };
+
+  /** unsigned ship plan (MCP の ship_lp_strategy もこれを読む) */
+  app.post<{ Body: Partial<AquaShipInput> }>("/eth/aqua/ship-plan", async (req, reply) => {
+    const input = aquaInput(req.body);
+    if (!input) return reply.code(400).send({ error: "invalid_argument" });
+    try {
+      return await buildAquaShipPlan(input);
+    } catch (e) {
+      return planErr(reply, e);
+    }
+  });
+
+  app.post<{ Body: Partial<AquaShipInput> & { approvedBy?: string } }>("/eth/aqua/ship", async (req, reply) => {
+    const input = aquaInput(req.body);
+    if (!input) return reply.code(400).send({ error: "invalid_argument" });
+    if (req.body?.approvedBy !== "user") return reply.code(403).send({ error: "approval_required", message: "Execution requires the user's approval in the app." });
+    try {
+      return await shipAquaOnFork(input);
+    } catch (e) {
+      return planErr(reply, e);
+    }
+  });
+
+  /** fork 専用: 1 回 fill して見せる (production の taker は KYB 済み resolver 限定) */
+  app.post<{ Body: { strategyHash?: string; taker?: string; usdcIn?: string; approvedBy?: string } }>("/eth/aqua/fill", async (req, reply) => {
+    const { strategyHash = "", taker = "", usdcIn = "" } = req.body ?? {};
+    if (!/^0x[0-9a-fA-F]{64}$/.test(strategyHash) || !isEvmAddress(taker)) return reply.code(400).send({ error: "invalid_argument" });
+    if (req.body?.approvedBy !== "user") return reply.code(403).send({ error: "approval_required", message: "Execution requires the user's approval in the app." });
+    try {
+      return await fillAquaOnFork({ strategyHash, taker, usdcIn });
+    } catch (e) {
+      return planErr(reply, e);
     }
   });
 }

@@ -202,3 +202,24 @@ Web 側 (`artifacts/seasonals-web`) は `BFF_URL` (Vite dev proxy 先、node 側
   - fork で USDC 保有の実 EOA `0x283Ac701…383b` として 100 USDC → **99.9986 USDe**、approve / Permit2 / swap の receipt 3 件 success (cast で USDe 残高を確認)。ブラウザからも 50 USDC で同じ流れを確認
   - 途中経過: fork の時計を Ethena の検証で +1h 進めていたため swap が `TransactionDeadlinePassed()` で revert (cast run で特定)。`/swap` に fork 時刻基準の `deadline` を渡しても変わらず → fork を作り直すと成功。README に「時間送り後は fork を再起動」と明記
   - BFF 426 tests (peg の境界・stale・欠損・decimals 差、swap は非対応ペアと guard 失敗で Trading API を呼ばずに拒否)
+
+### Chainlink / Uniswap swap — `558e1c4` (push 済み)
+
+### 1inch Aqua + SwapVM (LP sleeve、fork)
+- 公式確認: `@1inch/aqua-sdk` 0.3.4 / `@1inch/swap-vm-sdk` 0.4.4 (npm)。Aqua `0x1111113c…6a90a` と AquaSwapVMRouter `0x11111133…ac0de` の mainnet bytecode を確認 (SDK の定数と一致)。SDK README の通り、現在の router は `aquaInstructions` の subset のみ実行可能
+- SDK の ESM build は内部 import (`@1inch/byte-utils/dist/constants`) が解決できず失敗 → CJS (`require`) で読む
+- 実装済み (`aqua.ts`):
+  - template は **PEGGED_STABLE のみ** (`AquaPeggedAmmStrategy` + `withFeeTokenIn` + `withSalt`)。任意の SwapVM program は作らない。parameter はアプリが検証 (帯域 10–200 bps、fee 1–30 bps、金額 > 0 と maker 残高以内、review 日は 180 日以内の未来)
+  - ship の前に Chainlink USDe/USDC peg guard (±50 bps、fail-closed)
+  - `POST /eth/aqua/ship-plan` (unsigned、MCP の `ship_lp_strategy` もこれ)、`/eth/aqua/ship` と `/eth/aqua/fill` (fork 専用、approvedBy=user)
+  - ship 成功で「strategy review」(user_plan class) を review 日に作り、`aqua_dock` action を持たせる。dock は既存の `/eth/execute` 経路 (fork) で実行し settled に
+  - Web: Agent 画面に「LP sleeve (1inch Aqua)」(mainnet 状態の plan、fork で ship、taker address を入れて 1 回 fill)
+- 検証 (fork、実 mainnet 状態から):
+  - spike → 製品コードで ship → fill (Binance の公開 EOA `0x28C6…1d60` を taker として impersonate、10 USDC → 9.9886 USDe、5 bps fee 込み) → Timeline に review (Your plan / Planned) → dock → Completed
+  - 途中で見つけて直した不具合:
+    - `linearWidth` を helper から取れず仮値で動いていた (10 USDC → 9.23 USDe) → `instructions.peggedSwap.linearWidthFromSymmetricRangePercent(0.5)` に修正
+    - 同じ parameter の戦略は hash が同じで、dock 後の再 ship が revert → ship ごとに salt を付与
+    - **UI が revert した ship を「Shipped」と表示していた** → ship / fill / 汎用 fork 実行 (`ActionPreview`) すべてで tx の status を見て、失敗は失敗として表示
+  - mainnet 状態の plan は、maker が mainnet で USDe を持たないため正しく refuse されることも確認
+  - BFF 429 tests (template / 金額 / 帯域 / fee / review 日の検証、review event の class と dock action)、MCP 15 tests (tool 一覧に ship_lp_strategy)、`pnpm -r test` green、新規 TS エラー 0、e2e 43/43
+- 未実装: Aqua の mainnet 実行 (taker が KYB 済み resolver 限定)、Aqua REST の analytics、Aave

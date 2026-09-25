@@ -93,6 +93,7 @@ describe("Seasonals MCP server", () => {
       "list_events",
       "request_user_approval",
       "run_autonomous",
+      "ship_lp_strategy",
       "simulate_action",
     ]);
     const prompts = await client.listPrompts();

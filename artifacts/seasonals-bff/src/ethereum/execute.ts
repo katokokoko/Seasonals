@@ -140,6 +140,10 @@ export async function executeOnFork(input: { owner: string; eventId: string; act
   try {
     const txs = await sendStepsOnFork(owner, plan.steps);
     const ok = txs.length === plan.steps.length && txs.every((t) => t.status === "success");
+    if (ok && plan.actionType === "aqua_dock") {
+      const hash = (await buildEventSnapshotAction(input.owner, input.eventId, "aqua_dock"))?.strategyHash;
+      if (hash) (await import("./aqua")).markDocked(hash);
+    }
     const source = (await buildEventSnapshot(input.owner, input.eventId)) ?? { protocol: null, protocolName: null, title: plan.summary, asset: undefined };
     const executedEvent = await recordExecuted({
       owner: input.owner,
@@ -155,6 +159,11 @@ export async function executeOnFork(input: { owner: string; eventId: string; act
     if (e instanceof PlanError) throw e;
     throw new PlanError("upstream_error", sanitizeError(e));
   }
+}
+
+async function buildEventSnapshotAction(owner: string, eventId: string, actionType: string) {
+  const { getUserEvents } = await import("./events");
+  return (await getUserEvents(owner)).events.find((x) => x.id === eventId)?.actions.find((a) => a.actionType === actionType)?.params;
 }
 
 async function buildEventSnapshot(owner: string, eventId: string) {
