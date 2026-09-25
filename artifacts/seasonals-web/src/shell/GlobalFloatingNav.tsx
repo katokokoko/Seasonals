@@ -9,6 +9,7 @@ import { SUPPORTED_CHAINS } from "@workspace/lib/config/chains";
 import { IconChevronDown, IconGear } from "../ui/icons";
 import { ChainIcon } from "../ui/ChainIcon";
 import { WalletControl } from "./WalletControl";
+import { useEthStatus } from "../services/queries";
 
 const PRIMARY = [
   { to: "/", label: "Overview", end: true },
@@ -44,6 +45,7 @@ export function GlobalFloatingNav() {
         <MoreMenu active={secondaryActive} />
       </nav>
       <div className="nav-right">
+        <ForkBadge />
         <ul className="chain-icons" aria-label="Supported chains">
           {SUPPORTED_CHAINS.map((c) => (
             <li key={c.id} className="chain-icon tip" data-tip={c.name} aria-label={c.name} tabIndex={0}>
@@ -101,5 +103,16 @@ function MoreMenu({ active }: { active: boolean }) {
         </div>
       )}
     </div>
+  );
+}
+
+/** v3 §8: EXECUTION_TARGET=fork で fork が動いている時は常に見える FORK 表示 */
+function ForkBadge() {
+  const s = useEthStatus();
+  if (!(s.data?.executionTarget === "fork" && s.data.forkReachable)) return null;
+  return (
+    <span className="target-badge target-fork tip" data-tip="Transactions run only on a local mainnet fork" tabIndex={0}>
+      FORK
+    </span>
   );
 }

@@ -54,7 +54,7 @@ export function getEthClient(): PublicClient | null {
   if (cached?.url === url) return cached.client;
   const client = createPublicClient({
     chain: mainnet,
-    transport: http(url, { fetchFn: undiciFetch(), timeout: 20_000, retryCount: 2, batch: { wait: 16 } }),
+    transport: http(url, { fetchFn: undiciFetch(), timeout: 20_000, retryCount: 2, retryDelay: 400 }),
     batch: { multicall: true },
   }) as PublicClient;
   cached = { url, client };

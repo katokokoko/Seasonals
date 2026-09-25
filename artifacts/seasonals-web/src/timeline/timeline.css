@@ -464,3 +464,12 @@
 .proposal-options .tag {
   margin-left: var(--sp-sm);
 }
+.fork-exec {
+  display: grid;
+  gap: var(--sp-xs);
+}
+.plain-list {
+  list-style: none;
+  margin: var(--sp-xs) 0 0;
+  padding: 0;
+}

@@ -120,4 +120,28 @@ describe("routes", () => {
     expect(JSON.stringify(body)).not.toMatch(/https?:/);
     await app.close();
   });
+  it("execute requires explicit user approval and refuses mainnet targets", async () => {
+    const app = await buildServer();
+    const body = { owner: "0x0cA88aeB92357A00CDFAC815d5e11C4eEEefc2b5", eventId: "x", actionType: "lido_claim" };
+    const noApproval = await app.inject({ method: "POST", url: "/eth/execute", payload: body });
+    expect(noApproval.statusCode).toBe(403);
+    const saved = process.env.ETH_EXECUTION_TARGET;
+    process.env.ETH_EXECUTION_TARGET = "mainnet";
+    const mainnet = await app.inject({ method: "POST", url: "/eth/execute", payload: { ...body, approvedBy: "user" } });
+    process.env.ETH_EXECUTION_TARGET = saved;
+    expect(mainnet.statusCode).toBe(409);
+    expect(mainnet.json().message).toMatch(/plans only/);
+    await app.close();
+  });
+  it("execute refuses a non-Anvil endpoint", async () => {
+    const saved = { ...process.env };
+    process.env.ETH_EXECUTION_TARGET = "fork";
+    process.env.ETH_FORK_RPC_URL = "http://127.0.0.1:1";
+    const app = await buildServer();
+    const res = await app.inject({ method: "POST", url: "/eth/execute", payload: { owner: "0x0cA88aeB92357A00CDFAC815d5e11C4eEEefc2b5", eventId: "x", actionType: "lido_claim", approvedBy: "user" } });
+    process.env = saved;
+    expect(res.statusCode).toBe(502);
+    expect(res.json().message).toMatch(/fork is not running/);
+    await app.close();
+  });
 });

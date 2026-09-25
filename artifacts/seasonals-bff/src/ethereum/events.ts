@@ -78,6 +78,11 @@ export function getUserEvents(owner: string): Promise<TimelineEventsResponse> {
   );
 }
 
+/** 実行後など、address の cache を捨てて次回再導出させる */
+export function _invalidateUser(owner: string) {
+  cache.delete(`user:${owner.toLowerCase()}`);
+}
+
 export function _clearEthCacheForTest() {
   cache.clear();
 }

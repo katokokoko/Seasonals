@@ -128,3 +128,19 @@ Web 側 (`artifacts/seasonals-web`) は `BFF_URL` (Vite dev proxy 先、node 側
   - BFF 409 / MCP 15 / web 12 / lib 173 / mobile 475 tests green、新規 TS エラー 0、e2e 43/43、web build
 - 未検証: Pendle redeem plan (満期済み PT を持つ実 address を Infura の rate limit (429) で探しきれず)、Ethena unstake plan (実 address の cooldown が未終了)。いずれも derive / 可否判定は unit test のみ
 - 事故記録: `find-eth-demo-addresses.mjs` の深掘り中に Infura 429 の未捕捉例外が viem のエラー object (request URL = key を含む) を **repo 外の一時ファイル** (`/tmp`) に出力した。即削除し、script に redact 付きの global handler と throttle を追加、`/eth/*` にも sanitize 済みの error handler を追加。repo / commit / push には含まれていない (check-no-secrets で確認)
+
+### B7–B8 — `8218b4e` (push 済み)
+
+### B10 — Anvil fork 実行 (Foundry install、impersonation、executed event)
+- Foundry 1.8.3 を公式 installer (foundry.paradigm.xyz、attestation 検証あり) で `~/.foundry` に install (ユーザー承認済み)
+- `scripts/eth-fork.sh`: anvil は fork URL を argv でしか受けないため、key 入り URL は env 経由で `scripts/rpc-proxy.mjs` (127.0.0.1:8546 専用) にだけ渡し、anvil には proxy URL を渡す。出力は env 由来の perl で redact して `.data/anvil.log` (gitignore)。起動時の Infura 429 を避けるため `--compute-units-per-second 60 --retries 10`
+  - 途中経過: 初版は redact 用 `sed` の argv に key が載り `ps` に出ていた → env 参照の perl に置換。最終確認で anvil log / `ps auxww` とも key 0 件
+- BFF `POST /eth/execute`: `ETH_EXECUTION_TARGET=fork` かつ送信先が Anvil (web3_clientVersion) + chainId 1 の時だけ。`approvedBy: "user"` 必須 (MCP には実行 tool を出さない)。fork の状態で plan を再検証 + eth_call → `anvil_impersonateAccount` で owner として送信 → receipt から executed class の event を `.data/eth-executed-events.json` に記録 → timeline に合流。`POST /eth/fork/advance` (fork 専用の時間送り)
+- viem の HTTP JSON-RPC batch を無効化 (Infura 429 時に batch 応答の result が欠けて `Cannot convert undefined to a BigInt` になったため)
+- Web: 詳細カードの preview に「Approve and execute on local fork」(fork 稼働時のみ、impersonate であること・mainnet に触れないことを明記)、実行後は tx hash / status / block を表示し timeline を再取得、nav に FORK badge
+- 検証 (実 mainnet の request / cooldown を fork 上で実行):
+  - Lido `claimWithdrawal(#136731)` owner `0x0cA8…c2b5`: receipt success、fork 上で `isClaimed=true`、WithdrawalClaimed event (cast で確認)
+  - Ethena `unstake` owner `0xA7a7…0ef8`: fork 時間を +1h 進めて cooldown 終了後に実行、187,456.58 USDe、`cooldowns()` が 0 に
+  - ブラウザで Lido #136732 (`0xc601…4AC7`) を preview → 承認 → fork 実行 → Timeline に `Executed` (completed) の行が mainnet の claimable と別 class で並ぶことを screenshot で確認
+  - BFF 411 tests (実行の承認必須 403 / mainnet target 拒否 409 / 非 Anvil 拒否 502)、e2e 43/43、web build
+- 未実装: Pendle redeem / enter の fork 実行 (満期済み PT の実保有者を未特定)、browser wallet での署名 (mainnet 送信は意図的に無し)

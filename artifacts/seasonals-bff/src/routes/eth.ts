@@ -10,6 +10,7 @@ import { ethereumRpcUrl, executionTarget, forkRpcUrl, getEthClient, sanitizeErro
 import { getPublicEvents, getUserEvents } from "../ethereum/events";
 import { buildActionPlan, PlanError } from "../ethereum/plans";
 import { buildProposal } from "../ethereum/proposals";
+import { advanceFork, executeOnFork } from "../ethereum/execute";
 
 async function forkReachable(): Promise<boolean> {
   try {
@@ -99,6 +100,35 @@ async function ethRoutes(app: FastifyInstance): Promise<void> {
         return reply.code(code).send({ error: e.code, message: e.message });
       }
       app.log.warn({ err: sanitizeError(e) }, "build-action failed");
+      return reply.code(502).send({ error: "upstream_error", message: sanitizeError(e) });
+    }
+  });
+
+  /**
+   * fork 実行 (人が UI で承認した request のみ)。ETH_EXECUTION_TARGET=fork かつ送信先が
+   * Anvil mainnet fork の時だけ。mainnet への送信経路は無い
+   */
+  app.post<{ Body: { owner?: string; eventId?: string; actionType?: string; approvedBy?: string } }>("/eth/execute", async (req, reply) => {
+    const { owner = "", eventId = "", actionType = "", approvedBy } = req.body ?? {};
+    if (!isEvmAddress(owner) || !eventId || !actionType) return reply.code(400).send({ error: "invalid_argument" });
+    if (approvedBy !== "user") return reply.code(403).send({ error: "approval_required", message: "Execution requires the user's approval in the app." });
+    try {
+      return await executeOnFork({ owner, eventId, actionType });
+    } catch (e) {
+      if (e instanceof PlanError) {
+        const code = e.code === "event_not_found" ? 404 : e.code === "rpc_unavailable" || e.code === "upstream_error" ? 502 : 409;
+        return reply.code(code).send({ error: e.code, message: e.message });
+      }
+      return reply.code(502).send({ error: "upstream_error", message: sanitizeError(e) });
+    }
+  });
+
+  /** fork 専用: 時間を進める (demo の lifecycle 再生用) */
+  app.post<{ Body: { seconds?: number } }>("/eth/fork/advance", async (req, reply) => {
+    try {
+      return await advanceFork(Number(req.body?.seconds));
+    } catch (e) {
+      if (e instanceof PlanError) return reply.code(e.code === "rpc_unavailable" ? 502 : 409).send({ error: e.code, message: e.message });
       return reply.code(502).send({ error: "upstream_error", message: sanitizeError(e) });
     }
   });

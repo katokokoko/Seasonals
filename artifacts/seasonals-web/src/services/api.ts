@@ -55,6 +55,9 @@ export const api = {
   ethStatus: () => request<EthStatus>("/eth/status"),
   ethProposal: (address: string, eventId: string) =>
     request<Proposal>(`/eth/proposal?address=${encodeURIComponent(address)}&eventId=${encodeURIComponent(eventId)}`),
+  /** fork 実行 (ユーザーがボタンで承認した時だけ呼ぶ)。mainnet には送らない */
+  ethExecuteOnFork: (owner: string, eventId: string, actionType: string) =>
+    request<ForkExecution>("/eth/execute", { method: "POST", body: JSON.stringify({ owner, eventId, actionType, approvedBy: "user" }) }),
   ethBuildAction: (owner: string, eventId: string, actionType: string) =>
     request<ActionPlan>("/eth/build-action", { method: "POST", body: JSON.stringify({ owner, eventId, actionType }) }),
 };
@@ -105,4 +108,10 @@ export interface EthStatus {
   forkReachable: boolean;
   chainId: number | null;
   latestBlock: string | null;
+}
+
+export interface ForkExecution {
+  target: "fork";
+  plan: ActionPlan;
+  txs: Array<{ hash: string; status: "success" | "reverted"; blockNumber: string; gasUsed: string; description: string }>;
 }

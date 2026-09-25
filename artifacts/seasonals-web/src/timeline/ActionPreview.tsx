@@ -2,15 +2,18 @@
  * ActionPreview — 署名前の transaction preview (Ethereum v3 §11 D)。
  * BFF /eth/build-action が protocol ABI / Pendle Convert から組んだ unsigned plan を表示し、
  * mainnet に対する eth_call の結果 (送らずに確認) をそのまま見せる。
- * 署名・送信はここでは行わない (結果を模擬しない、UI v2 §4)。
+ * 実行はローカル Anvil fork のみ (FORK 表示、ユーザーの明示的な承認ボタン)。mainnet には送らない。
  */
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { TimelineAction, TimelineEvent } from "@workspace/lib/types";
 import { api, ApiError } from "../services/api";
+import { useEthStatus } from "../services/queries";
 import { shortAddress } from "../ui/format";
 
 export function ActionPreview({ event, action, onBack }: { event: TimelineEvent; action: TimelineAction; onBack: () => void }) {
   const owner = event.owner ?? "";
+  const qc = useQueryClient();
+  const status = useEthStatus();
   const q = useQuery({
     queryKey: ["eth", "plan", event.id, action.actionType],
     queryFn: () => api.ethBuildAction(owner, event.id, action.actionType),
@@ -18,6 +21,11 @@ export function ActionPreview({ event, action, onBack }: { event: TimelineEvent;
     retry: false,
     staleTime: 30_000,
   });
+  const exec = useMutation({
+    mutationFn: () => api.ethExecuteOnFork(owner, event.id, action.actionType),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["eth", "events"] }),
+  });
+  const forkReady = status.data?.executionTarget === "fork" && status.data.forkReachable;
 
   return (
     <div className="action-preview" aria-live="polite">
@@ -54,9 +62,36 @@ export function ActionPreview({ event, action, onBack }: { event: TimelineEvent;
             {q.data.simulation.note}
             {q.data.simulation.error ? ` (${q.data.simulation.error})` : ""}
           </p>
-          <p className="muted small">
-            Unsigned plan for {shortAddress(q.data.owner)}. Nothing has been signed or sent. Signing happens in your own wallet.
-          </p>
+          <p className="muted small">Unsigned plan for {shortAddress(q.data.owner)}. Nothing has been signed or sent.</p>
+
+          {exec.isSuccess ? (
+            <div className="sim sim-ok small" role="status">
+              <strong>Executed on the local fork.</strong> No real funds moved.
+              <ul className="plain-list">
+                {exec.data.txs.map((t) => (
+                  <li key={t.hash} className="mono">
+                    {t.hash.slice(0, 12)}… · {t.status} · block {t.blockNumber}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : forkReady ? (
+            <div className="fork-exec">
+              <button type="button" className="btn btn-primary" onClick={() => exec.mutate()} disabled={exec.isPending}>
+                {exec.isPending ? "Executing on fork…" : "Approve and execute on local fork"}
+              </button>
+              <span className="muted small">Runs on an Anvil fork of mainnet as {shortAddress(owner)} (impersonated). Mainnet is never touched.</span>
+              {exec.isError && (
+                <span className="error small" role="alert">
+                  {exec.error instanceof ApiError ? exec.error.message : "Execution failed."}
+                </span>
+              )}
+            </div>
+          ) : (
+            <p className="muted small">
+              Signing with a browser wallet is not wired in yet. {status.data?.executionTarget === "fork" ? "Start the local fork to run this plan on a mainnet fork." : ""}
+            </p>
+          )}
         </>
       )}
       <button type="button" className="btn" onClick={onBack} data-autofocus>

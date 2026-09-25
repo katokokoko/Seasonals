@@ -7,7 +7,7 @@
  * - mainnet に対して eth_call で「送らずに」実行可否を確かめる。署名・broadcast はしない
  * - 価格に依存しない action のみ (claim / unstake / redeem)。価格依存 action は未対応 (fail-closed)
  */
-import { encodeFunctionData } from "viem";
+import { encodeFunctionData, type PublicClient } from "viem";
 import { z } from "zod";
 import { formatTokenAmount } from "@workspace/lib/utils/numeric";
 import type { TimelineEvent } from "@workspace/lib/types";
@@ -51,8 +51,7 @@ export class PlanError extends Error {
   }
 }
 
-async function simulate(owner: string, steps: TxStep[]): Promise<ActionPlan["simulation"]> {
-  const client = getEthClient();
+async function simulate(owner: string, steps: TxStep[], client: PublicClient | null, where: string): Promise<ActionPlan["simulation"]> {
   if (!client) return { ran: false, note: "Ethereum RPC is not configured." };
   // approval が要る場合、本体 call は approval 後でないと通らないので approval のみ確認する
   const first = steps[0]!;
@@ -63,11 +62,11 @@ async function simulate(owner: string, steps: TxStep[]): Promise<ActionPlan["sim
       ok: true,
       note:
         steps.length > 1
-          ? `Step 1 of ${steps.length} succeeds against current mainnet state (eth_call). Later steps depend on it. Nothing was sent.`
-          : "Succeeds against current mainnet state (eth_call). Nothing was sent.",
+          ? `Step 1 of ${steps.length} succeeds against current ${where} state (eth_call). Later steps depend on it. Nothing was sent.`
+          : `Succeeds against current ${where} state (eth_call). Nothing was sent.`,
     };
   } catch (e) {
-    return { ran: true, ok: false, error: sanitizeError(e), note: "Would revert against current mainnet state (eth_call). Nothing was sent." };
+    return { ran: true, ok: false, error: sanitizeError(e), note: `Would revert against current ${where} state (eth_call). Nothing was sent.` };
   }
 }
 
@@ -77,15 +76,26 @@ function findEvent(events: TimelineEvent[], eventId: string): TimelineEvent {
   return e;
 }
 
-export async function buildActionPlan(input: { owner: string; eventId: string; actionType: string }): Promise<ActionPlan> {
-  const client = getEthClient();
+export interface PlanOptions {
+  /** 状態の読み取り / eth_call 先 (既定: mainnet)。fork 実行時は fork client */
+  client?: PublicClient;
+  /** true なら event 側の availability (mainnet 由来) を見ず、client の状態だけで判定 (fork の時間送り用) */
+  stateOnly?: boolean;
+  where?: "mainnet" | "fork";
+}
+
+export async function buildActionPlan(input: { owner: string; eventId: string; actionType: string }, opts: PlanOptions = {}): Promise<ActionPlan> {
+  const client = opts.client ?? getEthClient();
   if (!client) throw new PlanError("rpc_unavailable", "Ethereum RPC is not configured.");
+  const where = opts.where ?? "mainnet";
   const owner = input.owner as `0x${string}`;
   const { events } = await getUserEvents(owner);
   const event = findEvent(events, input.eventId);
   const action = event.actions.find((a) => a.actionType === input.actionType);
   if (!action) throw new PlanError("unsupported_action", "This event has no such action.");
-  if (action.availability !== "available") throw new PlanError("action_not_available", action.reason ?? "This action is not available yet.");
+  if (action.availability === "unsupported" || (!opts.stateOnly && action.availability !== "available")) {
+    throw new PlanError("action_not_available", action.reason ?? "This action is not available yet.");
+  }
 
   let steps: TxStep[];
   let summary: string;
@@ -118,7 +128,8 @@ export async function buildActionPlan(input: { owner: string; eventId: string; a
     }
     case "ethena_unstake": {
       const [end, amount] = (await client.readContract({ address: ETHENA.sUSDe, abi: sUSDeAbi, functionName: "cooldowns", args: [owner] })) as readonly [bigint, bigint];
-      if (amount === 0n || Number(end) * 1000 > Date.now()) throw new PlanError("action_not_available", "The sUSDe cooldown has not finished.");
+      const block = await client.getBlock();
+      if (amount === 0n || end > block.timestamp) throw new PlanError("action_not_available", "The sUSDe cooldown has not finished.");
       steps = [
         {
           kind: "call",
@@ -192,7 +203,7 @@ export async function buildActionPlan(input: { owner: string; eventId: string; a
     target: executionTarget(),
     summary,
     steps,
-    simulation: await simulate(owner, steps),
+    simulation: await simulate(owner, steps, client, where),
     builtAt: new Date().toISOString(),
     source,
     broadcast: false,
