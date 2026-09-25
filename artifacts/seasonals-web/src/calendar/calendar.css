@@ -1,0 +1,187 @@
+.toolbar-nav {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-xs);
+}
+.toolbar-label {
+  min-width: 170px;
+  text-align: center;
+  font-weight: var(--w-bold);
+  font-size: var(--fs-headingMD);
+}
+.filter-menu {
+  position: relative;
+}
+.filter-popover {
+  display: grid;
+  gap: var(--sp-md);
+  min-width: 240px;
+}
+.filter-popover fieldset {
+  display: grid;
+  gap: var(--sp-sm);
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+.filter-popover legend {
+  margin-bottom: var(--sp-sm);
+  font-size: var(--fs-overline);
+  font-weight: var(--w-bold);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--c-textSubtitle);
+}
+.calendar-content {
+  display: grid;
+  gap: var(--sp-md);
+  height: calc(100vh - 68px - 60px - 5 * var(--sp-md) - 2 * var(--sp-lg));
+  min-height: 560px;
+  grid-template-rows: minmax(0, 1fr) auto;
+}
+.calendar-content .month-grid {
+  min-height: 0;
+}
+.density-full .month-cell {
+  padding-top: 30px;
+}
+.day-panel {
+  display: grid;
+  gap: var(--sp-md);
+}
+.day-panel h2 {
+  margin: 0;
+  font-size: var(--fs-headingLG);
+}
+.day-panel-empty {
+  display: grid;
+  gap: var(--sp-sm);
+  justify-items: start;
+}
+.day-panel-empty p {
+  margin: 0;
+}
+.week-view {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: var(--sp-sm);
+  min-height: 0;
+}
+.week-col {
+  display: grid;
+  grid-template-rows: auto 1fr;
+  gap: var(--sp-sm);
+  padding: var(--sp-sm);
+  border-radius: var(--r-lg);
+  border: 1px solid var(--c-border);
+  min-height: 0;
+}
+.week-col.is-today .week-col-head strong {
+  color: var(--c-sodaText);
+}
+.week-col.is-selected {
+  background: var(--c-sodaTextSoft);
+}
+.week-col-head {
+  display: grid;
+  justify-items: start;
+  border: 0;
+  background: none;
+  padding: var(--sp-xs);
+  border-radius: var(--r-md);
+  cursor: pointer;
+}
+.week-col-head strong {
+  font-size: var(--fs-headingLG);
+}
+.week-col-events {
+  display: grid;
+  align-content: start;
+  gap: var(--sp-xs);
+  overflow: auto;
+}
+.week-event {
+  display: grid;
+  gap: 2px;
+  padding: var(--sp-sm);
+  border-radius: var(--r-md);
+  border: 1px solid var(--c-border);
+  background: var(--c-bgPrimary);
+  text-align: left;
+  cursor: pointer;
+}
+.week-event.class-user_plan {
+  border-style: dashed;
+  border-color: var(--c-caramelDark);
+}
+.week-event.class-executed {
+  border-color: var(--c-melonText);
+}
+.week-event-time {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: var(--fs-caption);
+  font-weight: var(--w-bold);
+}
+.week-event-title {
+  font-weight: var(--w-semibold);
+  font-size: var(--fs-bodySM);
+}
+.select {
+  height: 36px;
+  padding: 0 var(--sp-md);
+  border-radius: var(--r-pill);
+  border: 1px solid var(--c-borderStrong);
+  background: var(--s-detail);
+  font-weight: var(--w-semibold);
+}
+.check {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: var(--fs-bodySM);
+  font-weight: var(--w-semibold);
+}
+.tl-full .tl-row-button {
+  display: grid;
+  grid-template-columns: 150px minmax(0, 1fr) minmax(0, 1.4fr) 130px 90px 120px 140px;
+  gap: var(--sp-sm);
+}
+.tl-table-head {
+  display: grid;
+  grid-template-columns: calc(76px + var(--sp-md) + 2px) 150px minmax(0, 1fr) minmax(0, 1.4fr) 130px 90px 120px 140px;
+  gap: var(--sp-sm);
+  padding: 0 var(--sp-sm) var(--sp-sm) 0;
+  margin-top: var(--sp-md);
+  border-bottom: 1px solid var(--c-border);
+  font-size: var(--fs-caption);
+  font-weight: var(--w-bold);
+  color: var(--c-textSubtitle);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.section-title {
+  margin: var(--sp-md) 0 var(--sp-xs);
+  font-size: var(--fs-headingSM);
+  color: var(--c-caramelDark);
+}
+.attention-section {
+  padding-bottom: var(--sp-md);
+  border-bottom: 1px dashed var(--c-borderStrong);
+  margin-bottom: var(--sp-sm);
+}
+@media (max-width: 1299px) {
+  .tl-full .tl-row-button {
+    grid-template-columns: 140px minmax(0, 1fr) minmax(0, 1.4fr) 120px 132px;
+  }
+  .tl-table-head {
+    grid-template-columns: calc(76px + var(--sp-md) + 2px) 140px minmax(0, 1fr) minmax(0, 1.4fr) 120px 132px;
+  }
+  .tl-table-head span:nth-child(6),
+  .tl-table-head span:nth-child(7),
+  .tl-full .cell-network,
+  .tl-full .cell-class {
+    display: none;
+  }
+}

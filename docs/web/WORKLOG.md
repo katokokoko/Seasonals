@@ -67,3 +67,23 @@ Web 側 (`artifacts/seasonals-web`) は `BFF_URL` (Vite dev proxy 先、node 側
 - 実装済み: `water.frag.glsl` (sha256 `23df542f…` を test で固定)、`WaterBackground` (WebGL1 / 全画面三角形 / DPR cap / hidden・paused で draw skip / reduced motion は uTime=12 の静止画で loop 停止、変化時のみ 1 frame 再描画 / context lost・restored / 失敗時 fallback)、`useQuietZones` (RO + MO + passive scroll/resize + rAF throttle、group union、最大 4 rect、変化時のみ uniform upload)、`waterDefaults` + `waterCalm`、DS token → CSS 変数注入、hex 直書き禁止 test
 - 修正: StrictMode の二重 mount で loseContext 済み context を再利用し compile 失敗 → mount ごとに canvas を新規作成
 - 検証 (system Chrome headless): 1440×900 で `data-water-state=animating`、reduced motion で `still`、`--disable-webgl` で `fallback` (背景色表示)。screenshot 目視で caustic セル・mint・泡を確認
+
+### A3 — `cb8f27d` (push 済み)
+
+### A4–A7 — AppShell / Home lobby / Calendar・Timeline workspace / Explore / Agent・Dashboard・Settings + e2e
+- 実装済み:
+  - `GlobalFloatingNav`: 5 link + More (1100–1439px で Agent / Dashboard を畳む) + `SUPPORTED_CHAINS` の chain icon (非操作、tooltip) + Settings gear (`aria-label`) + `WalletControl` (injected EIP-1193 接続 / watch address)
+  - `HomeLobby`: portal card 4 枚 (カード全体が 1 Link、説明 1 行のみ、±2.5° / 1100–1439px で ±1° / <1100px で 2×2)、中央 `HomeCalendarCard` (Calendar ⇄ Timeline をその場で切替、header 高さ固定、expand のみ遷移、Timeline は月送り無し 30 日 window、未接続 note、empty state)
+  - `EventDetailCard`: portal / `role=dialog` / focus trap / Esc・外側 click・Close / focus 復帰 / anchor 配置 / wallet gating / 日付クリックは day list、event はクリックで詳細
+  - `/calendar`: tier-2 toolbar (前後 / Today / Month・Week・List / Filters / Calendar⇄Timeline は `?view=` を replace)、右パネルに選択日、`TimelineWorkspace` (range、Needs attention first、Today divider、network / type 列)
+  - `/explore`: diner menu (実 BFF `/menu-listings`、APY は必ず label、availability は実データの deposit_open 等から、sponsored は出さない)
+  - `/agent` `/dashboard` `/settings`: 未接続を明記した最小画面 (Dashboard は timeline 件数のみ、残高は出さない)
+  - work screen は `.workspace` 全体を 1 quiet rect、`waterCalm` preset
+- 未実装: Ethereum の実イベント (Stage B)、提案、tx preview、Ladder 表示 (既存実装が無いため入れない)、mobile 幅 (<1100 は 2×2 まで)
+- 検証 (`node e2e/run.mjs`、system Chrome headless、1440×900 / 1280×800): 43/43 pass
+  - nav 到達性 (1280 は More 内)、Settings href、chain icon 2 個、backdrop-filter 0 個
+  - toggle 前後で中央カード box と header 高さが一致、Home に留まる、Timeline に月送り無し、expand の href
+  - 日付 click で dialog (URL 不変、aria-labelledby)、Tab 6 回で dialog 内に留まる、Esc で閉じて日付 cell に focus 復帰、外側 click で閉じる
+  - Agent portal card に focus → Enter で `/agent`、tier-2 switch で `?view=timeline`
+  - reduced motion で `still`、既定で `animating`、`--disable-webgl` で `fallback`、page error 0
+  - screenshot 14 枚 + 3 枚を `.screenshots/` に保存し目視 (中央カードの文字は quiet zone 上で可読、work screen 下部の caustic は calm)

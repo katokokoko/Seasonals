@@ -1,0 +1,203 @@
+/* Explore / Menu — refined diner menu (UI v2 §10): 色は token のみ */
+.menu-page {
+  max-width: 1440px;
+  margin: 0 auto var(--sp-xl);
+  padding: var(--sp-xl) 48px;
+  background: var(--s-work);
+  border: 1px solid var(--s-border);
+  border-radius: 32px;
+  box-shadow: var(--sh-soft);
+}
+.menu-header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--sp-lg);
+  padding-bottom: var(--sp-lg);
+  border-bottom: 3px double var(--c-sodaText);
+}
+.menu-kicker {
+  margin: 0;
+  font-size: var(--fs-overline);
+  font-weight: var(--w-bold);
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+  color: var(--c-sodaText);
+}
+.menu-title {
+  margin: 0;
+  font-size: var(--fs-displayLG);
+  font-weight: var(--w-bold);
+  line-height: 1.05;
+  color: var(--c-textPrimary);
+}
+.menu-sub {
+  margin: var(--sp-xs) 0 0;
+  color: var(--c-textSubtitle);
+  font-size: var(--fs-bodyLG);
+}
+.menu-search {
+  width: min(380px, 40%);
+}
+.menu-search .input {
+  width: 100%;
+  border-radius: var(--r-pill);
+}
+.menu-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-sm);
+  margin: var(--sp-lg) 0 var(--sp-md);
+}
+.menu-tab {
+  height: 38px;
+  padding: 0 var(--sp-lg);
+  border-radius: var(--r-pill);
+  border: 1px solid var(--c-sodaMid);
+  background: var(--c-sodaLight);
+  color: var(--c-textPrimary);
+  font-weight: var(--w-semibold);
+  cursor: pointer;
+}
+.menu-tab[aria-selected="true"] {
+  background: var(--c-sodaText);
+  border-color: var(--c-sodaText);
+  color: var(--c-textOnColor);
+}
+.menu-section {
+  margin-top: var(--sp-lg);
+}
+.menu-section-title {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-md);
+  margin: 0 0 var(--sp-md);
+  font-size: var(--fs-overline);
+  font-weight: var(--w-bold);
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--c-caramelDark);
+}
+.menu-section-title::after {
+  content: "";
+  flex: 1;
+  border-top: 3px double var(--c-caramel);
+}
+.menu-items {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  gap: var(--sp-md);
+}
+.menu-item {
+  display: grid;
+  gap: var(--sp-sm);
+  padding: var(--sp-md) var(--sp-lg);
+  border-radius: var(--r-xl);
+  background: var(--c-bgPrimary);
+  border: 1px solid var(--c-border);
+  box-shadow: 0 1px 0 var(--c-textOnColor) inset, 0 6px 18px var(--c-shadow);
+}
+.menu-item-top {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--sp-md);
+}
+.menu-item-name h3 {
+  margin: 0;
+  font-size: var(--fs-headingMD);
+  font-weight: var(--w-bold);
+}
+.menu-item-name p {
+  margin: 2px 0 0;
+}
+.menu-item-name h3 {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.menu-item-protocol {
+  font-weight: var(--w-semibold);
+  color: var(--c-sodaText);
+}
+.inline-icon-left {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.menu-price {
+  display: grid;
+  justify-items: end;
+}
+.menu-price-label {
+  font-size: var(--fs-overline);
+  font-weight: var(--w-bold);
+  letter-spacing: 0.12em;
+  color: var(--c-textSubtitle);
+}
+.menu-price-value {
+  font-size: var(--fs-displaySM);
+  font-weight: var(--w-bold);
+  color: var(--c-melonText);
+  font-variant-numeric: tabular-nums;
+}
+.menu-rule {
+  border-top: 1px dashed var(--c-borderStrong);
+}
+.menu-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-lg);
+  margin: 0;
+}
+.menu-facts dt {
+  font-size: var(--fs-caption);
+  color: var(--c-textSubtitle);
+}
+.menu-facts dd {
+  margin: 0;
+  font-weight: var(--w-semibold);
+}
+.menu-item-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-sm);
+}
+.ticket {
+  display: inline-flex;
+  align-items: center;
+  height: 24px;
+  padding: 0 var(--sp-sm);
+  border-radius: 4px;
+  border: 1px dashed currentColor;
+  font-size: var(--fs-caption);
+  font-weight: var(--w-bold);
+  letter-spacing: 0.04em;
+}
+.ticket-ok {
+  color: var(--c-melonText);
+}
+.ticket-warn {
+  color: var(--c-caramelDark);
+}
+.menu-details {
+  padding: var(--sp-sm) var(--sp-md);
+  border-radius: var(--r-md);
+  background: var(--c-bgSecondary);
+}
+.menu-details p {
+  margin: 0 0 var(--sp-xs);
+}
+.menu-foot {
+  margin: var(--sp-xl) 0 0;
+  text-align: center;
+}
+@media (max-width: 1439px) {
+  .menu-page {
+    padding: var(--sp-lg) var(--sp-xl);
+  }
+}

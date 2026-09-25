@@ -1,0 +1,385 @@
+/* ── status badge / class tag (UI v2 §7) ─────────────────────────────────── */
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 22px;
+  padding: 0 var(--sp-sm);
+  border-radius: var(--r-pill);
+  font-size: var(--fs-caption);
+  font-weight: var(--w-bold);
+  white-space: nowrap;
+}
+.status-badge.compact {
+  width: 22px;
+  padding: 0;
+  justify-content: center;
+}
+.status-upcoming {
+  color: var(--st-upcoming);
+  background: var(--stbg-upcoming);
+}
+.status-planned {
+  color: var(--st-planned);
+  background: var(--stbg-planned);
+}
+.status-completed {
+  color: var(--st-completed);
+  background: var(--stbg-completed);
+}
+.status-warning {
+  color: var(--st-warning);
+  background: var(--stbg-warning);
+}
+.status-failed {
+  color: var(--st-failed);
+  background: var(--stbg-failed);
+}
+.class-tag {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 var(--sp-sm);
+  border-radius: var(--r-pill);
+  font-size: var(--fs-caption);
+  font-weight: var(--w-bold);
+}
+/* 3 class を視覚的に区別 (v3 §1): protocol = 塗り / plan = 破線 / executed = 実線 melon */
+.class-protocol {
+  background: var(--c-sodaTextSoft);
+  color: var(--c-sodaText);
+}
+.class-user_plan {
+  border: 1px dashed var(--c-caramelDark);
+  color: var(--c-caramelDark);
+}
+.class-executed {
+  border: 1px solid var(--c-melonText);
+  color: var(--c-melonText);
+}
+
+/* ── event chip (calendar cell) ─────────────────────────────────────────── */
+.event-chip {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  width: 100%;
+  min-height: 20px;
+  padding: 1px 6px;
+  border-radius: var(--r-sm);
+  border: 1px solid transparent;
+  background: var(--c-sodaTextSoft);
+  color: var(--c-textPrimary);
+  font-size: var(--fs-caption);
+  font-weight: var(--w-semibold);
+  text-align: left;
+  cursor: pointer;
+  overflow: hidden;
+}
+.event-chip span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.event-chip.class-user_plan {
+  background: transparent;
+  border: 1px dashed var(--c-caramelDark);
+}
+.event-chip.class-executed {
+  background: var(--c-melonTextSoft);
+}
+.event-chip.is-warning {
+  background: var(--c-caramelSoft);
+}
+.event-chip:hover {
+  border-color: var(--c-sodaText);
+}
+
+/* ── detail card (UI v2 §4) ─────────────────────────────────────────────── */
+.detail-layer {
+  position: fixed;
+  inset: 0;
+  z-index: 200;
+  background: var(--s-scrim);
+  animation: fade-in 180ms ease-out;
+}
+.detail-card {
+  position: fixed;
+  width: 400px;
+  max-width: calc(100vw - 24px);
+  max-height: calc(100vh - 24px);
+  overflow: auto;
+  background: var(--s-detail);
+  border: 1px solid var(--s-border);
+  border-radius: var(--r-xl);
+  box-shadow: var(--sh-lift);
+  outline: none;
+  animation: rise-in 180ms ease-out;
+}
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+.detail-close {
+  position: absolute;
+  top: var(--sp-sm);
+  right: var(--sp-sm);
+}
+.detail-body {
+  display: grid;
+  gap: var(--sp-md);
+  padding: var(--sp-lg);
+}
+.detail-body h2 {
+  margin: 0;
+  font-size: var(--fs-headingLG);
+  font-weight: var(--w-bold);
+  padding-right: var(--sp-xl);
+}
+.detail-head {
+  display: flex;
+  gap: var(--sp-md);
+  align-items: center;
+}
+.overline {
+  margin: 0;
+  font-size: var(--fs-overline);
+  font-weight: var(--w-bold);
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--c-textSubtitle);
+}
+.tag-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-xs);
+}
+.detail-grid {
+  display: grid;
+  grid-template-columns: 110px 1fr;
+  gap: var(--sp-sm) var(--sp-md);
+  margin: 0;
+  padding: var(--sp-md);
+  border-radius: var(--r-lg);
+  background: var(--c-bgPrimary);
+  border: 1px solid var(--c-border);
+}
+.detail-grid dt {
+  color: var(--c-textSubtitle);
+  font-size: var(--fs-bodySM);
+}
+.detail-grid dd {
+  margin: 0;
+  font-weight: var(--w-semibold);
+  text-align: right;
+}
+.block {
+  display: block;
+}
+.inline-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+}
+.detail-actions {
+  display: grid;
+  gap: var(--sp-sm);
+}
+.action-disabled {
+  display: grid;
+  gap: 4px;
+}
+.wallet-gate {
+  display: grid;
+  gap: var(--sp-sm);
+  padding: var(--sp-md);
+  border-radius: var(--r-lg);
+  background: var(--c-sodaTextSoft);
+}
+.wallet-gate p {
+  margin: 0;
+}
+.detail-footer {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-md);
+}
+.text-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--c-sodaText);
+  font-weight: var(--w-semibold);
+  text-decoration: none;
+  border-radius: var(--r-sm);
+}
+.text-link:hover {
+  text-decoration: underline;
+}
+.freshness {
+  margin: 0;
+  font-size: var(--fs-caption);
+  color: var(--c-textSubtitle);
+}
+.day-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: var(--sp-xs);
+}
+.day-list-item {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-sm);
+  width: 100%;
+  padding: var(--sp-sm);
+  border-radius: var(--r-md);
+  border: 1px solid var(--c-border);
+  background: var(--c-bgPrimary);
+  text-align: left;
+  cursor: pointer;
+}
+.day-list-item:hover {
+  background: var(--s-hover);
+}
+.day-list-text {
+  display: grid;
+  flex: 1;
+  min-width: 0;
+}
+.action-preview {
+  display: grid;
+  gap: var(--sp-sm);
+  padding: var(--sp-md);
+  border-radius: var(--r-lg);
+  border: 1px solid var(--c-borderStrong);
+  background: var(--c-bgPrimary);
+}
+.action-preview h3 {
+  margin: 0;
+  font-size: var(--fs-headingMD);
+}
+.protocol-badge {
+  flex: none;
+  border-radius: 50%;
+  object-fit: cover;
+  background: var(--c-textOnColor);
+  box-shadow: var(--sh-inset);
+}
+.protocol-badge.monogram {
+  display: inline-grid;
+  place-items: center;
+  color: var(--c-textOnColor);
+  background: var(--c-sodaText);
+  font-weight: var(--w-bold);
+}
+
+/* ── timeline list (Home preview と workspace で共有) ────────────────────── */
+.tl-groups {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.tl-group {
+  display: grid;
+  grid-template-columns: 76px 1fr;
+  position: relative;
+}
+.tl-date {
+  position: relative;
+  padding: var(--sp-sm) var(--sp-sm) var(--sp-sm) 0;
+}
+.tl-date strong {
+  display: block;
+  font-size: var(--fs-bodySM);
+  font-weight: var(--w-bold);
+  letter-spacing: 0.04em;
+}
+.tl-date span {
+  font-size: var(--fs-caption);
+  color: var(--c-textSubtitle);
+}
+.tl-rows {
+  list-style: none;
+  margin: 0;
+  padding: 0 0 0 var(--sp-md);
+  position: relative;
+  border-left: 2px solid var(--c-sodaTextSoft);
+}
+.tl-row {
+  position: relative;
+}
+.tl-row-button {
+  display: grid;
+  align-items: center;
+  gap: var(--sp-sm);
+  width: 100%;
+  min-height: 44px;
+  padding: var(--sp-xs) var(--sp-sm);
+  border: 0;
+  border-radius: var(--r-md);
+  background: none;
+  text-align: left;
+  cursor: pointer;
+}
+.tl-row-button:hover {
+  background: var(--s-hover);
+}
+.tl-row .tl-dot {
+  position: absolute;
+  left: calc(-1 * var(--sp-md) - 7px);
+  top: 50%;
+  transform: translateY(-50%);
+  display: grid;
+  place-items: center;
+  width: 12px;
+  height: 12px;
+  background: var(--s-lobby);
+  border-radius: 50%;
+}
+.cell-ellipsis {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.cell-protocol {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-sm);
+  min-width: 0;
+  font-weight: var(--w-semibold);
+}
+.cell-num {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+.today-divider {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-sm);
+  margin: var(--sp-sm) 0;
+  color: var(--c-sodaText);
+  font-size: var(--fs-caption);
+  font-weight: var(--w-bold);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.today-divider::after {
+  content: "";
+  flex: 1;
+  height: 2px;
+  background: var(--c-sodaText);
+  border-radius: 2px;
+}
