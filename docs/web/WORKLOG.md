@@ -163,3 +163,19 @@ Web 側 (`artifacts/seasonals-web`) は `BFF_URL` (Vite dev proxy 先、node 側
   - BFF 416 tests (CCA decode / 公開 event / bid lifecycle / throttle)
 - 未実装: `exitPartiallyFilledBid` (checkpoint hint が必要。説明文で manual と明記)、fork 上で数万 block 進める lifecycle 再生 (anvil_mine が block ごとに beacon roots storage を上流から取るため Infura 429 で失敗。代わりに mainnet で既に終了した実 auction で exit を実証)
 - 事故記録: debug 中に viem のエラー object をそのまま print し、RPC URL (key 入り) が **この作業の端末出力** に出た。ファイル / repo / commit には出ていない。以後の debug script は redact 関数経由のみ
+
+### B6 — `d5b2999` (push 済み)
+
+### B9 — Uniswap Trading API proxy (quote のみ) + Explore の Ethereum 商品 + FEEDBACK.md
+- 公式確認: Trading API OpenAPI (`https://trade-api.gateway.uniswap.org/v1/api.json`)。`/check_approval` required = walletAddress, token, amount, chainId、`/quote` required = type, amount, tokenInChainId, tokenOutChainId, tokenIn, tokenOut, swapper。routing で /swap か /order に分岐
+- 実装済み:
+  - BFF `POST /eth/uniswap/quote`: server 側で `x-api-key` (UNISWAP_API_KEY) を付けて `/check_approval` → `/quote`。amount は smallest unit の整数 string のみ受ける。**swap / order の実行経路は作っていない** (価格依存の実行は fail-closed の価格ガードが前提、WORKLOG #11)
+  - BFF `GET /eth/menu`: Lido 7 日 SMA APR、Ethena 30 日平均、Pendle 流動性上位 8 market の implied APY / 満期 / 流動性 (取れない利率は null)
+  - `lib/types/menu-product.ts` (`MenuProduct`: 利率は必ず label + source)
+  - Web Explore: chain 切替 (All / Ethereum / Solana)、Ethereum 商品カード (label 付き利率、出所、満期、公式 app への link)、Ethena カードに「Route from USDC」(Uniswap quote preview、実行不可と明記)
+  - `FEEDBACK.md` (repo root): CCA と Trading API について、実装で実際に当たった点のみ
+- 検証:
+  - 実 Trading API: 1,000 USDC → 約 999.94〜1,000.01 USDe (CLASSIC、approval + Permit2 署名が必要と返る) を curl とブラウザで確認
+  - Explore の Ethereum / Solana 混在表示と chain 切替を screenshot で確認
+  - BFF 420 tests (quote 要約 / UniswapX・CHAINED は実行不可 / 小数 amount を 400 / key 無しは外部を呼ばず 502)、`pnpm -r test` green、新規 TS エラー 0、e2e 43/43 (公開 CCA event で calendar に "+3 more" が出たため e2e の More selector を exact に修正)
+- 未実装: Uniswap `/swap`・`/order` の実行、Chainlink 価格ガード、Aqua、Aave

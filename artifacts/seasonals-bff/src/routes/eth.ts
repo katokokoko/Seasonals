@@ -12,6 +12,9 @@ import { buildActionPlan, PlanError } from "../ethereum/plans";
 import { buildProposal } from "../ethereum/proposals";
 import { advanceFork, executeOnFork, mineFork } from "../ethereum/execute";
 import { ensureIndexing, indexProgress } from "../ethereum/cca";
+import { UniswapError, uniswapPreview } from "../ethereum/uniswap";
+import { getEthMenu } from "../ethereum/menu";
+import { assertTokenAmount, InvalidAmountError } from "@workspace/lib/utils/numeric";
 
 async function forkReachable(): Promise<boolean> {
   try {
@@ -73,6 +76,9 @@ async function ethRoutes(app: FastifyInstance): Promise<void> {
   });
 
   app.get("/eth/public-events", async () => getPublicEvents());
+
+  /** Explore の Ethereum 商品 (利率は label + 出所付き、取れなければ null) */
+  app.get("/eth/menu", async () => getEthMenu());
 
   app.get<{ Querystring: { address?: string } }>("/eth/events", async (req, reply) => {
     const address = req.query.address?.trim() ?? "";
@@ -147,6 +153,24 @@ async function ethRoutes(app: FastifyInstance): Promise<void> {
     } catch (e) {
       if (e instanceof PlanError) return reply.code(e.code === "rpc_unavailable" ? 502 : 409).send({ error: e.code, message: e.message });
       return reply.code(502).send({ error: "upstream_error", message: sanitizeError(e) });
+    }
+  });
+
+  /** Uniswap Trading API: quote + 承認要否の preview のみ (server 側 key、実行経路なし) */
+  app.post<{ Body: { swapper?: string; tokenIn?: string; tokenOut?: string; amount?: string } }>("/eth/uniswap/quote", async (req, reply) => {
+    const { swapper = "", tokenIn = "", tokenOut = "", amount } = req.body ?? {};
+    if (!isEvmAddress(swapper) || !isEvmAddress(tokenIn) || !isEvmAddress(tokenOut)) return reply.code(400).send({ error: "invalid_argument" });
+    try {
+      assertTokenAmount(amount); // smallest unit の整数 string のみ (CLAUDE.md §3)
+    } catch (e) {
+      if (e instanceof InvalidAmountError) return reply.code(400).send({ error: "invalid_amount" });
+      throw e;
+    }
+    try {
+      return await uniswapPreview({ swapper, tokenIn, tokenOut, amount: amount! });
+    } catch (e) {
+      if (e instanceof UniswapError) return reply.code(e.status >= 500 ? 502 : e.status).send({ error: "uniswap_error", message: sanitizeError(e) });
+      throw e;
     }
   });
 }

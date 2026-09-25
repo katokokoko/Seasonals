@@ -4,6 +4,7 @@
  * API key / RPC URL は BFF 側にしか無い。
  */
 import type {
+  MenuProduct,
   ProtocolMenuEntry,
   TimelineEventsResponse,
   UnifiedTimeEventDTO,
@@ -53,6 +54,9 @@ export const api = {
   ethPublicEvents: () => request<TimelineEventsResponse>("/eth/public-events"),
   ethEvents: (address: string) => request<TimelineEventsResponse>(`/eth/events?address=${encodeURIComponent(address)}`),
   ethStatus: () => request<EthStatus>("/eth/status"),
+  ethMenu: () => request<MenuProduct[]>("/eth/menu"),
+  uniswapQuote: (swapper: string, tokenIn: string, tokenOut: string, amount: string) =>
+    request<UniswapPreview>("/eth/uniswap/quote", { method: "POST", body: JSON.stringify({ swapper, tokenIn, tokenOut, amount }) }),
   ethProposal: (address: string, eventId: string) =>
     request<Proposal>(`/eth/proposal?address=${encodeURIComponent(address)}&eventId=${encodeURIComponent(eventId)}`),
   /** fork 実行 (ユーザーがボタンで承認した時だけ呼ぶ)。mainnet には送らない */
@@ -114,4 +118,19 @@ export interface ForkExecution {
   target: "fork";
   plan: ActionPlan;
   txs: Array<{ hash: string; status: "success" | "reverted"; blockNumber: string; gasUsed: string; description: string }>;
+}
+
+/** BFF src/ethereum/uniswap.ts UniswapPreview と同形 (quote のみ、実行不可) */
+export interface UniswapPreview {
+  routing: string;
+  amountIn: string;
+  amountOut: string | null;
+  approvalRequired: boolean;
+  permitSignatureRequired: boolean;
+  gasFeeUsd: string | null;
+  executable: false;
+  nextStep: string;
+  requestId: string | null;
+  quotedAt: string;
+  source: "uniswap-trading-api";
 }

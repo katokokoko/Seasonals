@@ -112,6 +112,10 @@ export function useMenuListings() {
   return useQuery({ queryKey: queryKeys.menu, queryFn: api.menuListings, staleTime: 60_000, retry: 1 });
 }
 
+export function useEthMenu() {
+  return useQuery({ queryKey: ["eth", "menu"], queryFn: api.ethMenu, staleTime: 5 * 60_000, retry: 1 });
+}
+
 export function useEthStatus() {
   return useQuery({ queryKey: queryKeys.ethStatus, queryFn: api.ethStatus, staleTime: 30_000, retry: false });
 }

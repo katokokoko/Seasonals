@@ -88,7 +88,7 @@
   margin: 0;
   padding: 0;
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
   gap: var(--sp-md);
 }
 .menu-item {
@@ -115,9 +115,7 @@
   margin: 2px 0 0;
 }
 .menu-item-name h3 {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
 }
 .menu-item-protocol {
   font-weight: var(--w-semibold);
@@ -131,8 +129,11 @@
 .menu-price {
   display: grid;
   justify-items: end;
+  max-width: 120px;
+  text-align: right;
 }
 .menu-price-label {
+  order: 2;
   font-size: var(--fs-overline);
   font-weight: var(--w-bold);
   letter-spacing: 0.12em;
@@ -165,6 +166,7 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
   gap: var(--sp-sm);
 }
 .ticket {
@@ -200,4 +202,38 @@
   .menu-page {
     padding: var(--sp-lg) var(--sp-xl);
   }
+}
+
+.menu-chain {
+  display: flex;
+  gap: var(--sp-xs);
+  margin-top: var(--sp-lg);
+}
+.menu-chain .filter-chip {
+  height: 30px;
+  padding: 0 var(--sp-md);
+  border-radius: var(--r-pill);
+  border: 1px solid var(--c-borderStrong);
+  background: none;
+  font-weight: var(--w-semibold);
+  cursor: pointer;
+}
+.menu-chain .filter-chip[aria-pressed="true"] {
+  background: var(--c-textPrimary);
+  color: var(--c-textOnColor);
+  border-color: var(--c-textPrimary);
+}
+.menu-actions {
+  display: inline-flex;
+  gap: var(--sp-xs);
+}
+.route-preview {
+  display: grid;
+  gap: var(--sp-sm);
+}
+.route-preview .unit {
+  align-self: center;
+}
+.route-result p {
+  margin: 0 0 var(--sp-xs);
 }

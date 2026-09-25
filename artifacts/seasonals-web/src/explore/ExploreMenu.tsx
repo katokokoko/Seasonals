@@ -4,8 +4,10 @@
  * sponsored / featured は既存データに無いので出さない (捏造しない)。
  */
 import { useMemo, useState } from "react";
-import type { PositionCategory, ProtocolMenuEntry, ProtocolPool } from "@workspace/lib/types";
-import { useMenuListings } from "../services/queries";
+import type { MenuProduct, PositionCategory, ProtocolMenuEntry, ProtocolPool } from "@workspace/lib/types";
+import { useEthMenu, useMenuListings } from "../services/queries";
+import { fmtFullDate, fmtMetric } from "../ui/format";
+import { UniswapRoutePreview } from "./UniswapRoutePreview";
 import { ChainIcon } from "../ui/ChainIcon";
 import { fmtCompactUsd, fmtRatio } from "../ui/format";
 import { ProtocolBadge } from "../ui/ProtocolBadge";
@@ -30,24 +32,38 @@ interface MenuItem {
   pool: ProtocolPool;
   section: string;
 }
+type Row = { kind: "sol"; key: string; section: string; text: string; item: MenuItem } | { kind: "eth"; key: string; section: string; text: string; product: MenuProduct };
 
 export default function ExploreMenu() {
   const q = useMenuListings();
+  const eth = useEthMenu();
   const [tab, setTab] = useState("All");
+  const [chain, setChain] = useState<"all" | "solana" | "ethereum">("all");
   const [query, setQuery] = useState("");
 
-  const items = useMemo<MenuItem[]>(
-    () =>
-      (q.data ?? []).flatMap((p) =>
-        p.pools.map((pool) => ({ protocol: p, pool, section: SECTION[pool.category] ?? "Other" }))
+  const rows = useMemo<Row[]>(
+    () => [
+      ...(eth.data ?? []).map<Row>((p) => ({
+        kind: "eth",
+        key: p.id,
+        section: SECTION[p.category] ?? "Other",
+        text: `${p.protocolName} ${p.name}`,
+        product: p,
+      })),
+      ...(q.data ?? []).flatMap((p) =>
+        p.pools.map<Row>((pool) => {
+          const item = { protocol: p, pool, section: SECTION[pool.category] ?? "Other" };
+          return { kind: "sol", key: pool.pool_id, section: item.section, text: `${p.display_name} ${pool.name} ${pool.asset}`, item };
+        })
       ),
-    [q.data]
+    ],
+    [q.data, eth.data]
   );
-  const tabs = useMemo(() => ["All", ...Array.from(new Set(items.map((i) => i.section)))], [items]);
-  const filtered = items.filter(
-    (i) =>
-      (tab === "All" || i.section === tab) &&
-      (query === "" || `${i.protocol.display_name} ${i.pool.name} ${i.pool.asset}`.toLowerCase().includes(query.toLowerCase()))
+  const chainRows = rows.filter((r) => chain === "all" || (chain === "ethereum") === (r.kind === "eth"));
+  const tabs = ["All", ...Array.from(new Set(chainRows.map((i) => i.section)))];
+  const activeTab = tabs.includes(tab) ? tab : "All";
+  const filtered = chainRows.filter(
+    (r) => (activeTab === "All" || r.section === activeTab) && (query === "" || r.text.toLowerCase().includes(query.toLowerCase()))
   );
   const sections = Array.from(new Set(filtered.map((i) => i.section)));
 
@@ -64,21 +80,33 @@ export default function ExploreMenu() {
           <input className="input" placeholder="Search protocols or assets" value={query} onChange={(e) => setQuery(e.target.value)} />
         </label>
       </header>
+      <div className="menu-chain" role="group" aria-label="Chain">
+        {(["all", "ethereum", "solana"] as const).map((c) => (
+          <button key={c} type="button" className="filter-chip" aria-pressed={chain === c} onClick={() => setChain(c)}>
+            {c === "all" ? "All chains" : c === "ethereum" ? "Ethereum" : "Solana"}
+          </button>
+        ))}
+      </div>
       <div className="menu-tabs" role="tablist" aria-label="Menu sections">
         {tabs.map((t) => (
-          <button key={t} role="tab" type="button" aria-selected={tab === t} className="menu-tab" onClick={() => setTab(t)}>
+          <button key={t} role="tab" type="button" aria-selected={activeTab === t} className="menu-tab" onClick={() => setTab(t)}>
             {t}
           </button>
         ))}
       </div>
 
-      {q.isPending && <p className="muted">Loading the menu…</p>}
+      {(q.isPending || eth.isPending) && <p className="muted">Loading the menu…</p>}
       {q.isError && (
-        <Notice tone="warning" title="The menu could not be loaded.">
-          The Seasonals server did not return protocol listings. No data is shown instead of guessing.
+        <Notice tone="warning" title="Solana listings could not be loaded.">
+          The Seasonals server did not return them. No data is shown instead of guessing.
         </Notice>
       )}
-      {q.isSuccess && filtered.length === 0 && <p className="muted">Nothing on the menu matches.</p>}
+      {eth.isError && (
+        <Notice tone="warning" title="Ethereum listings could not be loaded.">
+          The Seasonals server did not return them. No data is shown instead of guessing.
+        </Notice>
+      )}
+      {!q.isPending && !eth.isPending && filtered.length === 0 && <p className="muted">Nothing on the menu matches.</p>}
 
       {sections.map((section) => (
         <section key={section} className="menu-section" aria-labelledby={`sec-${section}`}>
@@ -87,15 +115,13 @@ export default function ExploreMenu() {
           </h2>
           <ul className="menu-items">
             {filtered
-              .filter((i) => i.section === section)
-              .map((i) => (
-                <MenuCard key={i.pool.pool_id} item={i} />
-              ))}
+              .filter((r) => r.section === section)
+              .map((r) => (r.kind === "eth" ? <EthMenuCard key={r.key} product={r.product} /> : <MenuCard key={r.key} item={r.item} />))}
           </ul>
         </section>
       ))}
       <p className="menu-foot muted small">
-        Rates are current values reported by each protocol, not a promise of future returns. Listings come from the Seasonals server.
+        Rates are current or trailing values reported by each protocol (source shown on each item), not a promise of future returns.
       </p>
     </div>
   );
@@ -161,6 +187,63 @@ function MenuCard({ item }: { item: MenuItem }) {
             version shows this listing read-only.
           </p>
           {pool.borrowed_usd !== undefined && <p>Borrowed: {fmtCompactUsd(pool.borrowed_usd)}</p>}
+        </div>
+      )}
+    </li>
+  );
+}
+
+function EthMenuCard({ product }: { product: MenuProduct }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <li className="menu-item">
+      <div className="menu-item-top">
+        <ProtocolBadge id={product.protocolId} name={product.protocolName} size={40} />
+        <div className="menu-item-name">
+          <h3>{product.name}</h3>
+          <p className="menu-item-protocol">{product.protocolName}</p>
+          <p className="muted small inline-icon-left">
+            {SECTION[product.category] ?? "Other"} · <ChainIcon chain="ethereum" size={12} /> Ethereum
+          </p>
+        </div>
+        <div className="menu-price">
+          <span className="menu-price-label">{product.rate ? product.rate.label : "Rate"}</span>
+          <span className="menu-price-value">{product.rate ? fmtRatio(product.rate.value) : "n/a"}</span>
+        </div>
+      </div>
+      <div className="menu-rule" aria-hidden="true" />
+      <dl className="menu-facts">
+        {product.maturity && (
+          <div>
+            <dt>Maturity</dt>
+            <dd>{fmtFullDate(new Date(product.maturity))}</dd>
+          </div>
+        )}
+        {product.facts.map((f) => (
+          <div key={f.label}>
+            <dt>{f.label}</dt>
+            <dd>{fmtMetric(f)}</dd>
+          </div>
+        ))}
+      </dl>
+      <div className="menu-item-foot">
+        {product.rate ? <span className="muted small">Source: {product.rate.source}</span> : <span className="ticket ticket-warn">Rate unavailable</span>}
+        <span className="menu-actions">
+          {product.url && (
+            <a className="btn btn-quiet" href={product.url} target="_blank" rel="noreferrer">
+              Open {product.protocolName} ↗
+            </a>
+          )}
+          {product.protocolId === "ethena" && (
+            <button type="button" className="btn btn-quiet" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
+              {open ? "Hide route" : "Route from USDC"}
+            </button>
+          )}
+        </span>
+      </div>
+      {open && (
+        <div className="menu-details">
+          <UniswapRoutePreview />
         </div>
       )}
     </li>

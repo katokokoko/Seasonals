@@ -43,7 +43,7 @@ for (const vp of WIDTHS) {
   const navNames = await page.locator("nav[aria-label=Primary] a:visible").allInnerTexts();
   if (vp.width >= 1440) check(`${vp.name} nav shows all items`, ["Overview", "Explore", "Calendar", "Agent", "Dashboard"].every((n) => navNames.includes(n)), navNames);
   else {
-    await page.getByRole("button", { name: "More" }).click();
+    await page.getByRole("button", { name: "More", exact: true }).click();
     const more = await page.locator(".nav-more-menu a").allInnerTexts();
     check(`${vp.name} More menu holds Agent & Dashboard`, more.includes("Agent") && more.includes("Dashboard"), more);
     await page.keyboard.press("Escape");
