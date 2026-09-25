@@ -23,6 +23,7 @@ import { requestOpenWallet, useDetail } from "./detailStore";
 import { CLASS_LABEL, KIND_LABEL, shapeForKind, statusText } from "./labels";
 import { StatusBadge } from "./StatusBadge";
 import { ActionPreview } from "./ActionPreview";
+import { ProposalPanel } from "./ProposalPanel";
 import { useNow } from "../ui/useNow";
 import "./timeline.css";
 
@@ -258,6 +259,9 @@ function EventBody({ event, titleId, now, onDone }: { event: TimelineEvent; titl
         ))}
       </dl>
 
+      {!preview && hasWalletForChain && event.chain === "ethereum" && event.owner && event.class === "protocol" && event.actions.length > 0 && (
+        <ProposalPanel event={event} />
+      )}
       {preview ? (
         <ActionPreview event={event} action={preview} onBack={() => setPreview(null)} />
       ) : event.actions.length > 0 ? (

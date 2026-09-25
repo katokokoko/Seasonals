@@ -62,3 +62,31 @@
   align-items: center;
   gap: var(--sp-sm);
 }
+.agent-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: var(--sp-md);
+}
+.agent-item {
+  display: grid;
+  gap: var(--sp-xs);
+}
+.agent-item p {
+  margin: 0;
+}
+.agent-item-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-sm);
+}
+.agent-item-head .btn-link {
+  font-size: var(--fs-headingSM);
+  text-align: left;
+}
+code {
+  font-family: var(--f-mono);
+  font-size: 0.92em;
+}

@@ -19,15 +19,18 @@ export function TimelineList({
   now,
   variant,
   onEvent,
+  showToday = variant === "full",
 }: {
   events: TimelineEvent[];
   now: Date;
   variant: "preview" | "full";
   onEvent: (id: string, el: HTMLElement) => void;
+  /** Today divider を入れるか (workspace の chronological list のみ) */
+  showToday?: boolean;
 }) {
   const groups = groupTimelineByDay(events);
   const todayKey = dayKey(now);
-  let todayShown = variant !== "full";
+  let todayShown = !showToday;
   return (
     <ol className={`tl-groups tl-${variant}`}>
       {groups.map((g) => {

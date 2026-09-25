@@ -53,7 +53,48 @@ export const api = {
   ethPublicEvents: () => request<TimelineEventsResponse>("/eth/public-events"),
   ethEvents: (address: string) => request<TimelineEventsResponse>(`/eth/events?address=${encodeURIComponent(address)}`),
   ethStatus: () => request<EthStatus>("/eth/status"),
+  ethProposal: (address: string, eventId: string) =>
+    request<Proposal>(`/eth/proposal?address=${encodeURIComponent(address)}&eventId=${encodeURIComponent(eventId)}`),
+  ethBuildAction: (owner: string, eventId: string, actionType: string) =>
+    request<ActionPlan>("/eth/build-action", { method: "POST", body: JSON.stringify({ owner, eventId, actionType }) }),
 };
+
+/** BFF src/ethereum/plans.ts ActionPlanSchema と同形 (unsigned、broadcast しない) */
+export interface ActionPlan {
+  eventId: string;
+  actionType: string;
+  chainId: number;
+  owner: string;
+  target: "fork" | "mainnet";
+  summary: string;
+  steps: Array<{ kind: "approval" | "call"; to: string; data: string; value: string; description: string }>;
+  simulation: { ran: boolean; ok?: boolean; error?: string; note: string };
+  builtAt: string;
+  source: string;
+  broadcast: false;
+}
+
+/** BFF src/ethereum/proposals.ts ProposalSchema と同形 */
+export interface Proposal {
+  eventId: string;
+  generator: "rule-based";
+  summary: string;
+  facts: string[];
+  assumptions: string[];
+  options: Array<{
+    id: string;
+    label: string;
+    currentYield: number | null;
+    yieldSource: string | null;
+    liquidityClass: "instant" | "cooldown" | "queue" | "dated";
+    durationDays: number | null;
+    risks: string[];
+    firstAction: string | null;
+  }>;
+  recommendedOptionId: string;
+  reason: string;
+  builtAt: string;
+}
 
 /** /eth/status — 各 integration の設定有無のみ (値は返さない) */
 export interface EthStatus {

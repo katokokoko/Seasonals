@@ -112,3 +112,19 @@ Web 側 (`artifacts/seasonals-web`) は `BFF_URL` (Vite dev proxy 先、node 側
 ### B5 — Web を Ethereum 実データに接続
 - 実装済み: watchlist を複数 address 化 (最大 6、Solana / Ethereum 混在、接続 wallet を先頭に重複排除)、`useTimeline` が公開イベント + address ごとの `/eth/events` / `/time-events/wallet` を並列取得して id merge、source ごとの状態を card footer に表示、`useNow` (データ更新 + 30s で現在時刻を更新し status を再導出)、status 文言の具体化 (Claimable now / Pending / Overdue)、詳細カードは owner と一致する address を閲覧中の時だけ action を出す、nav に被らない配置
 - 検証: 実 address 3 件を watch した状態で Home Timeline / 詳細カード (Lido claimable = Claim ETH が available、Ethena cooldown = Claim USDe は not_yet と理由表示) を screenshot で確認。e2e 43/43 pass
+
+### B5 — `f6f1f24` (push 済み)
+
+### B7–B8 — 提案 (rule-based) / unsigned transaction plan / MCP tools
+- 実装済み:
+  - BFF `POST /eth/build-action`: event を同じ source (`getUserEvents`) から id で引き直し、on-chain 状態を再検証してから calldata を組む (Lido `claimWithdrawal`、Ethena `unstake`、Pendle は Hosted SDK Convert + 必要な approve)。mainnet に eth_call して結果を返す。`broadcast: false` 固定、zod で plan を検証
+  - BFF `GET /eth/proposal`: rule-based 提案 (facts / assumptions / options / risks / recommendation、zod 検証)。利回りは Lido eth-api SMA APR と Ethena 30 日平均 (いずれも trailing と明記)
+  - `/eth/*` を独立 scope にし、想定外の例外も `sanitizeError` 経由でのみ log / response
+  - Web: 詳細カードに Proposal panel と Transaction preview (FORK / MAINNET badge、step ごとの説明、eth_call の結果、「未署名・未送信」を明示)、Agent 画面に期日の近い event の提案
+  - MCP Server: `list_events` (status を導出、範囲 / status で絞り込み)、`get_proposal`、`build_action` (unsigned のみ)、resource `seasonals://calendar/{address}` (iCal)
+- 検証:
+  - 実 address `0x0cA88aeB92357A00CDFAC815d5e11C4eEEefc2b5` の Lido request #136731 で build-action → `claimWithdrawal` calldata、**mainnet eth_call 成功** (送信なし)。提案も実データ (Lido SMA APR 2.25%)
+  - MCP を stdio で起動し実 BFF に対して `list_events(status=due)` → `get_proposal` → `build_action` → calendar resource を実行 (same source で同じ event)
+  - BFF 409 / MCP 15 / web 12 / lib 173 / mobile 475 tests green、新規 TS エラー 0、e2e 43/43、web build
+- 未検証: Pendle redeem plan (満期済み PT を持つ実 address を Infura の rate limit (429) で探しきれず)、Ethena unstake plan (実 address の cooldown が未終了)。いずれも derive / 可否判定は unit test のみ
+- 事故記録: `find-eth-demo-addresses.mjs` の深掘り中に Infura 429 の未捕捉例外が viem のエラー object (request URL = key を含む) を **repo 外の一時ファイル** (`/tmp`) に出力した。即削除し、script に redact 付きの global handler と throttle を追加、`/eth/*` にも sanitize 済みの error handler を追加。repo / commit / push には含まれていない (check-no-secrets で確認)

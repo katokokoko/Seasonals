@@ -113,7 +113,7 @@ export function TimelineWorkspace({
           {attention.length > 0 && (
             <section className="attention-section" aria-label="Needs attention">
               <h2 className="section-title">Needs attention</h2>
-              <TimelineList events={attention} now={now} variant="full" onEvent={(id, el) => open({ kind: "event", eventId: id }, el)} />
+              <TimelineList events={attention} now={now} variant="full" showToday={false} onEvent={(id, el) => open({ kind: "event", eventId: id }, el)} />
             </section>
           )}
           <TimelineList events={rest} now={now} variant="full" onEvent={(id, el) => open({ kind: "event", eventId: id }, el)} />
