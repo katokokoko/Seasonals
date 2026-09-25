@@ -51,3 +51,12 @@ Web 側 (`artifacts/seasonals-web`) は `BFF_URL` (Vite dev proxy 先、node 側
 ## 進捗ログ
 
 各 push 後に commit hash と「実装済み / 未実装 / 実際に検証したこと」を追記する。
+
+### A1 — `c5f3c65` web scaffold
+- 実装済み: `artifacts/seasonals-web` (Vite 7 / React 19.2.3 / react-router 7 / vitest 3.2)、`/api` → BFF proxy、secret / typecheck script、ts-guard 追加
+- 未実装: 画面すべて
+- 検証: web typecheck / test / build green。`pnpm -r test` (lib 150, bff 394, mcp 11, mobile 475) green、全 workspace 新規 TS エラー 0。root の react 19.2.3 は不変 (web は react-dom 19.2.3 を nested install)。check-no-secrets が planted key を検出することを確認
+
+### A2 — lib: web 派生 token / chains / TimelineEvent / timeline derive
+- 実装済み: `FONT_WEB` / `SURFACE_WEB` / `SHADOW_WEB` / `mixHex` (docs/design-system.md に表を追加)、`lib/config/chains.ts` (`SUPPORTED_CHAINS`)、`lib/types/timeline.ts` (3 event class を型で区別)、`lib/derive/timeline.ts` (status 導出 / 表示 status / 安定 sort / window / 日付 group / 42 日 grid / block→時刻 / Solana 射影 / merge)
+- 検証: lib 173 tests green (新規 23)、`pnpm -r test` / 全 workspace 新規 TS エラー 0

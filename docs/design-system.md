@@ -374,6 +374,26 @@ import { BlurView } from "expo-blur";
 ### Web (Next.js / Vite) での扱い
 `backdrop-filter: blur(16px)` をそのまま使用可能。ただし `-webkit-backdrop-filter` も併記する。
 
+**例外 — desktop Web (`artifacts/seasonals-web`)**: 全画面 water shader (毎フレーム再描画) の上では
+`backdrop-filter` を使わない (docs/web/water-background-spec.md、WORKLOG #4)。代わりに下記の
+派生 token (near-opaque な vanilla 面) を使う。
+
+### Web 派生 token (`lib/design-system.ts`)
+既存 token から派生させたもの。hex の新規追加はしない。
+
+| token | 値の導出 | 用途 |
+|---|---|---|
+| `FONT_WEB.*` | DS.font と同じ CSS stack | Web の font-family (`FONT` は expo-font 名) |
+| `SURFACE_WEB.lobby` | `bgPrimary` @ 0.92 | Home portal card / 中央カード |
+| `SURFACE_WEB.work` | `bgPrimary` @ 0.90 | work screen の content パネル |
+| `SURFACE_WEB.nav` | `bgPrimary` @ 0.85 | global nav / local toolbar |
+| `SURFACE_WEB.detail` | `bgPrimary` @ 0.97 | 前面の詳細カード |
+| `SURFACE_WEB.hover` | `sodaLight` @ 0.6 | 行 hover / 選択セル |
+| `SURFACE_WEB.border` | `textOnColor` @ 0.7 | 1px 半透明白 border |
+| `SURFACE_WEB.scrim` | `textPrimary` @ 0.08 | 詳細カード背後の薄い scrim |
+| `SURFACE_WEB.waterFallback` | `mixHex(sodaLight, melonLight, 0.45)` | WebGL 非対応時の page 背景 |
+| `SHADOW_WEB.soft / lift` | `shadowStrong` + `shadow` | soft / wide な影 |
+
 ### Pacifico の Web Font 配信
 - Google Fonts 経由が推奨
 - Expo: `expo-font` で読み込み、`Pacifico_400Regular` を `@expo-google-fonts/pacifico` から import
