@@ -146,3 +146,7 @@ code {
   gap: var(--sp-xs);
   margin-top: var(--sp-sm);
 }
+.hf-warn {
+  color: var(--c-caramelDark);
+  font-weight: var(--w-bold);
+}

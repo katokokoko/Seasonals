@@ -19,6 +19,7 @@ This monorepo has four parts:
 | Lido | Withdrawal queue: pending (no ETA), or finalized and claimable | `claimWithdrawal` | `eth_call` on mainnet, then executed on the fork (`isClaimed=true`). |
 | Uniswap CCA | Auction start / end / claim; per-bid exit, claim and refund | `exitBid` / `claimTokens` | A real refund `exitBid` checked on mainnet and executed on the fork. |
 | 1inch Aqua + SwapVM | Strategy review date, set when a strategy ships (a "your plan" event) | Ship a PEGGED_STABLE USDC/USDe strategy (SwapVM `AquaPeggedAmmStrategy` + fee + salt) behind the peg guard. Dock it from the review event. | On the fork: ship → one fill by a real USDC-holding EOA (10 USDC → 9.9886 USDe) → review event on the calendar → dock. |
+| Aave V4 (context only) | None. Aave has no dated events (v3), so it never appears on the calendar. | Read only: Hub/Spoke positions, supplied / debt, health factor, net APY on the Dashboard | Real AaveKit (`api.aave.com`) data for a V4 Bluechip-spoke user. |
 | Uniswap Trading API | Route USDC → USDe before an Ethena deposit | `/check_approval` → `/quote` → `/swap` behind a fail-closed Chainlink USDe/USDC peg guard | Real API responses. Swap executed on a fresh fork: approve → Permit2 transaction → swap, all receipts success. |
 
 Every calendar entry belongs to one of three classes, kept visually and type-separate (`lib/types/timeline.ts`):
@@ -92,6 +93,7 @@ State changes over time, so these addresses may not show the same events later.
 | CCA / Lido / Ethena / Pendle unsigned plans | `artifacts/seasonals-bff/src/ethereum/plans.ts`: `lido_claim` (~L105), `ethena_unstake` (~L129), `pendle_redeem` + Convert `POST /v3/sdk/1/convert` (~L146), `cca_exit_bid` / `cca_claim` (~L194) |
 | Uniswap Trading API proxy + swap plan | `artifacts/seasonals-bff/src/ethereum/uniswap.ts`: base URL (L15), `/check_approval` / `/quote` preview (`uniswapPreview`), `buildUniswapSwapPlan` (peg guard → approval → quote with `generatePermitAsTransaction` → `/swap`) |
 | Chainlink prices + fail-closed peg guard | `artifacts/seasonals-bff/src/ethereum/pricing.ts` (Feed Registry `latestRoundData`, `evaluatePeg`) |
+| Aave V4 context (AaveKit) | `artifacts/seasonals-bff/src/ethereum/aave.ts` |
 | Pendle / Ethena / Lido readers | `artifacts/seasonals-bff/src/ethereum/{pendle,ethena,lido}.ts` |
 | Fork execution (Anvil only, user approval required) | `artifacts/seasonals-bff/src/ethereum/execute.ts` |
 | 1inch Aqua (template validation, peg guard, ship / fill / dock, review event) | `artifacts/seasonals-bff/src/ethereum/aqua.ts` |
@@ -113,7 +115,7 @@ node artifacts/seasonals-web/e2e/run.mjs   # needs the web dev server; uses the 
 ## Not built (yet)
 
 - Aqua on mainnet. Takers there are KYB-gated resolvers, so ship / fill / dock run only on the fork.
-- Aave V4 context
+- Aave actions (supply / borrow). Aave is read-only context.
 - Uniswap on mainnet, and UniswapX `/order`. Swaps run only on the fork, and only for USDC ⇄ USDe.
 - Browser-wallet signing on mainnet
 - CCA `exitPartiallyFilledBid`

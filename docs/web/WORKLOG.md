@@ -223,3 +223,12 @@ Web 側 (`artifacts/seasonals-web`) は `BFF_URL` (Vite dev proxy 先、node 側
   - mainnet 状態の plan は、maker が mainnet で USDe を持たないため正しく refuse されることも確認
   - BFF 429 tests (template / 金額 / 帯域 / fee / review 日の検証、review event の class と dock action)、MCP 15 tests (tool 一覧に ship_lp_strategy)、`pnpm -r test` green、新規 TS エラー 0、e2e 43/43
 - 未実装: Aqua の mainnet 実行 (taker が KYB 済み resolver 限定)、Aqua REST の analytics、Aave
+
+### Aqua — `d7ef3cd` (push 済み)
+
+### Aave V4 (context のみ)
+- 公式確認: `@aave/client` 6.6.0 (AaveKit、`api.aave.com/graphql`、key 不要) が V4 の `hubs` / `spokes` / `userPositions` を持ち、Spoke の id・名前を返すことを確認 (v3 の open item「AaveKit が V4 Hub/Spoke を扱えるか」は解消)。mainnet の spoke 例: Bluechip / Ethena Correlated / Ethena Ecosystem / Etherfi / Forex
+- 実装済み: `aave.ts` (`userPositions` → spoke ごとの supplied / debt / net の USD、health factor、net APY)。AaveKit は decimal を BigDecimal object で返し `Number()` が throw するため `toString()` で文字列化し、8 桁 USD string に正規化 (float 計算なし)。`GET /eth/aave?address=`。Dashboard に「Aave V4 (context)」表。v3 の通り calendar event は作らない
+- 検証: `reserveHolders` で見つけた実 V4 利用者 `0x59cCC403…F2A7` → Bluechip spoke、supplied $5,112,220.98 / debt $1,371,270.60 / HF 3.15 / net APY -1.53% を Dashboard で確認
+- 途中経過: `tsx watch` が CCA indexer の background loop を抱えたまま再起動せず、新しい route が 404 になっていた → BFF を手動で再起動 (README の起動手順は変わらない)
+- 未実装: Aave への supply / borrow action、hidden concentration warning

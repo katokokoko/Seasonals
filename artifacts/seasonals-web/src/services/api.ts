@@ -55,6 +55,7 @@ export const api = {
   ethEvents: (address: string) => request<TimelineEventsResponse>(`/eth/events?address=${encodeURIComponent(address)}`),
   ethStatus: () => request<EthStatus>("/eth/status"),
   ethMenu: () => request<MenuProduct[]>("/eth/menu"),
+  ethAave: (address: string) => request<{ positions: AavePositionView[] }>(`/eth/aave?address=${encodeURIComponent(address)}`),
   uniswapExecuteOnFork: (swapper: string, tokenIn: string, tokenOut: string, amount: string) =>
     request<{ target: "fork"; plan: UniswapSwapPlan; txs: ForkExecution["txs"] }>("/eth/uniswap/execute", {
       method: "POST",
@@ -173,4 +174,17 @@ export interface AquaShipPlan {
   steps: ActionPlan["steps"];
   reviewAt: string;
   broadcast: false;
+}
+
+/** BFF src/ethereum/aave.ts AavePositionView と同形 (Aave V4、context のみ) */
+export interface AavePositionView {
+  spokeName: string;
+  spokeAddress: string;
+  totalSuppliedUsd: string | null;
+  totalDebtUsd: string | null;
+  netBalanceUsd: string | null;
+  healthFactor: string | null;
+  netApy: number | null;
+  source: "aavekit";
+  observedAt: string;
 }

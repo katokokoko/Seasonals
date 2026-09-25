@@ -14,6 +14,7 @@ import { advanceFork, executeOnFork, mineFork } from "../ethereum/execute";
 import { ensureIndexing, indexProgress } from "../ethereum/cca";
 import { UniswapError, buildUniswapSwapPlan, executeUniswapSwapOnFork, uniswapPreview } from "../ethereum/uniswap";
 import { getEthMenu } from "../ethereum/menu";
+import { getAavePositions } from "../ethereum/aave";
 import { buildAquaShipPlan, fillAquaOnFork, shipAquaOnFork, type AquaShipInput } from "../ethereum/aqua";
 import { checkPeg, getChainlinkPrice, PRICE_ASSETS, type PriceAsset } from "../ethereum/pricing";
 import { assertTokenAmount, InvalidAmountError } from "@workspace/lib/utils/numeric";
@@ -95,6 +96,17 @@ async function ethRoutes(app: FastifyInstance): Promise<void> {
       return reply.code(400).send({ error: "invalid_argument" });
     }
     return checkPeg(base, quote, band);
+  });
+
+  /** Aave V4 の position (context のみ、calendar event は作らない) */
+  app.get<{ Querystring: { address?: string } }>("/eth/aave", async (req, reply) => {
+    const address = req.query.address?.trim() ?? "";
+    if (!isEvmAddress(address)) return reply.code(400).send({ error: "invalid_address" });
+    try {
+      return { positions: await getAavePositions(address) };
+    } catch (e) {
+      return reply.code(502).send({ error: "upstream_error", message: sanitizeError(e) });
+    }
   });
 
   /** Explore の Ethereum 商品 (利率は label + 出所付き、取れなければ null) */

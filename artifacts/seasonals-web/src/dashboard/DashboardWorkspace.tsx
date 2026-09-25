@@ -4,6 +4,7 @@
  * 接続されるまで出さない (架空値を出さない)。
  */
 import { useNow } from "../ui/useNow";
+import { AaveContext } from "./AaveContext";
 import { deriveTimelineStatus, displayStatus } from "@workspace/lib/derive/timeline";
 import { useDetail } from "../timeline/detailStore";
 import { StatusBadge } from "../timeline/StatusBadge";
@@ -95,6 +96,12 @@ export default function DashboardWorkspace() {
             </table>
           )}
           <p className="muted small">Portfolio value and exposure across positions without dates are not connected yet.</p>
+        </section>
+        <section aria-labelledby="aave-context">
+          <h2 id="aave-context" className="section-heading">
+            Aave V4 (context)
+          </h2>
+          <AaveContext />
         </section>
         <SourceStatusLine sources={t.sources} />
       </div>
