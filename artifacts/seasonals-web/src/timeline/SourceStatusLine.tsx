@@ -8,9 +8,9 @@ export function SourceStatusLine({ sources }: { sources: SourceState[] }) {
   return (
     <p className="source-line">
       {sources.map((s) => (
-        <span key={s.key} className={`source source-${s.status}`} title={s.error}>
+        <span key={s.key} className={`source source-${s.partial ? "unavailable" : s.status}`} title={s.error ?? s.partial?.join("\n")}>
           <span className="source-dot" aria-hidden="true" />
-          {s.label}: {s.status === "ok" ? `${s.count}` : s.status === "loading" ? "loading" : s.status === "unavailable" ? "not connected yet" : "error"}
+          {s.label}: {s.status === "ok" ? `${s.count}${s.partial ? ` (partial: ${s.partial.length} source${s.partial.length > 1 ? "s" : ""} pending)` : ""}` : s.status === "loading" ? "loading" : s.status === "unavailable" ? "not connected yet" : "error"}
         </span>
       ))}
     </p>

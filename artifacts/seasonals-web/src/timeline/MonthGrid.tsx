@@ -33,7 +33,7 @@ export function MonthGrid({
   const days = useMemo(() => monthGridDays(month, 1), [month]);
   const byDay = useMemo(() => indexTimelineByDay(events), [events]);
   const todayKey = dayKey(now);
-  const maxChips = density === "preview" ? 2 : 4;
+  const maxChips = 2; // 1100–1439px でもセル高さに収まる数 (超過は "+n more")
 
   return (
     <div className={`month-grid density-${density}`} role="grid" aria-label="Month">

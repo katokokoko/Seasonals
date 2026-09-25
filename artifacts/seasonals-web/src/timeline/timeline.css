@@ -45,15 +45,15 @@
   font-weight: var(--w-bold);
 }
 /* 3 class を視覚的に区別 (v3 §1): protocol = 塗り / plan = 破線 / executed = 実線 melon */
-.class-protocol {
+.class-tag.class-protocol {
   background: var(--c-sodaTextSoft);
   color: var(--c-sodaText);
 }
-.class-user_plan {
+.class-tag.class-user_plan {
   border: 1px dashed var(--c-caramelDark);
   color: var(--c-caramelDark);
 }
-.class-executed {
+.class-tag.class-executed {
   border: 1px solid var(--c-melonText);
   color: var(--c-melonText);
 }

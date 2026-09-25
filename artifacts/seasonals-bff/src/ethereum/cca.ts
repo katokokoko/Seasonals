@@ -388,11 +388,37 @@ const userCache = new Map<string, { at: number; events: TimelineEvent[] }>();
  * BidSubmitted / BidExited / TokensClaimed を owner topic (3 event とも topic2) で絞る。
  * auction ごとに呼ぶと数百回になり Infura の 429 に当たるため (実測)。
  */
+const userScans = new Map<string, Promise<TimelineEvent[]>>();
+const USER_SCAN_WAIT_MS = 6_000;
+
+/**
+ * bid scan は getLogs を数十回 (700ms 間隔) 使うため、他 source の応答を待たせないよう
+ * 6 秒で打ち切り、scan は background で続けて完了後に cache する (次回の取得で出る)。
+ */
 export async function fetchCcaUserEvents(owner: string, observedAt: string): Promise<TimelineEvent[]> {
+  const key = owner.toLowerCase();
+  const hit = userCache.get(key);
+  if (hit && Date.now() - hit.at < 5 * 60_000) return hit.events;
+  let scan = userScans.get(key);
+  if (!scan) {
+    scan = scanUserBids(owner, observedAt).finally(() => userScans.delete(key));
+    userScans.set(key, scan);
+    scan.catch(() => undefined);
+  }
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error("Scanning auction bids in the background; they will appear on the next refresh.")), USER_SCAN_WAIT_MS);
+  });
+  try {
+    return await Promise.race([scan, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function scanUserBids(owner: string, observedAt: string): Promise<TimelineEvent[]> {
   const client = getEthClient();
   if (!client) throw new Error("Ethereum RPC is not configured.");
-  const hit = userCache.get(owner.toLowerCase());
-  if (hit && Date.now() - hit.at < 5 * 60_000) return hit.events;
   const { h, list } = await relevantAuctions(client);
   if (list.length === 0) return [];
   const byAddr = new Map(list.map((a) => [a.auction.toLowerCase(), a]));

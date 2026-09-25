@@ -8,7 +8,7 @@
 import { useQueries, useQuery } from "@tanstack/react-query";
 import { useMemo } from "react";
 import { fromUnifiedTimeEventDTO, mergeTimelineEvents, sortTimeline } from "@workspace/lib/derive/timeline";
-import type { TimelineEvent } from "@workspace/lib/types";
+import type { TimelineEvent, TimelineEventsResponse } from "@workspace/lib/types";
 import { useActiveAddresses } from "../state/session";
 import { api, ApiError } from "./api";
 import { shortAddress } from "../ui/format";
@@ -27,6 +27,8 @@ export interface SourceState {
   status: "loading" | "ok" | "error" | "unavailable";
   error?: string;
   count: number;
+  /** 200 で返ったが一部 adapter が失敗 / 未完了 */
+  partial?: string[];
 }
 
 export interface TimelineData {
@@ -50,7 +52,7 @@ export function useTimeline(): TimelineData {
       key: "eth-public",
       label: "Ethereum public events",
       queryKey: queryKeys.ethPublic as readonly unknown[],
-      queryFn: async () => (await api.ethPublicEvents()).events,
+      queryFn: async () => api.ethPublicEvents(),
     },
     ...active.map((a) =>
       a.chain === "ethereum"
@@ -58,15 +60,18 @@ export function useTimeline(): TimelineData {
             key: `eth:${a.address}`,
             label: `Ethereum ${shortAddress(a.address)}`,
             queryKey: queryKeys.ethEvents(a.address) as readonly unknown[],
-            queryFn: async () => (await api.ethEvents(a.address)).events,
+            queryFn: async () => api.ethEvents(a.address),
           }
         : {
             key: `sol:${a.address}`,
             label: `Solana ${shortAddress(a.address)}`,
             queryKey: queryKeys.solEvents(a.address) as readonly unknown[],
-            queryFn: async () => {
+            queryFn: async (): Promise<TimelineEventsResponse> => {
               const observedAt = new Date().toISOString();
-              return (await api.solanaWalletEvents(a.address)).map((d) => fromUnifiedTimeEventDTO(d, observedAt));
+              return {
+                events: (await api.solanaWalletEvents(a.address)).map((d) => fromUnifiedTimeEventDTO(d, observedAt)),
+                sources: [{ source: "seasonals-bff:solana", ok: true, observedAt }],
+              };
             },
           }
     ),
@@ -78,12 +83,14 @@ export function useTimeline(): TimelineData {
       queryFn: s.queryFn,
       staleTime: 60_000,
       retry: (n: number, e: unknown) => !(e instanceof ApiError && e.status === 404) && n < 2,
+      // 一部 source が未完了 / 失敗 (CCA bid の background scan、429 等) なら 15 秒後に再取得
+      refetchInterval: (q: { state: { data?: TimelineEventsResponse } }) => (q.state.data?.sources.some((x) => !x.ok) ? 15_000 : false),
     })),
   });
 
   const dataKey = results.map((r) => r.dataUpdatedAt).join(",");
   const events = useMemo(
-    () => sortTimeline(mergeTimelineEvents(...results.map((r) => r.data ?? []))),
+    () => sortTimeline(mergeTimelineEvents(...results.map((r) => r.data?.events ?? []))),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [dataKey]
   );
@@ -96,7 +103,8 @@ export function useTimeline(): TimelineData {
       label: s.label,
       status: r.isPending ? "loading" : r.isError ? (notFound ? "unavailable" : "error") : "ok",
       ...(r.isError ? { error: errorText(r.error) } : {}),
-      count: r.data?.length ?? 0,
+      count: r.data?.events.length ?? 0,
+      ...(r.data && r.data.sources.some((x) => !x.ok) ? { partial: r.data.sources.filter((x) => !x.ok).map((x) => `${x.source}: ${x.error ?? "failed"}`) } : {}),
     };
   });
 
