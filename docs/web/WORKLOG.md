@@ -144,3 +144,22 @@ Web 側 (`artifacts/seasonals-web`) は `BFF_URL` (Vite dev proxy 先、node 側
   - ブラウザで Lido #136732 (`0xc601…4AC7`) を preview → 承認 → fork 実行 → Timeline に `Executed` (completed) の行が mainnet の claimable と別 class で並ぶことを screenshot で確認
   - BFF 411 tests (実行の承認必須 403 / mainnet target 拒否 409 / 非 Anvil 拒否 502)、e2e 43/43、web build
 - 未実装: Pendle redeem / enter の fork 実行 (満期済み PT の実保有者を未特定)、browser wallet での署名 (mainnet 送信は意図的に無し)
+
+### B10 — `729122f` (push 済み)
+
+### B6 — Uniswap CCA indexer / auction event / bid の exit・claim
+- 公式確認: 4 factory の mainnet deploy block を getCode の二分探索で実測 (v1.0.0 23,780,787 / v1.1.0 24,321,671 / v2.0.0 25,331,230 / v2.1.0 25,503,447)。**Infura の eth_getLogs は 1 回 10,000 block まで** (実測 `range … exceeds limit of 10000`)
+- 実装済み:
+  - `src/ethereum/cca.ts`: AuctionCreated を 10k block 分割で index。最新側を先に scan し、続けて過去へ遡る。範囲超過は分割幅を半分に、失敗は指数 backoff で再試行、chunk ごとに `.data/cca-index.json` へ進捗保存 (BFF 再起動で続きから再開することを確認)。`GET /eth/cca/status` で進捗
+  - `AuctionParameters` を decode、token / currency の symbol・decimals と `isGraduated()` を multicall (失敗時は未設定のまま残して再取得)
+  - 公開 feed: 開催中 / 予定 / 終了後 2 日以内、~2h 未満の極短 auction は除外、終了が近い順に 12 件。時刻は 12 秒/block の推定で「≈」表示。token symbol は作成者が自由に付けるため contract と注意書きを併記
+  - address 別: 全 relevant auction をまとめた raw `eth_getLogs` (topic0 = BidSubmitted / BidExited / TokensClaimed、topic2 = owner) を 10k 分割で → bid ごとに exit / claim / refund event と `cca_exit_bid` / `cca_claim` の plan
+  - Infura 429 対策: client 全体の `throttledFetch` (同時 4 本、eth_getLogs 同士は 700ms 以上空け、軽い read は待機中の getLogs を追い越す)、viem retry 4 回、部分失敗の結果は 10 秒だけ cache、エラーに HTTP status を付加 (秘密は含めない)
+- 検証 (mainnet 実データ):
+  - index 完了: 2,275,781 block、330 auction
+  - 公開 feed に実 auction (BGD / SCRT / SIKKA …) が並ぶことを screenshot で確認
+  - bidder `0x840b0Dea…51b5` (BFX bid #196/#200/#218) と `0x26ad2CEb…450F` (FLUX) で exit / claim event
+  - bidder `0x3c3F2f22…BE26` の UNO (非 graduate) bid #0: refund の `exitBid` plan が **mainnet eth_call 成功** → **fork で実行 (receipt success)**。BVM の bid は on-chain で exit 済みとして settled 表示
+  - BFF 416 tests (CCA decode / 公開 event / bid lifecycle / throttle)
+- 未実装: `exitPartiallyFilledBid` (checkpoint hint が必要。説明文で manual と明記)、fork 上で数万 block 進める lifecycle 再生 (anvil_mine が block ごとに beacon roots storage を上流から取るため Infura 429 で失敗。代わりに mainnet で既に終了した実 auction で exit を実証)
+- 事故記録: debug 中に viem のエラー object をそのまま print し、RPC URL (key 入り) が **この作業の端末出力** に出た。ファイル / repo / commit には出ていない。以後の debug script は redact 関数経由のみ

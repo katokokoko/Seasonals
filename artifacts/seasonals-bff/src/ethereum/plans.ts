@@ -12,7 +12,7 @@ import { z } from "zod";
 import { formatTokenAmount } from "@workspace/lib/utils/numeric";
 import type { TimelineEvent } from "@workspace/lib/types";
 import { executionTarget, getEthClient, getJson, sanitizeError } from "./client";
-import { erc20Abi, sUSDeAbi, withdrawalQueueAbi } from "./abis";
+import { ccaAuctionAbi, erc20Abi, sUSDeAbi, withdrawalQueueAbi } from "./abis";
 import { ETHENA, LIDO, MAINNET_CHAIN_ID, PENDLE_API } from "./config";
 import { getUserEvents } from "./events";
 import { fetchPendleMarkets } from "./pendle";
@@ -189,6 +189,28 @@ export async function buildActionPlan(input: { owner: string; eventId: string; a
       ];
       summary = `Redeem matured PT-${market.name} through Pendle's Convert route.`;
       source = "pendle-hosted-sdk:convert";
+      break;
+    }
+    case "cca_exit_bid":
+    case "cca_claim": {
+      const auction = action.params.auction as `0x${string}`;
+      const bidId = BigInt(action.params.bidId ?? "-1");
+      const isExit = action.actionType === "cca_exit_bid";
+      steps = [
+        {
+          kind: "call",
+          to: auction,
+          data: isExit
+            ? encodeFunctionData({ abi: ccaAuctionAbi, functionName: "exitBid", args: [bidId] })
+            : encodeFunctionData({ abi: ccaAuctionAbi, functionName: "claimTokens", args: [bidId] }),
+          value: "0",
+          description: isExit
+            ? `Exit CCA bid #${bidId} (refunds unspent currency; partially filled bids need checkpoint hints and are not handled here).`
+            : `Claim the tokens bought with CCA bid #${bidId}.`,
+        },
+      ];
+      summary = isExit ? `Exit bid #${bidId} in the Uniswap CCA auction.` : `Claim tokens for bid #${bidId} in the Uniswap CCA auction.`;
+      source = "uniswap-cca";
       break;
     }
     default:

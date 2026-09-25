@@ -142,3 +142,12 @@ export async function advanceFork(seconds: number): Promise<{ timestamp: string;
   const b = await rpc<{ timestamp: string; number: string }>("eth_getBlockByNumber", ["latest", false]);
   return { timestamp: new Date(Number.parseInt(b.timestamp, 16) * 1000).toISOString(), block: String(Number.parseInt(b.number, 16)) };
 }
+
+/** fork の block を進める (CCA は block 単位で進行するため)。12 秒間隔で mine する。fork 専用 */
+export async function mineFork(blocks: number): Promise<{ block: string; timestamp: string }> {
+  await assertForkEndpoint();
+  if (!Number.isInteger(blocks) || blocks <= 0 || blocks > 500_000) throw new PlanError("action_not_available", "blocks must be 1..500000");
+  await rpc("anvil_mine", ["0x" + blocks.toString(16), "0xc"]);
+  const b = await rpc<{ timestamp: string; number: string }>("eth_getBlockByNumber", ["latest", false]);
+  return { timestamp: new Date(Number.parseInt(b.timestamp, 16) * 1000).toISOString(), block: String(Number.parseInt(b.number, 16)) };
+}

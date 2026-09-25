@@ -10,7 +10,8 @@ import { ethereumRpcUrl, executionTarget, forkRpcUrl, getEthClient, sanitizeErro
 import { getPublicEvents, getUserEvents } from "../ethereum/events";
 import { buildActionPlan, PlanError } from "../ethereum/plans";
 import { buildProposal } from "../ethereum/proposals";
-import { advanceFork, executeOnFork } from "../ethereum/execute";
+import { advanceFork, executeOnFork, mineFork } from "../ethereum/execute";
+import { ensureIndexing, indexProgress } from "../ethereum/cca";
 
 async function forkReachable(): Promise<boolean> {
   try {
@@ -43,6 +44,12 @@ export async function registerEthRoutes(parent: FastifyInstance): Promise<void> 
 }
 
 async function ethRoutes(app: FastifyInstance): Promise<void> {
+  /** CCA indexer の進捗 (10k block 分割の getLogs、進捗は .data に保存) */
+  app.get("/eth/cca/status", async () => {
+    ensureIndexing();
+    return indexProgress();
+  });
+
   app.get("/eth/status", async () => {
     const client = getEthClient();
     let latestBlock: string | null = null;
@@ -127,6 +134,16 @@ async function ethRoutes(app: FastifyInstance): Promise<void> {
   app.post<{ Body: { seconds?: number } }>("/eth/fork/advance", async (req, reply) => {
     try {
       return await advanceFork(Number(req.body?.seconds));
+    } catch (e) {
+      if (e instanceof PlanError) return reply.code(e.code === "rpc_unavailable" ? 502 : 409).send({ error: e.code, message: e.message });
+      return reply.code(502).send({ error: "upstream_error", message: sanitizeError(e) });
+    }
+  });
+
+  /** fork 専用: block を進める (CCA の end / claim block を再生する) */
+  app.post<{ Body: { blocks?: number } }>("/eth/fork/mine", async (req, reply) => {
+    try {
+      return await mineFork(Number(req.body?.blocks));
     } catch (e) {
       if (e instanceof PlanError) return reply.code(e.code === "rpc_unavailable" ? 502 : 409).send({ error: e.code, message: e.message });
       return reply.code(502).send({ error: "upstream_error", message: sanitizeError(e) });

@@ -15,12 +15,14 @@ import { fetchPendlePublicEvents, fetchPendleUserEvents } from "./pendle";
 
 type Source = { name: string; run: (observedAt: string) => Promise<TimelineEvent[]>; needsRpc: boolean };
 
-const cache = new Map<string, { at: number; value: TimelineEventsResponse }>();
+const cache = new Map<string, { at: number; value: TimelineEventsResponse; ttlMs: number }>();
+/** 部分失敗 (429 等) を含む結果は短時間だけ cache して早めに再試行する */
+const FAILED_TTL_MS = 10_000;
 const inflight = new Map<string, Promise<TimelineEventsResponse>>();
 
 async function collect(key: string, sources: Source[], ttlMs: number): Promise<TimelineEventsResponse> {
   const hit = cache.get(key);
-  if (hit && Date.now() - hit.at < ttlMs) return hit.value;
+  if (hit && Date.now() - hit.at < hit.ttlMs) return hit.value;
   const running = inflight.get(key);
   if (running) return running;
   const p = (async () => {
@@ -39,7 +41,7 @@ async function collect(key: string, sources: Source[], ttlMs: number): Promise<T
       return { source: name, ok: false, error: sanitizeError(r.reason), observedAt };
     });
     const value = { events: sortTimeline(mergeTimelineEvents(...lists)), sources: status };
-    cache.set(key, { at: Date.now(), value });
+    cache.set(key, { at: Date.now(), value, ttlMs: status.every((x) => x.ok) ? ttlMs : FAILED_TTL_MS });
     return value;
   })().finally(() => inflight.delete(key));
   inflight.set(key, p);
