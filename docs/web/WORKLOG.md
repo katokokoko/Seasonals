@@ -187,3 +187,18 @@ Web 側 (`artifacts/seasonals-web`) は `BFF_URL` (Vite dev proxy 先、node 側
 - `pendle_redeem` (PT-wstETH, 2026-08-27 満期): Pendle Hosted SDK Convert が `redeem-py` route + approve 2 件を返し、step 1 の eth_call が mainnet で成功 → **fork で approve ×2 + redeem 実行、receipt 3 件とも success**。fork 上の PT 残高 0、mainnet は 0.0134 PT のまま (cast で確認)
 - これで Pendle / Ethena / Lido / Uniswap CCA の 4 経路すべてで「実 mainnet 状態 → unsigned plan → fork 実行」を確認
 - `README.md` (repo root): 概要、ETHGlobal の申告 (既存コード再利用、Classic 適格性は主張しない)、起動方法、env、実 address の例、protocol 呼び出し箇所、未実装、AI 利用表記。MultiBaas は不使用と明記、Team 欄は提出者が記入
+
+### sweep 修正 — `2d4c01b` (push 済み)
+
+### Chainlink 価格 + fail-closed peg guard + Uniswap swap (fork 実行)
+- 公式確認: Chainlink Feed Registry `0x47Fb2585…eeeDf` の `getFeed(base, USD)` が USDC / USDe / stETH / ETH の feed を返し、`description()` が "USDC / USD" / "USDe / USD" / "ETH / USD" であることを on-chain で確認。feed address は adapter に直書きせず、registry の `latestRoundData(base, USD)` を読む
+- 実装済み:
+  - `pricing.ts`: answer + decimals のまま保持し bigint で比較、feed ごとの heartbeat で stale 判定。`evaluatePeg` は欠損・stale・非正・乖離超過で必ず refuse (CLAUDE.md §4 の fail-closed を Ethereum 側に適用)。`GET /eth/prices`、`GET /eth/peg`
+  - Uniswap `buildUniswapSwapPlan`: **USDC ⇄ USDe のみ** (peg guard があるペア)。peg guard ±50 bps → `/check_approval` → `/quote` (`generatePermitAsTransaction: true` で Permit2 も通常 tx に) → `/swap`。CLASSIC 系以外と off-chain permit 署名が必要な quote は拒否
+  - `POST /eth/uniswap/execute`: fork 専用、`approvedBy: "user"` 必須。fork 実行は汎用化した `sendStepsOnFork` / `recordExecuted` を使い、receipt から executed event を記録
+  - Web: Ethena カードの route preview に「Approve and swap on local fork」(peg guard の結果と tx ごとの status を表示)
+- 検証:
+  - peg guard (実 Chainlink): USDe 0.99981676 / USDC 0.99987434 → 1 bps で pass
+  - fork で USDC 保有の実 EOA `0x283Ac701…383b` として 100 USDC → **99.9986 USDe**、approve / Permit2 / swap の receipt 3 件 success (cast で USDe 残高を確認)。ブラウザからも 50 USDC で同じ流れを確認
+  - 途中経過: fork の時計を Ethena の検証で +1h 進めていたため swap が `TransactionDeadlinePassed()` で revert (cast run で特定)。`/swap` に fork 時刻基準の `deadline` を渡しても変わらず → fork を作り直すと成功。README に「時間送り後は fork を再起動」と明記
+  - BFF 426 tests (peg の境界・stale・欠損・decimals 差、swap は非対応ペアと guard 失敗で Trading API を呼ばずに拒否)

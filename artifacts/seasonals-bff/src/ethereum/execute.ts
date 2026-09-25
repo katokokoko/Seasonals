@@ -61,65 +61,99 @@ export async function assertForkEndpoint(): Promise<void> {
   }
 }
 
-export async function executeOnFork(input: { owner: string; eventId: string; actionType: string }): Promise<ForkExecution> {
-  await assertForkEndpoint();
-  const owner = input.owner as Hex;
+export function forkClients() {
   const transport = http(forkRpcUrl(), { fetchFn: undiciFetch() });
-  const pub = createPublicClient({ chain: mainnet, transport });
-  // fork の状態で再検証・eth_call する (時間送り後の cooldown / 満期も fork 上の事実で判定)
-  const plan = await buildActionPlan(input, { client: pub as unknown as PublicClient, stateOnly: true, where: "fork" });
-  const wallet = createWalletClient({ chain: mainnet, transport });
+  return { pub: createPublicClient({ chain: mainnet, transport }), wallet: createWalletClient({ chain: mainnet, transport }) };
+}
 
+/** impersonate した owner として steps を順に送る (fork 専用、呼び出し側で assertForkEndpoint 済み) */
+export async function sendStepsOnFork(owner: Hex, steps: Array<{ to: string; data: string; value: string; description: string }>): Promise<ForkExecution["txs"]> {
+  const { pub, wallet } = forkClients();
   await rpc("anvil_impersonateAccount", [owner]);
   try {
     const bal = await pub.getBalance({ address: owner });
     // gas 代のみ fork 上で補充 (実資金ではない)
     if (bal < 10n ** 16n) await rpc("anvil_setBalance", [owner, "0x" + (10n ** 17n).toString(16)]);
     const txs: ForkExecution["txs"] = [];
-    for (const step of plan.steps) {
+    for (const step of steps) {
       const hash = await wallet.sendTransaction({ account: owner, to: step.to as Hex, data: step.data as Hex, value: BigInt(step.value), chain: mainnet });
       const r = await pub.waitForTransactionReceipt({ hash });
       txs.push({ hash, status: r.status, blockNumber: r.blockNumber.toString(), gasUsed: r.gasUsed.toString(), description: step.description });
       if (r.status !== "success") break;
     }
+    return txs;
+  } finally {
+    await rpc("anvil_stopImpersonatingAccount", [owner]).catch(() => undefined);
+  }
+}
+
+/** receipt を観測した実行を executed event として記録 (v3 §4) */
+export async function recordExecuted(input: {
+  owner: string;
+  title: string;
+  protocol: string | null;
+  protocolName: string | null;
+  asset?: string;
+  txs: ForkExecution["txs"];
+  ok: boolean;
+}): Promise<TimelineEvent> {
+  const { pub } = forkClients();
+  const last = input.txs[input.txs.length - 1];
+  const block = last ? await pub.getBlock({ blockNumber: BigInt(last.blockNumber) }) : null;
+  const now = new Date().toISOString();
+  const ev: TimelineEvent = {
+    id: `ethereum:executed:fork:${last?.hash ?? now}`,
+    chain: "ethereum",
+    class: "executed",
+    kind: "action_executed",
+    protocol: input.protocol,
+    protocolName: input.protocolName,
+    title: `${input.ok ? "Executed" : "Failed"} on fork: ${input.title}`,
+    ...(input.asset ? { asset: input.asset } : {}),
+    at: block ? new Date(Number(block.timestamp) * 1000).toISOString() : now,
+    atApprox: false,
+    settled: true,
+    outcome: input.ok ? "success" : "failed",
+    metrics: [
+      { label: "Environment", kind: "text", value: "Local Anvil fork of mainnet (no real funds moved)" },
+      ...input.txs.map((t, i) => ({ label: `Fork tx ${i + 1}`, kind: "text" as const, value: `${t.hash.slice(0, 10)}… (${t.status})` })),
+    ],
+    actions: [],
+    requiresWallet: true,
+    owner: input.owner,
+    links: [],
+    source: "anvil-fork:receipt",
+    observedAt: now,
+  };
+  executed = [...store(), ev];
+  saveJson(STORE, executed);
+  _invalidateUser(input.owner);
+  return ev;
+}
+
+export async function executeOnFork(input: { owner: string; eventId: string; actionType: string }): Promise<ForkExecution> {
+  await assertForkEndpoint();
+  const owner = input.owner as Hex;
+  const { pub } = forkClients();
+  // fork の状態で再検証・eth_call する (時間送り後の cooldown / 満期も fork 上の事実で判定)
+  const plan = await buildActionPlan(input, { client: pub as unknown as PublicClient, stateOnly: true, where: "fork" });
+  try {
+    const txs = await sendStepsOnFork(owner, plan.steps);
     const ok = txs.length === plan.steps.length && txs.every((t) => t.status === "success");
-    const last = txs[txs.length - 1];
-    const block = last ? await pub.getBlock({ blockNumber: BigInt(last.blockNumber) }) : null;
-    const now = new Date().toISOString();
     const source = (await buildEventSnapshot(input.owner, input.eventId)) ?? { protocol: null, protocolName: null, title: plan.summary, asset: undefined };
-    const executedEvent: TimelineEvent = {
-      id: `ethereum:executed:fork:${last?.hash ?? now}`,
-      chain: "ethereum",
-      class: "executed",
-      kind: "action_executed",
+    const executedEvent = await recordExecuted({
+      owner: input.owner,
+      title: plan.summary,
       protocol: source.protocol,
       protocolName: source.protocolName,
-      title: `${ok ? "Executed" : "Failed"} on fork: ${plan.summary}`,
       ...(source.asset ? { asset: source.asset } : {}),
-      at: block ? new Date(Number(block.timestamp) * 1000).toISOString() : now,
-      atApprox: false,
-      settled: true,
-      outcome: ok ? "success" : "failed",
-      metrics: [
-        { label: "Environment", kind: "text", value: "Local Anvil fork of mainnet (no real funds moved)" },
-        ...txs.map((t, i) => ({ label: `Fork tx ${i + 1}`, kind: "text" as const, value: `${t.hash.slice(0, 10)}… (${t.status})` })),
-      ],
-      actions: [],
-      requiresWallet: true,
-      owner: input.owner,
-      links: [],
-      source: "anvil-fork:receipt",
-      observedAt: now,
-    };
-    executed = [...store(), executedEvent];
-    saveJson(STORE, executed);
-    _invalidateUser(input.owner);
+      txs,
+      ok,
+    });
     return { target: "fork", plan, txs, executedEvent };
   } catch (e) {
     if (e instanceof PlanError) throw e;
     throw new PlanError("upstream_error", sanitizeError(e));
-  } finally {
-    await rpc("anvil_stopImpersonatingAccount", [owner]).catch(() => undefined);
   }
 }
 

@@ -12,8 +12,9 @@ import { buildActionPlan, PlanError } from "../ethereum/plans";
 import { buildProposal } from "../ethereum/proposals";
 import { advanceFork, executeOnFork, mineFork } from "../ethereum/execute";
 import { ensureIndexing, indexProgress } from "../ethereum/cca";
-import { UniswapError, uniswapPreview } from "../ethereum/uniswap";
+import { UniswapError, buildUniswapSwapPlan, executeUniswapSwapOnFork, uniswapPreview } from "../ethereum/uniswap";
 import { getEthMenu } from "../ethereum/menu";
+import { checkPeg, getChainlinkPrice, PRICE_ASSETS, type PriceAsset } from "../ethereum/pricing";
 import { assertTokenAmount, InvalidAmountError } from "@workspace/lib/utils/numeric";
 
 async function forkReachable(): Promise<boolean> {
@@ -76,6 +77,24 @@ async function ethRoutes(app: FastifyInstance): Promise<void> {
   });
 
   app.get("/eth/public-events", async () => getPublicEvents());
+
+  /** Chainlink 価格 (表示用)。取れない資産は null */
+  app.get<{ Querystring: { assets?: string } }>("/eth/prices", async (req) => {
+    const names = (req.query.assets ?? "USDC,USDe,ETH").split(",").filter((x): x is PriceAsset => x in PRICE_ASSETS);
+    const prices = await Promise.all(names.map((n) => getChainlinkPrice(n)));
+    return Object.fromEntries(names.map((n, i) => [n, prices[i]]));
+  });
+
+  /** fail-closed peg guard (価格依存の実行前チェック) */
+  app.get<{ Querystring: { base?: string; quote?: string; bandBps?: string } }>("/eth/peg", async (req, reply) => {
+    const base = req.query.base as PriceAsset;
+    const quote = req.query.quote as PriceAsset;
+    const band = Number.parseInt(req.query.bandBps ?? "50", 10);
+    if (!(base in PRICE_ASSETS) || !(quote in PRICE_ASSETS) || !Number.isInteger(band) || band <= 0 || band > 1000) {
+      return reply.code(400).send({ error: "invalid_argument" });
+    }
+    return checkPeg(base, quote, band);
+  });
 
   /** Explore の Ethereum 商品 (利率は label + 出所付き、取れなければ null) */
   app.get("/eth/menu", async () => getEthMenu());
@@ -170,6 +189,42 @@ async function ethRoutes(app: FastifyInstance): Promise<void> {
       return await uniswapPreview({ swapper, tokenIn, tokenOut, amount: amount! });
     } catch (e) {
       if (e instanceof UniswapError) return reply.code(e.status >= 500 ? 502 : e.status).send({ error: "uniswap_error", message: sanitizeError(e) });
+      throw e;
+    }
+  });
+
+  const swapBody = (body: { swapper?: string; tokenIn?: string; tokenOut?: string; amount?: string } | undefined) => {
+    const { swapper = "", tokenIn = "", tokenOut = "", amount } = body ?? {};
+    if (!isEvmAddress(swapper) || !isEvmAddress(tokenIn) || !isEvmAddress(tokenOut)) return null;
+    try {
+      return { swapper, tokenIn, tokenOut, amount: assertTokenAmount(amount) };
+    } catch {
+      return null;
+    }
+  };
+
+  /** Uniswap swap の unsigned plan (Chainlink peg guard を通った時だけ) */
+  app.post<{ Body: { swapper?: string; tokenIn?: string; tokenOut?: string; amount?: string } }>("/eth/uniswap/swap-plan", async (req, reply) => {
+    const input = swapBody(req.body);
+    if (!input) return reply.code(400).send({ error: "invalid_argument" });
+    try {
+      return await buildUniswapSwapPlan(input);
+    } catch (e) {
+      if (e instanceof UniswapError) return reply.code(e.status >= 500 ? 502 : e.status).send({ error: "uniswap_error", message: sanitizeError(e) });
+      throw e;
+    }
+  });
+
+  /** fork 専用の swap 実行 (approvedBy=user 必須、mainnet には送らない) */
+  app.post<{ Body: { swapper?: string; tokenIn?: string; tokenOut?: string; amount?: string; approvedBy?: string } }>("/eth/uniswap/execute", async (req, reply) => {
+    const input = swapBody(req.body);
+    if (!input) return reply.code(400).send({ error: "invalid_argument" });
+    if (req.body?.approvedBy !== "user") return reply.code(403).send({ error: "approval_required", message: "Execution requires the user's approval in the app." });
+    try {
+      return await executeUniswapSwapOnFork(input);
+    } catch (e) {
+      if (e instanceof UniswapError) return reply.code(e.status >= 500 ? 502 : e.status).send({ error: "uniswap_error", message: sanitizeError(e) });
+      if (e instanceof PlanError) return reply.code(e.code === "rpc_unavailable" ? 502 : 409).send({ error: e.code, message: e.message });
       throw e;
     }
   });

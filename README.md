@@ -18,7 +18,7 @@ This monorepo has four parts:
 | Ethena | sUSDe cooldown end. `cooldownDuration()` is read live, never assumed to be 7 days. | `unstake` | Executed on the fork after advancing fork time past a real cooldown. |
 | Lido | Withdrawal queue: pending (no ETA), or finalized and claimable | `claimWithdrawal` | `eth_call` on mainnet, then executed on the fork (`isClaimed=true`). |
 | Uniswap CCA | Auction start / end / claim; per-bid exit, claim and refund | `exitBid` / `claimTokens` | A real refund `exitBid` checked on mainnet and executed on the fork. |
-| Uniswap Trading API | Route preview USDC → USDe before an Ethena deposit | Quote only | Real `/check_approval` + `/quote` responses. |
+| Uniswap Trading API | Route USDC → USDe before an Ethena deposit | `/check_approval` → `/quote` → `/swap` behind a fail-closed Chainlink USDe/USDC peg guard | Real API responses. Swap executed on a fresh fork: approve → Permit2 transaction → swap, all receipts success. |
 
 Every calendar entry belongs to one of three classes, kept visually and type-separate (`lib/types/timeline.ts`):
 - **protocol event**: derived from chain or protocol data
@@ -49,6 +49,8 @@ pnpm --filter @seasonals/web dev          # http://localhost:5173
 
 # 3. Optional: Anvil mainnet fork for the execution demo
 bash scripts/eth-fork.sh                  # 127.0.0.1:8545 (key never on argv or in logs)
+#    Restart the fork after using fork time travel (/eth/fork/advance). Uniswap swaps
+#    revert with TransactionDeadlinePassed on a fork whose clock runs ahead of real time.
 
 # 4. Optional: MCP client (e.g. Claude Desktop) — see .mcp.json
 npx tsx artifacts/seasonals-mcp-server/src/index.ts
@@ -87,7 +89,8 @@ State changes over time, so these addresses may not show the same events later.
 | CCA ABI (`AuctionCreated`, `BidSubmitted`, `AuctionParameters`) | `artifacts/seasonals-bff/src/ethereum/abis.ts` |
 | CCA indexer (10k-block slices, retry, saved progress) | `artifacts/seasonals-bff/src/ethereum/cca.ts`: `ensureIndexing` (~L159), bid scan via raw `eth_getLogs` (~L391–L407) |
 | CCA / Lido / Ethena / Pendle unsigned plans | `artifacts/seasonals-bff/src/ethereum/plans.ts`: `lido_claim` (~L105), `ethena_unstake` (~L129), `pendle_redeem` + Convert `POST /v3/sdk/1/convert` (~L146), `cca_exit_bid` / `cca_claim` (~L194) |
-| Uniswap Trading API proxy | `artifacts/seasonals-bff/src/ethereum/uniswap.ts`: base URL (L15), `/check_approval` (~L105), `/quote` (~L111) |
+| Uniswap Trading API proxy + swap plan | `artifacts/seasonals-bff/src/ethereum/uniswap.ts`: base URL (L15), `/check_approval` / `/quote` preview (`uniswapPreview`), `buildUniswapSwapPlan` (peg guard → approval → quote with `generatePermitAsTransaction` → `/swap`) |
+| Chainlink prices + fail-closed peg guard | `artifacts/seasonals-bff/src/ethereum/pricing.ts` (Feed Registry `latestRoundData`, `evaluatePeg`) |
 | Pendle / Ethena / Lido readers | `artifacts/seasonals-bff/src/ethereum/{pendle,ethena,lido}.ts` |
 | Fork execution (Anvil only, user approval required) | `artifacts/seasonals-bff/src/ethereum/execute.ts` |
 | MCP tools `list_events` / `get_proposal` / `build_action` | `artifacts/seasonals-mcp-server/src/server.ts` |
@@ -109,8 +112,7 @@ node artifacts/seasonals-web/e2e/run.mjs   # needs the web dev server; uses the 
 
 - 1inch Aqua / SwapVM LP sleeve
 - Aave V4 context
-- Chainlink price module and depeg guard
-- Uniswap `/swap` / `/order` execution
+- Uniswap on mainnet, and UniswapX `/order`. Swaps run only on the fork, and only for USDC ⇄ USDe.
 - Browser-wallet signing on mainnet
 - CCA `exitPartiallyFilledBid`
 - LLM-generated proposals (rule-based today)

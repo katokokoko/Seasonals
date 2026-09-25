@@ -3,7 +3,7 @@
 Seasonals added an Ethereum "time layer": a calendar and an MCP API that show when DeFi positions need attention. For Uniswap, we built:
 
 - a participant calendar for **Continuous Clearing Auctions (CCA)**, which indexes auctions from all four factory versions and turns start, end, claim and refund into dated events
-- a server-side proxy for the **Uniswap Trading API**, used to preview routes such as USDC → USDe before an Ethena deposit
+- a server-side proxy for the **Uniswap Trading API**, used to route USDC → USDe before an Ethena deposit (preview, plus fork execution behind a Chainlink peg guard)
 
 Everything below comes from building and running that code against Ethereum mainnet on 2026-09-26.
 
@@ -74,12 +74,18 @@ Everything below comes from building and running that code against Ethereum main
    - `/quote` requires `swapper`, and `/check_approval` requires `walletAddress` and `amount`.
    - A read-only "indicative quote" mode that needs no wallet would suit calendar and agent previews, where nothing is signed yet.
 3. **Price-dependent execution.**
-   - We deliberately stopped at the quote preview.
-   - Our safety rule is that any price-dependent execution must fail closed on stale or diverging oracles.
-   - A documented way to get the quote's reference price and timestamp (to compare against Chainlink) would make that guard easy.
+   - Our rule is that any price-dependent execution must fail closed on stale or diverging oracles.
+   - We gate swaps on a Chainlink USDe/USDC peg check, then call `/quote` with `generatePermitAsTransaction: true`.
+     - This let an impersonated account on an Anvil fork run approve → Permit2 → swap without an off-chain signature.
+     - It worked (100 USDC → 99.9986 USDe).
+   - A documented way to get the quote's reference price and timestamp would make oracle comparisons more direct.
+4. **`deadline` on forks.**
+   - After advancing an Anvil fork's clock, the swap reverted with `TransactionDeadlinePassed()`.
+   - Passing `deadline` to `/swap` based on the fork's block time did not change that.
+   - A fresh fork, whose clock matches real time, worked. A note on how `deadline` interacts with the quote would help fork-based testing.
 
 ## Not done
 
 - **UniswapX order routes** were not used. We only preview `routing`.
-- **`/swap` transaction building** is not wired, for the price-guard reason above.
+- **Mainnet swaps** are not sent. Execution is fork-only, and only for USDC ⇄ USDe, the pair that has a peg guard.
 - **A fork demo of a full CCA lifecycle** (mining past `endBlock`) failed. Anvil mines block by block and fetches EIP-4788 beacon-root storage from upstream for each block, which hit our RPC's rate limit. We showed the exit path on an auction that had already ended on mainnet instead.

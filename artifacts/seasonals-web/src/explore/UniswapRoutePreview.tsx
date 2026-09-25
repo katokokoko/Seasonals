@@ -1,11 +1,12 @@
 /**
  * Uniswap Trading API の route preview (USDC → USDe、Ethena に入る前の資産変換、v3 §3)。
- * quote のみ。swap は価格依存の実行なので fail-closed の価格ガード実装まで行わない。
+ * quote → (fork 稼働時) Chainlink peg guard を通して fork 上で approve → Permit2 → swap。mainnet には送らない。
  */
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useId, useState, type FormEvent } from "react";
 import { formatTokenAmount, isValidTokenAmount, toSmallestUnit } from "@workspace/lib/utils/numeric";
 import { api, ApiError } from "../services/api";
+import { useEthStatus } from "../services/queries";
 import { useActiveAddresses } from "../state/session";
 import { requestOpenWallet } from "../timeline/detailStore";
 
@@ -18,6 +19,13 @@ export function UniswapRoutePreview() {
   const [err, setErr] = useState<string | null>(null);
   const id = useId();
   const q = useMutation({ mutationFn: (smallest: string) => api.uniswapQuote(swapper!, USDC, USDE, smallest) });
+  const qc = useQueryClient();
+  const status = useEthStatus();
+  const forkReady = status.data?.executionTarget === "fork" && status.data.forkReachable;
+  const exec = useMutation({
+    mutationFn: () => api.uniswapExecuteOnFork(swapper!, USDC, USDE, q.data!.amountIn),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["eth", "events"] }),
+  });
 
   function submit(e: FormEvent) {
     e.preventDefault();
@@ -72,10 +80,37 @@ export function UniswapRoutePreview() {
           </p>
           <p className="muted">
             {q.data.approvalRequired ? "Token approval needed. " : ""}
-            {q.data.permitSignatureRequired ? "Permit2 signature needed. " : ""}
-            Quote only — {q.data.nextStep}
+            {q.data.permitSignatureRequired ? "Permit2 permission needed (a signature in your wallet; the fork demo uses a Permit2 transaction instead). " : ""}
+            {q.data.nextStep}
           </p>
           <p className="freshness">Source: Uniswap Trading API · {new Date(q.data.quotedAt).toLocaleTimeString()}</p>
+          {forkReady && !exec.isSuccess && (
+            <div className="fork-exec">
+              <button type="button" className="btn btn-primary" onClick={() => exec.mutate()} disabled={exec.isPending}>
+                {exec.isPending ? "Checking price guard and executing on fork…" : "Approve and swap on local fork"}
+              </button>
+              <span className="muted small">
+                Checks the Chainlink USDe/USDC peg first (refuses if stale or off by more than 0.5%), then runs approve → Permit2 → swap as the watched
+                address on an Anvil fork. Mainnet is never touched.
+              </span>
+            </div>
+          )}
+          {exec.isError && <p className="error small">{exec.error instanceof ApiError ? exec.error.message : "Swap failed."}</p>}
+          {exec.isSuccess && (
+            <div className="sim sim-ok">
+              <strong>
+                {exec.data.txs.every((t) => t.status === "success") ? "Swapped on the local fork." : "The swap did not complete on the fork."}
+              </strong>{" "}
+              Price guard: {exec.data.plan.peg.reason}
+              <ul className="plain-list">
+                {exec.data.txs.map((t) => (
+                  <li key={t.hash} className="mono">
+                    {t.status} · {t.description}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
         </div>
       )}
     </form>

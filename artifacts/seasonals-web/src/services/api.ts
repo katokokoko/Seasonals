@@ -55,6 +55,11 @@ export const api = {
   ethEvents: (address: string) => request<TimelineEventsResponse>(`/eth/events?address=${encodeURIComponent(address)}`),
   ethStatus: () => request<EthStatus>("/eth/status"),
   ethMenu: () => request<MenuProduct[]>("/eth/menu"),
+  uniswapExecuteOnFork: (swapper: string, tokenIn: string, tokenOut: string, amount: string) =>
+    request<{ target: "fork"; plan: UniswapSwapPlan; txs: ForkExecution["txs"] }>("/eth/uniswap/execute", {
+      method: "POST",
+      body: JSON.stringify({ swapper, tokenIn, tokenOut, amount, approvedBy: "user" }),
+    }),
   uniswapQuote: (swapper: string, tokenIn: string, tokenOut: string, amount: string) =>
     request<UniswapPreview>("/eth/uniswap/quote", { method: "POST", body: JSON.stringify({ swapper, tokenIn, tokenOut, amount }) }),
   ethProposal: (address: string, eventId: string) =>
@@ -133,4 +138,13 @@ export interface UniswapPreview {
   requestId: string | null;
   quotedAt: string;
   source: "uniswap-trading-api";
+}
+
+export interface UniswapSwapPlan {
+  routing: string;
+  amountIn: string;
+  amountOut: string | null;
+  peg: { ok: boolean; deviationBps: number | null; bandBps: number; reason: string };
+  steps: ActionPlan["steps"];
+  broadcast: false;
 }
