@@ -12,11 +12,13 @@
 # yet won't hard-block; Claude sees the new errors and resolves them by the end.
 #
 # Baseline refresh (run after intentionally changing the known-error set):
-#   for ws in lib bff mobile; do
+#   for ws in lib bff mobile web mcp; do
 #     case $ws in
 #       lib)    dir=lib ;;
 #       bff)    dir=artifacts/seasonals-bff ;;
 #       mobile) dir=artifacts/seasonals ;;
+#       web)    dir=artifacts/seasonals-web ;;
+#       mcp)    dir=artifacts/seasonals-mcp-server ;;
 #     esac
 #     ( cd "$dir" && pnpm exec tsc --noEmit 2>&1 ) | grep "error TS" \
 #       | sed -E 's/\([0-9]+,[0-9]+\)//' | sort -u \
@@ -45,6 +47,8 @@ rel="${file#"$ROOT"/}"
 case "$rel" in
   lib/*)                    name="lib";    dir="lib" ;;
   artifacts/seasonals-bff/*) name="bff";   dir="artifacts/seasonals-bff" ;;
+  artifacts/seasonals-web/*) name="web";   dir="artifacts/seasonals-web" ;;
+  artifacts/seasonals-mcp-server/*) name="mcp"; dir="artifacts/seasonals-mcp-server" ;;
   artifacts/seasonals/*)    name="mobile"; dir="artifacts/seasonals" ;;
   *) exit 0 ;;
 esac
