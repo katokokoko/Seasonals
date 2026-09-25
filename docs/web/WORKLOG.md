@@ -60,3 +60,10 @@ Web 側 (`artifacts/seasonals-web`) は `BFF_URL` (Vite dev proxy 先、node 側
 ### A2 — lib: web 派生 token / chains / TimelineEvent / timeline derive
 - 実装済み: `FONT_WEB` / `SURFACE_WEB` / `SHADOW_WEB` / `mixHex` (docs/design-system.md に表を追加)、`lib/config/chains.ts` (`SUPPORTED_CHAINS`)、`lib/types/timeline.ts` (3 event class を型で区別)、`lib/derive/timeline.ts` (status 導出 / 表示 status / 安定 sort / window / 日付 group / 42 日 grid / block→時刻 / Solana 射影 / merge)
 - 検証: lib 173 tests green (新規 23)、`pnpm -r test` / 全 workspace 新規 TS エラー 0
+
+### A2 — `a59c3b9` (push 済み)
+
+### A3 — WebGL water background
+- 実装済み: `water.frag.glsl` (sha256 `23df542f…` を test で固定)、`WaterBackground` (WebGL1 / 全画面三角形 / DPR cap / hidden・paused で draw skip / reduced motion は uTime=12 の静止画で loop 停止、変化時のみ 1 frame 再描画 / context lost・restored / 失敗時 fallback)、`useQuietZones` (RO + MO + passive scroll/resize + rAF throttle、group union、最大 4 rect、変化時のみ uniform upload)、`waterDefaults` + `waterCalm`、DS token → CSS 変数注入、hex 直書き禁止 test
+- 修正: StrictMode の二重 mount で loseContext 済み context を再利用し compile 失敗 → mount ごとに canvas を新規作成
+- 検証 (system Chrome headless): 1440×900 で `data-water-state=animating`、reduced motion で `still`、`--disable-webgl` で `fallback` (背景色表示)。screenshot 目視で caustic セル・mint・泡を確認

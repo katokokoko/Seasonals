@@ -1,7 +1,12 @@
+import { WaterBackground } from "./background/WaterBackground";
+
 export function App() {
   return (
-    <main>
-      <h1>Seasonals</h1>
-    </main>
+    <>
+      <WaterBackground className="water-canvas" />
+      <main className="ui-layer">
+        <h1>Seasonals</h1>
+      </main>
+    </>
   );
 }
