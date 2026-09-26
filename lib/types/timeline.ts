@@ -99,7 +99,8 @@ export interface TimelineLink {
 export interface TimelineEvent {
   /** 安定 ID: `${chain}:${protocol}:${kind}:${ref}` (再導出時に id で merge) */
   id: string;
-  chain: ChainId;
+  /** null = chain 非依存 (ユーザーが Calendar に手入力した custom plan、`fromCustomEvent`) */
+  chain: ChainId | null;
   class: TimelineEventClass;
   kind: TimelineEventKind;
   /** protocol id (pendle / ethena / lido / cca / kamino …)。user_plan は null */
@@ -111,6 +112,10 @@ export interface TimelineEvent {
   asset?: string;
   /** ISO 8601。ETA 不明 (Lido 未 finalize 等) なら null */
   at: string | null;
+  /** 日付のみで時刻を持たない予定 (custom plan)。at はその日の local 0 時。UI は時刻の代わりに "All day" */
+  allDay?: boolean;
+  /** custom plan の絵文字 marker (1 grapheme)。あれば droplet の代わりに出す */
+  emoji?: string;
   /** block 推定などの概算時刻か (UI は "≈" を付ける) */
   atApprox: boolean;
   etaNote?: string;

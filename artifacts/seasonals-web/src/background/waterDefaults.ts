@@ -14,6 +14,8 @@ export type WaterParams = {
   tint: number;
   /** 0 = ignore UI rects, 1 = fully calm under them */
   quiet: number;
+  /** liquid glass lens strength under `data-water-glass` surfaces (0 = off) */
+  glass: number;
   /** device pixel ratio cap */
   maxDpr: number;
 };
@@ -26,6 +28,7 @@ export const waterDefaults: WaterParams = {
   refraction: 0.012,
   tint: 0.5,
   quiet: 0.85,
+  glass: 1,
   maxDpr: 1.25,
 };
 
@@ -40,6 +43,7 @@ export const waterCalm: WaterParams = {
   caustic: 0.28,
   refraction: 0.008,
   quiet: 1,
+  glass: 0.7,
 };
 
 export function resolveWaterParams(params?: Partial<WaterParams>): WaterParams {

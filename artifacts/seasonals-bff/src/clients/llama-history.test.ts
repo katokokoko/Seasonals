@@ -150,3 +150,12 @@ describe("anchorSeries", () => {
     expect(anchorSeries(series, "1.05372000")).toBe(series);
   });
 });
+
+describe("llamaCoinKey (ethereum)", () => {
+  it("prefixes ERC-20 addresses and maps native ETH to coingecko", () => {
+    expect(llamaCoinKey("0xabc", "ethereum")).toBe("ethereum:0xabc");
+    expect(llamaCoinKey("ETH", "ethereum")).toBe("coingecko:ethereum");
+    // Solana の "ETH" という mint 名は特別扱いしない
+    expect(llamaCoinKey("ETH")).toBe("solana:ETH");
+  });
+});

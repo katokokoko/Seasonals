@@ -128,6 +128,27 @@ export function compareUsd8(a: string, b: string): -1 | 0 | 1 {
   return av < bv ? -1 : av > bv ? 1 : 0;
 }
 
+/**
+ * **符号付き** USD 8-dec string ("-12.5" / "3.00000001") → scale-8 bigint。
+ * portfolio history の flow (入出金による増減) のように負になりうる値の合算用。
+ * 不正は InvalidAmountError。
+ */
+export function signedUsd8ToBigInt(value: string): bigint {
+  if (typeof value === "string" && value.startsWith("-")) {
+    return -usd8ToBigInt(value.slice(1));
+  }
+  return usd8ToBigInt(value);
+}
+
+/** scale-8 bigint → USD 8-dec string (符号付き、常に小数 8 桁)。 */
+export function bigIntToUsd8(scaled: bigint): string {
+  const neg = scaled < 0n;
+  const v = neg ? -scaled : scaled;
+  const intPart = v / 100_000_000n;
+  const frac = (v % 100_000_000n).toString().padStart(8, "0");
+  return `${neg ? "-" : ""}${intPart.toString()}.${frac}`;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // 表示用: smallest unit ↔ human-readable
 // ─────────────────────────────────────────────────────────────────────────────

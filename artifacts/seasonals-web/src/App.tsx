@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { lazy, Suspense, type ReactNode } from "react";
-import { createBrowserRouter, RouterProvider } from "react-router";
+import { createBrowserRouter, Navigate, RouterProvider } from "react-router";
 import { AppShell } from "./shell/AppShell";
 import { HomeLobby } from "./home/HomeLobby";
 
@@ -20,7 +20,9 @@ export const routes = [
     element: <AppShell />,
     children: [
       { index: true, element: <HomeLobby /> },
-      { path: "explore", element: lazyEl(<ExploreMenu />) },
+      { path: "menu", element: lazyEl(<ExploreMenu />) },
+      // 旧 URL (Explore → Menu に改名) は redirect
+      { path: "explore", element: <Navigate to="/menu" replace /> },
       { path: "calendar", element: lazyEl(<CalendarWorkspace />) },
       { path: "agent", element: lazyEl(<AgentWorkspace />) },
       { path: "dashboard", element: lazyEl(<DashboardWorkspace />) },

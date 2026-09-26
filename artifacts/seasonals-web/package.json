@@ -2,7 +2,7 @@
   "name": "@seasonals/web",
   "version": "0.0.1",
   "private": true,
-  "description": "Seasonals desktop Web — Home lobby / Explore / Calendar workspace (docs/web/ui-spec-v2.md)",
+  "description": "Seasonals desktop Web — Home lobby / Menu / Calendar workspace (docs/web/ui-spec-v2.md)",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -18,6 +18,7 @@
     "react": "19.2.3",
     "react-dom": "19.2.3",
     "react-router": "^7.18.4",
+    "recharts": "2.15.4",
     "zustand": "^4.5.5"
   },
   "devDependencies": {

@@ -1,7 +1,9 @@
 /**
  * GlobalFloatingNav — 全画面共通の浮遊 top bar (UI v2 §1)。
- * wordmark / Overview / Explore / Calendar / Agent / Dashboard / Learn / 対応 chain icons /
+ * wordmark / Overview / Menu / Calendar / Agent / Dashboard / Learn / 対応 chain icons /
  * Settings (gear) / Wallet。1100–1439px では Agent / Dashboard / Learn を More に畳む。
+ * 面は clear な liquid glass (中央が透け、縁で水面が曲がる)。選択中の項目は塗りではなく
+ * ガラスの "しずく" (useGlassDroplet) がばねで移動して示す。
  */
 import { useEffect, useRef, useState } from "react";
 import { Link, NavLink, useLocation } from "react-router";
@@ -10,10 +12,12 @@ import { IconChevronDown, IconGear } from "../ui/icons";
 import { ChainIcon } from "../ui/ChainIcon";
 import { WalletControl } from "./WalletControl";
 import { useEthStatus } from "../services/queries";
+import { useGlassPointer } from "../ui/useGlassPointer";
+import { useGlassDroplet } from "../ui/useGlassDroplet";
 
 const PRIMARY = [
   { to: "/", label: "Overview", end: true },
-  { to: "/explore", label: "Explore" },
+  { to: "/menu", label: "Menu" },
   { to: "/calendar", label: "Calendar" },
 ] as const;
 const SECONDARY = [
@@ -27,12 +31,15 @@ const linkClass = ({ isActive }: { isActive: boolean }) => `nav-link${isActive ?
 export function GlobalFloatingNav() {
   const { pathname } = useLocation();
   const secondaryActive = SECONDARY.some((s) => pathname.startsWith(s.to));
+  const glassRef = useGlassPointer<HTMLElement>();
+  const { containerRef, dropletRef } = useGlassDroplet<HTMLElement, HTMLSpanElement>(pathname);
   return (
-    <header className="global-nav" data-water-quiet="nav">
+    <header ref={glassRef} className="global-nav glass glass-clear" data-water-quiet="nav" data-water-glass="clear">
       <Link to="/" className="wordmark" aria-label="Seasonals — Overview">
         Seasonals
       </Link>
-      <nav aria-label="Primary" className="nav-links">
+      <nav aria-label="Primary" className="nav-links" ref={containerRef}>
+        <span ref={dropletRef} className="nav-droplet glass glass-clear is-hidden" data-water-glass="clear" aria-hidden="true" />
         {PRIMARY.map((l) => (
           <NavLink key={l.to} to={l.to} end={"end" in l ? l.end : false} className={linkClass}>
             {l.label}

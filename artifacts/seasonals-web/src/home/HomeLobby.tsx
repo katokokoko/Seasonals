@@ -13,7 +13,7 @@ export function HomeLobby() {
     <div className="lobby">
       <h1 className="sr-only">Seasonals overview</h1>
       <PortalCard to="/agent" title="Agent" description="Your seasonal companion" icon={<IconLeaf size={30} />} slot="agent" />
-      <PortalCard to="/explore" title="Menu" description="Explore Seasonals" icon={<IconMenuGrid size={30} />} slot="menu" />
+      <PortalCard to="/menu" title="Menu" description="Explore Seasonals" icon={<IconMenuGrid size={30} />} slot="menu" />
       <HomeCalendarCard />
       <PortalCard to="/settings" title="Setting" description="Make it yours" icon={<IconGear size={30} />} slot="setting" />
       <PortalCard to="/dashboard" title="Dashboard" description="Your seasonal snapshot" icon={<IconPie size={30} />} slot="dashboard" />

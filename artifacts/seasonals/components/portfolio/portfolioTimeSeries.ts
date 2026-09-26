@@ -31,21 +31,30 @@ import {
   snapshotsInRange,
   type PortfolioSnapshot,
 } from "./history";
-
-export type RangeKey = "1W" | "1M" | "3M" | "1Y" | "ALL";
-
-export interface PortfolioPoint {
-  date: Date;
-  /** 選択通貨建ての評価額 (8.55: 旧 `sol` を一般化) */
-  value: number;
-  /** today より未来か (chart の dashed forecast 区間) */
-  isFuture: boolean;
-  /**
-   * 8.65: 直前の点からの間に起きた **元本の増減** (預入 / 引出、選択通貨建て、符号付き)。
-   * 価格変動 / 利回りの分は含まない。段差の理由をマーカーで示すために使う。
-   */
-  flow?: number;
-}
+// web Dashboard 追加時: chain 非依存の helper は lib/derive/portfolio.ts に移設。
+// mobile はここ経由の re-export で従来どおり import できる (実装は 1 つ)
+import {
+  rangeToDays,
+  trimLeadingZeros,
+  type PortfolioPoint,
+  type PortfolioScope,
+  type RangeKey,
+} from "@workspace/lib/derive/portfolio";
+export {
+  chartBounds,
+  coverageFromKnownStart,
+  flowMarkerIndices,
+  formatAxisValue,
+  hasHistory,
+  historyCoverage,
+  rangeExceedsCoverage,
+  rangeToDays,
+  trimLeadingZeros,
+  type HistoryCoverage,
+  type PortfolioPoint,
+  type PortfolioScope,
+  type RangeKey,
+} from "@workspace/lib/derive/portfolio";
 
 /** ポートフォリオ全体の現在 SOL 評価額 (allocation.ts と同じ計算ロジック) */
 export function totalSolValue(
@@ -53,22 +62,6 @@ export function totalSolValue(
   prices: PriceMap = {}
 ): number {
   return allocationTotalSolValue(positions, prices);
-}
-
-/** range key → 過去日数 */
-export function rangeToDays(range: RangeKey): number {
-  switch (range) {
-    case "1W":
-      return 7;
-    case "1M":
-      return 30;
-    case "3M":
-      return 90;
-    case "1Y":
-      return 365;
-    case "ALL":
-      return 365 * 2;
-  }
 }
 
 /**
@@ -116,66 +109,6 @@ export function buildPortfolioTimeSeries(
 }
 
 /**
- * chart として意味のある履歴があるか。
- * 2 点未満、または全点が同値 (= 変動を観測していない) なら false。
- * false の間は線を描かず現在値カードを出す (中身のない目盛りを作らない)。
- */
-export function hasHistory(points: PortfolioPoint[]): boolean {
-  if (points.length < 2) return false;
-  const first = points[0]!.value;
-  return points.some((p) => p.value !== first);
-}
-
-/**
- * chart の y 軸範囲 = **実際の変動幅 (span) の ±10%** 余白。
- *
- * 8.55 は「値そのものの ±10%」にしたが、それだと実データの変動 (利回りは日
- * 0.01% 程度) が広い軸の中に埋もれて再び横一本に見える。span 基準なら小さな
- * 動きでも軸いっぱいに見える。span が 0 の系列は `hasHistory` false として
- * そもそも chart を描かないので、ここでゼロ幅を気にする必要はない
- * (呼ばれても 0 除算しないよう最低幅は残す)。
- */
-export function chartBounds(points: PortfolioPoint[]): {
-  minValue: number;
-  maxValue: number;
-} {
-  if (points.length === 0) return { minValue: 0, maxValue: 1 };
-  const values = points.map((p) => p.value);
-  const rawMin = Math.min(...values);
-  const rawMax = Math.max(...values);
-  // 保険: 全点同値でも 0 除算しない最低幅 (通常は hasHistory=false で未到達)
-  const span = rawMax - rawMin || Math.abs(rawMax) * 0.01 || 1;
-  const pad = span * 0.1;
-  return {
-    // 8.60: 評価額は負にならない。ゼロ期間を含む系列で軸に「-13 USDC」が
-    // 出ていたので下端を 0 で止める
-    minValue: rawMin >= 0 ? Math.max(0, rawMin - pad) : rawMin - pad,
-    maxValue: rawMax + pad,
-  };
-}
-
-/**
- * y 軸ラベルの数値部。
- *
- * 8.56: 小数桁は **目盛りの刻み幅 (step)** から決める。値の桁で決めていた
- * (≥100 → 1 桁) と、150.603 / 150.631 / 150.659 が全部 "150.6" に潰れて
- * 4 段の軸が 2 種類の文字列になっていた — 変動の小さい実データで再発する。
- * step 未指定時は従来どおり値の桁で決める。
- */
-export function formatAxisValue(value: number, step?: number): string {
-  if (!Number.isFinite(value)) return "0";
-  if (step !== undefined && Number.isFinite(step) && step > 0) {
-    // step が 0.028 なら 3 桁 (= 隣の目盛りと必ず違う文字列になる)
-    const digits = Math.min(6, Math.max(0, Math.ceil(-Math.log10(step)) + 1));
-    return value.toFixed(digits);
-  }
-  const abs = Math.abs(value);
-  if (abs >= 100) return value.toFixed(1);
-  if (abs >= 1) return value.toFixed(2);
-  return value.toFixed(4);
-}
-
-/**
  * Phase 8.58: BFF が tx から復元した履歴 (day/usd/sol の 8-dec string) を
  * chart の系列に変換する。**表示直前の Number 化**なので §4.5 の carve-out 内。
  */
@@ -190,26 +123,6 @@ export interface ServerHistoryPoint {
   /** 8.65: 直前の点からの元本の増減 (USD 8-dec、符号付き)。価格変動は含まない */
   flow_usd?: string;
   deposited_flow_usd?: string;
-}
-
-/** 8.62: 集計の対象。total = 全資産 / deposited = protocol への預入のみ */
-export type PortfolioScope = "total" | "deposited";
-
-/**
- * Phase 8.63: **先頭の連続ゼロ**を落とす (途中のゼロは残す)。
- *
- * 8.61 で保有ゼロの期間も描くようにしたら、入金前の長いゼロ区間が線の大半を
- * 占め、y 軸が 0 まで伸びて **直近の変動が直線に潰れて**しまった。
- * 先頭のゼロは「まだ入金していない」以上の情報を持たない (その事実は 8.60 の
- * 注記が伝えている) ので落とす。一方 **途中のゼロ** (全額引き出し → 再入金) は
- * 「資金が抜けていた」という情報なので残す。
- *
- * 全点ゼロなら空配列 (線を描かず現在値カードに落とす)。
- */
-export function trimLeadingZeros(points: PortfolioPoint[]): PortfolioPoint[] {
-  const firstNonZero = points.findIndex((p) => p.value > 0);
-  if (firstNonZero === -1) return [];
-  return firstNonZero === 0 ? points : points.slice(firstNonZero);
 }
 
 export function serverHistoryToPoints(
@@ -239,101 +152,4 @@ export function serverHistoryToPoints(
   }
   // 8.63: 入金前のゼロ区間で軸が潰れるので落とす (途中のゼロは残る)
   return trimLeadingZeros(out);
-}
-
-/**
- * 8.65: **元本の増減マーカー**を打つ点の index。
- *
- * Deposited のグラフは「利回りの推移」を読む面なのに、預入 / 引出があると
- * そこだけ段差になる (実測: 3M で +0.096 jlUSDC の追加預入が、3 ヶ月分の
- * 利回りとほぼ同じ高さの崖になっていた)。段差を消すのではなく **理由が
- * 読めるように** マーカーを打つ。
- *
- * 拾うのは「グラフ上で見える大きさ」の増減だけ。系列の変動幅に対する比で
- * 判定するので、dust の出入りでマーカーが散らからない。
- */
-export function flowMarkerIndices(
-  points: PortfolioPoint[],
-  minSpanRatio = 0.06
-): number[] {
-  if (points.length < 2) return [];
-  const values = points.map((p) => p.value);
-  const span = Math.max(...values) - Math.min(...values);
-  if (!(span > 0)) return [];
-  const threshold = span * minSpanRatio;
-  const out: number[] = [];
-  points.forEach((p, i) => {
-    if (i > 0 && Math.abs(p.flow ?? 0) >= threshold) out.push(i);
-  });
-  return out;
-}
-
-/**
- * Phase 8.60: 選択中の range に対して履歴がどこまで遡れているかを判定する。
- *
- * 「3M と 1Y が同じグラフ」の正体は **その wallet に 82 日分しか履歴が無い**
- * ことだった (それ以前は残高ゼロ)。データは正しいので、UI 側で
- * 「ここから先は存在しない」と伝える。
- *
- * 判定は server の points だけで完結させる (端末時計のズレに影響されない)。
- */
-export interface HistoryCoverage {
-  /** 要求 range より短い範囲しか描けていない */
-  partial: boolean;
-  /** 履歴の開始 (points の先頭)。points が空なら null */
-  from: Date | null;
-  /** 実際に描けている日数 */
-  coveredDays: number;
-}
-
-/**
- * 8.63: 判定は **実際に描く系列** (先頭ゼロを落とした後) から行う。
- * server の生 points を見ると、注記の日付が線の開始とズレる。
- */
-export function historyCoverage(
-  points: PortfolioPoint[],
-  range: RangeKey
-): HistoryCoverage {
-  const first = points[0];
-  const last = points[points.length - 1];
-  if (!first || !last || points.length < 2) {
-    return { partial: false, from: null, coveredDays: 0 };
-  }
-  const coveredDays =
-    (last.date.getTime() - first.date.getTime()) / (86_400 * 1000);
-  return {
-    // 1 日の余裕を見る (サンプリングの刻みで端が欠けるため)
-    partial: coveredDays < rangeToDays(range) - 1,
-    from: first.date,
-    coveredDays,
-  };
-}
-
-/**
- * その range が「描ける期間」を超えているか (range チップの淡色化に使う)。
- * **カバーしきっている時は何も淡色にしない** — より長い range にデータが
- * あるかは、その range を引いてみるまで分からないため。
- */
-export function rangeExceedsCoverage(
-  range: RangeKey,
-  coverage: HistoryCoverage
-): boolean {
-  if (!coverage.partial) return false;
-  return rangeToDays(range) > coverage.coveredDays + 1;
-}
-
-/**
- * 一度分かった「履歴の開始」から coverage を作る。
- *
- * 開始日は **絶対的な事実** (それ以前は残高ゼロ) なので、短い range に切り替えて
- * 判定材料が無くなっても淡色表示を保つために使う。range を跨いで表示が
- * ちらつくのを防ぐ。
- */
-export function coverageFromKnownStart(
-  startAt: Date | null,
-  now: Date
-): HistoryCoverage {
-  if (!startAt) return { partial: false, from: null, coveredDays: 0 };
-  const coveredDays = (now.getTime() - startAt.getTime()) / (86_400 * 1000);
-  return { partial: true, from: startAt, coveredDays };
 }

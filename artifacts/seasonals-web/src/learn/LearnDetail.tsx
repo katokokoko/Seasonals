@@ -142,7 +142,7 @@ export function LearnDetail({
           </Section>
         </div>
         <footer className="learn-card-foot">
-          <Link className="btn btn-quiet" to="/explore">
+          <Link className="btn btn-quiet" to="/menu">
             See on Menu
           </Link>
           <span className="learn-links">

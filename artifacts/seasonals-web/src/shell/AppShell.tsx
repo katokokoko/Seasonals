@@ -6,10 +6,13 @@ import { Outlet, useLocation } from "react-router";
 import { WaterBackground } from "../background/WaterBackground";
 import { waterCalm, waterDefaults } from "../background/waterDefaults";
 import { GlobalFloatingNav } from "./GlobalFloatingNav";
-import { useEffect } from "react";
+import { GlassDebugOverlay } from "../background/GlassDebugOverlay";
+import { FloatingFriends } from "../home/FloatingFriends";
+import { useEffect, useState } from "react";
 import { useTimeline } from "../services/queries";
 import { EventDetailCard } from "../timeline/EventDetailCard";
 import { useDetail } from "../timeline/detailStore";
+import { useGlassLight } from "../ui/useGlassLight";
 import "./shell.css";
 
 export function AppShell() {
@@ -18,9 +21,21 @@ export function AppShell() {
   const { events } = useTimeline();
   const closeDetail = useDetail((s) => s.close);
   useEffect(() => closeDetail(), [pathname, closeDetail]);
+  useGlassLight();
+  // ?glass-debug で開いた時だけ、WebGL の glass と DOM の枠の重なりを診断表示する (route を移っても維持)
+  const [glassDebug] = useState(() => {
+    try {
+      return new URLSearchParams(window.location.search).has("glass-debug");
+    } catch {
+      return false;
+    }
+  });
   return (
     <>
-      <WaterBackground className="water-canvas" params={isHome ? waterDefaults : waterCalm} />
+      {/* 水面 (fixed) + glass layer (sticky、rubber band でも glass の枠と一緒に動く)。styles/base.css */}
+      <WaterBackground className="water-canvas" glassClassName="glass-canvas" params={isHome ? waterDefaults : waterCalm} />
+      {/* Home の水面に浮かぶキャラクター (水面の上、glass / UI の下) */}
+      {isHome && <FloatingFriends />}
       <div className={`ui-layer ${isHome ? "is-home" : "is-work"}`}>
         <a className="skip-link" href="#main">
           Skip to content
@@ -31,6 +46,7 @@ export function AppShell() {
         </main>
       </div>
       <EventDetailCard events={events} />
+      {glassDebug && <GlassDebugOverlay />}
     </>
   );
 }
