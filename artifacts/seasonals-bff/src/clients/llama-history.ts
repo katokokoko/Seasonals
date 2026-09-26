@@ -47,6 +47,9 @@ const CACHE_MAX_ENTRIES = 200;
  */
 export const MIN_CONFIDENCE = 0.7;
 
+/** 1 リクエストあたりの coin 数 (URL 長で API が空応答になるのを避ける) */
+export const CHUNK = 20;
+
 /** 上限点数 (API の span 上限に踏み込まないための保険) */
 const MAX_SPAN = 400;
 
@@ -155,27 +158,31 @@ export async function fetchLlamaPriceSeries(
   const cached = cache.get(cacheKey);
   if (cached && Date.now() - cached.at < CACHE_TTL_MS) return cached.data;
 
-  const coins = unique.map((m) => llamaCoinKey(m, chain)).join(",");
-  const url =
-    `${CHART_URL}/${coins}?start=${fromSec}&span=${span}` +
-    `&period=${period}&searchWidth=${period}`;
-  try {
-    const res = await fetchWithTimeout(
-      url,
-      {
-        method: "GET",
-        headers: {
-          accept: "application/json",
-          "user-agent": "seasonals-bff/1.0",
+  // 1 リクエストに全 coin を並べると URL が長くなり (75 coin で約 5,500 文字)、coins API は
+  // 何も返さなくなる (2026-09-26 実測: 全 asset が現在価格に落ちて履歴が平らになった)。
+  // CHUNK 個ずつに分け、失敗した束は半分に割って再試行する (1 つの不正な coin で全体を落とさない)
+  const fetchChunk = async (chunk: string[]): Promise<boolean> => {
+    const coins = chunk.map((m) => llamaCoinKey(m, chain)).join(",");
+    const url =
+      `${CHART_URL}/${coins}?start=${fromSec}&span=${span}` +
+      `&period=${period}&searchWidth=${period}`;
+    try {
+      const res = await fetchWithTimeout(
+        url,
+        {
+          method: "GET",
+          headers: {
+            accept: "application/json",
+            "user-agent": "seasonals-bff/1.0",
+          },
         },
-      },
-      FETCH_TIMEOUT_MS
-    );
-    if (res.ok) {
+        FETCH_TIMEOUT_MS
+      );
+      if (!res.ok) return false;
       const json = (await res.json()) as {
         coins?: Record<string, LlamaChartCoin>;
       };
-      for (const mint of unique) {
+      for (const mint of chunk) {
         const coin = json.coins?.[llamaCoinKey(mint, chain)];
         if (!coin || !Array.isArray(coin.prices)) continue;
         // confidence は「この価格をどれだけ信用してよいか」。低い値は採用しない
@@ -202,9 +209,20 @@ export async function fetchLlamaPriceSeries(
         }
         if (series.t.length > 0) out.set(mint, series);
       }
+      return true;
+    } catch {
+      return false; // 取れない mint は Map に入れない (呼び手が近似に落ちる)
     }
-  } catch {
-    /* noop — 取れない mint は Map に入れない (呼び手が近似に落ちる) */
+  };
+  const run = async (chunk: string[]): Promise<void> => {
+    if (await fetchChunk(chunk)) return;
+    if (chunk.length <= 1) return;
+    const mid = Math.ceil(chunk.length / 2);
+    await run(chunk.slice(0, mid));
+    await run(chunk.slice(mid));
+  };
+  for (let i = 0; i < unique.length; i += CHUNK) {
+    await run(unique.slice(i, i + CHUNK));
   }
 
   cache.set(cacheKey, { at: Date.now(), data: out });
