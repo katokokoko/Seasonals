@@ -245,7 +245,7 @@ oracle 異常時は **常に止める方を選ぶ**。warning だけで素通り
 multi-file 変更や §21 phase を「完了」と宣言する **前に**、必ず以下を green にすること。ツーリングを実際に走らせる前に done と言わない:
 
 ```bash
-pnpm -r test        # 全 workspace の jest (現状: 150 mobile / 67 lib / 22 BFF)
+pnpm -r test        # 全 workspace の jest
 pnpm -r typecheck   # 全 workspace の tsc --noEmit
 ```
 
