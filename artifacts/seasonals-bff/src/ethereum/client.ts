@@ -25,7 +25,7 @@ export function ethereumRpcUrl(env: NodeJS.ProcessEnv = process.env): string | n
 
 /** 秘密値として扱う env 値 (sanitize 対象) */
 function secretValues(env: NodeJS.ProcessEnv = process.env): string[] {
-  return [env.INFURA_API_KEY, env.ETHEREUM_RPC_URL, env.UNISWAP_API_KEY, env.ANTHROPIC_API_KEY]
+  return [env.INFURA_API_KEY, env.ETHEREUM_RPC_URL, env.UNISWAP_API_KEY, env.ANTHROPIC_API_KEY, env.ETHERSCAN_API_KEY]
     .map((v) => v?.trim())
     .filter((v): v is string => Boolean(v && v.length >= 8));
 }

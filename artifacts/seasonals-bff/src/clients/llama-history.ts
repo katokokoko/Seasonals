@@ -34,6 +34,7 @@ import { fetchWithTimeout } from "./http";
 import type { PriceSeries } from "./pyth-history";
 
 const CHART_URL = "https://coins.llama.fi/chart";
+const CURRENT_URL = "https://coins.llama.fi/prices/current";
 const FETCH_TIMEOUT_MS = 15_000;
 /** 系列は末尾以外変わらないので pyth-history と同じ TTL */
 const CACHE_TTL_MS = 5 * 60_000;
@@ -244,4 +245,51 @@ export function anchorSeries(
       return scaledToUsd8((scaled * target) / last);
     }),
   };
+}
+
+/**
+ * 現在価格 (USD 8-dec)。Chainlink feed の無い Ethereum asset (wstETH / sUSDe /
+ * Pendle PT 等) の「今の単価」に使う (Solana は DAS が価格を持つので不要)。
+ * 履歴と同じく **display only**。取れない / 低 confidence は Map に入れない。
+ */
+export async function fetchLlamaCurrentPrices(
+  mints: string[],
+  chain: LlamaChain = "solana"
+): Promise<Map<string, string>> {
+  const unique = [...new Set(mints)].sort();
+  const out = new Map<string, string>();
+  if (unique.length === 0) return out;
+  const coins = unique.map((m) => llamaCoinKey(m, chain)).join(",");
+  try {
+    const res = await fetchWithTimeout(
+      `${CURRENT_URL}/${coins}?searchWidth=4h`,
+      {
+        method: "GET",
+        headers: {
+          accept: "application/json",
+          "user-agent": "seasonals-bff/1.0",
+        },
+      },
+      FETCH_TIMEOUT_MS
+    );
+    if (!res.ok) return out;
+    const json = (await res.json()) as {
+      coins?: Record<string, { price?: number; confidence?: number }>;
+    };
+    for (const mint of unique) {
+      const coin = json.coins?.[llamaCoinKey(mint, chain)];
+      if (!coin) continue;
+      if (
+        typeof coin.confidence === "number" &&
+        coin.confidence < MIN_CONFIDENCE
+      ) {
+        continue;
+      }
+      const usd8 = toUsd8(coin.price);
+      if (usd8 !== null) out.set(mint, usd8);
+    }
+  } catch {
+    /* noop — 取れない asset は単価不明 (holdings に載らない / 近似に落ちる) */
+  }
+  return out;
 }

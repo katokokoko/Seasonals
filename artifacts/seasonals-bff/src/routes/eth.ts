@@ -18,6 +18,8 @@ import { getAavePositions } from "../ethereum/aave";
 import { buildAquaShipPlan, fillAquaOnFork, shipAquaOnFork, type AquaShipInput } from "../ethereum/aqua";
 import { checkPeg, getChainlinkPrice, PRICE_ASSETS, type PriceAsset } from "../ethereum/pricing";
 import { assertTokenAmount, InvalidAmountError } from "@workspace/lib/utils/numeric";
+import { ethereumHistoryEngine } from "../ethereum/history";
+import { EtherscanNotConfiguredError } from "../clients/etherscan";
 
 async function forkReachable(): Promise<boolean> {
   try {
@@ -34,6 +36,14 @@ async function forkReachable(): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+/** 503 の本文。key 未設定は別 code にして UI が「未設定」と言えるようにする */
+function portfolioUnavailable(e: unknown, code: string): { error: string; message: string } {
+  if (e instanceof EtherscanNotConfiguredError) {
+    return { error: "etherscan_not_configured", message: "Ethereum history needs ETHERSCAN_API_KEY on the server." };
+  }
+  return { error: code, message: sanitizeError(e) };
 }
 
 export async function registerEthRoutes(parent: FastifyInstance): Promise<void> {
@@ -106,6 +116,34 @@ async function ethRoutes(app: FastifyInstance): Promise<void> {
       return { positions: await getAavePositions(address) };
     } catch (e) {
       return reply.code(502).send({ error: "upstream_error", message: sanitizeError(e) });
+    }
+  });
+
+  /**
+   * 評価額の履歴 (web Dashboard の資産推移グラフ)。Solana の /portfolio/history と
+   * 同じエンジン・同じ応答形 (lib PortfolioHistoryResponse)。上流が落ちたら 503
+   * (履歴を捏造しない / 空の成功で client の cache を上書きしない、8.95 と同じ)
+   */
+  app.get<{ Querystring: { address?: string; days?: string } }>("/eth/portfolio/history", async (req, reply) => {
+    const address = req.query.address?.trim() ?? "";
+    if (!isEvmAddress(address)) return reply.code(400).send({ error: "invalid_address" });
+    const requested = Number(req.query.days ?? "30");
+    const days = Number.isFinite(requested) ? Math.min(730, Math.max(1, Math.floor(requested))) : 30;
+    try {
+      return await ethereumHistoryEngine.history(address.toLowerCase(), days);
+    } catch (e) {
+      return reply.code(503).send(portfolioUnavailable(e, "portfolio_history_unavailable"));
+    }
+  });
+
+  /** 現在の保有 (category 付き、Allocation donut 用)。Aave V4 は in_history=false で載る */
+  app.get<{ Querystring: { address?: string } }>("/eth/portfolio/holdings", async (req, reply) => {
+    const address = req.query.address?.trim() ?? "";
+    if (!isEvmAddress(address)) return reply.code(400).send({ error: "invalid_address" });
+    try {
+      return await ethereumHistoryEngine.holdings(address.toLowerCase());
+    } catch (e) {
+      return reply.code(503).send(portfolioUnavailable(e, "portfolio_holdings_unavailable"));
     }
   });
 

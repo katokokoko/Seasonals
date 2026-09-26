@@ -53,6 +53,8 @@ export interface HistoryInputs {
   extraHoldings?: ExtraHolding[];
   /** 現在保有しているが履歴に含められないものの表示名 */
   excludedFromHistory?: string[];
+  /** 価格以外の理由で近似の asset (例: rebase で過去残高を追えない stETH) */
+  approximatedSymbols?: string[];
 }
 
 export interface ChainHistorySource {
@@ -212,7 +214,12 @@ export function createHistoryEngine(
       // 「それ以前はゼロ」と言える (複数アドレス合算で 0 として扱ってよい)
       starts_at_funding:
         fundedFrom !== null && fundedFrom >= cutoff && inputs.complete,
-      approximated_symbols: series.approximatedSymbols,
+      approximated_symbols: [
+        ...new Set([
+          ...series.approximatedSymbols,
+          ...(inputs.approximatedSymbols ?? []),
+        ]),
+      ].sort(),
       ...meta,
     };
   }
