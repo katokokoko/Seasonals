@@ -21,7 +21,8 @@ jest.mock("@solana/web3.js", () => {
   // fixture 値は factory 内に inline する (test 本体側の FIXTURE_BASE58 と一致させる)。
   const FIXTURE = "7nZbHkQqXkr3eW8s2dKvHqBxNz9vC5jPpL2tF6mYrXaA";
   class MockPublicKey {
-    constructor(input) {
+    private readonly _input: unknown;
+    constructor(input: unknown) {
       this._input = input;
     }
     toBase58() {
