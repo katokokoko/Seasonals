@@ -260,4 +260,4 @@ Web 側 (`artifacts/seasonals-web`) は `BFF_URL` (Vite dev proxy 先、node 側
 - Aave action
 - LLM 提案、hidden concentration warning
 - mobile 幅 (<1100px は 2×2 まで)
-- Explore の「Add to calendar」(user plan 作成 UI は無い。user_plan は Aqua の review event のみ)
+- Menu (旧 Explore) の「Add to calendar」。自分の予定 (絵文字 + 内容) は日付から手入力できるが、このブラウザの localStorage のみ (BFF / MCP には未同期)

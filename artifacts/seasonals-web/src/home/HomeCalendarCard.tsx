@@ -113,8 +113,8 @@ export function HomeCalendarCard() {
             ) : upcoming.length === 0 ? (
               <div className="empty-state">
                 <p>No upcoming activity in this period.</p>
-                <Link className="btn btn-primary" to="/explore">
-                  Explore opportunities
+                <Link className="btn btn-primary" to="/menu">
+                  Browse the menu
                 </Link>
               </div>
             ) : (

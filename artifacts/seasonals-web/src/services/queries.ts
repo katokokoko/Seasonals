@@ -1,15 +1,17 @@
 /**
  * TanStack Query hooks (server state は必ずここ経由、CLAUDE.md §5)。
  *
- * useTimeline(): 公開イベント + 閲覧中 address のイベントを 1 本の TimelineEvent[] に
- * merge する (Calendar / Timeline / 詳細カード / Dashboard の共通 source)。
+ * useTimeline(): 公開イベント + 閲覧中 address のイベント + ユーザーが手入力した予定
+ * (custom plan、localStorage) を 1 本の TimelineEvent[] に merge する
+ * (Calendar / Timeline / 詳細カード / Dashboard の共通 source)。
  * 部分失敗は source ごとの状態として返し、架空データで埋めない。
  */
 import { useQueries, useQuery } from "@tanstack/react-query";
 import { useMemo } from "react";
-import { fromUnifiedTimeEventDTO, mergeTimelineEvents, sortTimeline } from "@workspace/lib/derive/timeline";
+import { fromCustomEvent, fromUnifiedTimeEventDTO, mergeTimelineEvents, sortTimeline } from "@workspace/lib/derive/timeline";
 import type { TimelineEvent, TimelineEventsResponse } from "@workspace/lib/types";
 import { useActiveAddresses } from "../state/session";
+import { useCustomEvents } from "../state/customEvents";
 import { api, ApiError } from "./api";
 import { shortAddress } from "../ui/format";
 
@@ -46,6 +48,7 @@ function errorText(e: unknown): string {
 
 export function useTimeline(): TimelineData {
   const active = useActiveAddresses();
+  const customEvents = useCustomEvents((s) => s.events);
 
   const specs = [
     {
@@ -90,9 +93,14 @@ export function useTimeline(): TimelineData {
 
   const dataKey = results.map((r) => r.dataUpdatedAt).join(",");
   const events = useMemo(
-    () => sortTimeline(mergeTimelineEvents(...results.map((r) => r.data?.events ?? []))),
+    () => {
+      const observedAt = new Date().toISOString();
+      return sortTimeline(
+        mergeTimelineEvents(...results.map((r) => r.data?.events ?? []), customEvents.map((c) => fromCustomEvent(c, observedAt)))
+      );
+    },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [dataKey]
+    [dataKey, customEvents]
   );
 
   const sources: SourceState[] = specs.map((s, i) => {

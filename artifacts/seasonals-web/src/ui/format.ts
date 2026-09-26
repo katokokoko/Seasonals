@@ -3,7 +3,7 @@
  * ここで Number にするのは表示直前の比率 (APY) と日時のみ。
  */
 import { formatPercentage, formatTokenAmount, formatUsd } from "@workspace/lib/utils/numeric";
-import type { TimelineMetric, TokenAmountView } from "@workspace/lib/types";
+import type { TimelineEvent, TimelineMetric, TokenAmountView } from "@workspace/lib/types";
 
 const MONTH = new Intl.DateTimeFormat("en-US", { month: "short" });
 const TIME = new Intl.DateTimeFormat("en-US", { hour: "2-digit", minute: "2-digit", hour12: false });
@@ -25,6 +25,13 @@ export function fmtMonthYear(d: Date): string {
 export function parseDayKey(key: string): Date {
   const [y, m, d] = key.split("-").map((x) => Number.parseInt(x, 10));
   return new Date(y ?? 1970, (m ?? 1) - 1, d ?? 1);
+}
+
+/** event の時刻表記: 日付のみの予定は "All day"、概算は "≈ "、ETA 不明は null */
+export function fmtEventTime(e: Pick<TimelineEvent, "at" | "atApprox" | "allDay">): string | null {
+  if (e.at === null) return null;
+  if (e.allDay) return "All day";
+  return `${e.atApprox ? "≈ " : ""}${fmtTime(new Date(e.at))}`;
 }
 
 export function fmtAmount(a: TokenAmountView, maxFractionDigits = 4): string {

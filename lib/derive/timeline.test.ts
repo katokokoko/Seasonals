@@ -1,3 +1,5 @@
+import type { CustomEvent } from "../types/custom-event";
+import { PositionCategory } from "../types/enums";
 import type { TimelineEvent } from "../types/timeline";
 import type { UnifiedTimeEventDTO } from "../types/unified-time-event";
 import {
@@ -5,8 +7,10 @@ import {
   deriveTimelineStatus,
   displayStatus,
   estimateBlockTime,
+  fromCustomEvent,
   fromUnifiedTimeEventDTO,
   groupTimelineByDay,
+  isCustomPlan,
   mergeTimelineEvents,
   monthGridDays,
   sortTimeline,
@@ -66,6 +70,12 @@ describe("deriveTimelineStatus", () => {
   });
   it("ETA unknown → upcoming", () => {
     expect(deriveTimelineStatus(ev({ at: null }), NOW)).toBe("upcoming");
+  });
+  it("user_plan: due within 24h, then done without action / overdue with action", () => {
+    const past = (h: number) => new Date(NOW.getTime() - h * H).toISOString();
+    expect(deriveTimelineStatus(ev({ class: "user_plan", at: past(2), actions: [] }), NOW)).toBe("due");
+    expect(deriveTimelineStatus(ev({ class: "user_plan", at: past(30), actions: [] }), NOW)).toBe("done");
+    expect(deriveTimelineStatus(ev({ class: "user_plan", at: past(30) }), NOW)).toBe("overdue");
   });
   it("executed → done / failed by outcome", () => {
     expect(deriveTimelineStatus(ev({ class: "executed", outcome: "success" }), NOW)).toBe("done");
@@ -190,5 +200,46 @@ describe("mergeTimelineEvents", () => {
       ["x", "new"],
       ["y", "PT matures"],
     ]);
+  });
+});
+
+describe("fromCustomEvent", () => {
+  const ce: CustomEvent = {
+    id: "ce_1_abc",
+    date: "2026-10-03",
+    title: "Jupiter TGE",
+    note: "Check claim site",
+    category: PositionCategory.Other,
+    marker: "emoji",
+    emoji: "🚀",
+    created_at: NOW.toISOString(),
+  };
+  it("projects to a chain-agnostic all-day user_plan", () => {
+    const t = fromCustomEvent(ce, NOW.toISOString());
+    expect(t).toMatchObject({
+      id: "custom:ce_1_abc",
+      chain: null,
+      class: "user_plan",
+      kind: "user_note",
+      protocol: null,
+      title: "Jupiter TGE",
+      allDay: true,
+      emoji: "🚀",
+      requiresWallet: false,
+      actions: [],
+    });
+    expect(dayKey(new Date(t.at!))).toBe("2026-10-03");
+    expect(t.metrics).toEqual([{ label: "Note", kind: "text", value: "Check claim site" }]);
+    expect(isCustomPlan(t)).toBe(true);
+    expect(isCustomPlan(ev())).toBe(false);
+  });
+  it("omits emoji for non-emoji markers and note metric when empty", () => {
+    const t = fromCustomEvent({ ...ce, marker: "circle", note: undefined }, NOW.toISOString());
+    expect(t.emoji).toBeUndefined();
+    expect(t.metrics).toEqual([]);
+  });
+  it("past custom plans read as done, not overdue", () => {
+    const t = fromCustomEvent({ ...ce, date: "2026-09-20" }, NOW.toISOString());
+    expect(deriveTimelineStatus(t, NOW)).toBe("done");
   });
 });

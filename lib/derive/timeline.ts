@@ -5,6 +5,7 @@
  * 全関数 pure (now は引数で注入)。Web / BFF / MCP Server で共有する。
  */
 
+import type { CustomEvent } from "../types/custom-event";
 import type { UnifiedTimeEventDTO } from "../types/unified-time-event";
 import type {
   TimelineAction,
@@ -39,7 +40,9 @@ export function deriveTimelineStatus(event: TimelineEvent, now: Date): TimelineS
   if (Number.isNaN(at)) return "upcoming";
   const diff = now.getTime() - at;
   if (diff < 0) return "upcoming";
-  if (event.class === "user_plan") return diff < DAY_MS ? "due" : "overdue";
+  // user_plan: 当日中は due。action の無い予定 (custom plan のメモ等) は過ぎたら done、
+  // action 付き (Aqua strategy review 等) は未処理として overdue
+  if (event.class === "user_plan") return diff < DAY_MS ? "due" : event.actions.length === 0 ? "done" : "overdue";
   if (!hasOpenAction(event)) return "done";
   return diff < OVERDUE_AFTER_MS ? "due" : "overdue";
 }
@@ -232,6 +235,41 @@ export function fromUnifiedTimeEventDTO(dto: UnifiedTimeEventDTO, observedAt: st
     owner: dto.walletAddress,
     links: signature ? [{ label: "View on Solscan", url: `https://solscan.io/tx/${signature}` }] : [],
     source: typeof meta.source === "string" ? meta.source : "seasonals-bff",
+    observedAt,
+  };
+}
+
+export const CUSTOM_EVENT_SOURCE = "local:custom";
+
+/** Calendar に手入力した予定か (編集 / 削除できるのはこれだけ) */
+export function isCustomPlan(event: TimelineEvent): boolean {
+  return event.source === CUSTOM_EVENT_SOURCE;
+}
+
+/**
+ * ユーザーが手入力した CustomEvent → TimelineEvent (user_plan)。
+ * 日付のみの予定なので at はその日の local 0 時、allDay = true。chain 非依存 (null)。
+ */
+export function fromCustomEvent(ce: CustomEvent, observedAt: string): TimelineEvent {
+  const [y, m, d] = ce.date.split("-").map(Number) as [number, number, number];
+  return {
+    id: `custom:${ce.id}`,
+    chain: null,
+    class: "user_plan",
+    kind: "user_note",
+    protocol: null,
+    protocolName: null,
+    title: ce.title,
+    at: new Date(y, m - 1, d).toISOString(),
+    allDay: true,
+    atApprox: false,
+    settled: false,
+    ...(ce.marker === "emoji" && ce.emoji ? { emoji: ce.emoji } : {}),
+    metrics: ce.note ? [{ label: "Note", kind: "text", value: ce.note }] : [],
+    actions: [],
+    requiresWallet: false,
+    links: [],
+    source: CUSTOM_EVENT_SOURCE,
     observedAt,
   };
 }
