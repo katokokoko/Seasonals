@@ -23,7 +23,6 @@ import { useCallback, useEffect, useRef } from "react";
 import fragSrc from "./water.frag.glsl?raw";
 import { resolveWaterParams, type WaterParams } from "./waterDefaults";
 import { useQuietZones } from "./useQuietZones";
-import { canvasViewport } from "./quietZones";
 
 const VERT_SRC = "attribute vec2 a;\nvoid main() { gl_Position = vec4(a, 0.0, 1.0); }";
 const STILL_TIME = 12.0;
@@ -166,8 +165,10 @@ export function WaterBackground({ params, paused = false, className }: Props) {
     const resize = () => {
       const p = target.current;
       dprRef.current = Math.min(window.devicePixelRatio || 1, p.maxDpr);
-      // scrollbar を除いた canvas の実寸 (innerWidth だと常時 scrollbar 環境で絵が伸びてずれる)
-      const vp = canvasViewport();
+      // host (sticky + 上下 overscan) の実寸で解像度を決める (innerWidth / innerHeight は
+      // scrollbar も overscan も反映しないので絵が伸びてずれる)
+      const hb = host.getBoundingClientRect();
+      const vp = { width: hb.width || window.innerWidth, height: hb.height || window.innerHeight };
       const w = Math.round(vp.width * dprRef.current);
       const h = Math.round(vp.height * dprRef.current);
       const key = `${w}x${h}`;

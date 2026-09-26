@@ -12,17 +12,6 @@
 
 export const MAX_QUIET_RECTS = 4;
 
-/**
- * canvas (position: fixed; inset: 0) が実際に占める CSS px。常時表示の scrollbar
- * (macOS「スクロールバーを常に表示」/ Windows) があると innerWidth / innerHeight より
- * 小さくなるので、canvas の解像度と rect の座標変換は必ずこれを使う
- * (innerHeight を使うと shader の glass / quiet rect が上にずれる)。
- */
-export function canvasViewport(): { width: number; height: number } {
-  const el = document.documentElement;
-  return { width: el.clientWidth || window.innerWidth, height: el.clientHeight || window.innerHeight };
-}
-
 export interface QuietRect {
   x: number;
   y: number;

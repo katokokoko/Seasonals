@@ -280,6 +280,30 @@ for (const vp of WIDTHS) {
   await page.waitForTimeout(80);
   d = await glassDrift(page);
   check("glass aligned after scrolling back", d.max <= 1, d.detail);
+  // rubber band 対策: canvas は sticky + 上に 100px の overscan。どのスクロール位置でも viewport を覆い、
+  // document のスクロール量は増えない (rubber band 自体は headless で再現できないので実機で確認)
+  const cover = () =>
+    page.evaluate(() => {
+      const r = document.querySelector(".water-canvas").getBoundingClientRect();
+      const ui = document.querySelector(".ui-layer");
+      return {
+        top: r.top,
+        bottom: r.bottom - innerHeight,
+        position: getComputedStyle(document.querySelector(".water-canvas")).position,
+        extra: document.documentElement.scrollHeight - (ui.offsetTop + ui.offsetHeight),
+      };
+    });
+  await page.goto(BASE + "/calendar?view=timeline&range=all", { waitUntil: "networkidle" });
+  await page.waitForTimeout(500);
+  let cv = await cover();
+  check("water canvas is sticky with overscan above the top", cv.position === "sticky" && cv.top === -100 && cv.bottom === 0, JSON.stringify(cv));
+  check("overscan does not add scroll height", cv.extra <= 1, JSON.stringify(cv));
+  await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
+  await page.waitForTimeout(150);
+  cv = await cover();
+  check("water canvas still covers the viewport at the bottom", cv.top <= -99.5 && Math.abs(cv.bottom) <= 0.5, JSON.stringify(cv)); // sub-pixel の丸めは許容
+  d = await glassDrift(page);
+  check("glass aligned at the bottom of a long page", d.max <= 1, d.detail);
   await page.goto(BASE + "/?glass-debug", { waitUntil: "networkidle" });
   await page.waitForTimeout(800);
   check("glass-debug overlay renders", (await page.locator(".glass-debug-info").innerText()).includes("shader − DOM"));
@@ -319,10 +343,11 @@ await browser.close();
   await page.waitForTimeout(1000);
   const m = await page.evaluate(() => {
     const c = document.querySelector(".water-canvas canvas");
+    const host = document.querySelector(".water-canvas").getBoundingClientRect();
     const dpr = Math.min(devicePixelRatio, 1.25);
-    return { cw: c.width, ch: c.height, want: [Math.round(document.documentElement.clientWidth * dpr), Math.round(document.documentElement.clientHeight * dpr)], inner: [innerWidth, innerHeight] };
+    return { cw: c.width, ch: c.height, want: [Math.round(host.width * dpr), Math.round(host.height * dpr)], hostW: host.width, clientW: document.documentElement.clientWidth };
   });
-  check("canvas matches the viewport minus scrollbars", m.cw === m.want[0] && m.ch === m.want[1] && m.want[1] < Math.round(m.inner[1] * 1.25), JSON.stringify(m));
+  check("canvas matches its host box (viewport minus scrollbars)", m.cw === m.want[0] && m.ch === m.want[1] && m.hostW === m.clientW, JSON.stringify(m));
   await b.close();
 }
 

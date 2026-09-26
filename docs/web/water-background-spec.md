@@ -49,11 +49,12 @@ Motion: the water should feel like a still image that happens to be alive. Cells
 
 ## Architecture
 
-One fixed `<canvas>` at `z-index: 0` draws the water; the whole UI sits above it at `z-index: 10` in a normal DOM layer. The canvas never receives pointer events and is `aria-hidden`.
+One `<canvas>` at `z-index: 0` draws the water (sticky inside the scrolling content, see "Rubber band" below; it was `position: fixed` before 2026-09); the whole UI sits above it at `z-index: 10` in a normal DOM layer. The canvas never receives pointer events and is `aria-hidden`.
 
 ```text
 <main class="app">
-  <WaterBackground ... />        position: fixed; inset: 0; z-index: 0
+  <div class="water-track">      position: absolute; top: -100px; bottom: 0 (inside #root, display: flow-root)
+    <WaterBackground ... />      position: sticky; top: -100px; height: calc(100vh + 100px); z-index: 0
   <div class="ui">               position: relative; z-index: 10
     <TopNavigation />
     <Calendar data-water-quiet /> registers its rect as a quiet zone
@@ -106,11 +107,13 @@ type Props = { params?: Partial<WaterParams>; paused?: boolean; className?: stri
 Quiet zone contract:
 
 - Any element with the attribute `data-water-quiet` registers its bounding rect as a quiet zone. The calendar and floating cards get it; the top bar does not need it.
-- `useQuietZones()` observes those elements with one `ResizeObserver` plus `scroll` and `resize` listeners (passive), and returns up to 4 rects in device pixels with a bottom-left origin: `x = rect.left * dpr`, `y = (viewportHeight - rect.bottom) * dpr`, `w = rect.width * dpr`, `h = rect.height * dpr`. `viewportHeight` is the canvas's real CSS height, `document.documentElement.clientHeight` (the fixed `inset: 0` box), not `innerHeight`: with always-visible scrollbars (macOS "Always", Windows) `innerHeight` includes the scrollbar and every rect would land about one scrollbar height too high. Elements appearing or disappearing (route change, modal) must re-run the query; a `MutationObserver` on the UI root or an explicit `registerQuietZone(el)` helper are both acceptable.
+- `useQuietZones()` observes those elements with one `ResizeObserver` plus `scroll` and `resize` listeners (passive), and returns up to 4 rects in device pixels with a bottom-left origin: `x = rect.left * dpr`, `y = (viewportHeight - rect.bottom) * dpr`, `w = rect.width * dpr`, `h = rect.height * dpr`. (Superseded 2026-09: rects are measured relative to the canvas's own box via `canvasFrame()`; see "Tracking rules". Never use `innerHeight`: with always-visible scrollbars it includes the scrollbar and every rect lands one scrollbar height too high.) Elements appearing or disappearing (route change, modal) must re-run the query; a `MutationObserver` on the UI root or an explicit `registerQuietZone(el)` helper are both acceptable.
 - More than 4 candidates: keep the 4 largest by area. The shader unions the rects with a soft edge of 12% of the viewport height, so adjacent cards merge into one calm region.
 - The quiet mask does not darken the water. It lowers caustic contrast and refraction motion so text above stays readable without the background looking dirty.
 
 Rect uniforms are uploaded once per frame only when the values changed since the last frame; compare the flattened `Float32Array` before calling `uniform4fv`.
+
+Rubber band (added 2026-09): macOS elastic overscroll at the top / bottom edge translates the scrolling content on the compositor and leaves `position: fixed` elements in place. No JS value reports that offset, so a fixed canvas cannot follow it, and the glass light / rim stayed behind while the DOM frames bounced. The canvas therefore lives in the scrolling content: an absolutely positioned `.water-track` (from 100px above the document top to its bottom) holds a `position: sticky; top: -100px` host, `100vh + 100px` tall. During normal scrolling it behaves like a fixed layer; during a bounce it moves with the content, so glass and frames stay together in any browser. The 100px overscan above the top hides the gap when pulling down at the top. Overflow above the document top adds no scroll height, but overflow below would, so there is no overscan at the bottom (a bottom bounce briefly shows the page background colour). `#root` is `display: flow-root` so the top bar's margin does not collapse through it and shift the track. The canvas resolution comes from the host's own box, not the viewport.
 
 Tracking rules (revised 2026-09 after glass surfaces drifted off their DOM frames):
 
