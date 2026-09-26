@@ -314,6 +314,64 @@
 .wallet-list li .icon-button {
   margin-left: auto;
 }
+/* 検出した browser wallet (EIP-6963) の選択肢 */
+.wallet-choices {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: var(--sp-xs);
+}
+.wallet-choice {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-sm);
+  width: 100%;
+  min-height: 44px;
+  padding: var(--sp-sm) var(--sp-md);
+  border: 1px solid var(--c-borderStrong);
+  border-radius: var(--r-md);
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-weight: var(--w-semibold);
+  text-align: left;
+  cursor: pointer;
+}
+.wallet-choice:hover:not(:disabled) {
+  background: var(--s-hover);
+}
+.wallet-choice:disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+.wallet-choice[aria-busy="true"] {
+  opacity: 1;
+}
+.wallet-choice.is-connected {
+  border-color: var(--c-sodaText);
+}
+.wallet-choice-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wallet-choice-action {
+  margin-left: auto;
+  color: var(--c-sodaText);
+  font-size: var(--fs-bodySM);
+}
+.wallet-icon {
+  flex: none;
+  border-radius: var(--r-sm);
+}
+.wallet-icon.is-generic {
+  color: var(--c-textSubtitle);
+}
+.wallet-via {
+  gap: var(--sp-xs);
+}
 .input-row {
   display: flex;
   gap: var(--sp-sm);
