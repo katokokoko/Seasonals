@@ -82,7 +82,8 @@ export interface ThemeMeta {
  * theme.ts 内に閉じ込める (domain-specific palette、theme 切替の対象 surface
  * は MelonSodaBackground と Home logo に限定)。
  */
-export const THEME_CATALOG: readonly ThemeMeta[] = [
+// 空でない tuple 型: 先頭 (Cream Soda) を fallback として型安全に参照できる
+export const THEME_CATALOG: readonly [ThemeMeta, ...ThemeMeta[]] = [
   {
     id: "cream_soda",
     name: "Cream Soda",
