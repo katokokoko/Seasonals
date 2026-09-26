@@ -52,6 +52,8 @@ export interface MenuHoldingsResponse {
   holdings: MenuHolding[];
   /** 保有しているが Menu の一覧 (流動性上位) に無い商品。トグル ON 時に表示する */
   extraProducts: MenuProduct[];
+  /** deposit に使える wallet 残高 (ETH / USDe)。deposit フォームの残高表示と Max 用 */
+  spendable: TokenAmountView[];
   /** 取得に失敗した source (例: "pendle")。失敗分は「保有なし」とみなさない */
   failed: string[];
   observedAt: string;

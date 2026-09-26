@@ -9,6 +9,8 @@ import type { EarnPosition, MenuHolding, MenuProduct, PositionCategory, Protocol
 import { useEthMenu, useMenuHoldings, useMenuListings, type MenuHoldingsData } from "../services/queries";
 import { requestOpenWallet } from "../timeline/detailStore";
 import { ethHoldingText, solHoldingText } from "./holdingText";
+import { MenuActionPanel, actionLabel, menuActionable, type MenuAction } from "./MenuActionPanel";
+import { useActiveAddresses } from "../state/session";
 import { fmtFullDate, fmtMetric } from "../ui/format";
 import { UniswapRoutePreview } from "./UniswapRoutePreview";
 import { ChainIcon } from "../ui/ChainIcon";
@@ -46,6 +48,8 @@ export default function ExploreMenu() {
   const [query, setQuery] = useState("");
   const [depositedOnly, setDepositedOnly] = useState(false);
   const holdings = useMenuHoldings(q.data);
+  const active = useActiveAddresses();
+  const ethCtx: EthActionContext = { addresses: active.filter((a) => a.chain === "ethereum").map((a) => a.address), byAddress: holdings.ethByAddress };
   const extra = depositedOnly ? holdings.extraProducts : [];
 
   const rows = useMemo<Row[]>(
@@ -127,7 +131,7 @@ export default function ExploreMenu() {
               .filter((r) => r.section === section)
               .map((r) =>
                 r.kind === "eth" ? (
-                  <EthMenuCard key={r.key} product={r.product} holding={holdings.eth.get(r.key)} />
+                  <EthMenuCard key={r.key} product={r.product} holding={holdings.eth.get(r.key)} ctx={ethCtx} />
                 ) : (
                   <MenuCard key={r.key} item={r.item} held={holdings.sol.get(r.key)} />
                 )
@@ -235,8 +239,16 @@ function MenuCard({ item, held }: { item: MenuItem; held?: EarnPosition[] }) {
   );
 }
 
-export function EthMenuCard({ product, holding }: { product: MenuProduct; holding?: MenuHolding[] }) {
+export interface EthActionContext {
+  addresses: string[];
+  byAddress: MenuHoldingsData["ethByAddress"];
+}
+
+export function EthMenuCard({ product, holding, ctx }: { product: MenuProduct; holding?: MenuHolding[]; ctx?: EthActionContext }) {
   const [open, setOpen] = useState(false);
+  const [panel, setPanel] = useState<MenuAction | null>(null);
+  const canAct = Boolean(ctx) && menuActionable(product);
+  const held = Boolean(holding?.some((h) => h.amounts.length > 0));
   return (
     <li className="menu-item" style={brandStyle(product.protocolId)}>
       <div className="menu-item-top">
@@ -297,6 +309,25 @@ export function EthMenuCard({ product, holding }: { product: MenuProduct; holdin
           )}
         </span>
       </div>
+      {canAct && !panel && (
+        <div className="menu-item-cta">
+          <button type="button" className="btn btn-primary" onClick={() => setPanel("deposit")}>
+            {actionLabel(product, "deposit")}
+          </button>
+          <button
+            type="button"
+            className="btn"
+            onClick={() => setPanel("withdraw")}
+            disabled={!held}
+            title={held ? undefined : "Nothing held at the watched addresses"}
+          >
+            {actionLabel(product, "withdraw")}
+          </button>
+        </div>
+      )}
+      {canAct && panel && ctx && (
+        <MenuActionPanel key={panel} product={product} action={panel} addresses={ctx.addresses} byAddress={ctx.byAddress} onClose={() => setPanel(null)} />
+      )}
       {open && (
         <div className="menu-details">
           <UniswapRoutePreview />

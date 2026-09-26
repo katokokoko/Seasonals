@@ -153,6 +153,27 @@ for (const vp of WIDTHS) {
   await page.close();
 }
 
+// Menu: 「Deposited only」と deposit / withdraw のプラン (公開 mainnet address を watch、fork 実行はしない)
+{
+  const page = await newPage(WIDTHS[0]);
+  const watchlist = [{ chain: "ethereum", address: "0xA7a71E78128F6e3f6dB404ec47806E472F280ef8" }];
+  await page.addInitScript((v) => localStorage.setItem("seasonals-web-session-v2", v), JSON.stringify({ state: { watchlist }, version: 0 }));
+  await page.goto(BASE + "/explore", { waitUntil: "networkidle" });
+  const all = await page.locator(".menu-item").count();
+  await page.getByRole("button", { name: "Deposited only" }).click();
+  await page.locator(".menu-holding").first().waitFor({ timeout: 60_000 }).catch(() => {});
+  const shown = await page.locator(".menu-item").count();
+  const heldShown = await page.locator(".menu-item .menu-holding").count();
+  check("Deposited only narrows the menu to held products", shown > 0 && shown < all && heldShown === shown, `all=${all} shown=${shown} held=${heldShown}`);
+  const card = page.locator(".menu-item", { hasText: "sUSDe" }).first();
+  await card.getByRole("button", { name: "Stake USDe" }).click();
+  await card.getByLabel("Amount").fill("1");
+  await card.getByRole("button", { name: "Build plan" }).click();
+  const planOrError = await card.locator(".plan-steps, .error").first().waitFor({ timeout: 60_000 }).then(() => card.locator(".plan-steps, .error").first().innerText()).catch((e) => String(e));
+  check("Menu deposit builds a plan or a clear on-chain refusal", planOrError.length > 0 && !/Timeout/.test(planOrError), planOrError.slice(0, 120));
+  await page.close();
+}
+
 // reduced motion → 静止画
 {
   const page = await newPage(WIDTHS[0], { reducedMotion: "reduce" });

@@ -12,6 +12,10 @@ export const sUSDeAbi = parseAbi([
   "function cooldowns(address) view returns (uint104 cooldownEnd, uint152 underlyingAmount)",
   "function silo() view returns (address)",
   "function convertToAssets(uint256 shares) view returns (uint256)",
+  "function previewDeposit(uint256 assets) view returns (uint256)",
+  "function deposit(uint256 assets, address receiver) returns (uint256)",
+  "function redeem(uint256 shares, address receiver, address owner) returns (uint256)",
+  "function cooldownShares(uint256 shares) returns (uint256)",
   "function unstake(address receiver)",
   "event Withdraw(address indexed sender, address indexed receiver, address indexed owner, uint256 assets, uint256 shares)",
 ]);
@@ -24,6 +28,10 @@ export const withdrawalQueueAbi = parseAbi([
   "function getLastCheckpointIndex() view returns (uint256)",
   "function findCheckpointHints(uint256[] _requestIds, uint256 _firstIndex, uint256 _lastIndex) view returns (uint256[] hintIds)",
   "function claimWithdrawal(uint256 _requestId)",
+  "function MIN_STETH_WITHDRAWAL_AMOUNT() view returns (uint256)",
+  "function MAX_STETH_WITHDRAWAL_AMOUNT() view returns (uint256)",
+  "function requestWithdrawals(uint256[] _amounts, address _owner) returns (uint256[] requestIds)",
+  "function requestWithdrawalsWstETH(uint256[] _amounts, address _owner) returns (uint256[] requestIds)",
   "event WithdrawalRequested(uint256 indexed requestId, address indexed requestor, address indexed owner, uint256 amountOfStETH, uint256 amountOfShares)",
 ]);
 
@@ -59,3 +67,16 @@ export const auctionParametersAbi = [
     ],
   },
 ] as const;
+
+/** ERC-20 の approve / allowance (plan の approval step 用) */
+export const erc20ApproveAbi = parseAbi([
+  "function allowance(address owner, address spender) view returns (uint256)",
+  "function approve(address spender, uint256 amount) returns (bool)",
+]);
+
+/** Lido stETH (submit で ETH を stake) と wstETH の換算 */
+export const stETHAbi = parseAbi(["function submit(address _referral) payable returns (uint256)"]);
+export const wstETHAbi = parseAbi([
+  "function getStETHByWstETH(uint256 _wstETHAmount) view returns (uint256)",
+  "function getWstETHByStETH(uint256 _stETHAmount) view returns (uint256)",
+]);

@@ -35,6 +35,8 @@ export const ActionPlanSchema = z.object({
   summary: z.string(),
   steps: z.array(TxStepSchema).min(1),
   simulation: z.object({ ran: z.boolean(), ok: z.boolean().optional(), error: z.string().optional(), note: z.string() }),
+  /** 実行前に人が知っておくべきこと (例: cooldown タイマーの再スタート、価格 guard の乖離) */
+  warnings: z.array(z.string()).optional(),
   builtAt: z.string(),
   source: z.string(),
   broadcast: z.literal(false),
@@ -44,14 +46,23 @@ export type TxStep = z.infer<typeof TxStepSchema>;
 
 export class PlanError extends Error {
   constructor(
-    public readonly code: "event_not_found" | "action_not_available" | "unsupported_action" | "rpc_unavailable" | "upstream_error",
+    public readonly code:
+      | "event_not_found"
+      | "action_not_available"
+      | "unsupported_action"
+      | "rpc_unavailable"
+      | "upstream_error"
+      | "invalid_amount"
+      | "insufficient_balance"
+      | "oracle_unavailable"
+      | "oracle_divergence_too_large",
     message: string
   ) {
     super(message);
   }
 }
 
-async function simulate(owner: string, steps: TxStep[], client: PublicClient | null, where: string): Promise<ActionPlan["simulation"]> {
+export async function simulate(owner: string, steps: TxStep[], client: PublicClient | null, where: string): Promise<ActionPlan["simulation"]> {
   if (!client) return { ran: false, note: "Ethereum RPC is not configured." };
   // approval が要る場合、本体 call は approval 後でないと通らないので approval のみ確認する
   const first = steps[0]!;

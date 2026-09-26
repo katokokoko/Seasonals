@@ -118,13 +118,15 @@ export async function getMenuHoldings(owner: string): Promise<MenuHoldingsRespon
   if (hit && Date.now() - hit.at < (hit.value.failed.length ? 10_000 : 60_000)) return hit.value;
   const observedAt = new Date().toISOString();
   const client = getEthClient();
-  if (!client) return { address: owner, holdings: [], extraProducts: [], failed: ["rpc"], observedAt };
+  if (!client) return { address: owner, holdings: [], extraProducts: [], spendable: [], failed: ["rpc"], observedAt };
 
-  const [lido, ethena, pendle, menu] = await Promise.allSettled([
+  const [lido, ethena, pendle, menu, eth, usde] = await Promise.allSettled([
     lidoHolding(client, owner),
     ethenaHolding(client, owner),
     pendleHoldings(client, owner),
     getEthMenu(),
+    client.getBalance({ address: owner as `0x${string}` }),
+    balanceOf(client, ETHENA.USDe, owner),
   ]);
   const failed: string[] = [];
   const holdings: MenuHolding[] = [];
@@ -140,8 +142,13 @@ export async function getMenuHoldings(owner: string): Promise<MenuHoldingsRespon
       (p) => !listed.has(p.id) && pendle.value.holdings.some((h) => h.productId === p.id)
     );
   } else failed.push("pendle");
+  const spendable = [
+    ...(eth.status === "fulfilled" ? [{ value: eth.value.toString(), decimals: 18, symbol: "ETH" }] : []),
+    ...(usde.status === "fulfilled" ? [{ value: usde.value.toString(), decimals: 18, symbol: "USDe" }] : []),
+  ];
+  if (eth.status === "rejected" || usde.status === "rejected") failed.push("wallet balances");
 
-  const value: MenuHoldingsResponse = { address: owner, holdings, extraProducts, failed, observedAt };
+  const value: MenuHoldingsResponse = { address: owner, holdings, extraProducts, spendable, failed, observedAt };
   cache.set(key, { at: Date.now(), value });
   return value;
 }

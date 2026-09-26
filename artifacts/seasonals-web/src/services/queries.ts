@@ -9,7 +9,7 @@ import { useQueries, useQuery } from "@tanstack/react-query";
 import { useMemo } from "react";
 import { fromUnifiedTimeEventDTO, mergeTimelineEvents, sortTimeline } from "@workspace/lib/derive/timeline";
 import { heldPoolKeys } from "@workspace/lib/derive/earn-positions";
-import type { EarnPosition, MenuHolding, MenuProduct, ProtocolMenuEntry, TimelineEvent, TimelineEventsResponse } from "@workspace/lib/types";
+import type { EarnPosition, MenuHolding, MenuHoldingsResponse, MenuProduct, ProtocolMenuEntry, TimelineEvent, TimelineEventsResponse } from "@workspace/lib/types";
 import { useActiveAddresses } from "../state/session";
 import { api, ApiError } from "./api";
 import { shortAddress } from "../ui/format";
@@ -143,6 +143,8 @@ export interface MenuHoldingsData {
   sol: Map<string, EarnPosition[]>;
   /** 保有しているが Menu の一覧に無い Ethereum 商品 */
   extraProducts: MenuProduct[];
+  /** Ethereum address ごとの応答 (deposit / withdraw パネルの残高・Max 用) */
+  ethByAddress: Map<string, MenuHoldingsResponse>;
 }
 
 /**
@@ -165,10 +167,12 @@ export function useMenuHoldings(listings: ProtocolMenuEntry[] | undefined): Menu
     const failed: string[] = [];
     const ethMap = new Map<string, MenuHolding[]>();
     const extra = new Map<string, MenuProduct>();
+    const ethByAddress = new Map<string, MenuHoldingsResponse>();
     ethResults.forEach((r, i) => {
       const label = `Ethereum ${shortAddress(eth[i]!.address)}`;
       if (r.isError) failed.push(label);
       if (!r.data) return;
+      ethByAddress.set(eth[i]!.address, r.data);
       r.data.failed.forEach((f) => failed.push(`${label} (${f})`));
       for (const h of r.data.holdings) ethMap.set(h.productId, [...(ethMap.get(h.productId) ?? []), h]);
       for (const p of r.data.extraProducts) extra.set(p.id, p);
@@ -184,6 +188,7 @@ export function useMenuHoldings(listings: ProtocolMenuEntry[] | undefined): Menu
       eth: ethMap,
       sol: listings ? heldPoolKeys(listings, earns) : new Map(),
       extraProducts: [...extra.values()],
+      ethByAddress,
     };
   }
 }

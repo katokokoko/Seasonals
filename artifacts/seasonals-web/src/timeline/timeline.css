@@ -479,3 +479,10 @@
   margin: var(--sp-xs) 0 0;
   padding: 0;
 }
+/* プランの注意書き (cooldown 再スタート、価格 guard の乖離など)。caramel = 注意 */
+.plan-warnings {
+  margin: 0;
+  padding: var(--sp-sm) var(--sp-sm) var(--sp-sm) var(--sp-lg);
+  border-radius: var(--r-md);
+  background: var(--c-caramelSoft);
+}
