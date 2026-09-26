@@ -19,7 +19,7 @@ import { getEthMenu } from "../ethereum/menu";
 import { getMenuHoldings } from "../ethereum/holdings";
 import { getAavePositions } from "../ethereum/aave";
 import { buildAquaShipPlan, fillAquaOnFork, shipAquaOnFork, type AquaShipInput } from "../ethereum/aqua";
-import { executeProposal, getProposal, listProposals, previewStep, ProposalError, rejectProposal, StepSchema, submitProposal } from "../ethereum/agent-proposals";
+import { executeProposal, getProposal, listProposals, previewProposal, previewStep, ProposalError, rejectProposal, StepSchema, submitProposal } from "../ethereum/agent-proposals";
 import type { EthProposalApprovalVia, EthProposalExecuteRequest, EthProposalPreviewRequest, EthProposalSubmitRequest } from "@workspace/lib/types";
 import { checkPeg, getChainlinkPrice, PRICE_ASSETS, type PriceAsset } from "../ethereum/pricing";
 import { assertTokenAmount, InvalidAmountError } from "@workspace/lib/utils/numeric";
@@ -371,6 +371,15 @@ async function ethRoutes(app: FastifyInstance): Promise<void> {
   app.post<{ Body: Partial<EthProposalSubmitRequest> }>("/eth/agent-proposals", async (req, reply) => {
     try {
       return reply.code(201).send(await submitProposal(req.body));
+    } catch (e) {
+      return proposalErr(reply, e);
+    }
+  });
+
+  /** dry run: previews + Strategy Brief だけ返す (保存しない)。Agent が brief を見て練り直すため */
+  app.post<{ Body: Partial<EthProposalSubmitRequest> }>("/eth/agent-proposals/brief", async (req, reply) => {
+    try {
+      return await previewProposal(req.body);
     } catch (e) {
       return proposalErr(reply, e);
     }

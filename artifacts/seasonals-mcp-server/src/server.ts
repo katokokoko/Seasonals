@@ -25,6 +25,7 @@ import type {
   AgentPlan,
   ApprovalToken,
   EthAgentProposal,
+  EthProposalBriefResponse,
   EthProposalPreviewSlot,
   MenuHoldingsResponse,
   MenuProduct,
@@ -666,6 +667,14 @@ export function buildMcpServer(
       eventId: z.string().min(1).describe("An event id from list_events"),
       actionType: z.string().regex(/^[a-z_]+$/).describe("One of that event's actions (lido_claim, ethena_unstake, pendle_redeem, aqua_dock …)"),
     }),
+    z.object({
+      kind: z.literal("aqua_ship"),
+      usdc: DECIMAL.describe("USDC to commit to the 1inch Aqua PEGGED_STABLE USDC/USDe LP (human-readable decimal)"),
+      usde: DECIMAL.describe("USDe to commit (human-readable decimal)"),
+      bandBps: z.number().int().min(10).max(200).describe("Peg band in bps (10–200); the server refuses if Chainlink shows USDe/USDC off peg by > 50 bps"),
+      reviewAt: z.string().datetime().describe("ISO date (≤ 180 days out) when a 'strategy review' event goes on the calendar"),
+      feeBps: z.number().int().min(1).max(30).optional().describe("Taker fee in bps, default 5"),
+    }),
   ]);
   const proposalPath = (id: string) => `/eth/agent-proposals/${encodeURIComponent(id)}`;
 
@@ -695,7 +704,7 @@ export function buildMcpServer(
     "get_holdings",
     {
       description:
-        "Read what an address holds in the menu products (stETH / wstETH, sUSDe incl. cooldown, Pendle PT / YT) plus spendable ETH / USDe, " +
+        "Read what an address holds in the menu products (stETH / wstETH, sUSDe incl. cooldown, Pendle PT / YT) plus spendable ETH / USDC / USDe, " +
         "as the Menu page shows them (mainnet state; amounts are smallest-unit strings with decimals). Also reports whether the local " +
         "Anvil fork is reachable, which is where approved proposals run.",
       inputSchema: { address: EVM_ADDRESS },
@@ -742,24 +751,40 @@ export function buildMcpServer(
     "propose_rebalance",
     {
       description:
-        "Submit a multi-step rebalance (up to 6 steps: menu deposit / withdraw, USDC ⇄ USDe swap, event action) as an UNSIGNED proposal. " +
-        "The server builds every step and refuses the whole proposal if any guard fails; a later step that spends what an earlier step " +
-        "produces is deferred and checked on the fork when it runs. Size such steps from the previous step's preview amountOut (leave ~1% margin). " +
-        "Withdrawals from Lido (queue) and Ethena (cooldown) are not liquid in the same run — end the proposal at the request and let the " +
-        "calendar event handle the claim later. Nothing runs until a human approves: after submitting, show the user the id, the steps and the " +
-        "bundleHash, then either ask them to approve it on the Seasonals web Agent page (then call wait_for_rebalance_decision) or ask for an " +
-        "explicit yes in this conversation (then call execute_rebalance). Execution happens only on the local Anvil fork; the Agent never signs.",
+        "Submit a multi-step rebalance (up to 6 steps: menu deposit / withdraw, USDC ⇄ USDe swap, event action, 1inch Aqua LP ship) as an " +
+        "UNSIGNED proposal with a Strategy Brief. The server builds every step and refuses the whole proposal if any guard fails; a later step " +
+        "that spends what an earlier step produces is deferred and checked on the fork when it runs. Size such steps from the previous step's " +
+        "preview amountOut (leave ~1% margin). Withdrawals from Lido (queue) and Ethena (cooldown) are not liquid in the same run — end the " +
+        "proposal at the request and let the calendar event handle the claim later. " +
+        "The response carries `brief`: the server computes BEFORE → AFTER portfolio, USD-weighted blended APY, the Aqua sleeve and the calendar " +
+        "horizon from real holdings, menu rates and step previews (you only name and explain the strategy; never invent numbers). " +
+        "Use dryRun: true first to see the brief without submitting, iterate, then submit. Nothing runs until a human approves: show the " +
+        "user `brief.markdown` verbatim plus the id and bundleHash, then either ask them to approve it on the Seasonals web Agent page (then " +
+        "call wait_for_rebalance_decision) or ask for an explicit yes in this conversation (then call execute_rebalance). Execution happens " +
+        "only on the local Anvil fork; the Agent never signs.",
       inputSchema: {
         address: EVM_ADDRESS,
-        title: z.string().min(1).max(120),
-        rationale: z.string().min(1).max(2000).describe("Why this rebalance, in plain words the user will read before approving"),
+        name: z
+          .string()
+          .min(1)
+          .max(80)
+          .describe("Pop strategy name: one emoji + a short English name, ≤ 40 characters, e.g. '🍋 Lemon Ladder' or '🦋 Cocoon to Coupon'"),
+        tagline: z.string().min(1).max(140).optional().describe("One-line English hook for the strategy (≤ 140 characters)"),
+        rationale: z.string().min(1).max(2000).describe("Why this rebalance, in plain English the user will read before approving"),
         steps: z.array(PROPOSAL_STEP).min(1).max(6),
+        dryRun: z.boolean().optional().describe("true = build previews + Strategy Brief only; nothing is stored or shown to the user yet"),
       },
     },
-    async ({ address, title, rationale, steps }) => {
+    async ({ address, name, tagline, rationale, steps, dryRun }) => {
       const t0 = Date.now();
+      const body = { owner: address, name, ...(tagline ? { tagline } : {}), rationale, steps };
       try {
-        const proposal = await bff.post<EthAgentProposal>("/eth/agent-proposals", { owner: address, title, rationale, steps });
+        if (dryRun) {
+          const brief = await bff.post<EthProposalBriefResponse>("/eth/agent-proposals/brief", body);
+          audit("propose_rebalance", null, "ok", t0);
+          return jsonContent({ dryRun: true, ...brief });
+        }
+        const proposal = await bff.post<EthAgentProposal>("/eth/agent-proposals", body);
         audit("propose_rebalance", proposal.id, "ok", t0);
         return jsonContent(proposal);
       } catch (err) {
@@ -767,6 +792,35 @@ export function buildMcpServer(
         throw err;
       }
     }
+  );
+
+  server.registerPrompt(
+    "design_rebalance",
+    {
+      description: "Design an Ethereum rebalance for an address, present it as a Strategy Brief, and ask the human to approve it",
+      argsSchema: { address: z.string(), goal: z.string().optional() },
+    },
+    ({ address, goal }) => ({
+      messages: [
+        {
+          role: "user" as const,
+          content: {
+            type: "text" as const,
+            text:
+              `Design a rebalance for ${address} on Seasonals${goal ? ` with this goal: ${goal}` : ""}.\n\n` +
+              "Workflow:\n" +
+              "1. Read the current state with get_holdings and the opportunities with list_yield_menu (Lido, Ethena, Pendle PT / YT, 1inch Aqua LP).\n" +
+              "2. Pick at most 6 steps. Size each step with preview_rebalance_step; a swap's amountOut tells you how much the next step can use (leave ~1% margin). " +
+              "Withdrawals from Lido or Ethena are not liquid in the same run, so end there and let the calendar event handle the claim.\n" +
+              "3. Give the strategy a pop name (one emoji + a short English name, ≤ 40 characters), a one-line tagline and a plain-English rationale.\n" +
+              "4. Call propose_rebalance with dryRun: true, read the returned brief (before → after, blended APY, warnings, unpriced), adjust, then submit without dryRun.\n" +
+              "5. Show me brief.markdown verbatim (do not restate or change its numbers — the server computed them), plus the proposal id and bundleHash.\n" +
+              "6. Ask me to approve: either on the Seasonals web Agent page (then call wait_for_rebalance_decision) or by an explicit yes here (then call execute_rebalance with user_confirmed: true).\n" +
+              "Never say anything ran before I approved. Everything executes only on the local Anvil fork; you never sign.",
+          },
+        },
+      ],
+    })
   );
 
   server.registerTool(

@@ -146,11 +146,14 @@ describe("routes", () => {
     expect((await app.inject({ method: "GET", url: "/eth/agent-proposals/ethprop_x" })).statusCode).toBe(404);
     const owner = "0x0cA88aeB92357A00CDFAC815d5e11C4eEEefc2b5";
     const step = { kind: "uniswap_swap", tokenIn: "USDC", tokenOut: "USDe", amount: "1" };
-    const tooMany = await app.inject({ method: "POST", url: "/eth/agent-proposals", payload: { owner, title: "t", rationale: "r", steps: Array(7).fill(step) } });
+    const tooMany = await app.inject({ method: "POST", url: "/eth/agent-proposals", payload: { owner, name: "🍋 t", rationale: "r", steps: Array(7).fill(step) } });
     expect(tooMany.statusCode).toBe(400);
     expect(tooMany.json().error).toBe("invalid_argument");
-    const badSymbol = await app.inject({ method: "POST", url: "/eth/agent-proposals", payload: { owner, title: "t", rationale: "r", steps: [{ ...step, tokenOut: "DAI" }] } });
+    const badSymbol = await app.inject({ method: "POST", url: "/eth/agent-proposals", payload: { owner, name: "🍋 t", rationale: "r", steps: [{ ...step, tokenOut: "DAI" }] } });
     expect(badSymbol.statusCode).toBe(400);
+    const noLetter = await app.inject({ method: "POST", url: "/eth/agent-proposals/brief", payload: { owner, name: "🍋", rationale: "r", steps: [step] } });
+    expect(noLetter.statusCode).toBe(400);
+    expect(noLetter.json().message).toMatch(/letter/);
     const badPreview = await app.inject({ method: "POST", url: "/eth/agent-proposals/preview", payload: { owner, step: { kind: "menu" } } });
     expect(badPreview.statusCode).toBe(400);
     await app.close();

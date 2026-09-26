@@ -6,11 +6,35 @@ import { ProposalInbox } from "./ProposalInbox";
 
 const OWNER = "0x1121aFF29666B91181568264Ab0F2Bc58Bf90a11";
 const HASH = `0x${"ab".repeat(32)}`;
+const USDC = "0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48";
+const SUSDE = "0x9d39a5de30e57443bff2a8307a4256c8797a3497";
+const brief: EthAgentProposal["brief"] = {
+  name: "🍋 Lemon Ladder",
+  tagline: "Idle USDC → sUSDe",
+  before: { totalUsd: "1000.00000000", lines: [{ key: USDC, label: "USDC (wallet)", amounts: [{ value: "1000000000", decimals: 6, symbol: "USDC" }], usd: "1000.00000000", share: 1, apy: 0, apyLabel: "Idle" }] },
+  after: {
+    totalUsd: "999.50000000",
+    lines: [
+      { key: USDC, label: "USDC (wallet)", amounts: [{ value: "900000000", decimals: 6, symbol: "USDC" }], usd: "900.00000000", share: 0.9, apy: 0, apyLabel: "Idle" },
+      { key: SUSDE, label: "sUSDe (Ethena)", productId: "ethereum:ethena:susde", amounts: [{ value: "79200000000000000000", decimals: 18, symbol: "sUSDe" }], usd: "99.00000000", share: 0.099, apy: 0.05, approx: true },
+      { key: "aqua:usdc-usde", label: "Aqua USDC/USDe LP (1inch)", amounts: [{ value: "500000", decimals: 6, symbol: "USDC" }], usd: "0.50000000", share: 0.0005, apy: null, apyLabel: "Fees (not counted)" },
+    ],
+  },
+  blendedApy: { before: 0, after: 0.05, delta: 0.05, excluded: ["Aqua USDC/USDe LP (1inch)"] },
+  aqua: { usdc: { value: "500000", decimals: 6, symbol: "USDC" }, usde: { value: "500000000000000000", decimals: 18, symbol: "USDe" }, bandBps: 50, feeBps: 5, reviewAt: "2026-10-10T00:00:00.000Z", peg: "Within 50 bps (1 bps)." },
+  horizon: [{ at: "2026-10-10T00:00:00.000Z", label: "Review the Aqua USDC/USDe strategy" }],
+  unpriced: ["PT-mystery"],
+  warnings: [],
+  markdown: "# 🍋 Lemon Ladder",
+  builtAt: "2026-09-26T00:00:00.000Z",
+};
 const pending: EthAgentProposal = {
   id: "ethprop_1",
   owner: OWNER,
-  title: "Move 100 USDC into sUSDe",
+  name: "🍋 Lemon Ladder",
+  tagline: "Idle USDC → sUSDe",
   rationale: "sUSDe pays 5% while USDC sits idle.",
+  brief,
   steps: [
     { kind: "uniswap_swap", tokenIn: "USDC", tokenOut: "USDe", amount: "100" },
     { kind: "menu", productId: "ethereum:ethena:susde", action: "deposit", amount: "99" },
@@ -69,9 +93,25 @@ beforeEach(() => {
   useSession.setState({ watchlist: [{ chain: "ethereum", address: OWNER }], connectedEvm: null });
 });
 
+test("shows the strategy brief: name, before → after, blended APY delta, Aqua sleeve, horizon and unpriced note", async () => {
+  renderInbox([pending]);
+  expect((await screen.findByRole("heading", { level: 3 })).textContent).toBe("🍋 Lemon Ladder");
+  expect(screen.getByText("Idle USDC → sUSDe")).toBeTruthy();
+  const text = document.body.textContent!;
+  expect(text).toContain("USDC (wallet)");
+  expect(text).toContain("$1,000.00");
+  expect(text).toContain("≈$99.00");
+  expect(text).toContain("(+5.00% pts)");
+  expect(screen.getByText("(+5.00% pts)").className).toContain("delta-up");
+  expect(text).toContain("Fees (not counted)");
+  expect(text).toContain("1inch Aqua LP sleeve:");
+  expect(text).toContain("Review the Aqua USDC/USDe strategy");
+  expect(text).toContain("Not priced (excluded from totals): PT-mystery.");
+});
+
 test("shows the agent's steps, defers the dependent step, and one tap approves with the shown bundle hash", async () => {
   const calls = renderInbox([pending]);
-  await screen.findByText("Move 100 USDC into sUSDe");
+  await screen.findByText("sUSDe pays 5% while USDC sits idle.");
   expect(screen.getByText("Swap 100 USDC → USDe on Uniswap")).toBeTruthy();
   expect(screen.getByText(/checked on the fork when it runs/)).toBeTruthy();
   fireEvent.click(await screen.findByRole("button", { name: "Approve and execute on local fork" }));

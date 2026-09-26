@@ -13,13 +13,15 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import type {
   EthAgentProposal,
+  EthPlanEffects,
   EthProposalApprovalVia,
+  EthProposalBriefResponse,
   EthProposalPreviewSlot,
   EthProposalStep,
   EthProposalStepResult,
   TimelineEvent,
 } from "@workspace/lib/types";
-import { SWAP_SYMBOLS } from "@workspace/lib/types";
+import { PROPOSAL_NAME_MAX, PROPOSAL_TAGLINE_MAX, SWAP_SYMBOLS } from "@workspace/lib/types";
 import { isEvmAddress } from "@workspace/lib/config/chains";
 import { ETH_ASSET_ADDRESS, findEthAsset } from "@workspace/lib/config/eth-assets";
 import { toSmallestUnit } from "@workspace/lib/utils/numeric";
@@ -32,6 +34,8 @@ import { assertForkEndpoint, executeMenuOnFork, executeOnFork } from "./execute"
 import { _invalidateHoldings } from "./holdings";
 import { buildMenuPlan } from "./menu-actions";
 import { buildActionPlan, PlanError } from "./plans";
+import { buildAquaShipPlan, shipAquaOnFork, type AquaShipInput } from "./aqua";
+import { buildStrategyBrief } from "./strategy-brief";
 import { buildUniswapSwapPlan, executeUniswapSwapOnFork } from "./uniswap";
 
 export const MAX_PROPOSAL_STEPS = 6;
@@ -58,11 +62,26 @@ export const StepSchema: z.ZodType<EthProposalStep> = z
       eventId: z.string().min(1),
       actionType: z.string().regex(/^[a-z_]+$/),
     }),
+    z.object({
+      kind: z.literal("aqua_ship"),
+      usdc: decimalAmount,
+      usde: decimalAmount,
+      bandBps: z.number().int().min(10).max(200),
+      reviewAt: z.string().datetime(),
+      feeBps: z.number().int().min(1).max(30).optional(),
+    }),
   ])
   .refine((s) => s.kind !== "uniswap_swap" || s.tokenIn !== s.tokenOut, { message: "tokenIn and tokenOut must differ" });
+/** 戦略名: 絵文字 + 短い英語名 (code point で数える)。文字を 1 つは含む */
+const nameSchema = z
+  .string()
+  .trim()
+  .refine((s) => [...s].length >= 1 && [...s].length <= PROPOSAL_NAME_MAX, `name must be 1–${PROPOSAL_NAME_MAX} characters`)
+  .refine((s) => /\p{L}/u.test(s), "name must contain at least one letter");
 export const SubmitSchema = z.object({
   owner: z.string().refine(isEvmAddress, "owner must be a 0x-prefixed 20-byte address"),
-  title: z.string().trim().min(1).max(120),
+  name: nameSchema,
+  tagline: z.string().trim().min(1).max(PROPOSAL_TAGLINE_MAX).optional(),
   rationale: z.string().trim().min(1).max(2000),
   steps: z.array(StepSchema).min(1).max(MAX_PROPOSAL_STEPS),
 });
@@ -83,7 +102,8 @@ const STORE = "eth-agent-proposals";
 let proposals: EthAgentProposal[] | null = null;
 function store(): EthAgentProposal[] {
   if (!proposals) {
-    proposals = loadJson<EthAgentProposal[]>(STORE) ?? [];
+    // brief の無い旧形式 (title のみ) は読まない (dev データ)
+    proposals = (loadJson<EthAgentProposal[]>(STORE) ?? []).filter((p) => typeof p.name === "string" && p.brief);
     // 実行中にプロセスが落ちた proposal はロックが残らないよう failed にする
     for (const p of proposals) {
       if (p.status === "executing") {
@@ -146,6 +166,29 @@ export function swapInput(owner: string, step: Extract<EthProposalStep, { kind: 
   return { swapper: owner, tokenIn, tokenOut, amount };
 }
 
+/** Aqua ship の decimal → AquaShipInput (smallest unit)。変換はここだけ */
+export function aquaInput(owner: string, step: Extract<EthProposalStep, { kind: "aqua_ship" }>): AquaShipInput {
+  const conv = (v: string, decimals: number, symbol: string) => {
+    let out: string;
+    try {
+      out = toSmallestUnit(v, decimals);
+    } catch {
+      throw new PlanError("invalid_amount", `Enter a positive ${symbol} amount with at most ${decimals} decimals.`);
+    }
+    if (BigInt(out) === 0n) throw new PlanError("invalid_amount", `Enter a ${symbol} amount greater than zero.`);
+    return out;
+  };
+  return {
+    maker: owner,
+    template: "PEGGED_STABLE",
+    usdcAmount: conv(step.usdc, 6, "USDC"),
+    usdeAmount: conv(step.usde, 18, "USDe"),
+    bandBps: step.bandBps,
+    reviewAt: step.reviewAt,
+    ...(step.feeBps !== undefined ? { feeBps: step.feeBps } : {}),
+  };
+}
+
 function describeStep(step: EthProposalStep): string {
   switch (step.kind) {
     case "menu":
@@ -154,8 +197,12 @@ function describeStep(step: EthProposalStep): string {
       return `Swap ${step.amount} ${step.tokenIn} → ${step.tokenOut} (Uniswap)`;
     case "event_action":
       return `${step.actionType} on ${step.eventId}`;
+    case "aqua_ship":
+      return `Ship Aqua USDC/USDe LP (${step.usdc} USDC + ${step.usde} USDe, ±${(step.bandBps / 100).toFixed(2)}%)`;
   }
 }
+
+const SWAP_DECIMALS: Record<string, number> = { USDC: 6, USDe: 18 };
 
 /**
  * 1 step の未署名プランを組んで preview にする (mainnet 状態)。
@@ -166,20 +213,34 @@ export async function previewStep(owner: string, step: EthProposalStep, index: n
     switch (step.kind) {
       case "menu": {
         const plan = await buildMenuPlan({ owner, productId: step.productId, action: step.action, amount: step.amount, ...(step.token ? { token: step.token } : {}) });
-        return { ok: true, preview: { summary: plan.summary, warnings: plan.warnings ?? [], simulation: plan.simulation } };
+        return { ok: true, preview: { summary: plan.summary, warnings: plan.warnings ?? [], simulation: plan.simulation, ...(plan.effects ? { effects: plan.effects } : {}) } };
       }
       case "uniswap_swap": {
-        const plan = await buildUniswapSwapPlan(swapInput(owner, step));
+        const input = swapInput(owner, step);
+        const plan = await buildUniswapSwapPlan(input);
         const last = plan.steps[plan.steps.length - 1]!;
         const warnings = plan.peg.deviationBps !== null && plan.peg.deviationBps !== 0 ? [`Price guard: ${plan.peg.reason}`] : [];
+        const effects: EthPlanEffects | undefined = plan.amountOut
+          ? {
+              in: [{ key: input.tokenIn.toLowerCase(), value: input.amount, decimals: SWAP_DECIMALS[step.tokenIn]!, symbol: step.tokenIn }],
+              out: [{ key: input.tokenOut.toLowerCase(), value: plan.amountOut, decimals: SWAP_DECIMALS[step.tokenOut]!, symbol: step.tokenOut }],
+              approx: true,
+            }
+          : undefined;
         return {
           ok: true,
-          preview: { summary: last.description, warnings, simulation: plan.simulation, ...(plan.amountOut ? { amountOut: plan.amountOut } : {}) },
+          preview: { summary: last.description, warnings, simulation: plan.simulation, ...(plan.amountOut ? { amountOut: plan.amountOut } : {}), ...(effects ? { effects } : {}) },
         };
       }
       case "event_action": {
         const plan = await buildActionPlan({ owner, eventId: step.eventId, actionType: step.actionType });
         return { ok: true, preview: { summary: plan.summary, warnings: plan.warnings ?? [], simulation: plan.simulation } };
+      }
+      case "aqua_ship": {
+        const plan = await buildAquaShipPlan(aquaInput(owner, step));
+        const last = plan.steps[plan.steps.length - 1]!;
+        const warnings = [`Price guard: ${plan.peg.reason}`];
+        return { ok: true, preview: { summary: last.description, warnings, simulation: { ran: false, note: "Approve → ship depend on each other; checked by executing on the fork." } } };
       }
     }
   } catch (e) {
@@ -192,21 +253,33 @@ export async function previewStep(owner: string, step: EthProposalStep, index: n
 
 // ── submit / reject / execute ───────────────────────────────────────────────
 
-export async function submitProposal(input: unknown): Promise<EthAgentProposal> {
+/** validate → 各 step の preview (guard は fail-closed) → Strategy Brief。保存はしない */
+export async function prepareProposal(input: unknown): Promise<EthProposalBriefResponse> {
   const parsed = SubmitSchema.safeParse(input);
   if (!parsed.success) throw new ProposalError("invalid_argument", parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; "), 400);
-  const { owner, title, rationale, steps } = parsed.data;
+  const { owner, name, tagline, rationale, steps } = parsed.data;
   const previews: EthProposalPreviewSlot[] = [];
   for (const [i, step] of steps.entries()) previews.push(await previewStep(owner, step, i));
+  const brief = await buildStrategyBrief({ owner, name, ...(tagline ? { tagline } : {}), steps, previews });
+  return { owner, name, ...(tagline ? { tagline } : {}), rationale, steps, previews, brief };
+}
+
+/** dry run (`POST /eth/agent-proposals/brief`): Agent が brief を見て練り直すため。何も保存しない */
+export const previewProposal = prepareProposal;
+
+export async function submitProposal(input: unknown): Promise<EthAgentProposal> {
+  const { owner, name, tagline, rationale, steps, previews, brief } = await prepareProposal(input);
   const now = new Date();
   const id = `ethprop_${randomUUID()}`;
   const proposal: EthAgentProposal = {
     id,
     owner,
-    title,
+    name,
+    ...(tagline ? { tagline } : {}),
     rationale,
     steps,
     previews,
+    brief,
     bundleHash: computeBundleHash({ id, owner: owner.toLowerCase(), steps }),
     status: "pending",
     createdBy: "mcp",
@@ -247,6 +320,14 @@ async function runStep(owner: string, step: EthProposalStep): Promise<{ summary:
     case "event_action": {
       const r = await executeOnFork({ owner, eventId: step.eventId, actionType: step.actionType });
       return { summary: r.plan.summary, txs: r.txs, ok: r.txs.length === r.plan.steps.length && r.txs.every((t) => t.status === "success") };
+    }
+    case "aqua_ship": {
+      const r = await shipAquaOnFork(aquaInput(owner, step));
+      return {
+        summary: r.plan.steps[r.plan.steps.length - 1]!.description,
+        txs: r.txs,
+        ok: r.txs.length === r.plan.steps.length && r.txs.every((t) => t.status === "success"),
+      };
     }
   }
 }
@@ -303,7 +384,7 @@ export function deriveProposalEvent(p: EthAgentProposal, observedAt: string): Ti
     kind: "agent_proposal",
     protocol: null,
     protocolName: null,
-    title: `Agent proposal: ${p.title}`,
+    title: `Agent proposal: ${p.name}`,
     at: p.createdAt,
     owner: p.owner,
     settled: false,

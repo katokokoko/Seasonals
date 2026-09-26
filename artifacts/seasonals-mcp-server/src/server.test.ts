@@ -104,6 +104,7 @@ describe("Seasonals MCP server", () => {
     ]);
     const prompts = await client.listPrompts();
     expect(prompts.prompts.map((p) => p.name).sort()).toEqual([
+      "design_rebalance",
       "max_yield_search",
       "safety_first_rollover",
     ]);

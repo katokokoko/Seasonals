@@ -9,6 +9,8 @@
  * - 返すのは ActionPlanSchema (plans.ts と同じ)。mainnet に eth_call して「送らずに」確かめる。署名・送信はしない
  */
 import { encodeFunctionData, getAddress, type PublicClient } from "viem";
+import type { EthPlanAsset, EthPlanEffects } from "@workspace/lib/types";
+import { ETH_NATIVE_KEY } from "@workspace/lib/config/eth-assets";
 import { formatTokenAmount, toSmallestUnit } from "@workspace/lib/utils/numeric";
 import { erc20Abi, erc20ApproveAbi, stETHAbi, sUSDeAbi, withdrawalQueueAbi, wstETHAbi } from "./abis";
 import { executionTarget, getEthClient, getJson } from "./client";
@@ -100,7 +102,17 @@ interface Built {
   source: string;
   actionType: string;
   warnings: string[];
+  /** Strategy Brief の before → after 用 (builder が分かる量だけ) */
+  effects: EthPlanEffects;
 }
+
+/** effects の 1 行。key は "ETH" / 小文字 address / Pendle productId */
+const asset = (key: string, value: bigint, decimals: number, symbol: string): EthPlanAsset => ({
+  key: key === ETH_NATIVE_KEY ? key : key.toLowerCase(),
+  value: value.toString(),
+  decimals,
+  symbol,
+});
 
 async function lidoPlan(client: PublicClient, owner: Addr, input: MenuPlanInput, where: Where): Promise<Built> {
   const amount = parseMenuAmount(input.amount, 18);
@@ -121,6 +133,7 @@ async function lidoPlan(client: PublicClient, owner: Addr, input: MenuPlanInput,
       source: "lido.stETH.submit",
       actionType: "lido_stake",
       warnings: eth - amount < 10n ** 15n ? ["Almost all of this address's ETH would be staked; keep some for gas."] : [],
+      effects: { in: [asset(ETH_NATIVE_KEY, amount, 18, "ETH")], out: [asset(LIDO.stETH, amount, 18, "stETH")] },
     };
   }
   const token = input.token === "wstETH" ? "wstETH" : "stETH";
@@ -142,6 +155,8 @@ async function lidoPlan(client: PublicClient, owner: Addr, input: MenuPlanInput,
   // wstETH 換算の MIN は切り捨てで下回りうるので +1
   const parts = splitWithdrawal(amount, token === "wstETH" ? minT + 1n : minT, maxT);
   const fn = token === "wstETH" ? "requestWithdrawalsWstETH" : "requestWithdrawals";
+  // 届く ETH は stETH 建て (wstETH は現在レートで換算、概算)
+  const ethOut = token === "wstETH" ? ((await client.readContract({ address: LIDO.wstETH, abi: wstETHAbi, functionName: "getStETHByWstETH", args: [amount] })) as bigint) : amount;
   return {
     steps: [
       ...(await approvalStep(client, tokenAddr, owner, LIDO.withdrawalQueue, amount, `Allow the Lido withdrawal queue to take exactly ${fmt(amount, token)}.`)),
@@ -157,6 +172,7 @@ async function lidoPlan(client: PublicClient, owner: Addr, input: MenuPlanInput,
     source: `lido.withdrawalQueue.${fn}`,
     actionType: "lido_request_withdrawal",
     warnings: ["Lido finalizes withdrawals in a queue (typically 1–5 days). The claim then appears on your calendar."],
+    effects: { in: [asset(tokenAddr, amount, 18, token)], out: [], pending: [asset(ETH_NATIVE_KEY, ethOut, 18, "ETH")], approx: true },
   };
 }
 
@@ -181,6 +197,7 @@ async function ethenaPlan(client: PublicClient, owner: Addr, input: MenuPlanInpu
       source: "susde.deposit",
       actionType: "ethena_stake",
       warnings: [],
+      effects: { in: [asset(ETHENA.USDe, amount, 18, "USDe")], out: [asset(ETHENA.sUSDe, shares, 18, "sUSDe")] },
     };
   }
   const shares = await erc20Balance(client, ETHENA.sUSDe, owner);
@@ -205,6 +222,7 @@ async function ethenaPlan(client: PublicClient, owner: Addr, input: MenuPlanInpu
       source: "susde.redeem",
       actionType: "ethena_redeem",
       warnings: [],
+      effects: { in: [asset(ETHENA.sUSDe, amount, 18, "sUSDe")], out: [asset(ETHENA.USDe, assets, 18, "USDe")] },
     };
   }
   const days = Math.round(Number(duration) / 86_400);
@@ -226,6 +244,12 @@ async function ethenaPlan(client: PublicClient, owner: Addr, input: MenuPlanInpu
     source: "susde.cooldownShares",
     actionType: "ethena_cooldown",
     warnings,
+    effects: {
+      in: [asset(ETHENA.sUSDe, amount, 18, "sUSDe")],
+      out: [],
+      pending: [asset(ETHENA.USDe, assets, 18, "USDe")],
+      availableAt: new Date(Date.now() + Number(duration) * 1000).toISOString(),
+    },
   };
 }
 
@@ -362,6 +386,12 @@ async function pendlePlan(client: PublicClient, owner: Addr, input: MenuPlanInpu
     source: "pendle-hosted-sdk:convert",
     actionType: `pendle_${buy ? "buy" : "sell"}_${ctx.kind}`,
     warnings,
+    // PT / YT 側の key は productId (holdings と同じ索引)、支払い / 受取 token は address
+    effects: {
+      in: [buy ? asset(ctx.token.address, amount, ctx.token.decimals, ctx.token.symbol) : asset(input.productId, amount, ctx.pyToken.decimals, label)],
+      out: [buy ? asset(input.productId, outAmount, ctx.pyToken.decimals, label) : asset(ctx.token.address, outAmount, ctx.token.decimals, ctx.token.symbol)],
+      approx: true,
+    },
   };
 }
 
@@ -387,6 +417,7 @@ export async function buildMenuPlan(input: MenuPlanInput, opts: PlanOptions = {}
     steps: built.steps,
     simulation: await simulate(input.owner, built.steps, client, where),
     ...(built.warnings.length ? { warnings: built.warnings } : {}),
+    effects: built.effects,
     builtAt: new Date().toISOString(),
     source: built.source,
     broadcast: false,

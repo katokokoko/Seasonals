@@ -6,6 +6,7 @@
  * - source ごとに隔離し、失敗は failed[] に記録する (失敗分を「保有なし」と見せない)
  */
 import type { MenuHolding, MenuHoldingsResponse, MenuProduct } from "@workspace/lib/types";
+import { ETH_ASSET_ADDRESS } from "@workspace/lib/config/eth-assets";
 import { erc20Abi, sUSDeAbi } from "./abis";
 import { getEthClient } from "./client";
 import { usdNumberTo8 } from "./common";
@@ -120,13 +121,14 @@ export async function getMenuHoldings(owner: string): Promise<MenuHoldingsRespon
   const client = getEthClient();
   if (!client) return { address: owner, holdings: [], extraProducts: [], spendable: [], failed: ["rpc"], observedAt };
 
-  const [lido, ethena, pendle, menu, eth, usde] = await Promise.allSettled([
+  const [lido, ethena, pendle, menu, eth, usde, usdc] = await Promise.allSettled([
     lidoHolding(client, owner),
     ethenaHolding(client, owner),
     pendleHoldings(client, owner),
     getEthMenu(),
     client.getBalance({ address: owner as `0x${string}` }),
     balanceOf(client, ETHENA.USDe, owner),
+    balanceOf(client, ETH_ASSET_ADDRESS.USDC, owner),
   ]);
   const failed: string[] = [];
   const holdings: MenuHolding[] = [];
@@ -142,11 +144,13 @@ export async function getMenuHoldings(owner: string): Promise<MenuHoldingsRespon
       (p) => !listed.has(p.id) && pendle.value.holdings.some((h) => h.productId === p.id)
     );
   } else failed.push("pendle");
+  // spendable = Menu の入力に使える wallet 残高 (ETH → Lido、USDC → Uniswap / Aqua、USDe → Ethena / Aqua)
   const spendable = [
     ...(eth.status === "fulfilled" ? [{ value: eth.value.toString(), decimals: 18, symbol: "ETH" }] : []),
+    ...(usdc.status === "fulfilled" ? [{ value: usdc.value.toString(), decimals: 6, symbol: "USDC" }] : []),
     ...(usde.status === "fulfilled" ? [{ value: usde.value.toString(), decimals: 18, symbol: "USDe" }] : []),
   ];
-  if (eth.status === "rejected" || usde.status === "rejected") failed.push("wallet balances");
+  if (eth.status === "rejected" || usde.status === "rejected" || usdc.status === "rejected") failed.push("wallet balances");
 
   const value: MenuHoldingsResponse = { address: owner, holdings, extraProducts, spendable, failed, observedAt };
   cache.set(key, { at: Date.now(), value });

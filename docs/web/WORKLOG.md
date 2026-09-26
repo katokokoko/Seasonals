@@ -253,6 +253,12 @@ Web 側 (`artifacts/seasonals-web`) は `BFF_URL` (Vite dev proxy 先、node 側
 - **シナリオ B (chat 承認、2026-09-26)**: owner `0x1121…0a11` で `propose_rebalance` (0.1 PT-apyUSD を売る、TWAP 0.03% 乖離で通過) → Agent が id / steps / bundleHash を人に提示して yes をもらう → `execute_rebalance(user_confirmed: true)` → fork で 2 tx success (router approve / sell 0.1 PT → 0.0688 apyUSD)、`execution.via: "chat"`。同時に oracle 未準備の PT-USDx を売る提案は提出時点で `oracle_unavailable` として拒否 (fail-closed は提案段階で効く)。実行済み proposal の再実行 / 誤 bundleHash / approvedBy 無しは live BFF でも 409 / 409 / 403
 - Pendle の「PT 売り → 別 PT 買い」は market ごとに underlying が違う (apyUSD / USDx / reUSD …) ため、同じ underlying の後続 market が無いと組めない。デモでは単発の売りにした
 
+### Strategy Brief (Agent の戦略を英語で提示する枠組み)
+- 実装済み: `lib/types/eth-agent-proposal.ts` に `EthStrategyBrief` (before / after の `EthPortfolioSnapshot`、USD 加重 `blendedApy`、`aqua` sleeve、`horizon`、`unpriced` / `warnings`、英語 `markdown`)、step kind `aqua_ship`、`title` → `name` (絵文字 + 短い英語名 ≤ 40 code point、文字必須) + `tagline`。`lib/types/eth-plan.ts` に `EthPlanEffects` (`ActionPlan.effects?`)。BFF `ethereum/prices.ts` (現在単価: Chainlink → on-chain 換算 wstETH / sUSDe → DefiLlama、history.ts と共有)、`menu-actions.ts` の全 plan に `effects` (Lido 1:1 / previewDeposit / convertToAssets / Pendle Convert の outAmount、pending は queue / cooldown)、`ethereum/strategy-brief.ts` (`composeStrategyBrief` は純関数、`buildStrategyBrief` が I/O。Pendle 単価は dashboard 評価額 → step の反対側からの暗黙単価 (approx) → unpriced)、`agent-proposals.ts` に `aqua_ship` (preview = `buildAquaShipPlan`、実行 = `shipAquaOnFork`)、`prepareProposal` / `previewProposal` (dry run) と `POST /eth/agent-proposals/brief`、holdings の `spendable` に USDC。MCP `propose_rebalance` に `name` / `tagline` / `dryRun` / `aqua_ship`、prompt `design_rebalance`。web `/agent` の `StrategyBrief` 表 (before / after / APY、Blended APY の delta を melon / cherry 色、Aqua sleeve、horizon、unpriced)
+- 判断: 数字は BFF が決定的に計算し LLM は名前と説明だけ (数字を創作できない)。加重 APY の分母は価格のある全 line、APY 不明は 0 扱いで `excluded` に列挙 (未知の利回りで数字を膨らませない)。brief は proposal を止めない (取得失敗は warnings)。`bundleHash` は `{id, owner, steps}` のまま。aqua.ts の残高不足は `insufficient_balance` に変更 (後続 step で保留できるように)。brief 無しの旧 proposal は load 時に捨てる
+- 検証: unit (BFF `strategy-brief.test.ts` 8 件 / `prices.test.ts` 5 件 / agent-proposals 追加 4 件、MCP 20 件、web ProposalInbox 4 件)。fork での brief 表示は下記
+- 既知: Pendle の暗黙単価は 8 桁に丸めるため 1e-6 USD 程度ずれる (approx 表示)。YT は Llama に無いことが多く dashboard 評価額が無ければ unpriced
+
 ## 最終状態 (2026-09-26 05:30 JST 時点)
 
 | 領域 | 状態 | 実際に確認したこと |
@@ -262,7 +268,7 @@ Web 側 (`artifacts/seasonals-web`) は `BFF_URL` (Vite dev proxy 先、node 側
 | Pendle / Ethena / Lido の実イベント | 実装済み | 実 mainnet address で表示。overdue (満期済み PT 13 本) も表示 |
 | 提案 | rule-based で実装済み | 実データ (Lido SMA APR / Ethena 30 日平均 / Pendle implied APY)。LLM は key 無しのため未使用 |
 | 署名前 preview | 実装済み | mainnet eth_call: Lido claim / Pendle Convert redeem (step 1) / CCA exitBid が成功 |
-| MCP | 実装済み | stdio で list_events → get_proposal → build_action → iCal resource を実 BFF に対して実行。ship_lp_strategy 追加 |
+| MCP | 実装済み | stdio で list_events → get_proposal → build_action → iCal resource を実 BFF に対して実行。ship_lp_strategy 追加。rebalance proposal 6 tools + `design_rebalance` prompt + Strategy Brief (fork でシナリオ A / B を完走) |
 | fork 実行 | 実装済み (fork のみ) | Lido claim / Ethena unstake / Pendle redeem / CCA refund exit / Uniswap USDC→USDe swap / Aqua ship・fill・dock の receipt success |
 | Uniswap CCA | 実装済み | 330 auction を index、実 bidder の exit / claim / refund |
 | Uniswap Trading API | quote・swap plan・fork 実行 | 実 API 応答、peg guard 付き |

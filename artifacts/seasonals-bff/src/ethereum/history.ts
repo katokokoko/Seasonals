@@ -24,7 +24,6 @@ import {
   type EthAsset,
 } from "@workspace/lib/config/eth-assets";
 import { PositionCategory } from "@workspace/lib/types";
-import { bigIntToUsd8 } from "@workspace/lib/utils/numeric";
 
 import {
   EtherscanNotConfiguredError,
@@ -33,11 +32,7 @@ import {
   type EtherscanTokenTx,
   type EtherscanTx,
 } from "../clients/etherscan";
-import {
-  anchorSeries,
-  fetchLlamaCurrentPrices,
-  fetchLlamaPriceSeries,
-} from "../clients/llama-history";
+import { anchorSeries, fetchLlamaPriceSeries } from "../clients/llama-history";
 import type { PriceSeries } from "../clients/pyth-history";
 import {
   createHistoryEngine,
@@ -49,7 +44,7 @@ import { erc20Abi } from "./abis";
 import { getAavePositions, type AavePositionView } from "./aave";
 import { getEthClient, sanitizeError } from "./client";
 import { fetchPendleMarkets } from "./pendle";
-import { getChainlinkPrice, type ChainlinkPrice, type PriceAsset } from "./pricing";
+import { priceEthAssetsNow } from "./prices";
 
 const UINT_RE = /^[0-9]+$/;
 
@@ -114,17 +109,8 @@ export function ethDeltasFromEtherscan(
   return out;
 }
 
-/** Chainlink の answer (decimals 桁) → USD 8-dec。stale / 非正は null (使わない) */
-export function chainlinkToUsd8(p: ChainlinkPrice | null): string | null {
-  if (!p || p.stale || !UINT_RE.test(p.answer)) return null;
-  const answer = BigInt(p.answer);
-  if (answer <= 0n) return null;
-  const scaled =
-    p.decimals >= 8
-      ? answer / 10n ** BigInt(p.decimals - 8)
-      : answer * 10n ** BigInt(8 - p.decimals);
-  return bigIntToUsd8(scaled);
-}
+// 現在単価の合成 (Chainlink → 換算 → Llama) は prices.ts に移した (Strategy Brief と共有)
+export { chainlinkToUsd8 } from "./prices";
 
 /** Aave V4 の spoke 別 net balance → holdings の現在値 (履歴には入らない) */
 export function aaveExtraHoldings(positions: AavePositionView[]): ExtraHolding[] {
@@ -145,15 +131,6 @@ export function aaveExtraHoldings(positions: AavePositionView[]): ExtraHolding[]
 }
 
 // ── I/O: 入力の取得 ───────────────────────────────────────────────────────
-
-/** registry asset → Chainlink の feed 名 (WETH は ETH と同価) */
-const CHAINLINK_BY_KEY: Record<string, PriceAsset> = {
-  [ETH_NATIVE_KEY]: "ETH",
-  [ETH_ASSET_ADDRESS.WETH.toLowerCase()]: "ETH",
-  [ETH_ASSET_ADDRESS.USDC.toLowerCase()]: "USDC",
-  [ETH_ASSET_ADDRESS.USDe.toLowerCase()]: "USDe",
-  [ETH_ASSET_ADDRESS.stETH.toLowerCase()]: "stETH",
-};
 
 const PT_CACHE_TTL_MS = 60 * 60_000;
 let ptCache: { at: number; data: Map<string, string> } | null = null;
@@ -250,23 +227,8 @@ export async function loadEthereumHistoryInputs(
   const extraHoldings = aaveExtraHoldings(aave);
   if (active.length === 0 && extraHoldings.length === 0) return null;
 
-  // 4. 現在単価: Chainlink (stale は使わない) → DefiLlama
-  const chainlinkKeys = active.filter((a) => CHAINLINK_BY_KEY[a.key]);
-  const feeds = [...new Set(chainlinkKeys.map((a) => CHAINLINK_BY_KEY[a.key]!))];
-  const feedPrices = new Map(
-    await Promise.all(
-      feeds.map(async (f) => [f, chainlinkToUsd8(await getChainlinkPrice(f))] as const)
-    )
-  );
-  const currentUsd = new Map<string, string>();
-  for (const a of chainlinkKeys) {
-    const usd8 = feedPrices.get(CHAINLINK_BY_KEY[a.key]!);
-    if (usd8) currentUsd.set(a.key, usd8);
-  }
-  const missing = active.filter((a) => !currentUsd.has(a.key)).map((a) => a.key);
-  for (const [key, usd8] of await fetchLlamaCurrentPrices(missing, "ethereum")) {
-    currentUsd.set(key, usd8);
-  }
+  // 4. 現在単価: Chainlink (stale は使わない) → on-chain 換算 → DefiLlama (prices.ts)
+  const currentUsd = await priceEthAssetsNow(active.map((a) => a.key));
 
   const assets: HistoryAsset[] = active.map((a) => ({
     mint: a.key,

@@ -81,7 +81,17 @@ BFF の `/eth/*` を読む。UI (web) と同じ endpoint = same source of truth�
 | `ship_lp_strategy` | 1inch Aqua PEGGED_STABLE (USDC/USDe) の未署名 ship plan (Chainlink peg guard) |
 | `list_yield_menu` / `get_holdings` | Menu の利回り (Lido / Ethena / Pendle PT・YT) と address の保有・spendable、fork の到達性 |
 | `preview_rebalance_step` | 1 step の未署名プラン (swap は `amountOut` を返す → 次 step の金額決め) |
-| `propose_rebalance` | 最大 6 step (menu deposit / withdraw、USDC ⇄ USDe swap、event action) の **提案** を BFF に保存。全 step を組んで guard を通し、`bundleHash` を付ける |
+| `propose_rebalance` | 最大 6 step (menu deposit / withdraw、USDC ⇄ USDe swap、event action、**1inch Aqua LP ship**) の **提案** を BFF に保存。全 step を組んで guard を通し、`bundleHash` と **Strategy Brief** (`brief`) を付ける。`dryRun: true` なら保存せず brief だけ返す (練り直し用) |
+| prompt `design_rebalance` | `{address, goal?}`。holdings → menu → preview → `dryRun` → 提出 → `brief.markdown` をそのまま提示 → web / chat で承認依頼、という手順を英語で教える |
+
+### Strategy Brief (`brief`)
+
+LLM が組んだ戦略を人が読める形にする。**数字は BFF が実データから決定的に組む** (holdings の on-chain 残高 + menu の利回り + 各 step の preview)。LLM が書くのは `name` (絵文字 + 短い英語名、≤ 40 文字)、`tagline`、`rationale` だけ。
+
+- `before` / `after`: line ごとの量・USD・share・APY。after は step の効果 (builder が返す `effects`) を順に適用した結果
+- `blendedApy`: USD 加重平均。APY 不明 (Aqua LP など) は 0 扱いで `excluded` に列挙 (数字を膨らませない)。価格の無い line は `unpriced` に列挙し総額・APY から除外
+- `aqua`: LP sleeve の中身と peg guard、`horizon`: PT 満期 / Aqua review / cooldown 終了 / Lido queue
+- `markdown`: 英語の Markdown (Claude はこれをそのまま見せる)。web の Agent ページも同じ brief を表で描く
 | `wait_for_rebalance_decision` | 人が web の Agent ページで承認 (= fork 実行) / 却下するまで long-poll |
 | `execute_rebalance` | chat で人が明示的に yes と言った後、`bundleHash` 付きで fork 実行 (`user_confirmed: true` 必須) |
 

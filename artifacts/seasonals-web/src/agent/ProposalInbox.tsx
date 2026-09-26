@@ -11,6 +11,7 @@ import { useAgentProposals, useEthStatus } from "../services/queries";
 import { requestOpenWallet } from "../timeline/detailStore";
 import { Notice } from "../shell/WorkspaceShell";
 import { fmtFullDate } from "../ui/format";
+import { StrategyBrief } from "./StrategyBrief";
 
 function stepText(s: EthProposalStep): string {
   switch (s.kind) {
@@ -20,6 +21,8 @@ function stepText(s: EthProposalStep): string {
       return `Swap ${s.amount} ${s.tokenIn} → ${s.tokenOut} on Uniswap`;
     case "event_action":
       return `${s.actionType} · ${s.eventId}`;
+    case "aqua_ship":
+      return `Ship 1inch Aqua USDC/USDe LP (${s.usdc} USDC + ${s.usde} USDe, ±${(s.bandBps / 100).toFixed(2)}%)`;
   }
 }
 
@@ -52,15 +55,15 @@ export function ProposalCard({ proposal: p }: { proposal: EthAgentProposal }) {
   const results = p.execution?.steps ?? [];
 
   return (
-    <section className="proposal proposal-card" aria-label={`Agent proposal: ${p.title}`}>
+    <section className="proposal proposal-card" aria-label={`Agent proposal: ${p.name}`}>
       <div className="preview-head">
         <span className="overline">Agent proposal</span>
         <span className="tag">{STATUS_TEXT[p.status]}</span>
       </div>
-      <p>
-        <strong>{p.title}</strong>
-      </p>
+      <h3 className="brief-name">{p.name}</h3>
+      {p.tagline && <p className="muted small">{p.tagline}</p>}
       <p className="small">{p.rationale}</p>
+      <StrategyBrief brief={p.brief} />
       <ol className="plan-steps">
         {p.steps.map((s, i) => {
           const slot = p.previews[i];
