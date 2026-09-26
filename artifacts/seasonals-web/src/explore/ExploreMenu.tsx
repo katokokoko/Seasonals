@@ -11,7 +11,7 @@ import { requestOpenWallet } from "../timeline/detailStore";
 import { ethHoldingText, solHoldingText } from "./holdingText";
 import { MenuActionPanel, actionLabel, menuActionable, type MenuAction } from "./MenuActionPanel";
 import { useActiveAddresses } from "../state/session";
-import { fmtFullDate, fmtMetric } from "../ui/format";
+import { fmtDate, fmtMetric } from "../ui/format";
 import { UniswapRoutePreview } from "./UniswapRoutePreview";
 import { ChainIcon } from "../ui/ChainIcon";
 import { fmtCompactUsd, fmtRatio } from "../ui/format";
@@ -278,7 +278,7 @@ export function EthMenuCard({ product, holding, ctx }: { product: MenuProduct; h
         {product.maturity && (
           <div>
             <dt>Maturity</dt>
-            <dd>{fmtFullDate(new Date(product.maturity))}</dd>
+            <dd>{fmtDate(new Date(product.maturity))}</dd>
           </div>
         )}
         {product.facts.map((f) => (

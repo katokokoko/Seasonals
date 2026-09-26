@@ -18,6 +18,11 @@ export function fmtTime(d: Date): string {
 export function fmtFullDate(d: Date): string {
   return FULL.format(d);
 }
+const DATE = new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", year: "numeric" });
+/** 曜日なしの日付 ("Nov 5, 2026")。満期など、曜日に意味の無い日付に使う */
+export function fmtDate(d: Date): string {
+  return DATE.format(d);
+}
 export function fmtMonthYear(d: Date): string {
   return new Intl.DateTimeFormat("en-US", { month: "long", year: "numeric" }).format(d);
 }
