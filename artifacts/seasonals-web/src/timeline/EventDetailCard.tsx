@@ -16,7 +16,7 @@ import { useActiveAddresses } from "../state/session";
 import { ChainIcon } from "../ui/ChainIcon";
 import { fmtAmount, fmtFullDate, fmtMetric, fmtTime, fmtUsd, parseDayKey } from "../ui/format";
 import { IconClose, IconExternal } from "../ui/icons";
-import { ProtocolBadge } from "../ui/ProtocolBadge";
+import { ProtocolBadge, brandStyle } from "../ui/ProtocolBadge";
 import { STATUS_COLOR } from "../styles/tokens";
 import { Droplet } from "./Droplet";
 import { requestOpenWallet, useDetail } from "./detailStore";
@@ -212,7 +212,7 @@ function EventBody({ event, titleId, now, onDone }: { event: TimelineEvent; titl
 
   return (
     <div className="detail-body">
-      <div className="detail-head">
+      <div className="detail-head brand-tint" style={brandStyle(event.protocol)}>
         <ProtocolBadge id={event.protocol} name={event.protocolName} size={36} />
         <div>
           <p className="overline">{event.protocolName ?? CLASS_LABEL[event.class]}</p>

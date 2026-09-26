@@ -12,6 +12,7 @@ import { StatusBadge } from "../timeline/StatusBadge";
 import { statusText } from "../timeline/labels";
 import { displayStatus } from "@workspace/lib/derive/timeline";
 import { fmtFullDate } from "../ui/format";
+import { ProtocolBadge, brandStyle } from "../ui/ProtocolBadge";
 import { useNow } from "../ui/useNow";
 import { AquaPanel } from "./AquaPanel";
 import "./agent.css";
@@ -63,7 +64,8 @@ export default function AgentWorkspace() {
                       </button>
                       <StatusBadge status={displayStatus(e, s)} label={statusText(e, s)} />
                     </div>
-                    <p className="muted small">
+                    <p className="muted small brand-inline">
+                      <ProtocolBadge id={e.protocol} name={e.protocolName} size={16} />
                       {e.protocolName} · {e.at ? fmtFullDate(new Date(e.at)) : "ETA unknown"}
                     </p>
                     <ProposalPanel event={e} />
@@ -80,7 +82,10 @@ export default function AgentWorkspace() {
             <code>ship_lp_strategy</code> (unsigned plans only) and the <code>seasonals://calendar/&#123;address&#125;</code> iCal feed. It never signs or
             sends a transaction.
           </p>
-          <h2>LP sleeve (1inch Aqua)</h2>
+          <h2 className="brand-heading" style={brandStyle("aqua")}>
+            <ProtocolBadge id="aqua" name="1inch Aqua" size={24} />
+            LP sleeve (1inch Aqua)
+          </h2>
           <AquaPanel />
           <h2>MCP client</h2>
           <pre className="code-block" aria-label="MCP client configuration">

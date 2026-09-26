@@ -5,6 +5,7 @@ import { STATUS_COLOR } from "../styles/tokens";
 import { Droplet } from "../timeline/Droplet";
 import { shapeForKind } from "../timeline/labels";
 import { fmtTime } from "../ui/format";
+import { ProtocolBadge, brandStyle } from "../ui/ProtocolBadge";
 
 export function WeekView({
   start,
@@ -40,13 +41,18 @@ export function WeekView({
               {list.map((e) => {
                 const st = displayStatus(e, deriveTimelineStatus(e, now));
                 return (
-                  <button key={e.id} type="button" className={`week-event class-${e.class}`} onClick={(ev) => onEvent(e.id, ev.currentTarget)}>
+                  <button key={e.id} type="button" className={`week-event brand-accent class-${e.class}`}
+                    style={brandStyle(e.protocol)}
+                    onClick={(ev) => onEvent(e.id, ev.currentTarget)}>
                     <span className="week-event-time">
                       <Droplet shape={shapeForKind(e.kind, e.class)} color={STATUS_COLOR[st]} size={10} />
                       {e.at ? `${e.atApprox ? "≈" : ""}${fmtTime(new Date(e.at))}` : ""}
                     </span>
                     <span className="week-event-title">{e.title}</span>
-                    <span className="muted small">{e.protocolName}</span>
+                    <span className="muted small brand-inline">
+                      <ProtocolBadge id={e.protocol} name={e.protocolName} size={14} />
+                      <span className="cell-ellipsis">{e.protocolName}</span>
+                    </span>
                   </button>
                 );
               })}

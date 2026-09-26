@@ -6,6 +6,7 @@
  */
 import type { CSSProperties } from "react";
 import { PROTOCOL_BRAND, type ProtocolBrandKey } from "@workspace/lib/design-system";
+import "./brand.css";
 
 const LOGOS = {
   ...import.meta.glob("../../../seasonals/assets/brands/*.png", { eager: true, query: "?url", import: "default" }),
@@ -64,6 +65,7 @@ export function ProtocolBadge({ id, name, size = 28 }: { id: string | null; name
   const label = name ?? id ?? "Plan";
   if (url) {
     const contain = CONTAIN.has(canonical(id!));
+    const brand = protocolBrandKey(id);
     return (
       <img
         className={contain ? "protocol-badge contain" : "protocol-badge"}
@@ -71,11 +73,18 @@ export function ProtocolBadge({ id, name, size = 28 }: { id: string | null; name
         alt=""
         width={size}
         height={size}
-        style={{ width: size, height: size }}
+        // 内側余白は size 基準 (CSS の % padding は親の幅基準になるため inline で指定)
+        // Pendle の薄灰の円などが白地に溶けないよう、地は brand 色 @ 0.10
+        style={{
+          width: size,
+          height: size,
+          ...(contain ? { padding: Math.round(size * 0.14) } : {}),
+          ...(contain && brand ? { background: `var(--brandbg-${brand})` } : {}),
+        }}
       />
     );
   }
-  const brand = protocolBrandKey(id);
+  const monoBrand = protocolBrandKey(id);
   return (
     <span
       className="protocol-badge monogram"
@@ -84,7 +93,7 @@ export function ProtocolBadge({ id, name, size = 28 }: { id: string | null; name
         width: size,
         height: size,
         fontSize: Math.round(size * 0.45),
-        ...(brand ? { background: `var(--brand-${brand})` } : {}),
+        ...(monoBrand ? { background: `var(--brand-${monoBrand})` } : {}),
       }}
     >
       {label.charAt(0).toUpperCase()}

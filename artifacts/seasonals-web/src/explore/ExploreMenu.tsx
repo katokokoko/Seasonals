@@ -10,7 +10,7 @@ import { fmtFullDate, fmtMetric } from "../ui/format";
 import { UniswapRoutePreview } from "./UniswapRoutePreview";
 import { ChainIcon } from "../ui/ChainIcon";
 import { fmtCompactUsd, fmtRatio } from "../ui/format";
-import { ProtocolBadge } from "../ui/ProtocolBadge";
+import { ProtocolBadge, brandStyle } from "../ui/ProtocolBadge";
 import { Notice } from "../shell/WorkspaceShell";
 import "./explore.css";
 
@@ -142,7 +142,7 @@ function MenuCard({ item }: { item: MenuItem }) {
   const [open, setOpen] = useState(false);
   const avail = availability(pool);
   return (
-    <li className="menu-item">
+    <li className="menu-item" style={brandStyle(protocol.icon_id)}>
       <div className="menu-item-top">
         <ProtocolBadge id={protocol.icon_id} name={protocol.display_name} size={40} />
         <div className="menu-item-name">
@@ -196,7 +196,7 @@ function MenuCard({ item }: { item: MenuItem }) {
 function EthMenuCard({ product }: { product: MenuProduct }) {
   const [open, setOpen] = useState(false);
   return (
-    <li className="menu-item">
+    <li className="menu-item" style={brandStyle(product.protocolId)}>
       <div className="menu-item-top">
         <ProtocolBadge id={product.protocolId} name={product.protocolName} size={40} />
         <div className="menu-item-name">

@@ -9,7 +9,7 @@ import { dayKey, deriveTimelineStatus, displayStatus, groupTimelineByDay } from 
 import type { TimelineEvent } from "@workspace/lib/types";
 import { STATUS_COLOR } from "../styles/tokens";
 import { fmtAmount, fmtMonthDay, fmtTime, fmtUsd, parseDayKey } from "../ui/format";
-import { ProtocolBadge } from "../ui/ProtocolBadge";
+import { ProtocolBadge, brandStyle } from "../ui/ProtocolBadge";
 import { Droplet } from "./Droplet";
 import { CLASS_LABEL, KIND_LABEL, shapeForKind, statusText } from "./labels";
 import { StatusBadge } from "./StatusBadge";
@@ -68,7 +68,11 @@ export function TimelineList({
                       <span className="tl-dot" aria-hidden="true">
                         <Droplet shape={shapeForKind(e.kind, e.class)} color={STATUS_COLOR[st]} size={10} />
                       </span>
-                      <button type="button" className="tl-row-button" onClick={(ev) => onEvent(e.id, ev.currentTarget)}>
+                      <button
+                        type="button"
+                        className="tl-row-button brand-accent"
+                        style={brandStyle(e.protocol)}
+                        onClick={(ev) => onEvent(e.id, ev.currentTarget)}>
                         <span className="cell-protocol">
                           <ProtocolBadge id={e.protocol} name={e.protocolName} size={22} />
                           <span className="cell-ellipsis">{e.protocolName ?? CLASS_LABEL[e.class]}</span>
