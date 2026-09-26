@@ -247,10 +247,6 @@
   color: var(--c-textOnColor);
   border-color: var(--c-textPrimary);
 }
-.menu-actions {
-  display: inline-flex;
-  gap: var(--sp-xs);
-}
 .route-preview {
   display: grid;
   gap: var(--sp-sm);
@@ -284,11 +280,29 @@
   display: block;
 }
 
-/* deposit / withdraw: カード下段のボタン列とパネル */
+/* deposit / withdraw: カード最下段 (左にボタン、右下に外部サイトへのリンク) とパネル */
+.menu-item-bottom {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-sm);
+}
 .menu-item-cta {
   display: flex;
   flex-wrap: wrap;
   gap: var(--sp-sm);
+}
+/* プロトコルのサイトを開くリンク: 常に右下、本文より小さめ */
+.menu-open-link {
+  margin-left: auto;
+  font-size: var(--fs-caption);
+  font-weight: var(--w-semibold);
+  color: var(--c-sodaText);
+  text-decoration: none;
+  white-space: nowrap;
+}
+.menu-open-link:hover {
+  text-decoration: underline;
 }
 .menu-action {
   display: grid;

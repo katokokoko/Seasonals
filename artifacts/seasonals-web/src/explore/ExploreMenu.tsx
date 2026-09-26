@@ -294,33 +294,34 @@ export function EthMenuCard({ product, holding, ctx }: { product: MenuProduct; h
         ) : (
           <span className="ticket ticket-warn">Rate unavailable</span>
         )}
-        <span className="menu-actions">
-          {product.url && (
-            <a className="btn btn-quiet" href={product.url} target="_blank" rel="noreferrer">
-              Open {product.protocolName} ↗
-            </a>
-          )}
-        </span>
       </div>
-      {canAct && !panel && (
-        <div className="menu-item-cta">
-          <button type="button" className="btn btn-primary" onClick={() => setPanel("deposit")}>
-            {actionLabel("deposit")}
-          </button>
-          <button
-            type="button"
-            className="btn"
-            onClick={() => setPanel("withdraw")}
-            disabled={!held}
-            title={held ? undefined : "Nothing held at the watched addresses"}
-          >
-            {actionLabel("withdraw")}
-          </button>
-        </div>
-      )}
       {canAct && panel && ctx && (
         <MenuActionPanel key={panel} product={product} action={panel} addresses={ctx.addresses} byAddress={ctx.byAddress} onClose={() => setPanel(null)} />
       )}
+      {/* 最下段: 左に Deposit / Withdraw、右下にプロトコルのサイトへのリンク (小さめ) */}
+      <div className="menu-item-bottom">
+        {canAct && !panel && (
+          <span className="menu-item-cta">
+            <button type="button" className="btn btn-primary" onClick={() => setPanel("deposit")}>
+              {actionLabel("deposit")}
+            </button>
+            <button
+              type="button"
+              className="btn"
+              onClick={() => setPanel("withdraw")}
+              disabled={!held}
+              title={held ? undefined : "Nothing held at the watched addresses"}
+            >
+              {actionLabel("withdraw")}
+            </button>
+          </span>
+        )}
+        {product.url && (
+          <a className="menu-open-link" href={product.url} target="_blank" rel="noreferrer">
+            Open {product.protocolName} ↗
+          </a>
+        )}
+      </div>
     </li>
   );
 }
