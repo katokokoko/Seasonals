@@ -5,26 +5,29 @@
  * - 押した要素の近くに anchor、入らなければ中央
  * - action は event.actions (Seeker と同じく event 側が持つ)。wallet 必須 action は
  *   未接続なら Connect wallet の案内に置き換え、結果を模擬しない
+ * - 日付を押した時はその日に自分の予定 (custom plan: 絵文字 + 内容) を追加できる。
+ *   custom plan を開いた時だけ編集 / 削除を出す (他の class は読み取り専用)
  */
 import { useEffect, useId, useLayoutEffect, useRef, useState, type CSSProperties } from "react";
 import { createPortal } from "react-dom";
 import { Link } from "react-router";
 import { chainInfo } from "@workspace/lib/config/chains";
-import { deriveTimelineStatus, displayStatus, dayKey } from "@workspace/lib/derive/timeline";
+import { deriveTimelineStatus, displayStatus, dayKey, isCustomPlan } from "@workspace/lib/derive/timeline";
 import type { TimelineAction, TimelineEvent } from "@workspace/lib/types";
 import { useActiveAddresses } from "../state/session";
 import { ChainIcon } from "../ui/ChainIcon";
-import { fmtAmount, fmtFullDate, fmtMetric, fmtTime, fmtUsd, parseDayKey } from "../ui/format";
+import { fmtAmount, fmtEventTime, fmtFullDate, fmtMetric, fmtTime, fmtUsd, parseDayKey } from "../ui/format";
 import { IconClose, IconExternal } from "../ui/icons";
 import { ProtocolBadge, brandStyle } from "../ui/ProtocolBadge";
-import { STATUS_COLOR } from "../styles/tokens";
-import { Droplet } from "./Droplet";
+import { EventMarker } from "./EventMarker";
 import { requestOpenWallet, useDetail } from "./detailStore";
-import { CLASS_LABEL, KIND_LABEL, shapeForKind, statusText } from "./labels";
+import { CLASS_LABEL, KIND_LABEL, statusText } from "./labels";
 import { StatusBadge } from "./StatusBadge";
 import { ActionPreview } from "./ActionPreview";
 import { ProposalPanel } from "./ProposalPanel";
 import { useNow } from "../ui/useNow";
+import { CustomEventForm } from "../calendar/CustomEventForm";
+import { useCustomEvents } from "../state/customEvents";
 import "./timeline.css";
 
 const CARD_W = 400;
@@ -80,7 +83,7 @@ export function EventDetailCard({ events }: { events: TimelineEvent[] }) {
         return;
       }
       if (e.key !== "Tab" || !cardRef.current) return;
-      const f = [...cardRef.current.querySelectorAll<HTMLElement>('a[href], button:not([disabled]), input, [tabindex]:not([tabindex="-1"])')];
+      const f = [...cardRef.current.querySelectorAll<HTMLElement>('a[href], button:not([disabled]), input, textarea, [tabindex]:not([tabindex="-1"])')];
       if (f.length === 0) return;
       const first = f[0]!;
       const last = f[f.length - 1]!;
@@ -119,7 +122,11 @@ export function EventDetailCard({ events }: { events: TimelineEvent[] }) {
         </button>
         {target.kind === "event" ? (
           event ? (
-            <EventBody event={event} titleId={titleId} now={now} onDone={close} />
+            isCustomPlan(event) ? (
+              <CustomPlanBody event={event} titleId={titleId} now={now} onDone={close} />
+            ) : (
+              <EventBody event={event} titleId={titleId} now={now} onDone={close} />
+            )
           ) : (
             <div className="detail-body">
               <h2 id={titleId}>Event not found</h2>
@@ -155,32 +162,26 @@ function DayBody({
   onPick: (id: string) => void;
 }) {
   const date = parseDayKey(day);
+  const [adding, setAdding] = useState(false);
+  const add = useCustomEvents((s) => s.add);
   return (
     <div className="detail-body">
       <p className="overline">Day</p>
       <h2 id={titleId}>{fmtFullDate(date)}</h2>
       {events.length === 0 ? (
-        <>
-          <p className="muted">Nothing scheduled.</p>
-          <div className="detail-actions">
-            <Link className="btn btn-primary" to="/explore" data-autofocus>
-              Explore opportunities
-            </Link>
-          </div>
-        </>
+        !adding && <p className="muted">Nothing scheduled.</p>
       ) : (
         <ul className="day-list">
           {events.map((e, i) => {
             const st = displayStatus(e, deriveTimelineStatus(e, now));
             return (
               <li key={e.id}>
-                <button type="button" className="day-list-item" onClick={() => onPick(e.id)} {...(i === 0 ? { "data-autofocus": true } : {})}>
-                  <Droplet shape={shapeForKind(e.kind, e.class)} color={STATUS_COLOR[st]} size={12} />
+                <button type="button" className="day-list-item" onClick={() => onPick(e.id)} {...(i === 0 && !adding ? { "data-autofocus": true } : {})}>
+                  <EventMarker event={e} status={st} size={12} />
                   <span className="day-list-text">
                     <strong>{e.title}</strong>
                     <span className="muted small">
-                      {e.protocolName ?? "Plan"} · {e.atApprox ? "≈ " : ""}
-                      {e.at ? fmtTime(new Date(e.at)) : "time unknown"}
+                      {e.protocolName ?? CLASS_LABEL[e.class]} · {fmtEventTime(e) ?? "time unknown"}
                     </span>
                   </span>
                   <StatusBadge status={st} compact />
@@ -190,9 +191,107 @@ function DayBody({
           })}
         </ul>
       )}
+      {adding ? (
+        <CustomEventForm
+          day={day}
+          onSave={(input) => {
+            add(input);
+            setAdding(false);
+          }}
+          onCancel={() => setAdding(false)}
+        />
+      ) : (
+        <div className="detail-actions">
+          <button type="button" className="btn btn-primary" onClick={() => setAdding(true)} {...(events.length === 0 ? { "data-autofocus": true } : {})}>
+            + Add plan
+          </button>
+          {events.length === 0 && (
+            <Link className="btn" to="/menu">
+              Browse the menu
+            </Link>
+          )}
+        </div>
+      )}
       <Link className="text-link" to={`/calendar?view=month&date=${day}`}>
         Open this day in calendar
       </Link>
+    </div>
+  );
+}
+
+/** ユーザーが手入力した予定: 内容を見せて、その場で編集 / 削除 */
+function CustomPlanBody({ event, titleId, now, onDone }: { event: TimelineEvent; titleId: string; now: Date; onDone: () => void }) {
+  const ceId = event.id.replace(/^custom:/, "");
+  const ce = useCustomEvents((s) => s.events.find((e) => e.id === ceId));
+  const update = useCustomEvents((s) => s.update);
+  const remove = useCustomEvents((s) => s.remove);
+  const [editing, setEditing] = useState(false);
+  const st = displayStatus(event, deriveTimelineStatus(event, now));
+  const at = event.at ? new Date(event.at) : null;
+  const day = at ? dayKey(at) : null;
+
+  if (editing && ce) {
+    return (
+      <div className="detail-body">
+        <p className="overline">Your plan</p>
+        <h2 id={titleId}>Edit plan</h2>
+        <CustomEventForm
+          day={ce.date}
+          initial={{ date: ce.date, title: ce.title, emoji: ce.emoji ?? "📅", note: ce.note ?? "" }}
+          onSave={(input) => {
+            update(ce.id, input);
+            setEditing(false);
+          }}
+          onCancel={() => setEditing(false)}
+          onDelete={() => {
+            remove(ce.id);
+            onDone();
+          }}
+        />
+      </div>
+    );
+  }
+
+  return (
+    <div className="detail-body">
+      <div className="detail-head">
+        <span className="plan-emoji-large" aria-hidden="true">
+          {event.emoji ?? "📅"}
+        </span>
+        <div>
+          <p className="overline">{CLASS_LABEL[event.class]}</p>
+          <h2 id={titleId}>{event.title}</h2>
+        </div>
+      </div>
+      <div className="tag-row">
+        <span className={`class-tag class-${event.class}`}>{CLASS_LABEL[event.class]}</span>
+        <StatusBadge status={st} label={statusText(event, deriveTimelineStatus(event, now))} />
+      </div>
+      <dl className="detail-grid">
+        <dt>Date</dt>
+        <dd>{at ? fmtFullDate(at) : "—"}</dd>
+        <dt>Time</dt>
+        <dd>{fmtEventTime(event) ?? "—"}</dd>
+        {ce?.note && (
+          <>
+            <dt>Note</dt>
+            <dd className="plan-note">{ce.note}</dd>
+          </>
+        )}
+      </dl>
+      <div className="detail-actions">
+        <button type="button" className="btn btn-primary" data-autofocus onClick={() => setEditing(true)} disabled={!ce}>
+          Edit plan
+        </button>
+      </div>
+      <div className="detail-footer">
+        {day && (
+          <Link className="text-link" to={`/calendar?view=month&date=${day}`}>
+            Open in calendar
+          </Link>
+        )}
+      </div>
+      <p className="freshness">Saved in this browser only.</p>
     </div>
   );
 }
@@ -201,7 +300,7 @@ function EventBody({ event, titleId, now, onDone }: { event: TimelineEvent; titl
   const active = useActiveAddresses();
   // owner のある event は、その address を閲覧 (watch) または接続している時だけ action を出す
   const hasWalletForChain = active.some(
-    (a) => a.chain === event.chain && (!event.owner || a.address.toLowerCase() === event.owner.toLowerCase())
+    (a) => event.chain !== null && a.chain === event.chain && (!event.owner || a.address.toLowerCase() === event.owner.toLowerCase())
   );
   const status = deriveTimelineStatus(event, now);
   const st = displayStatus(event, status);
@@ -229,13 +328,17 @@ function EventBody({ event, titleId, now, onDone }: { event: TimelineEvent; titl
         <dd>{at ? fmtFullDate(at) : "Not scheduled yet"}</dd>
         <dt>Time</dt>
         <dd>
-          {at ? `${event.atApprox ? "≈ " : ""}${fmtTime(at)}` : "—"}
+          {fmtEventTime(event) ?? "—"}
           {event.etaNote && <span className="muted small block">{event.etaNote}</span>}
         </dd>
-        <dt>Chain</dt>
-        <dd className="inline-icon">
-          <ChainIcon chain={event.chain} size={14} /> {chainInfo(event.chain).name}
-        </dd>
+        {event.chain && (
+          <>
+            <dt>Chain</dt>
+            <dd className="inline-icon">
+              <ChainIcon chain={event.chain} size={14} /> {chainInfo(event.chain).name}
+            </dd>
+          </>
+        )}
         {event.asset && (
           <>
             <dt>Position</dt>
@@ -268,7 +371,7 @@ function EventBody({ event, titleId, now, onDone }: { event: TimelineEvent; titl
         <div className="detail-actions">
           {needsWallet ? (
             <div className="wallet-gate">
-              <p className="small muted">Connect or watch a {chainInfo(event.chain).name} wallet to act on this event.</p>
+              <p className="small muted">Connect or watch a {event.chain ? chainInfo(event.chain).name : ""} wallet to act on this event.</p>
               <button
                 type="button"
                 className="btn btn-primary"

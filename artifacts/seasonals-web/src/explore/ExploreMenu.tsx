@@ -31,7 +31,7 @@ const SECTION: Partial<Record<PositionCategory, string>> & Record<string, string
   pt_yt: "PT/YT",
   staking: "Staking",
   restaking: "Staking",
-  stable: "Stable yield",
+  stable: "Yield-bearing stable",
   vesting: "Vesting",
   governance: "Governance",
   other: "Other",

@@ -7,11 +7,10 @@ import { Fragment } from "react";
 import { chainInfo } from "@workspace/lib/config/chains";
 import { dayKey, deriveTimelineStatus, displayStatus, groupTimelineByDay } from "@workspace/lib/derive/timeline";
 import type { TimelineEvent } from "@workspace/lib/types";
-import { STATUS_COLOR } from "../styles/tokens";
-import { fmtAmount, fmtMonthDay, fmtTime, fmtUsd, parseDayKey } from "../ui/format";
+import { fmtAmount, fmtEventTime, fmtMonthDay, fmtUsd, parseDayKey } from "../ui/format";
 import { ProtocolBadge, brandStyle } from "../ui/ProtocolBadge";
-import { Droplet } from "./Droplet";
-import { CLASS_LABEL, KIND_LABEL, shapeForKind, statusText } from "./labels";
+import { EventMarker } from "./EventMarker";
+import { CLASS_LABEL, KIND_LABEL, statusText } from "./labels";
 import { StatusBadge } from "./StatusBadge";
 
 export function TimelineList({
@@ -50,7 +49,7 @@ export function TimelineList({
                 {date ? (
                   <>
                     <strong>{fmtMonthDay(date)}</strong>
-                    <span>{first.at ? `${first.atApprox ? "≈" : ""}${fmtTime(new Date(first.at))}` : ""}</span>
+                    <span>{fmtEventTime(first) ?? ""}</span>
                   </>
                 ) : (
                   <>
@@ -66,7 +65,7 @@ export function TimelineList({
                   return (
                     <li key={e.id} className="tl-row">
                       <span className="tl-dot" aria-hidden="true">
-                        <Droplet shape={shapeForKind(e.kind, e.class)} color={STATUS_COLOR[st]} size={10} />
+                        <EventMarker event={e} status={st} size={10} />
                       </span>
                       <button
                         type="button"
@@ -74,7 +73,7 @@ export function TimelineList({
                         style={brandStyle(e.protocol)}
                         onClick={(ev) => onEvent(e.id, ev.currentTarget)}>
                         <span className="cell-protocol">
-                          <ProtocolBadge id={e.protocol} name={e.protocolName} size={22} />
+                          {e.protocol || !e.emoji ? <ProtocolBadge id={e.protocol} name={e.protocolName} size={22} /> : null}
                           <span className="cell-ellipsis">{e.protocolName ?? CLASS_LABEL[e.class]}</span>
                         </span>
                         <span className="cell-ellipsis cell-asset">{e.asset ?? "—"}</span>
@@ -87,7 +86,7 @@ export function TimelineList({
                         </span>
                         {variant === "full" && (
                           <>
-                            <span className="cell-ellipsis cell-network">{chainInfo(e.chain).name}</span>
+                            <span className="cell-ellipsis cell-network">{e.chain ? chainInfo(e.chain).name : "—"}</span>
                             <span className="cell-ellipsis cell-class">
                               <span className={`class-tag class-${e.class}`}>{CLASS_LABEL[e.class]}</span>
                             </span>

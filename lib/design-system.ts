@@ -286,6 +286,10 @@ export function mixHex(a: string, b: string, t: number): string {
  * Web の surface token。water shader の上に載る面は `backdrop-filter` を使わず
  * (docs/web/water-background-spec.md: 毎フレーム再合成を避ける)、
  * bgPrimary (vanilla) の不透明度を上げた near-opaque な面で読みやすさを担保する。
+ *
+ * glass* は Home の global nav / portal card 用の "liquid glass"。屈折 / すりガラス感は
+ * water shader 側 (`data-water-glass` の rect) が GPU で描き、CSS は薄い tint + 光沢縁 +
+ * specular だけを載せる。`backdrop-filter` は WebGL 不可 (背景が静止) の時だけ使う。
  */
 export const SURFACE_WEB = {
   /** Home の portal card / 中央カード (UI v2 §2: 90–95%) — bgPrimary @ 0.92 */
@@ -300,6 +304,24 @@ export const SURFACE_WEB = {
   hover: withAlpha(COLOR.sodaLight, 0.6),
   /** 1px の半透明白 border — textOnColor (#FFFFFF) @ 0.7 */
   border: withAlpha(COLOR.textOnColor, 0.7),
+  /** liquid glass の tint (shader の屈折が透けて見える薄さ) — bgPrimary @ 0.34 */
+  glass: withAlpha(COLOR.bgPrimary, 0.34),
+  /** glass の nav 版 (文字が多いので少し濃い) — bgPrimary @ 0.5 */
+  glassNav: withAlpha(COLOR.bgPrimary, 0.5),
+  /** clear glass (Apple Liquid Glass の clear variant: 中央が透ける。top bar / 選択しずく) — bgPrimary @ 0.2 */
+  glassClear: withAlpha(COLOR.bgPrimary, 0.2),
+  /** clear glass 上の文字の可読性用に上下へ敷く薄い vanilla — bgPrimary @ 0.38 */
+  glassLegibility: withAlpha(COLOR.bgPrimary, 0.38),
+  /** clear glass 上の文字の白い halo (text-shadow) — textOnColor @ 0.7 */
+  glassTextHalo: withAlpha(COLOR.textOnColor, 0.7),
+  /** WebGL 不可時 (backdrop-filter で blur する) の glass tint — bgPrimary @ 0.62 */
+  glassFallback: withAlpha(COLOR.bgPrimary, 0.62),
+  /** glass 上端の光沢縁 — textOnColor @ 0.95 */
+  glassRim: withAlpha(COLOR.textOnColor, 0.95),
+  /** glass 下端の縁 (光沢の抜け) — textOnColor @ 0.2 */
+  glassRimSoft: withAlpha(COLOR.textOnColor, 0.2),
+  /** pointer 追従の specular — textOnColor @ 0.55 */
+  glassSpecular: withAlpha(COLOR.textOnColor, 0.55),
   /** 詳細カード背後の薄い scrim — textPrimary @ 0.08 */
   scrim: withAlpha(COLOR.textPrimary, 0.08),
   /**
@@ -314,6 +336,12 @@ export const SHADOW_WEB = {
   soft: `0 12px 40px ${COLOR.shadowStrong}, 0 2px 8px ${COLOR.shadow}`,
   lift: `0 18px 48px ${COLOR.shadowStrong}, 0 4px 12px ${COLOR.shadow}`,
   inset: `inset 0 0 0 1px ${COLOR.border}`,
+  /** liquid glass: 外側の柔らかい影 + 内側上端の highlight + 内側下端の抜け */
+  glass: `0 20px 50px ${COLOR.shadowStrong}, 0 2px 8px ${COLOR.shadow}, inset 0 1px 0 ${withAlpha(COLOR.textOnColor, 0.85)}, inset 0 -1px 0 ${withAlpha(COLOR.textOnColor, 0.18)}`,
+  /** clear glass: 厚みを出す (外側の深い影 + 内側上端の明るい線 + 内側下端の暗い線) */
+  glassClear: `0 16px 44px ${COLOR.shadowStrong}, 0 3px 10px ${COLOR.shadow}, inset 0 1px 0 ${withAlpha(COLOR.textOnColor, 0.95)}, inset 0 -1px 0 ${COLOR.shadowStrong}, inset 0 0 12px ${withAlpha(COLOR.textOnColor, 0.28)}`,
+  /** liquid glass hover (浮き上がり) */
+  glassLift: `0 26px 60px ${COLOR.shadowStrong}, 0 4px 12px ${COLOR.shadow}, inset 0 1px 0 ${withAlpha(COLOR.textOnColor, 0.95)}, inset 0 -1px 0 ${withAlpha(COLOR.textOnColor, 0.24)}`,
 } as const;
 
 /**

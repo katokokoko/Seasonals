@@ -9,6 +9,10 @@
   background: var(--s-detail);
   box-shadow: var(--sh-soft);
 }
+/* 画面外に置くだけだと rubber band (上端の引っぱり) で見えてしまうので、focus まで clip で隠す */
+.skip-link:not(:focus) {
+  clip-path: inset(50%);
+}
 .skip-link:focus {
   top: var(--sp-md);
 }
@@ -30,10 +34,9 @@
   align-items: center;
   gap: var(--sp-lg);
   padding: 0 var(--sp-md) 0 var(--sp-xl);
-  background: var(--s-nav);
-  border: 1px solid var(--s-border);
+  /* clear な liquid glass (ui/glass.css .glass-clear)。屈折は water shader が描く */
+  border: 1px solid transparent;
   border-radius: var(--r-pill);
-  box-shadow: var(--sh-soft);
 }
 .wordmark {
   font-family: var(--f-script);
@@ -46,10 +49,34 @@
   white-space: nowrap;
 }
 .nav-links {
+  position: relative;
   display: flex;
   align-items: center;
   gap: var(--sp-xs);
   flex: 1;
+}
+/* 選択中項目の下の clear glass の "しずく" (ui/useGlassDroplet.ts が位置 / 幅 / ばねを書く) */
+.nav-droplet {
+  position: absolute;
+  left: 0;
+  top: calc(50% - 21px);
+  z-index: 0;
+  height: 42px;
+  width: 0;
+  border-radius: var(--r-pill);
+  pointer-events: none;
+  transition: opacity 200ms ease, scale 180ms ease-out;
+}
+.nav-droplet.is-hidden {
+  opacity: 0;
+}
+.nav-droplet.is-pressed {
+  scale: 1.06;
+}
+.nav-links > .nav-link,
+.nav-more {
+  position: relative;
+  z-index: 1;
 }
 .nav-link {
   display: inline-flex;
@@ -68,12 +95,19 @@
   transition: background-color 160ms ease, color 160ms ease;
 }
 .nav-link:hover {
-  background: var(--s-hover);
+  background: var(--s-glassRimSoft);
+  box-shadow: inset 0 0 0 1px var(--s-glassRimSoft);
   color: var(--c-textPrimary);
 }
-.nav-link.is-active {
+.nav-link:active {
+  scale: 0.97;
+}
+/* 選択は塗りではなく下の glass しずくで示す (文字色だけ変える) */
+.nav-link.is-active,
+.nav-link.is-active:hover {
   color: var(--c-sodaText);
-  background: var(--c-sodaTextSoft);
+  background: none;
+  box-shadow: none;
 }
 .nav-more {
   position: relative;

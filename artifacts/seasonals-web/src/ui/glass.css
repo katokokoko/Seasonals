@@ -1,0 +1,122 @@
+/* ── Liquid glass surface (global nav / Home portal card) ─────────────────────
+ * 屈折・すりガラス・リムは water shader が `data-water-glass` の rect の下で GPU で描く
+ * (docs/web/water-background-spec.md "Glass lens")。ここは その上に載る
+ *   - 薄い tint (shader の屈折が透ける)
+ *   - 1px の光沢縁 (::before、mask で ring だけ残す)。光源側が明るく、反対側にも弱い反射
+ *     (Apple Liquid Glass の specular)。光源角度 --glass-light-angle は useGlassLight が
+ *     pointer に合わせて <html> に書く (water shader の uLight と同じ向き)
+ *   - pointer に追従する specular (::after、--gx / --gy は useGlassPointer)
+ * だけ。backdrop-filter は WebGL 不可 (背景が静止) の時だけ使う (spec: 毎フレーム再合成を避ける)。
+ *
+ * variant: `.glass` = regular (すりガラス寄り、Home の portal card)、
+ *          `.glass.glass-clear` = clear (中央が透ける、top bar / 選択しずく)
+ */
+@property --glass-light-angle {
+  syntax: "<angle>";
+  inherits: true;
+  initial-value: 323deg; /* 左上 (shader の既定 uLight = (-0.6, 0.8)) */
+}
+.glass {
+  /* position は面ごとに持つ (nav = sticky、しずく = absolute、card = relative)。
+     ::before / ::after の absolute の基準になるので、使う側で static にしないこと */
+  isolation: isolate;
+  /* 面ごとの tint は --glass-tint で上書き (nav は文字が多いので少し濃い) */
+  background: var(--glass-tint, var(--s-glass));
+  border-color: transparent;
+  box-shadow: var(--sh-glass);
+}
+.glass::before,
+.glass::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  pointer-events: none;
+}
+.glass::before {
+  padding: 1px;
+  background: conic-gradient(
+    from var(--glass-light-angle, 323deg),
+    var(--s-glassRim) 0deg,
+    var(--s-glassRimSoft) 55deg,
+    var(--s-glassRimSoft) 125deg,
+    var(--s-glassSpecular) 180deg,
+    var(--s-glassRimSoft) 235deg,
+    var(--s-glassRimSoft) 305deg,
+    var(--s-glassRim) 360deg
+  );
+  -webkit-mask: linear-gradient(black, black) content-box, linear-gradient(black, black);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(black, black) content-box exclude, linear-gradient(black, black);
+}
+.glass::after {
+  background: radial-gradient(circle at var(--gx, 22%) var(--gy, -10%), var(--s-glassSpecular), transparent 55%);
+  opacity: 0.55;
+  transition: opacity 240ms ease;
+}
+.glass:hover::after {
+  opacity: 0.9;
+}
+
+/* clear variant: tint を薄くして shader の屈折を見せる。文字の可読性のため上下にだけ
+ * 薄い vanilla を敷き、文字に白い halo を付ける (Apple も clear glass 上の文字には減光 / 縁取り) */
+.glass-clear {
+  background:
+    linear-gradient(180deg, var(--s-glassLegibility), transparent 38%, transparent 62%, var(--s-glassLegibility)),
+    var(--glass-tint, var(--s-glassClear));
+  box-shadow: var(--sh-glassClear);
+  text-shadow: 0 0 10px var(--s-glassTextHalo), 0 1px 0 var(--s-glassTextHalo);
+}
+/* 選択しずく: glass の中の glass なので影は浅く、soda をごく薄く乗せる */
+.nav-droplet.glass-clear {
+  background:
+    radial-gradient(120% 90% at 50% 0%, var(--s-glassSpecular), transparent 60%),
+    linear-gradient(var(--c-sodaTextSoft), var(--c-sodaTextSoft)),
+    var(--s-glassClear);
+  box-shadow: 0 6px 16px var(--c-shadowStrong), inset 0 1px 0 var(--s-glassRim), inset 0 -1px 0 var(--c-shadow);
+}
+
+/* WebGL 不可: 背景は静止した単色なので backdrop-filter の再合成コストは無い */
+:root[data-water="fallback"] .glass {
+  background: var(--s-glassFallback);
+  -webkit-backdrop-filter: blur(18px) saturate(170%);
+  backdrop-filter: blur(18px) saturate(170%);
+}
+@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+  :root[data-water="fallback"] .glass {
+    background: var(--s-lobby);
+  }
+}
+/* 透明度を下げたい設定 (OS のアクセシビリティ) では不透明な面に戻す */
+@media (prefers-reduced-transparency: reduce) {
+  .glass {
+    background: var(--s-lobby);
+  }
+}
+
+/* ?glass-debug の診断表示 (background/GlassDebugOverlay.tsx) */
+.glass-debug {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  pointer-events: none;
+}
+.glass-debug svg {
+  position: absolute;
+  inset: 0;
+}
+.glass-debug-info {
+  position: absolute;
+  left: var(--sp-sm);
+  bottom: var(--sp-sm);
+  margin: 0;
+  padding: var(--sp-sm);
+  border-radius: var(--r-md);
+  background: var(--s-detail);
+  box-shadow: var(--sh-soft);
+  color: var(--c-textPrimary);
+  font-family: var(--f-mono, monospace);
+  font-size: var(--fs-caption);
+  line-height: 1.5;
+}

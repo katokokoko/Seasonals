@@ -147,7 +147,7 @@ describe("buildHistorySeries", () => {
     expect(out.points.map((p) => p.usd)).toEqual(["80.00000000", "73.00000000"]);
     expect(out.points.map((p) => p.at)).toEqual(stamps);
     // SOL 建てはその時点の SOL 価格で割るので 1 SOL のまま
-    expect(out.points.map((p) => p.sol)).toEqual(["1.00000000", "1.00000000"]);
+    expect(out.points.map((p) => p.native)).toEqual(["1.00000000", "1.00000000"]);
     expect(out.approximatedSymbols).toEqual([]);
   });
 
@@ -248,7 +248,7 @@ describe("buildHistorySeries", () => {
       new Map(),
       WSOL);
     expect(out.points[0]!.usd).toBe("73.00000000"); // 現在価格で近似
-    expect(out.points[0]!.sol).toBe("0.00000000");
+    expect(out.points[0]!.native).toBe("0.00000000");
     expect(out.approximatedSymbols).toEqual(["SOL"]);
   });
 });
@@ -349,8 +349,8 @@ describe("buildHistorySeries — 預入分の同時集計 (8.62)", () => {
     expect(out.points[0]!.usd).toBe("90.00000000");
     expect(out.points[0]!.deposited_usd).toBe("10.00000000");
     // SOL 建ても同じ SOL 価格で割る
-    expect(out.points[0]!.sol).toBe("1.12500000");
-    expect(out.points[0]!.deposited_sol).toBe("0.12500000");
+    expect(out.points[0]!.native).toBe("1.12500000");
+    expect(out.points[0]!.deposited_native).toBe("0.12500000");
   });
 
   it("預入がゼロの時点は deposited_usd='0' (全資産は出る)", () => {

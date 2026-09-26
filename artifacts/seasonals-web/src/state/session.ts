@@ -7,8 +7,9 @@
  * localStorage 永続化は per-viewer の利便性のみ (失敗しても動く)。
  */
 import { create } from "zustand";
-import { persist, createJSONStorage } from "zustand/middleware";
+import { persist } from "zustand/middleware";
 import type { ChainId } from "@workspace/lib/config/chains";
+import { safeStorage } from "./storage";
 
 export interface WatchEntry {
   chain: ChainId;
@@ -29,22 +30,6 @@ export interface SessionState {
 }
 
 const same = (a: WatchEntry, b: WatchEntry) => a.chain === b.chain && a.address.toLowerCase() === b.address.toLowerCase();
-
-const safeStorage = createJSONStorage(() => {
-  try {
-    const k = "__seasonals_probe__";
-    window.localStorage.setItem(k, "1");
-    window.localStorage.removeItem(k);
-    return window.localStorage;
-  } catch {
-    const mem = new Map<string, string>();
-    return {
-      getItem: (n: string) => mem.get(n) ?? null,
-      setItem: (n: string, v: string) => void mem.set(n, v),
-      removeItem: (n: string) => void mem.delete(n),
-    };
-  }
-});
 
 export const useSession = create<SessionState>()(
   persist(

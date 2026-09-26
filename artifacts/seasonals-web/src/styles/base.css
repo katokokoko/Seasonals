@@ -43,12 +43,39 @@ a {
   white-space: nowrap;
   border: 0;
 }
+/*
+ * 背景は canvas 2 枚 (background/WaterBackground.tsx)。
+ * - .water-canvas: 水面。fixed なので macOS の rubber band (上下端を越えたスクロールの伸び縮み) 中も
+ *   画面を覆い続け、端に背景色の帯が出ない
+ * - .glass-canvas: glass の中だけを描く透明な canvas。rubber band はスクロール内容だけを平行移動し
+ *   fixed を動かさない (JS からは移動量を読めない) ので、glass を fixed に描くと光・縁が DOM の枠から
+ *   置いていかれる。スクロール内容の中の sticky にして DOM の枠と一緒に動かす
+ * #root は flow-root にして nav の margin-top が #root の外へ相殺されないようにする (track がずれる)。
+ */
+#root {
+  position: relative;
+  display: flow-root;
+}
 .water-canvas {
   position: fixed;
   inset: 0;
   z-index: 0;
   pointer-events: none;
 }
+.water-track {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+}
+.glass-canvas {
+  position: sticky;
+  top: 0;
+  width: 100%;
+  height: 100vh;
+  pointer-events: none;
+}
+.glass-canvas canvas,
 .water-canvas canvas {
   display: block;
   width: 100%;
