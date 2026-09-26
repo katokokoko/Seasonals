@@ -1,28 +1,46 @@
 /**
  * WalletControl — Connect wallet / Watch address (UI v2 §1 右端)。
- * - Ethereum: injected wallet (EIP-1193) で address を取得。署名は wallet 側
+ * - Ethereum: browser の wallet を EIP-6963 で検出して並べ、選んだ wallet から address を取得。署名は wallet 側
  * - Watch: 任意の Solana / Ethereum address を読み取り専用で閲覧 (Ethereum v3 §12 watch-mode)
  */
 import { useEffect, useId, useRef, useState, type FormEvent } from "react";
 import { chainOfAddress } from "@workspace/lib/config/chains";
 import { MAX_WATCH, useActiveAddresses, useSession } from "../state/session";
-import { connectInjected, injectedProvider, onAccountsChanged } from "../services/evmWallet";
+import {
+  connectWallet,
+  disconnectWallet,
+  isUserRejection,
+  onAccountsChanged,
+  safeWalletIcon,
+  useDetectedWallets,
+  type DetectedWallet,
+} from "../services/evmWallet";
 import { ChainIcon } from "../ui/ChainIcon";
 import { IconChevronDown, IconClose, IconWallet } from "../ui/icons";
 import { shortAddress } from "../ui/format";
 import { OPEN_WALLET_EVENT } from "../timeline/detailStore";
 
 export function WalletControl() {
-  const { addWatch, removeWatch, setConnectedEvm } = useSession();
+  const { addWatch, removeWatch, setConnectedEvm, connectedWallet } = useSession();
   const active = useActiveAddresses();
+  const wallets = useDetectedWallets();
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState("");
   const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
+  /** 接続を待っている wallet の rdns */
+  const [pending, setPending] = useState<string | null>(null);
   const ref = useRef<HTMLDivElement>(null);
   const inputId = useId();
 
-  useEffect(() => onAccountsChanged((a) => setConnectedEvm(a)), [setConnectedEvm]);
+  useEffect(
+    () =>
+      onAccountsChanged((a) => {
+        // wallet 側で接続を外された (空配列) ら、以後その wallet を聞かない
+        if (!a) disconnectWallet();
+        setConnectedEvm(a);
+      }),
+    [setConnectedEvm]
+  );
   useEffect(() => {
     const onOpen = () => {
       setOpen(true);
@@ -47,16 +65,23 @@ export function WalletControl() {
     };
   }, [open]);
 
-  async function onConnect() {
+  async function onConnect(w: DetectedWallet) {
     setError(null);
-    setBusy(true);
+    setPending(w.info.rdns);
     try {
-      setConnectedEvm(await connectInjected());
+      const address = await connectWallet(w);
+      setConnectedEvm(address, { name: w.info.name, icon: w.info.icon, rdns: w.info.rdns });
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Could not connect.");
+      if (isUserRejection(e)) setError(`Request was rejected in ${w.info.name}.`);
+      else setError(e instanceof Error ? e.message : "Could not connect.");
     } finally {
-      setBusy(false);
+      setPending(null);
     }
+  }
+
+  function onDisconnect() {
+    disconnectWallet();
+    setConnectedEvm(null);
   }
 
   function onWatch(e: FormEvent) {
@@ -105,12 +130,19 @@ export function WalletControl() {
                 <li key={`${a.chain}:${a.address}`}>
                   <ChainIcon chain={a.chain} size={16} />
                   <span className="mono">{shortAddress(a.address)}</span>
-                  <span className="tag">{a.connected ? "connected" : "watching"}</span>
+                  {a.connected && connectedWallet ? (
+                    <span className="tag wallet-via">
+                      <WalletIcon icon={connectedWallet.icon} size={12} />
+                      {connectedWallet.name}
+                    </span>
+                  ) : (
+                    <span className="tag">{a.connected ? "connected" : "watching"}</span>
+                  )}
                   <button
                     type="button"
                     className="icon-button small"
                     aria-label={`Remove ${shortAddress(a.address)}`}
-                    onClick={() => (a.connected ? setConnectedEvm(null) : removeWatch(a))}
+                    onClick={() => (a.connected ? onDisconnect() : removeWatch(a))}
                   >
                     <IconClose size={14} />
                   </button>
@@ -120,10 +152,31 @@ export function WalletControl() {
           )}
           <section>
             <h3 className="popover-title">Browser wallet (Ethereum)</h3>
-            {injectedProvider() ? (
-              <button type="button" className="btn btn-primary" onClick={onConnect} disabled={busy}>
-                {active.some((a) => a.connected) ? "Reconnect" : "Connect browser wallet"}
-              </button>
+            {wallets.length > 0 ? (
+              <ul className="wallet-choices" aria-label="Detected wallets">
+                {wallets.map((w) => {
+                  const isConnected = connectedWallet?.rdns === w.info.rdns;
+                  const waiting = pending === w.info.rdns;
+                  return (
+                    <li key={w.info.rdns}>
+                      <button
+                        type="button"
+                        className={`wallet-choice${isConnected ? " is-connected" : ""}`}
+                        onClick={() => onConnect(w)}
+                        disabled={pending !== null}
+                        aria-busy={waiting || undefined}
+                      >
+                        <WalletIcon icon={w.info.icon} size={20} />
+                        <span className="wallet-choice-name">{w.info.name}</span>
+                        {isConnected && <span className="tag">connected</span>}
+                        <span className="wallet-choice-action">
+                          {waiting ? "Waiting…" : isConnected ? "Reconnect" : "Connect"}
+                        </span>
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
             ) : (
               <p className="muted small">No browser wallet detected. You can still watch an address below.</p>
             )}
@@ -157,4 +210,11 @@ export function WalletControl() {
       )}
     </div>
   );
+}
+
+/** wallet が名乗った icon (data:image/ のみ)。無い / 不正なら汎用の wallet icon */
+function WalletIcon({ icon, size }: { icon: string; size: number }) {
+  const src = safeWalletIcon(icon);
+  if (!src) return <IconWallet size={size} className="wallet-icon is-generic" aria-hidden="true" />;
+  return <img className="wallet-icon" src={src} alt="" width={size} height={size} />;
 }

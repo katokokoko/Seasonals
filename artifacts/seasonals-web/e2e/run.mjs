@@ -206,6 +206,45 @@ for (const vp of WIDTHS) {
   await page.close();
 }
 
+// Connect wallet: EIP-6963 で名乗った wallet を全部並べ、window.ethereum を奪った wallet (OKX 役) ではなく
+// 選んだ wallet (MetaMask 役) に eth_requestAccounts が行く。本物の拡張は入れず、名乗る provider を偽装する
+{
+  const page = await newPage(WIDTHS[0]);
+  await page.addInitScript(() => {
+    const icon = "data:image/svg+xml;base64," + btoa('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 8 8"><rect width="8" height="8" rx="2"/></svg>');
+    window.__walletCalls = [];
+    const make = (name, rdns, account) => ({
+      info: { uuid: rdns, name, icon, rdns },
+      provider: {
+        request: async ({ method }) => (window.__walletCalls.push(`${name}:${method}`), [account]),
+        on() {},
+        removeListener() {},
+      },
+    });
+    const okx = make("OKX Wallet", "com.okex.wallet", "0x2222222222222222222222222222222222222222");
+    const mm = make("MetaMask", "io.metamask", "0x1121aFF29666B91181568264Ab0F2Bc58Bf90a11");
+    window.ethereum = okx.provider;
+    window.addEventListener("eip6963:requestProvider", () => {
+      for (const w of [okx, mm]) window.dispatchEvent(new CustomEvent("eip6963:announceProvider", { detail: Object.freeze(w) }));
+    });
+  });
+  await page.goto(BASE + "/menu", { waitUntil: "networkidle" });
+  await page.getByRole("button", { name: /Connect wallet/ }).click();
+  const names = await page.locator(".wallet-choice-name").allInnerTexts();
+  check("Connect wallet lists every EIP-6963 wallet", names.join(",") === "OKX Wallet,MetaMask", names.join(","));
+  await page.screenshot({ path: ".screenshots/wallet-choices-1440.png" });
+  await page.getByRole("button", { name: /MetaMask/ }).click();
+  await page.locator(".wallet-button.is-active").waitFor({ timeout: 10_000 }).catch(() => {});
+  const header = await page.locator(".wallet-button").innerText();
+  const calls = await page.evaluate(() => window.__walletCalls);
+  check(
+    "choosing MetaMask connects its account, not the window.ethereum wallet",
+    header.includes("0x1121…0a11") && calls.join(",") === "MetaMask:eth_requestAccounts",
+    `${header.replace(/\s+/g, " ")} | ${calls.join(",")}`
+  );
+  await page.close();
+}
+
 // Learn: 横 3 枚のカード、/learn#pendle で詳細 dialog が開き見出しに focus、Esc で閉じる
 for (const vp of WIDTHS) {
   const page = await newPage(vp);
