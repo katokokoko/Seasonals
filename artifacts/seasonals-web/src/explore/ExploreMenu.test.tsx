@@ -1,4 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { MemoryRouter } from "react-router";
 import { render, screen } from "@testing-library/react";
 import type { MenuProduct } from "@workspace/lib/types";
 import { EthMenuCard, noBreakHyphen } from "./ExploreMenu";
@@ -23,9 +24,11 @@ function product(p: Partial<MenuProduct>): MenuProduct {
 function renderCard(p: MenuProduct) {
   return render(
     <QueryClientProvider client={new QueryClient()}>
-      <ul>
-        <EthMenuCard product={p} />
-      </ul>
+      <MemoryRouter>
+        <ul>
+          <EthMenuCard product={p} />
+        </ul>
+      </MemoryRouter>
     </QueryClientProvider>
   );
 }

@@ -292,9 +292,13 @@
   flex-wrap: wrap;
   gap: var(--sp-sm);
 }
-/* プロトコルのサイトを開くリンク: 常に右下、本文より小さめ */
-.menu-open-link {
+/* 右下のリンク群 (Learn / プロトコルのサイト): 本文より小さめ */
+.menu-links {
+  display: inline-flex;
+  gap: var(--sp-md);
   margin-left: auto;
+}
+.menu-open-link {
   font-size: var(--fs-caption);
   font-weight: var(--w-semibold);
   color: var(--c-sodaText);

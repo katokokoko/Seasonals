@@ -1,7 +1,7 @@
 /**
  * GlobalFloatingNav — 全画面共通の浮遊 top bar (UI v2 §1)。
- * wordmark / Overview / Explore / Calendar / Agent / Dashboard / 対応 chain icons /
- * Settings (gear) / Wallet。1100–1439px では Agent と Dashboard を More に畳む。
+ * wordmark / Overview / Explore / Calendar / Agent / Dashboard / Learn / 対応 chain icons /
+ * Settings (gear) / Wallet。1100–1439px では Agent / Dashboard / Learn を More に畳む。
  */
 import { useEffect, useRef, useState } from "react";
 import { Link, NavLink, useLocation } from "react-router";
@@ -19,6 +19,7 @@ const PRIMARY = [
 const SECONDARY = [
   { to: "/agent", label: "Agent" },
   { to: "/dashboard", label: "Dashboard" },
+  { to: "/learn", label: "Learn" },
 ] as const;
 
 const linkClass = ({ isActive }: { isActive: boolean }) => `nav-link${isActive ? " is-active" : ""}`;

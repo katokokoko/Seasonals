@@ -4,6 +4,8 @@
  * sponsored / featured は既存データに無いので出さない (捏造しない)。
  */
 import { useMemo, useState } from "react";
+import { Link } from "react-router";
+import { LEARN } from "../learn/content";
 import type { ChainId } from "@workspace/lib/config/chains";
 import type { EarnPosition, MenuHolding, MenuProduct, PositionCategory, ProtocolMenuEntry, ProtocolPool } from "@workspace/lib/types";
 import { useEthMenu, useMenuHoldings, useMenuListings, type MenuHoldingsData } from "../services/queries";
@@ -18,6 +20,9 @@ import { ProtocolBadge, brandStyle } from "../ui/ProtocolBadge";
 import { TokenKindBadge } from "../ui/TokenKindBadge";
 import { Notice } from "../shell/WorkspaceShell";
 import "./explore.css";
+
+/** Learn に解説がある protocol (Menu カードから /learn#<id> へ) */
+const LEARN_IDS = new Set(LEARN.map((e) => e.id));
 
 const SECTION: Partial<Record<PositionCategory, string>> & Record<string, string> = {
   lending: "Lending",
@@ -316,11 +321,18 @@ export function EthMenuCard({ product, holding, ctx }: { product: MenuProduct; h
             </button>
           </span>
         )}
-        {product.url && (
-          <a className="menu-open-link" href={product.url} target="_blank" rel="noreferrer">
-            Open {product.protocolName} ↗
-          </a>
-        )}
+        <span className="menu-links">
+          {LEARN_IDS.has(product.protocolId) && (
+            <Link className="menu-open-link" to={`/learn#${product.protocolId}`}>
+              Learn
+            </Link>
+          )}
+          {product.url && (
+            <a className="menu-open-link" href={product.url} target="_blank" rel="noreferrer">
+              Open {product.protocolName} ↗
+            </a>
+          )}
+        </span>
       </div>
     </li>
   );

@@ -41,11 +41,11 @@ for (const vp of WIDTHS) {
 
   // nav reachability (Agent / Dashboard は 1280 で More の中)
   const navNames = await page.locator("nav[aria-label=Primary] a:visible").allInnerTexts();
-  if (vp.width >= 1440) check(`${vp.name} nav shows all items`, ["Overview", "Explore", "Calendar", "Agent", "Dashboard"].every((n) => navNames.includes(n)), navNames);
+  if (vp.width >= 1440) check(`${vp.name} nav shows all items`, ["Overview", "Explore", "Calendar", "Agent", "Dashboard", "Learn"].every((n) => navNames.includes(n)), navNames);
   else {
     await page.getByRole("button", { name: "More", exact: true }).click();
     const more = await page.locator(".nav-more-menu a").allInnerTexts();
-    check(`${vp.name} More menu holds Agent & Dashboard`, more.includes("Agent") && more.includes("Dashboard"), more);
+    check(`${vp.name} More menu holds Agent, Dashboard & Learn`, more.includes("Agent") && more.includes("Dashboard") && more.includes("Learn"), more);
     await page.keyboard.press("Escape");
   }
   check(`${vp.name} settings gear`, (await page.getByRole("link", { name: "Settings" }).getAttribute("href")) === "/settings");
@@ -171,6 +171,24 @@ for (const vp of WIDTHS) {
   await card.getByRole("button", { name: "Build plan" }).click();
   const planOrError = await card.locator(".plan-steps, .error").first().waitFor({ timeout: 60_000 }).then(() => card.locator(".plan-steps, .error").first().innerText()).catch((e) => String(e));
   check("Menu deposit builds a plan or a clear on-chain refusal", planOrError.length > 0 && !/Timeout/.test(planOrError), planOrError.slice(0, 120));
+  await page.close();
+}
+
+// Learn: /learn#pendle で Pendle のカードが見え、見出しに focus。Open site は公式サイトへ
+{
+  const page = await newPage(WIDTHS[0]);
+  await page.goto(BASE + "/learn#pendle", { waitUntil: "networkidle" });
+  await page.locator("#pendle").waitFor({ timeout: 30_000 });
+  await page.waitForTimeout(400);
+  const inView = await page.locator("#pendle").evaluate((el) => {
+    const r = el.getBoundingClientRect();
+    return r.top >= 0 && r.top < innerHeight;
+  });
+  const focused = await page.evaluate(() => document.activeElement?.id);
+  check("Learn deep link scrolls to the card and focuses its title", inView && focused === "learn-pendle-title", `${inView} ${focused}`);
+  const cards = await page.locator(".learn-card").count();
+  const sites = await page.locator(".learn-card a", { hasText: "Open site" }).evaluateAll((as) => as.map((a) => a.getAttribute("href")));
+  check("Learn shows 6 cards, each with an https Open site link", cards === 6 && sites.length === 6 && sites.every((h) => h?.startsWith("https://")), sites.join(" "));
   await page.close();
 }
 
