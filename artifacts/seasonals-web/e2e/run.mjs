@@ -135,6 +135,24 @@ for (const vp of WIDTHS) {
   await page.close();
 }
 
+// Explore: Pendle は PT / YT のペア、バッジは Pendle ロゴの下、chain ロゴは上、名前は 1 行
+{
+  const page = await newPage(WIDTHS[0]);
+  await page.goto(BASE + "/explore", { waitUntil: "networkidle" });
+  await page.getByRole("tab", { name: "PT/YT", exact: true }).click({ timeout: 30_000 }).catch(() => {});
+  await page.locator(".token-kind").first().waitFor({ timeout: 30_000 }).catch(() => {});
+  const pt = await page.locator(".token-kind-pt").count();
+  const yt = await page.locator(".token-kind-yt").count();
+  check("Explore shows Pendle PT and YT cards", pt > 0 && pt === yt, `pt=${pt} yt=${yt}`);
+  const order = await page.locator(".menu-media").first().evaluate((el) => [...el.children].map((c) => c.className.split(" ")[0]));
+  check("chain logo above protocol logo, PT/YT badge below", JSON.stringify(order) === JSON.stringify(["menu-media-chain", "protocol-badge", "token-kind"]), order);
+  const wrapped = await page.locator(".menu-item-name h3").evaluateAll((els) =>
+    els.filter((h) => h.getBoundingClientRect().height > parseFloat(getComputedStyle(h).lineHeight) * 1.5).map((h) => h.textContent)
+  );
+  check("Pendle card names stay on one line", wrapped.length === 0, wrapped.join(", "));
+  await page.close();
+}
+
 // reduced motion → 静止画
 {
   const page = await newPage(WIDTHS[0], { reducedMotion: "reduce" });

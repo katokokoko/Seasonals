@@ -21,7 +21,15 @@ export interface PendleMarket {
   sy: string;
   underlyingAsset: string;
   chainId?: number;
-  details?: { liquidity?: number; totalTvl?: number; impliedApy?: number; underlyingApy?: number; aggregatedApy?: number };
+  details?: {
+    liquidity?: number;
+    totalTvl?: number;
+    impliedApy?: number;
+    underlyingApy?: number;
+    aggregatedApy?: number;
+    /** YT の Long Yield APY (Pendle UI と同じ値)。負もありうる */
+    ytFloatingApy?: number;
+  };
 }
 
 export interface PendlePosition {

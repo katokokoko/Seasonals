@@ -4,6 +4,7 @@
  * sponsored / featured は既存データに無いので出さない (捏造しない)。
  */
 import { useMemo, useState } from "react";
+import type { ChainId } from "@workspace/lib/config/chains";
 import type { MenuProduct, PositionCategory, ProtocolMenuEntry, ProtocolPool } from "@workspace/lib/types";
 import { useEthMenu, useMenuListings } from "../services/queries";
 import { fmtFullDate, fmtMetric } from "../ui/format";
@@ -11,6 +12,7 @@ import { UniswapRoutePreview } from "./UniswapRoutePreview";
 import { ChainIcon } from "../ui/ChainIcon";
 import { fmtCompactUsd, fmtRatio } from "../ui/format";
 import { ProtocolBadge, brandStyle } from "../ui/ProtocolBadge";
+import { TokenKindBadge } from "../ui/TokenKindBadge";
 import { Notice } from "../shell/WorkspaceShell";
 import "./explore.css";
 
@@ -18,7 +20,7 @@ const SECTION: Partial<Record<PositionCategory, string>> & Record<string, string
   lending: "Lending",
   lp: "Liquidity",
   vault: "Yield",
-  pt_yt: "Fixed yield",
+  pt_yt: "PT/YT",
   staking: "Staking",
   restaking: "Staking",
   stable: "Stable yield",
@@ -137,6 +139,34 @@ function availability(pool: ProtocolPool): { label: string; tone: "ok" | "warn" 
   return null;
 }
 
+/**
+ * カード左の列: 上から chain ロゴ → protocol ロゴ → (Pendle のみ) PT / YT バッジ。
+ * chain 名は画面では icon だけなので sr-only で読み上げ用に残す。
+ */
+function MenuMedia({ chain, chainName, protocolId, protocolName, tokenKind }: {
+  chain: ChainId;
+  chainName: string;
+  protocolId: string;
+  protocolName: string;
+  tokenKind?: "pt" | "yt";
+}) {
+  return (
+    <div className="menu-media">
+      <span className="menu-media-chain" title={chainName}>
+        <ChainIcon chain={chain} size={14} />
+        <span className="sr-only">{chainName}</span>
+      </span>
+      <ProtocolBadge id={protocolId} name={protocolName} size={40} />
+      {tokenKind && <TokenKindBadge kind={tokenKind} />}
+    </div>
+  );
+}
+
+/** "PT-apyUSD" が「PT-」と「apyUSD」に割れないよう、表示だけハイフンを改行しないハイフン (U+2011) にする */
+export function noBreakHyphen(name: string): string {
+  return name.replace(/-/g, "\u2011");
+}
+
 function MenuCard({ item }: { item: MenuItem }) {
   const { protocol, pool } = item;
   const [open, setOpen] = useState(false);
@@ -144,13 +174,11 @@ function MenuCard({ item }: { item: MenuItem }) {
   return (
     <li className="menu-item" style={brandStyle(protocol.icon_id)}>
       <div className="menu-item-top">
-        <ProtocolBadge id={protocol.icon_id} name={protocol.display_name} size={40} />
+        <MenuMedia chain="solana" chainName="Solana" protocolId={protocol.icon_id} protocolName={protocol.display_name} />
         <div className="menu-item-name">
-          <h3>{pool.name}</h3>
+          <h3>{noBreakHyphen(pool.name)}</h3>
           <p className="menu-item-protocol">{protocol.display_name}</p>
-          <p className="muted small inline-icon-left">
-            {item.section} · <ChainIcon chain="solana" size={12} /> Solana
-          </p>
+          <p className="muted small">{item.section}</p>
         </div>
         <div className="menu-price">
           <span className="menu-price-label">APY</span>
@@ -193,22 +221,29 @@ function MenuCard({ item }: { item: MenuItem }) {
   );
 }
 
-function EthMenuCard({ product }: { product: MenuProduct }) {
+export function EthMenuCard({ product }: { product: MenuProduct }) {
   const [open, setOpen] = useState(false);
   return (
     <li className="menu-item" style={brandStyle(product.protocolId)}>
       <div className="menu-item-top">
-        <ProtocolBadge id={product.protocolId} name={product.protocolName} size={40} />
+        <MenuMedia
+          chain="ethereum"
+          chainName="Ethereum"
+          protocolId={product.protocolId}
+          protocolName={product.protocolName}
+          tokenKind={product.tokenKind}
+        />
         <div className="menu-item-name">
-          <h3>{product.name}</h3>
+          <h3>{noBreakHyphen(product.name)}</h3>
           <p className="menu-item-protocol">{product.protocolName}</p>
-          <p className="muted small inline-icon-left">
-            {SECTION[product.category] ?? "Other"} · <ChainIcon chain="ethereum" size={12} /> Ethereum
-          </p>
+          <p className="muted small">{SECTION[product.category] ?? "Other"}</p>
         </div>
         <div className="menu-price">
           <span className="menu-price-label">{product.rate ? product.rate.label : "Rate"}</span>
-          <span className="menu-price-value">{product.rate ? fmtRatio(product.rate.value) : "n/a"}</span>
+          {/* 負の利回り (YT の Long Yield APY など) は cherry (CLAUDE.md §6: 負/警告は cherryDark) */}
+          <span className={product.rate && product.rate.value < 0 ? "menu-price-value negative" : "menu-price-value"}>
+            {product.rate ? fmtRatio(product.rate.value) : "n/a"}
+          </span>
         </div>
       </div>
       <div className="menu-rule" aria-hidden="true" />
@@ -227,7 +262,13 @@ function EthMenuCard({ product }: { product: MenuProduct }) {
         ))}
       </dl>
       <div className="menu-item-foot">
-        {product.rate ? <span className="muted small">Source: {product.rate.source}</span> : <span className="ticket ticket-warn">Rate unavailable</span>}
+        {product.rate ? (
+          <span className="muted small">
+            {product.rate.basis ? `${product.rate.basis} · ${product.rate.source}` : `Source: ${product.rate.source}`}
+          </span>
+        ) : (
+          <span className="ticket ticket-warn">Rate unavailable</span>
+        )}
         <span className="menu-actions">
           {product.url && (
             <a className="btn btn-quiet" href={product.url} target="_blank" rel="noreferrer">

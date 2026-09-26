@@ -12,6 +12,8 @@ export interface MenuProductRate {
   label: string;
   /** 0..1 の比率 */
   value: number;
+  /** 率の意味を 1 行で補う (短い label の補足)。例: "Fixed if held to maturity" */
+  basis?: string;
   source: string;
 }
 
@@ -24,7 +26,9 @@ export interface MenuProduct {
   category: PositionCategory;
   rate: MenuProductRate | null;
   facts: TimelineMetric[];
-  /** 満期のある商品 (Pendle PT) の満期 ISO */
+  /** Pendle の PT (元本) / YT (利回り) の区別。Pendle 以外は undefined */
+  tokenKind?: "pt" | "yt";
+  /** 満期のある商品 (Pendle PT / YT) の満期 ISO */
   maturity?: string;
   url?: string;
   observedAt: string;
