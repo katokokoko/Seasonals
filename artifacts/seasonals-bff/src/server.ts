@@ -21,6 +21,7 @@ import Fastify, {
   type FastifyRequest,
 } from "fastify";
 import cors from "@fastify/cors";
+import { registerEthRoutes } from "./routes/eth";
 import {
   Connection,
   PublicKey,
@@ -3150,6 +3151,9 @@ export async function buildServer(
     // dev は any origin で OK (Mobile emulator は IP/host 多様)
     origin: true,
   });
+
+  // ── Ethereum (docs/web/WORKLOG.md Stage B、読み取り + unsigned plan のみ) ──
+  await registerEthRoutes(app);
 
   // ── health ────────────────────────────────────────────────────────────
   app.get("/health", async () => ({

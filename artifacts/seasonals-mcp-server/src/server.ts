@@ -29,6 +29,30 @@ import type {
 } from "@workspace/lib/types";
 
 import type { BffClient } from "./bff-client";
+import type { TimelineEvent, TimelineEventsResponse } from "@workspace/lib/types";
+import { TIMELINE_STATUSES } from "@workspace/lib/types";
+import { deriveTimelineStatus } from "@workspace/lib/derive/timeline";
+
+/** RFC 5545 の最小 VEVENT 列 (日時のある event のみ) */
+export function toIcal(events: TimelineEvent[]): string {
+  const stamp = (iso: string) => iso.replace(/[-:]/g, "").replace(/\.\d{3}/, "");
+  const esc = (t: string) => t.replace(/[\\;,]/g, (c) => `\\${c}`).replace(/\n/g, "\\n");
+  const lines = ["BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Seasonals//Time Layer//EN"];
+  for (const e of events) {
+    if (!e.at) continue;
+    lines.push(
+      "BEGIN:VEVENT",
+      `UID:${e.id}@seasonals`,
+      `DTSTAMP:${stamp(e.observedAt)}`,
+      `DTSTART:${stamp(e.at)}`,
+      `SUMMARY:${esc(e.title)}`,
+      `DESCRIPTION:${esc(`${e.protocolName ?? ""} ${e.kind} (${e.class}) source=${e.source}`)}`,
+      "END:VEVENT"
+    );
+  }
+  lines.push("END:VCALENDAR");
+  return lines.join("\r\n");
+}
 
 // Phase 8.38 (F3): enum は lib/types/enums.ts が canonical (§2)。手書き複製は
 // enum 追加時に MCP 境界だけ zod が新値を拒否する drift を生むため、lib から導出
@@ -496,6 +520,134 @@ export function buildMcpServer(
         },
       ],
     })
+  );
+
+  // ── Ethereum time layer (docs/web/WORKLOG.md Stage B) ─────────────────────
+  // UI と同じ BFF /eth/* を読む (same source of truth)。build_action は unsigned plan
+  // を返すだけで、署名も broadcast もしない (Ethereum v3 §9)。
+
+  const EVM_ADDRESS = z.string().regex(/^0x[0-9a-fA-F]{40}$/, "0x-prefixed 20-byte address");
+
+  server.registerTool(
+    "list_events",
+    {
+      description:
+        "List Ethereum time events (Pendle PT maturity, Ethena sUSDe cooldown end, Lido withdrawal queue, " +
+        "public Pendle market maturities) from the same source the Seasonals calendar renders. " +
+        "Each event carries observedAt and source so you can judge freshness. Status is derived at request time.",
+      inputSchema: {
+        address: EVM_ADDRESS.optional().describe("Wallet to read. Omit for public events only."),
+        from: z.string().datetime().optional().describe("ISO start (inclusive)"),
+        to: z.string().datetime().optional().describe("ISO end (inclusive)"),
+        status: z.enum(TIMELINE_STATUSES as unknown as [string, ...string[]]).optional(),
+      },
+    },
+    async ({ address, from, to, status }) => {
+      const t0 = Date.now();
+      try {
+        const res = await bff.get<TimelineEventsResponse>(
+          address ? `/eth/events?address=${address}` : "/eth/public-events"
+        );
+        const now = new Date();
+        const lo = from ? Date.parse(from) : -Infinity;
+        const hi = to ? Date.parse(to) : Infinity;
+        const events = res.events
+          .map((e) => ({ ...e, status: deriveTimelineStatus(e, now) }))
+          .filter((e) => (e.at === null ? !from && !to : Date.parse(e.at) >= lo && Date.parse(e.at) <= hi))
+          .filter((e) => !status || e.status === status);
+        audit("list_events", null, "ok", t0);
+        return jsonContent({ events, sources: res.sources, derivedAt: now.toISOString() });
+      } catch (err) {
+        audit("list_events", null, "error", t0);
+        throw err;
+      }
+    }
+  );
+
+  server.registerTool(
+    "get_proposal",
+    {
+      description:
+        "Get the proposal for one event: what to do when its date arrives (facts, assumptions, options, risks, " +
+        "recommendation). Rule-based unless the server has an LLM configured. Contains no calldata.",
+      inputSchema: { address: EVM_ADDRESS, eventId: z.string().min(1) },
+    },
+    async ({ address, eventId }) => {
+      const t0 = Date.now();
+      try {
+        const p = await bff.get(`/eth/proposal?address=${address}&eventId=${encodeURIComponent(eventId)}`);
+        audit("get_proposal", null, "ok", t0);
+        return jsonContent(p);
+      } catch (err) {
+        audit("get_proposal", null, "error", t0);
+        throw err;
+      }
+    }
+  );
+
+  server.registerTool(
+    "build_action",
+    {
+      description:
+        "Build an UNSIGNED transaction plan for an event action (e.g. lido_claim, ethena_unstake, pendle_redeem). " +
+        "The server re-checks on-chain state, builds calldata from protocol ABIs / Pendle Convert, and checks it with " +
+        "eth_call. It never signs or broadcasts; the human signs in their own wallet.",
+      inputSchema: { address: EVM_ADDRESS, eventId: z.string().min(1), actionType: z.string().regex(/^[a-z_]+$/) },
+    },
+    async ({ address, eventId, actionType }) => {
+      const t0 = Date.now();
+      try {
+        const plan = await bff.post("/eth/build-action", { owner: address, eventId, actionType });
+        audit("build_action", null, "ok", t0);
+        return jsonContent(plan);
+      } catch (err) {
+        audit("build_action", null, "rejected", t0);
+        throw err;
+      }
+    }
+  );
+
+  server.registerTool(
+    "ship_lp_strategy",
+    {
+      description:
+        "Prepare an UNSIGNED plan to ship a 1inch Aqua LP strategy. Only the PEGGED_STABLE template (USDC/USDe) is accepted; " +
+        "the server validates the parameters and refuses if the Chainlink USDe/USDC peg is stale or off by more than 0.5%. " +
+        "It never signs or broadcasts. After the human ships it, a strategy review event appears on the calendar on reviewAt.",
+      inputSchema: {
+        maker: EVM_ADDRESS,
+        template: z.enum(["PEGGED_STABLE"]),
+        usdcAmount: z.string().regex(/^[0-9]+$/).describe("USDC in smallest units (6 decimals)"),
+        usdeAmount: z.string().regex(/^[0-9]+$/).describe("USDe in smallest units (18 decimals)"),
+        bandBps: z.number().int().min(10).max(200),
+        feeBps: z.number().int().min(1).max(30).optional().describe("Fee on the taker's input token, default 5 bps"),
+        reviewAt: z.string().datetime(),
+      },
+    },
+    async (args) => {
+      const t0 = Date.now();
+      try {
+        const plan = await bff.post("/eth/aqua/ship-plan", args);
+        audit("ship_lp_strategy", null, "ok", t0);
+        return jsonContent(plan);
+      } catch (err) {
+        audit("ship_lp_strategy", null, "rejected", t0);
+        throw err;
+      }
+    }
+  );
+
+  server.registerResource(
+    "calendar",
+    new ResourceTemplate("seasonals://calendar/{address}", { list: undefined }),
+    {
+      description: "Ethereum events for an address as an iCalendar (text/calendar) feed",
+      mimeType: "text/calendar",
+    },
+    async (uri, { address }) => {
+      const res = await bff.get<TimelineEventsResponse>(`/eth/events?address=${String(address)}`);
+      return { contents: [{ uri: uri.href, mimeType: "text/calendar", text: toIcal(res.events) }] };
+    }
   );
 
   return server;

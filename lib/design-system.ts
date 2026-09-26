@@ -247,6 +247,76 @@ export const GRADIENT_RN = {
 } as const;
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Web (desktop) — 派生 token (docs/web/ui-spec-v2.md §2, docs/web/WORKLOG.md #4-#6)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Web の CSS font stack。`FONT` は expo-font の登録名なので Web では使えない。
+ * 値は docs/design-system.jsx の DS.font と同一 (Pacifico はロゴ専用、CLAUDE.md §6)。
+ */
+export const FONT_WEB = {
+  script: "'Pacifico', cursive",
+  heading: "'Quicksand', sans-serif",
+  body: "'Quicksand', sans-serif",
+  mono: "'JetBrains Mono', 'Fira Code', monospace",
+} as const;
+
+/**
+ * 2 色の #RRGGBB を t (0..1) で線形補間する。派生 token を既存 token から
+ * 作るためのヘルパ (hex 直書きを増やさない)。
+ */
+export function mixHex(a: string, b: string, t: number): string {
+  if (t < 0 || t > 1) throw new RangeError(`t must be in [0, 1], got ${t}`);
+  const parse = (h: string): [number, number, number] => {
+    if (!/^#[0-9A-Fa-f]{6}$/.test(h)) throw new TypeError(`expected #RRGGBB, got ${h}`);
+    return [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16)) as [number, number, number];
+  };
+  const pa = parse(a);
+  const pb = parse(b);
+  return (
+    "#" +
+    pa
+      .map((v, i) => Math.round(v + ((pb[i] as number) - v) * t))
+      .map((v) => v.toString(16).padStart(2, "0").toUpperCase())
+      .join("")
+  );
+}
+
+/**
+ * Web の surface token。water shader の上に載る面は `backdrop-filter` を使わず
+ * (docs/web/water-background-spec.md: 毎フレーム再合成を避ける)、
+ * bgPrimary (vanilla) の不透明度を上げた near-opaque な面で読みやすさを担保する。
+ */
+export const SURFACE_WEB = {
+  /** Home の portal card / 中央カード (UI v2 §2: 90–95%) — bgPrimary @ 0.92 */
+  lobby: withAlpha(COLOR.bgPrimary, 0.92),
+  /** work screen の content パネル — bgPrimary @ 0.9 */
+  work: withAlpha(COLOR.bgPrimary, 0.9),
+  /** global floating nav / local toolbar — bgPrimary @ 0.85 */
+  nav: withAlpha(COLOR.bgPrimary, 0.85),
+  /** 前面の詳細カード — bgPrimary @ 0.97 */
+  detail: withAlpha(COLOR.bgPrimary, 0.97),
+  /** 行 hover / 選択中セル — sodaLight @ 0.6 */
+  hover: withAlpha(COLOR.sodaLight, 0.6),
+  /** 1px の半透明白 border — textOnColor (#FFFFFF) @ 0.7 */
+  border: withAlpha(COLOR.textOnColor, 0.7),
+  /** 詳細カード背後の薄い scrim — textPrimary @ 0.08 */
+  scrim: withAlpha(COLOR.textPrimary, 0.08),
+  /**
+   * WebGL 非対応 / shader compile 失敗時の page 背景。
+   * water spec の #CDEEE3 相当を sodaLight → melonLight の 45% 補間で派生。
+   */
+  waterFallback: mixHex(COLOR.sodaLight, COLOR.melonLight, 0.45),
+} as const;
+
+/** Web の影 (soft / wide、UI v2 §2)。色は COLOR.shadow / shadowStrong 由来。 */
+export const SHADOW_WEB = {
+  soft: `0 12px 40px ${COLOR.shadowStrong}, 0 2px 8px ${COLOR.shadow}`,
+  lift: `0 18px 48px ${COLOR.shadowStrong}, 0 4px 12px ${COLOR.shadow}`,
+  inset: `inset 0 0 0 1px ${COLOR.border}`,
+} as const;
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Aggregate `DS` (互換性のため、design-system.jsx の DS object と同形)
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -267,6 +337,9 @@ export const DS = {
   glassRN: GLASS_RN,
   gradient: GRADIENT,
   gradientRN: GRADIENT_RN,
+  fontWeb: FONT_WEB,
+  surfaceWeb: SURFACE_WEB,
+  shadowWeb: SHADOW_WEB,
 } as const;
 
 // ─────────────────────────────────────────────────────────────────────────────

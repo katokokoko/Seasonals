@@ -1,0 +1,34 @@
+{
+  "name": "@seasonals/web",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Seasonals desktop Web — Home lobby / Explore / Calendar workspace (docs/web/ui-spec-v2.md)",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "e2e": "node e2e/run.mjs"
+  },
+  "dependencies": {
+    "@tanstack/react-query": "^5.101.4",
+    "@workspace/lib": "workspace:*",
+    "react": "19.2.3",
+    "react-dom": "19.2.3",
+    "react-router": "^7.18.4",
+    "zustand": "^4.5.5"
+  },
+  "devDependencies": {
+    "@testing-library/react": "^16.3.3",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "@vitejs/plugin-react": "^5.2.0",
+    "jsdom": "^26.1.0",
+    "playwright-core": "^1.63.0",
+    "typescript": "^6.0.3",
+    "vite": "^7.3.6",
+    "vitest": "^3.2.7"
+  }
+}
