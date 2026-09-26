@@ -89,7 +89,10 @@ export function summarizeQuote(q: QuoteResponse, amountIn: string, approvalRequi
     amountOut: amountOut && /^[0-9]+$/.test(amountOut) ? amountOut : null,
     approvalRequired,
     permitSignatureRequired: q.permitData != null,
-    gasFeeUsd: typeof q.quote.gasFeeUSD === "string" ? q.quote.gasFeeUSD : null,
+    // API は 18 桁程度の decimal string を返す → 8 桁 USD string に切り捨て (CLAUDE.md §3、Number にしない)
+    gasFeeUsd: typeof q.quote.gasFeeUSD === "string" && /^[0-9]+(\.[0-9]+)?$/.test(q.quote.gasFeeUSD)
+      ? `${q.quote.gasFeeUSD.split(".")[0]}.${((q.quote.gasFeeUSD.split(".")[1] ?? "") + "00000000").slice(0, 8)}`
+      : null,
     executable: false,
     nextStep: q.routing === "CHAINED"
       ? "Multi-step route: not supported in this MVP."

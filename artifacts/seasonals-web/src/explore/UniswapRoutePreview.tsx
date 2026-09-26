@@ -9,6 +9,7 @@ import { api, ApiError } from "../services/api";
 import { useEthStatus } from "../services/queries";
 import { useActiveAddresses } from "../state/session";
 import { requestOpenWallet } from "../timeline/detailStore";
+import { fmtUsd } from "../ui/format";
 
 const USDC = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48";
 const USDE = "0x4c9EDD5852cd905f086C759E8383e09bff1E68B3";
@@ -76,7 +77,7 @@ export function UniswapRoutePreview() {
             ≈{" "}
             <strong>{q.data.amountOut ? `${formatTokenAmount(q.data.amountOut, 18, { maxFractionDigits: 2 })} USDe` : "amount unavailable"}</strong> via{" "}
             {q.data.routing}
-            {q.data.gasFeeUsd ? ` · gas ≈ $${Number(q.data.gasFeeUsd).toFixed(2)}` : ""}
+            {q.data.gasFeeUsd ? ` · gas ≈ ${fmtUsd(q.data.gasFeeUsd)}` : ""}
           </p>
           <p className="muted">
             {q.data.approvalRequired ? "Token approval needed. " : ""}

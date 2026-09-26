@@ -5,6 +5,7 @@ test("CLASSIC quote → swap path described, never executable here", () => {
   const p = summarizeQuote({ routing: "CLASSIC", requestId: "r1", quote: { output: { amount: "999941926838758711860" }, gasFeeUSD: "0.03" }, permitData: {} }, "1000000000", true);
   expect(p).toMatchObject({ routing: "CLASSIC", amountOut: "999941926838758711860", approvalRequired: true, permitSignatureRequired: true, executable: false });
   expect(p.nextStep).toMatch(/peg guard/);
+  expect(summarizeQuote({ routing: "CLASSIC", quote: { gasFeeUSD: "0.031076847874406184" } }, "1", false).gasFeeUsd).toBe("0.03107684");
 });
 
 test("UniswapX and CHAINED routes are not executable", () => {
