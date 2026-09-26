@@ -401,7 +401,7 @@ CSS では `var(--brand-<key>)` / 薄い背景は `var(--brandbg-<key>)` (@ 0.10
 
 - 用途は **装飾のみ** (行・カードの accent 線、薄い背景、monogram の地)。**文字色に使わない**。
 - status 色 (droplet / status pill) とは役割を分ける: brand = どの protocol か、status = 状態。
-- 色の提供が無い protocol (Solana 系 / Aave) は定義しない。accent 無しの中立表示にする。
+- 色の提供が無い protocol (Solana 系) は定義しない。accent 無しの中立表示にする。
 
 | key | hex | 由来 |
 |---|---|---|
@@ -411,6 +411,7 @@ CSS では `var(--brand-<key>)` / 薄い背景は `var(--brandbg-<key>)` (@ 0.10
 | `uniswap` | `#F50DB4` | Uniswap pink (CCA も同色) |
 | `oneinch` | `#000000` | 1inch tile (Aqua も同色) |
 | `ethereum` | `#62688F` | ETH diamond |
+| `aave` | `#9997FF` | Aave のロゴ (紫の円) |
 
 ### Pacifico の Web Font 配信
 - Google Fonts 経由が推奨

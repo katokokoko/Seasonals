@@ -321,7 +321,7 @@ export const SHADOW_WEB = {
  * の不透明ピクセルの最頻色を実測した値。
  * 用途は装飾 (accent 線 / 薄い背景 / monogram の地) に限り、文字色には使わない (コントラスト)。
  * status 色 (droplet / status pill) とは役割を分ける: brand = どの protocol か、status = 状態。
- * 色の提供が無い protocol (Solana 系 / Aave) は定義しない (推測で埋めない)。
+ * 色の提供が無い protocol (Solana 系) は定義しない (推測で埋めない)。
  */
 export const PROTOCOL_BRAND = {
   pendle: "#1E4480",
@@ -330,6 +330,7 @@ export const PROTOCOL_BRAND = {
   uniswap: "#F50DB4",
   oneinch: "#000000",
   ethereum: "#62688F",
+  aave: "#9997FF",
 } as const;
 
 export type ProtocolBrandKey = keyof typeof PROTOCOL_BRAND;

@@ -34,9 +34,6 @@ test("no live figures in the copy: no dollar amounts, and percentages only for S
   }
 });
 
-test("logos resolve for every protocol except Aave (no logo supplied; monogram)", () => {
-  for (const e of LEARN) {
-    if (e.id === "aave") expect(protocolLogo(e.id)).toBeNull();
-    else expect(protocolLogo(e.id)).toBeTruthy();
-  }
+test("every protocol has its logo (no monogram fallback)", () => {
+  for (const e of LEARN) expect(protocolLogo(e.id)).toBeTruthy();
 });
