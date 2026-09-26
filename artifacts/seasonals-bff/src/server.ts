@@ -4280,6 +4280,11 @@ export async function buildServer(
         reply.code(400);
         return { error: "wallet_required" };
       }
+      // /positions と同じ簡易 base58 guard (不正 address で上流を叩かない)
+      if (wallet.length < 32 || wallet.length > 44 || /\s/.test(wallet)) {
+        reply.code(400);
+        return { error: "invalid_wallet_address", wallet };
+      }
       try {
         return await buildPortfolioHoldings(wallet);
       } catch (err) {

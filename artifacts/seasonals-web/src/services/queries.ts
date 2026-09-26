@@ -6,11 +6,17 @@
  * (Calendar / Timeline / 詳細カード / Dashboard の共通 source)。
  * 部分失敗は source ごとの状態として返し、架空データで埋めない。
  */
-import { useQueries, useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useQueries, useQuery } from "@tanstack/react-query";
 import { useMemo } from "react";
 import { fromCustomEvent, fromUnifiedTimeEventDTO, mergeTimelineEvents, sortTimeline } from "@workspace/lib/derive/timeline";
-import type { TimelineEvent, TimelineEventsResponse } from "@workspace/lib/types";
-import { useActiveAddresses } from "../state/session";
+import { rangeToDays, type RangeKey } from "@workspace/lib/derive/portfolio";
+import type {
+  PortfolioHistoryResponse,
+  PortfolioHoldingsResponse,
+  TimelineEvent,
+  TimelineEventsResponse,
+} from "@workspace/lib/types";
+import { useActiveAddresses, type ActiveAddress } from "../state/session";
 import { useCustomEvents } from "../state/customEvents";
 import { api, ApiError } from "./api";
 import { shortAddress } from "../ui/format";
@@ -21,7 +27,14 @@ export const queryKeys = {
   solEvents: (a: string) => ["sol", "events", a] as const,
   menu: ["menu-listings"] as const,
   ethStatus: ["eth", "status"] as const,
+  portfolioHistory: (a: ActiveAddress, days: number) => ["portfolio", "history", a.chain, addressKey(a), days] as const,
+  portfolioHoldings: (a: ActiveAddress) => ["portfolio", "holdings", a.chain, addressKey(a)] as const,
 };
+
+/** EVM address は大小文字を区別しない (Solana の base58 は区別する) */
+function addressKey(a: Pick<ActiveAddress, "chain" | "address">): string {
+  return a.chain === "ethereum" ? a.address.toLowerCase() : a.address;
+}
 
 export interface SourceState {
   key: string;
@@ -134,4 +147,65 @@ export function useEthMenu() {
 
 export function useEthStatus() {
   return useQuery({ queryKey: queryKeys.ethStatus, queryFn: api.ethStatus, staleTime: 30_000, retry: false });
+}
+
+/** 1 address 分の portfolio query の状態 (失敗を隠さず、合算から外したことを示すため) */
+export interface PortfolioSourceResult<T> {
+  address: ActiveAddress;
+  data: T | undefined;
+  isFetching: boolean;
+  isPending: boolean;
+  error: string | null;
+}
+
+// 履歴は BFF 側も 5 分 cache + SWR (8.83)。mobile の usePortfolioHistory と同じ鮮度
+const PORTFOLIO_STALE_MS = 5 * 60_000;
+// 503 は BFF が上流失敗を返したもの (BFF 側で SWR 済み、key 未設定は直らない)。
+// 再試行するのは BFF に届かなかった時だけ
+const portfolioRetry = (n: number, e: unknown) => e instanceof ApiError && e.status === 0 && n < 1;
+
+/**
+ * 閲覧中の全 address の評価額履歴 (chain ごとに endpoint を振り分け)。
+ * range を切り替えても前の系列を出したまま取りに行く (keepPreviousData)。
+ */
+export function usePortfolioHistories(range: RangeKey): PortfolioSourceResult<PortfolioHistoryResponse>[] {
+  const active = useActiveAddresses();
+  const days = rangeToDays(range);
+  const results = useQueries({
+    queries: active.map((a) => ({
+      queryKey: queryKeys.portfolioHistory(a, days),
+      queryFn: () => api.portfolioHistory(a.chain, a.address, days),
+      staleTime: PORTFOLIO_STALE_MS,
+      placeholderData: keepPreviousData,
+      retry: portfolioRetry,
+    })),
+  });
+  return active.map((a, i) => toSourceResult(a, results[i]!));
+}
+
+/** 閲覧中の全 address の現在の保有 (Allocation donut / holdings 表) */
+export function usePortfolioHoldings(): PortfolioSourceResult<PortfolioHoldingsResponse>[] {
+  const active = useActiveAddresses();
+  const results = useQueries({
+    queries: active.map((a) => ({
+      queryKey: queryKeys.portfolioHoldings(a),
+      queryFn: () => api.portfolioHoldings(a.chain, a.address),
+      staleTime: PORTFOLIO_STALE_MS,
+      retry: portfolioRetry,
+    })),
+  });
+  return active.map((a, i) => toSourceResult(a, results[i]!));
+}
+
+function toSourceResult<T>(
+  address: ActiveAddress,
+  r: { data?: T; isFetching: boolean; isPending: boolean; isError: boolean; error: unknown }
+): PortfolioSourceResult<T> {
+  return {
+    address,
+    data: r.isError ? undefined : r.data,
+    isFetching: r.isFetching,
+    isPending: r.isPending,
+    error: r.isError ? errorText(r.error) : null,
+  };
 }

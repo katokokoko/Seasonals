@@ -3,8 +3,11 @@
  * `/api/*` は Vite dev proxy / 本番 reverse proxy で BFF へ転送される。
  * API key / RPC URL は BFF 側にしか無い。
  */
+import type { ChainId } from "@workspace/lib/config/chains";
 import type {
   MenuProduct,
+  PortfolioHistoryResponse,
+  PortfolioHoldingsResponse,
   ProtocolMenuEntry,
   TimelineEventsResponse,
   UnifiedTimeEventDTO,
@@ -55,6 +58,20 @@ export const api = {
   ethEvents: (address: string) => request<TimelineEventsResponse>(`/eth/events?address=${encodeURIComponent(address)}`),
   ethStatus: () => request<EthStatus>("/eth/status"),
   ethMenu: () => request<MenuProduct[]>("/eth/menu"),
+  /** 評価額の履歴 (Solana: /portfolio/history、Ethereum: /eth/portfolio/history、同じ応答形) */
+  portfolioHistory: (chain: ChainId, address: string, days: number) =>
+    request<PortfolioHistoryResponse>(
+      chain === "ethereum"
+        ? `/eth/portfolio/history?address=${encodeURIComponent(address)}&days=${days}`
+        : `/portfolio/history?wallet=${encodeURIComponent(address)}&days=${days}`
+    ),
+  /** 現在の保有 (category 付き、Allocation donut 用) */
+  portfolioHoldings: (chain: ChainId, address: string) =>
+    request<PortfolioHoldingsResponse>(
+      chain === "ethereum"
+        ? `/eth/portfolio/holdings?address=${encodeURIComponent(address)}`
+        : `/portfolio/holdings?wallet=${encodeURIComponent(address)}`
+    ),
   ethAave: (address: string) => request<{ positions: AavePositionView[] }>(`/eth/aave?address=${encodeURIComponent(address)}`),
   uniswapExecuteOnFork: (swapper: string, tokenIn: string, tokenOut: string, amount: string) =>
     request<{ target: "fork"; plan: UniswapSwapPlan; txs: ForkExecution["txs"] }>("/eth/uniswap/execute", {

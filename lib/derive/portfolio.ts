@@ -383,6 +383,32 @@ export function mergeHistorySeries(
 }
 
 /**
+ * 表示期間の **入出金を除いた** 増減 (USD 8-dec、符号付き) = 利回り + 価格変動。
+ *
+ *   change = (最後の評価額 − 最初の評価額) − Σ flow (2 点目以降)
+ *
+ * 入金で総額が増えたのを「儲かった」と見せないため (8.65 の flow 分解と同じ考え方)。
+ * 先頭のゼロ区間 (入金前) は mergedHistoryToPoints と同じく飛ばす。2 点未満は null。
+ */
+export function historyChangeExFlows(
+  points: MergedHistoryPoint[],
+  scope: PortfolioScope = "total"
+): string | null {
+  const deposited = scope === "deposited";
+  const value = (p: MergedHistoryPoint) =>
+    usd8ToBigInt(deposited ? p.deposited_usd : p.usd);
+  const start = points.findIndex((p) => value(p) > 0n);
+  if (start === -1 || points.length - start < 2) return null;
+  let flows = 0n;
+  for (let i = start + 1; i < points.length; i++) {
+    const p = points[i]!;
+    flows += signedUsd8ToBigInt(deposited ? p.deposited_flow_usd : p.flow_usd);
+  }
+  const change = value(points[points.length - 1]!) - value(points[start]!) - flows;
+  return bigIntToUsd8(change);
+}
+
+/**
  * 合算済み履歴 → chart の系列 (USD 建て)。**表示直前の Number 化**なので
  * §4.5 の carve-out 内。先頭のゼロ区間は落とす (8.63)。
  */

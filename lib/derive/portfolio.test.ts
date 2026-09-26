@@ -7,6 +7,7 @@ import type {
 import {
   allocationByCategory,
   chartAreaState,
+  historyChangeExFlows,
   mergeHistorySeries,
   mergedHistoryToPoints,
   rangeToDays,
@@ -195,5 +196,24 @@ describe("allocationByCategory / sumHoldingsUsd", () => {
     expect(allocationByCategory(holdings, "deposited").map((s) => s.category)).toEqual(["staking"]);
     expect(sumHoldingsUsd(holdings)).toBe("100.00000000");
     expect(sumHoldingsUsd(holdings, "deposited")).toBe("31.00000000");
+  });
+});
+
+describe("historyChangeExFlows", () => {
+  const m = (at: number, usd: string, flow = "0.00000000") => ({
+    at,
+    usd,
+    deposited_usd: usd,
+    flow_usd: flow,
+    deposited_flow_usd: flow,
+  });
+  it("excludes deposits from the change and skips the pre-funding zeros", () => {
+    const pts = [m(0, "0.00000000"), m(1, "100.00000000"), m(2, "160.00000000", "50.00000000"), m(3, "161.00000000")];
+    // 161 − 100 − 50 = 11 (利回り / 価格変動のみ)
+    expect(historyChangeExFlows(pts)).toBe("11.00000000");
+  });
+  it("can be negative and is null without two points", () => {
+    expect(historyChangeExFlows([m(0, "10.00000000"), m(1, "4.00000000", "-5.00000000")])).toBe("-1.00000000");
+    expect(historyChangeExFlows([m(0, "10.00000000")])).toBeNull();
   });
 });
