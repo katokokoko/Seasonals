@@ -9,18 +9,13 @@
  */
 import { createPublicClient, createWalletClient, http, type Hex, type PublicClient } from "viem";
 import { mainnet } from "viem/chains";
-import type { TimelineEvent } from "@workspace/lib/types";
+import type { ForkExecution, TimelineEvent } from "@workspace/lib/types";
 import { executionTarget, forkRpcUrl, sanitizeError, undiciFetch } from "./client";
 import { buildActionPlan, PlanError, type ActionPlan } from "./plans";
 import { registerUserSource, _invalidateUser } from "./events";
 import { loadJson, saveJson } from "../persistence";
 
-export interface ForkExecution {
-  target: "fork";
-  plan: ActionPlan;
-  txs: Array<{ hash: string; status: "success" | "reverted"; blockNumber: string; gasUsed: string; description: string }>;
-  executedEvent: TimelineEvent;
-}
+export type { ForkExecution };
 
 const STORE = "eth-executed-events";
 // 遅延 load: SEASONALS_DATA_DIR は index.ts の main() で設定されるため import 時には読まない

@@ -82,22 +82,29 @@ const MENU = [
 ];
 
 describe("Seasonals MCP server", () => {
-  it("tools/list に §24.9 の tools + Ethereum time layer 3 tools、prompts 2 種、resources 5 種", async () => {
+  it("tools/list に §24.9 の tools + Ethereum time layer 4 tools + rebalance proposal 6 tools、prompts 2 種、resources 5 種", async () => {
     const { client } = await connect(fakeBff({}));
     const tools = await client.listTools();
     expect(tools.tools.map((t) => t.name).sort()).toEqual([
       "build_action",
       "compare_opportunities",
       "execute_approved_action",
+      "execute_rebalance",
+      "get_holdings",
       "get_proposal",
       "list_events",
+      "list_yield_menu",
+      "preview_rebalance_step",
+      "propose_rebalance",
       "request_user_approval",
       "run_autonomous",
       "ship_lp_strategy",
       "simulate_action",
+      "wait_for_rebalance_decision",
     ]);
     const prompts = await client.listPrompts();
     expect(prompts.prompts.map((p) => p.name).sort()).toEqual([
+      "design_rebalance",
       "max_yield_search",
       "safety_first_rollover",
     ]);

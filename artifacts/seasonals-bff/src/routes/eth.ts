@@ -19,6 +19,8 @@ import { getEthMenu } from "../ethereum/menu";
 import { getMenuHoldings } from "../ethereum/holdings";
 import { getAavePositions } from "../ethereum/aave";
 import { buildAquaShipPlan, fillAquaOnFork, shipAquaOnFork, type AquaShipInput } from "../ethereum/aqua";
+import { executeProposal, getProposal, listProposals, previewProposal, previewStep, ProposalError, rejectProposal, StepSchema, submitProposal } from "../ethereum/agent-proposals";
+import type { EthProposalApprovalVia, EthProposalExecuteRequest, EthProposalPreviewRequest, EthProposalSubmitRequest } from "@workspace/lib/types";
 import { checkPeg, getChainlinkPrice, PRICE_ASSETS, type PriceAsset } from "../ethereum/pricing";
 import { assertTokenAmount, InvalidAmountError } from "@workspace/lib/utils/numeric";
 import { ethereumHistoryEngine } from "../ethereum/history";
@@ -354,6 +356,82 @@ async function ethRoutes(app: FastifyInstance): Promise<void> {
       if (e instanceof UniswapError) return reply.code(e.status >= 500 ? 502 : e.status).send({ error: "uniswap_error", message: sanitizeError(e) });
       if (e instanceof PlanError) return reply.code(e.code === "rpc_unavailable" ? 502 : 409).send({ error: e.code, message: e.message });
       throw e;
+    }
+  });
+
+  // ── Agent rebalance proposals (MCP が提案 → 人が web / chat で承認 → fork で実行) ──
+  const proposalErr = (reply: import("fastify").FastifyReply, e: unknown) => {
+    if (e instanceof ProposalError) return reply.code(e.status).send({ error: e.code, message: e.message });
+    if (e instanceof PlanError) return reply.code(planErrorStatus(e.code)).send({ error: e.code, message: e.message });
+    if (e instanceof UniswapError) return reply.code(e.status >= 500 ? 502 : e.status).send({ error: "uniswap_error", message: sanitizeError(e) });
+    return reply.code(502).send({ error: "upstream_error", message: sanitizeError(e) });
+  };
+
+  /** 提出: 各 step の未署名プランを組んで guard を通す (署名も送信もしない) */
+  app.post<{ Body: Partial<EthProposalSubmitRequest> }>("/eth/agent-proposals", async (req, reply) => {
+    try {
+      return reply.code(201).send(await submitProposal(req.body));
+    } catch (e) {
+      return proposalErr(reply, e);
+    }
+  });
+
+  /** dry run: previews + Strategy Brief だけ返す (保存しない)。Agent が brief を見て練り直すため */
+  app.post<{ Body: Partial<EthProposalSubmitRequest> }>("/eth/agent-proposals/brief", async (req, reply) => {
+    try {
+      return await previewProposal(req.body);
+    } catch (e) {
+      return proposalErr(reply, e);
+    }
+  });
+
+  /** 1 step だけの未署名プラン (Agent が金額を決める材料。swap は amountOut を返す) */
+  app.post<{ Body: Partial<EthProposalPreviewRequest> }>("/eth/agent-proposals/preview", async (req, reply) => {
+    const owner = req.body?.owner ?? "";
+    const step = StepSchema.safeParse(req.body?.step);
+    if (!isEvmAddress(owner) || !step.success) return reply.code(400).send({ error: "invalid_argument" });
+    try {
+      return await previewStep(owner, step.data, 0);
+    } catch (e) {
+      return proposalErr(reply, e);
+    }
+  });
+
+  app.get<{ Querystring: { address?: string } }>("/eth/agent-proposals", async (req, reply) => {
+    const address = req.query.address?.trim() ?? "";
+    if (!isEvmAddress(address)) return reply.code(400).send({ error: "invalid_address" });
+    return { proposals: listProposals(address) };
+  });
+
+  app.get<{ Params: { id: string } }>("/eth/agent-proposals/:id", async (req, reply) => {
+    try {
+      return getProposal(req.params.id);
+    } catch (e) {
+      return proposalErr(reply, e);
+    }
+  });
+
+  /**
+   * 人の承認後の実行 (fork のみ)。web のボタンも chat 経由の MCP も同じここに来る。
+   * approvedBy:"user" に加えて、提出時に見せた bundleHash の一致を要求する
+   */
+  app.post<{ Params: { id: string }; Body: Partial<EthProposalExecuteRequest> }>("/eth/agent-proposals/:id/execute", async (req, reply) => {
+    if (req.body?.approvedBy !== "user") return reply.code(403).send({ error: "approval_required", message: "Execution requires the user's approval in the app." });
+    const via = req.body.via;
+    const bundleHash = req.body.bundleHash;
+    if ((via !== "web" && via !== "chat") || typeof bundleHash !== "string" || !bundleHash) return reply.code(400).send({ error: "invalid_argument" });
+    try {
+      return await executeProposal(req.params.id, { bundleHash, via: via as EthProposalApprovalVia });
+    } catch (e) {
+      return proposalErr(reply, e);
+    }
+  });
+
+  app.post<{ Params: { id: string } }>("/eth/agent-proposals/:id/reject", async (req, reply) => {
+    try {
+      return rejectProposal(req.params.id);
+    } catch (e) {
+      return proposalErr(reply, e);
     }
   });
 

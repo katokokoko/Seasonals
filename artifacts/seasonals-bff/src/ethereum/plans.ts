@@ -10,7 +10,7 @@
 import { encodeFunctionData, type PublicClient } from "viem";
 import { z } from "zod";
 import { formatTokenAmount } from "@workspace/lib/utils/numeric";
-import type { TimelineEvent } from "@workspace/lib/types";
+import type { ActionPlan, TimelineEvent, TxStep } from "@workspace/lib/types";
 import { executionTarget, getEthClient, getJson, sanitizeError } from "./client";
 import { ccaAuctionAbi, erc20Abi, sUSDeAbi, withdrawalQueueAbi } from "./abis";
 import { ETHENA, LIDO, MAINNET_CHAIN_ID, PENDLE_API } from "./config";
@@ -26,6 +26,15 @@ export const TxStepSchema = z.object({
   value: z.string().regex(/^[0-9]+$/),
   description: z.string(),
 });
+const assetView = z.object({ key: z.string().min(1), value: z.string().regex(/^[0-9]+$/), decimals: z.number().int().min(0), symbol: z.string() });
+/** Strategy Brief 用の効果 (lib EthPlanEffects と同形)。Menu の plan だけが付ける */
+export const EffectsSchema = z.object({
+  in: z.array(assetView),
+  out: z.array(assetView),
+  pending: z.array(assetView).optional(),
+  availableAt: z.string().optional(),
+  approx: z.boolean().optional(),
+});
 export const ActionPlanSchema = z.object({
   eventId: z.string(),
   actionType: z.string(),
@@ -37,12 +46,15 @@ export const ActionPlanSchema = z.object({
   simulation: z.object({ ran: z.boolean(), ok: z.boolean().optional(), error: z.string().optional(), note: z.string() }),
   /** 実行前に人が知っておくべきこと (例: cooldown タイマーの再スタート、価格 guard の乖離) */
   warnings: z.array(z.string()).optional(),
+  effects: EffectsSchema.optional(),
   builtAt: z.string(),
   source: z.string(),
   broadcast: z.literal(false),
 });
-export type ActionPlan = z.infer<typeof ActionPlanSchema>;
-export type TxStep = z.infer<typeof TxStepSchema>;
+// 型は lib が canonical (web / MCP と共有、CLAUDE.md §1)。zod の出力が lib 型に収まることをここで固定する
+({}) as z.infer<typeof ActionPlanSchema> satisfies ActionPlan;
+({}) as z.infer<typeof TxStepSchema> satisfies TxStep;
+export type { ActionPlan, TxStep };
 
 export class PlanError extends Error {
   constructor(

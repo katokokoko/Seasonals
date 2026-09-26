@@ -97,7 +97,8 @@ State changes over time, so these addresses may not show the same events later.
 | Pendle / Ethena / Lido readers | `artifacts/seasonals-bff/src/ethereum/{pendle,ethena,lido}.ts` |
 | Fork execution (Anvil only, user approval required) | `artifacts/seasonals-bff/src/ethereum/execute.ts` |
 | 1inch Aqua (template validation, peg guard, ship / fill / dock, review event) | `artifacts/seasonals-bff/src/ethereum/aqua.ts` |
-| MCP tools `list_events` / `get_proposal` / `build_action` / `ship_lp_strategy` | `artifacts/seasonals-mcp-server/src/server.ts` |
+| MCP tools `list_events` / `get_proposal` / `build_action` / `ship_lp_strategy` + rebalance proposals `list_yield_menu` / `get_holdings` / `preview_rebalance_step` / `propose_rebalance` / `wait_for_rebalance_decision` / `execute_rebalance` | `artifacts/seasonals-mcp-server/src/server.ts` |
+| Agent rebalance proposals (multi-step unsigned plan, bundle hash, human approval on the web Agent page or in chat, fork-only execution) | `artifacts/seasonals-bff/src/ethereum/agent-proposals.ts`, routes `/eth/agent-proposals*` in `routes/eth.ts`, web `artifacts/seasonals-web/src/agent/ProposalInbox.tsx` |
 | Shared model (`TimelineEvent`, status derivation) | `lib/types/timeline.ts`, `lib/derive/timeline.ts` |
 | Desktop Web | `artifacts/seasonals-web/` (Home lobby, Calendar/Timeline workspace, Explore, Agent, Dashboard, Settings, WebGL water background) |
 

@@ -5,7 +5,11 @@
  */
 import type { ChainId } from "@workspace/lib/config/chains";
 import type {
+  ActionPlan,
   EarnPositionsResponse,
+  EthAgentProposal,
+  EthProposalListResponse,
+  ForkExecution,
   MenuHoldingsResponse,
   MenuProduct,
   PortfolioHistoryResponse,
@@ -15,6 +19,9 @@ import type {
   TimelineEventsResponse,
   UnifiedTimeEventDTO,
 } from "@workspace/lib/types";
+
+// unsigned plan / fork 実行結果の型は lib が canonical (BFF の zod と同形、CLAUDE.md §1)
+export type { ActionPlan, ForkExecution };
 
 export class ApiError extends Error {
   constructor(
@@ -111,24 +118,16 @@ export const api = {
     request<ForkExecution>("/eth/menu/execute", { method: "POST", body: JSON.stringify({ ...input, approvedBy: "user" }) }),
   ethBuildAction: (owner: string, eventId: string, actionType: string) =>
     request<ActionPlan>("/eth/build-action", { method: "POST", body: JSON.stringify({ owner, eventId, actionType }) }),
+  /** Agent (MCP) が提出したリバランス案。承認は人がここ (web) か chat で行う */
+  ethAgentProposals: (address: string) => request<EthProposalListResponse>(`/eth/agent-proposals?address=${encodeURIComponent(address)}`),
+  /** 承認 = fork で実行 (ユーザーがボタンで承認した時だけ)。表示した bundleHash を送り、違うものは BFF が拒否する */
+  ethExecuteAgentProposal: (id: string, bundleHash: string) =>
+    request<EthAgentProposal>(`/eth/agent-proposals/${encodeURIComponent(id)}/execute`, {
+      method: "POST",
+      body: JSON.stringify({ approvedBy: "user", via: "web", bundleHash }),
+    }),
+  ethRejectAgentProposal: (id: string) => request<EthAgentProposal>(`/eth/agent-proposals/${encodeURIComponent(id)}/reject`, { method: "POST" }),
 };
-
-/** BFF src/ethereum/plans.ts ActionPlanSchema と同形 (unsigned、broadcast しない) */
-export interface ActionPlan {
-  eventId: string;
-  actionType: string;
-  chainId: number;
-  owner: string;
-  target: "fork" | "mainnet";
-  summary: string;
-  steps: Array<{ kind: "approval" | "call"; to: string; data: string; value: string; description: string }>;
-  simulation: { ran: boolean; ok?: boolean; error?: string; note: string };
-  /** 実行前に知っておくべきこと (cooldown の再スタート、価格 guard の乖離など) */
-  warnings?: string[];
-  builtAt: string;
-  source: string;
-  broadcast: false;
-}
 
 /** BFF src/ethereum/menu-actions.ts MenuPlanInput と同形 (amount は人が入力した decimal string) */
 export interface MenuPlanRequest {
@@ -181,12 +180,6 @@ export interface EthStatus {
   forkReachable: boolean;
   chainId: number | null;
   latestBlock: string | null;
-}
-
-export interface ForkExecution {
-  target: "fork";
-  plan: ActionPlan;
-  txs: Array<{ hash: string; status: "success" | "reverted"; blockNumber: string; gasUsed: string; description: string }>;
 }
 
 /** BFF src/ethereum/uniswap.ts UniswapPreview と同形 (quote のみ、実行不可) */

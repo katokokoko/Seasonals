@@ -15,6 +15,7 @@ import { fmtFullDate } from "../ui/format";
 import { ProtocolBadge, brandStyle } from "../ui/ProtocolBadge";
 import { useNow } from "../ui/useNow";
 import { AquaPanel } from "./AquaPanel";
+import { ProposalInbox } from "./ProposalInbox";
 import "./agent.css";
 
 const WEEK = 7 * 86_400_000;
@@ -36,6 +37,12 @@ export default function AgentWorkspace() {
     <WorkspaceShell title="Agent" subtitle="Your seasonal companion">
       <div className="agent-grid">
         <section className="panel-block">
+          <h2>Proposals from your Agent</h2>
+          <p className="muted small">
+            Rebalances your Agent designed over MCP. Nothing runs until you approve here (one tap) or say yes in the chat; either way it executes only on
+            the local fork.
+          </p>
+          <ProposalInbox />
           <h2>What to do when these dates arrive</h2>
           <p className="muted small">
             Proposals are rule-based from on-chain and protocol data (no LLM is configured on this server). They never contain calldata; a transaction
@@ -78,9 +85,11 @@ export default function AgentWorkspace() {
         <section className="panel-block">
           <h2>Humans read the calendar. Agents read the API.</h2>
           <p className="muted small">
-            The Seasonals MCP Server serves the same events: <code>list_events</code>, <code>get_proposal</code>, <code>build_action</code> and{" "}
-            <code>ship_lp_strategy</code> (unsigned plans only) and the <code>seasonals://calendar/&#123;address&#125;</code> iCal feed. It never signs or
-            sends a transaction.
+            The Seasonals MCP Server serves the same events and menu: <code>list_events</code>, <code>get_proposal</code>, <code>build_action</code>,{" "}
+            <code>ship_lp_strategy</code>, <code>list_yield_menu</code>, <code>get_holdings</code>, <code>preview_rebalance_step</code>,{" "}
+            <code>propose_rebalance</code>, <code>wait_for_rebalance_decision</code>, <code>execute_rebalance</code> (unsigned plans; execution only
+            after your approval, only on the fork) and the <code>seasonals://calendar/&#123;address&#125;</code> iCal feed. It never signs or sends a
+            transaction.
           </p>
           <h2 className="brand-heading" style={brandStyle("aqua")}>
             <ProtocolBadge id="aqua" name="1inch Aqua" size={24} />
