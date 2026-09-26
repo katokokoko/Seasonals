@@ -149,6 +149,9 @@
   display: flex;
   gap: var(--sp-md);
   align-items: center;
+  /* brand-tint (protocol ブランド色 @ 0.10) の帯。色の無い protocol は透明 */
+  padding: var(--sp-sm);
+  border-radius: var(--r-lg);
 }
 .overline {
   margin: 0;
@@ -276,6 +279,9 @@
   object-fit: cover;
   background: var(--c-textOnColor);
   box-shadow: var(--sh-inset);
+}
+.protocol-badge.contain {
+  object-fit: contain;
 }
 .protocol-badge.monogram {
   display: inline-grid;

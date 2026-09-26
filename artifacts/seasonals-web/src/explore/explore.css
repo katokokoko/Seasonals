@@ -98,7 +98,8 @@
   border-radius: var(--r-xl);
   background: var(--c-bgPrimary);
   border: 1px solid var(--c-border);
-  box-shadow: 0 1px 0 var(--c-textOnColor) inset, 0 6px 18px var(--c-shadow);
+  /* 上辺 3px = protocol ブランド色 (brandStyle、無い protocol は透明) */
+  box-shadow: inset 0 3px 0 var(--accent, transparent), 0 1px 0 var(--c-textOnColor) inset, 0 6px 18px var(--c-shadow);
 }
 .menu-item-top {
   display: grid;

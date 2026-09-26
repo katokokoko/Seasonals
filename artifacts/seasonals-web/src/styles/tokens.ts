@@ -8,6 +8,7 @@ import {
   COLOR,
   FONT_SIZE,
   FONT_WEB,
+  PROTOCOL_BRAND,
   RADIUS,
   SHADOW_WEB,
   SPACE,
@@ -40,6 +41,12 @@ export function buildTokenCss(): string {
   put("r", RADIUS, "px");
   put("w", WEIGHT);
   put("st", STATUS_COLOR);
+  // protocol ブランド色 (装飾のみ、文字色に使わない) と薄い背景
+  put("brand", PROTOCOL_BRAND);
+  put(
+    "brandbg",
+    Object.fromEntries(Object.entries(PROTOCOL_BRAND).map(([k, v]) => [k, withAlpha(v, 0.1)]))
+  );
   // status の薄い背景 (pill)
   put(
     "stbg",

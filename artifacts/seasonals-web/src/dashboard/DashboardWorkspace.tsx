@@ -10,6 +10,7 @@ import { useDetail } from "../timeline/detailStore";
 import { StatusBadge } from "../timeline/StatusBadge";
 import { statusText } from "../timeline/labels";
 import { fmtAmount, fmtFullDate, fmtUsd } from "../ui/format";
+import { ProtocolBadge } from "../ui/ProtocolBadge";
 import { useTimeline } from "../services/queries";
 import { WorkspaceShell } from "../shell/WorkspaceShell";
 import { requestOpenWallet } from "../timeline/detailStore";
@@ -77,7 +78,12 @@ export default function DashboardWorkspace() {
                   const st = deriveTimelineStatus(e, now);
                   return (
                     <tr key={e.id}>
-                      <td>{e.protocolName}</td>
+                      <td>
+                        <span className="brand-inline">
+                          <ProtocolBadge id={e.protocol} name={e.protocolName} size={18} />
+                          {e.protocolName}
+                        </span>
+                      </td>
                       <td>
                         <button type="button" className="btn-link" onClick={(ev) => open({ kind: "event", eventId: e.id }, ev.currentTarget)}>
                           {e.asset ?? e.title}

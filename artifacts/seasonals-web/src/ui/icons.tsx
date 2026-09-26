@@ -145,15 +145,9 @@ export const IconX = (p: P) => (
   </Svg>
 );
 
-/** Chain marks — 単色の簡略 glyph (商標ロゴの再現ではない) */
+/** Solana の chain mark — 単色の簡略 glyph (商標ロゴの再現ではない)。Ethereum は ChainIcon で公式ロゴを使う */
 export const IconSolana = (p: P) => (
   <Svg {...p} strokeWidth={2.2}>
     <path d="M7.5 4.5H21l-3.5 4H4zM4 10h13.5l3.5 4H7.5zM7.5 15.5H21l-3.5 4H4z" fill="currentColor" stroke="none" />
-  </Svg>
-);
-export const IconEthereum = (p: P) => (
-  <Svg {...p}>
-    <path d="M12 2.5l6 9.7-6 3.6-6-3.6z" fill="currentColor" stroke="none" opacity={0.85} />
-    <path d="M12 17.1l6-3.6-6 8-6-8z" fill="currentColor" stroke="none" />
   </Svg>
 );

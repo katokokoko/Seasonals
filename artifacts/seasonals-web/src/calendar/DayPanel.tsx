@@ -8,6 +8,7 @@ import { shapeForKind } from "../timeline/labels";
 import { StatusBadge } from "../timeline/StatusBadge";
 import { requestOpenWallet } from "../timeline/detailStore";
 import { fmtFullDate, fmtTime, parseDayKey } from "../ui/format";
+import { ProtocolBadge, brandStyle } from "../ui/ProtocolBadge";
 
 export function DayPanel({
   day,
@@ -39,11 +40,16 @@ export function DayPanel({
             const st = displayStatus(e, deriveTimelineStatus(e, now));
             return (
               <li key={e.id}>
-                <button type="button" className="day-list-item" onClick={(ev) => onEvent(e.id, ev.currentTarget)}>
+                <button
+                  type="button"
+                  className="day-list-item brand-accent"
+                  style={brandStyle(e.protocol)}
+                  onClick={(ev) => onEvent(e.id, ev.currentTarget)}>
                   <Droplet shape={shapeForKind(e.kind, e.class)} color={STATUS_COLOR[st]} size={12} />
                   <span className="day-list-text">
                     <strong>{e.title}</strong>
-                    <span className="muted small">
+                    <span className="muted small brand-inline">
+                      <ProtocolBadge id={e.protocol} name={e.protocolName} size={16} />
                       {e.protocolName ?? "Plan"} · {e.at ? `${e.atApprox ? "≈ " : ""}${fmtTime(new Date(e.at))}` : "time unknown"}
                     </span>
                   </span>

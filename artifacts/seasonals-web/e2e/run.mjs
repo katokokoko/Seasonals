@@ -50,6 +50,7 @@ for (const vp of WIDTHS) {
   }
   check(`${vp.name} settings gear`, (await page.getByRole("link", { name: "Settings" }).getAttribute("href")) === "/settings");
   check(`${vp.name} chain icons from config`, (await page.locator(".chain-icons li").count()) === 2);
+  check(`${vp.name} Ethereum chain icon is the brand logo`, (await page.locator(".chain-icons li[aria-label='Ethereum'] img.chain-logo").count()) === 1);
 
   // backdrop-filter budget (≤ 2 persistent; 実装は 0)
   const blurCount = await page.evaluate(() =>
@@ -118,6 +119,19 @@ for (const vp of WIDTHS) {
     await page.screenshot({ path: `.screenshots/${name}-${vp.name}.png` });
   }
   check(`${vp.name} no page errors`, page.errors.length === 0, page.errors.join(" | "));
+  await page.close();
+}
+
+// protocol ロゴ: 公開 mainnet address を watch → Pendle 行の badge が monogram でなく img
+{
+  const page = await newPage(WIDTHS[0]);
+  const watchlist = [{ chain: "ethereum", address: "0x1121aFF29666B91181568264Ab0F2Bc58Bf90a11" }];
+  await page.addInitScript((v) => localStorage.setItem("seasonals-web-session-v2", v), JSON.stringify({ state: { watchlist }, version: 0 }));
+  await page.goto(BASE + "/calendar?view=timeline", { waitUntil: "networkidle" });
+  await page.locator(".tl-row").first().waitFor({ timeout: 30_000 }).catch(() => {});
+  const pendleRow = page.locator(".tl-row", { hasText: "Pendle" }).first();
+  const badge = await pendleRow.locator(".protocol-badge").first().evaluate((el) => ({ tag: el.tagName, w: el.getBoundingClientRect().width })).catch(() => null);
+  check("Pendle row shows the Pendle logo", badge?.tag === "IMG" && badge.w > 0 && badge.w <= 24, JSON.stringify(badge));
   await page.close();
 }
 

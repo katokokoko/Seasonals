@@ -316,6 +316,24 @@ export const SHADOW_WEB = {
   inset: `inset 0 0 0 1px ${COLOR.border}`,
 } as const;
 
+/**
+ * Protocol / chain のブランド色 (Web)。各社公式ロゴ (artifacts/seasonals-web/src/assets/brands/)
+ * の不透明ピクセルの最頻色を実測した値。
+ * 用途は装飾 (accent 線 / 薄い背景 / monogram の地) に限り、文字色には使わない (コントラスト)。
+ * status 色 (droplet / status pill) とは役割を分ける: brand = どの protocol か、status = 状態。
+ * 色の提供が無い protocol (Solana 系 / Aave) は定義しない (推測で埋めない)。
+ */
+export const PROTOCOL_BRAND = {
+  pendle: "#1E4480",
+  lido: "#2E72FF",
+  ethena: "#16181D",
+  uniswap: "#F50DB4",
+  oneinch: "#000000",
+  ethereum: "#62688F",
+} as const;
+
+export type ProtocolBrandKey = keyof typeof PROTOCOL_BRAND;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Aggregate `DS` (互換性のため、design-system.jsx の DS object と同形)
 // ─────────────────────────────────────────────────────────────────────────────

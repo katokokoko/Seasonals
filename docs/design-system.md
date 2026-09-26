@@ -394,6 +394,24 @@ import { BlurView } from "expo-blur";
 | `SURFACE_WEB.waterFallback` | `mixHex(sodaLight, melonLight, 0.45)` | WebGL 非対応時の page 背景 |
 | `SHADOW_WEB.soft / lift` | `shadowStrong` + `shadow` | soft / wide な影 |
 
+### Protocol ブランド色 (`PROTOCOL_BRAND`、Web)
+
+公式ロゴ (`artifacts/seasonals-web/src/assets/brands/`) の不透明ピクセルの最頻色を実測した値。
+CSS では `var(--brand-<key>)` / 薄い背景は `var(--brandbg-<key>)` (@ 0.10)。
+
+- 用途は **装飾のみ** (行・カードの accent 線、薄い背景、monogram の地)。**文字色に使わない**。
+- status 色 (droplet / status pill) とは役割を分ける: brand = どの protocol か、status = 状態。
+- 色の提供が無い protocol (Solana 系 / Aave) は定義しない。accent 無しの中立表示にする。
+
+| key | hex | 由来 |
+|---|---|---|
+| `pendle` | `#1E4480` | Pendle の紺 |
+| `lido` | `#2E72FF` | Lido drop の青 |
+| `ethena` | `#16181D` | Ethena coin の黒 |
+| `uniswap` | `#F50DB4` | Uniswap pink (CCA も同色) |
+| `oneinch` | `#000000` | 1inch tile (Aqua も同色) |
+| `ethereum` | `#62688F` | ETH diamond |
+
 ### Pacifico の Web Font 配信
 - Google Fonts 経由が推奨
 - Expo: `expo-font` で読み込み、`Pacifico_400Regular` を `@expo-google-fonts/pacifico` から import

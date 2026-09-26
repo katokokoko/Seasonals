@@ -10,6 +10,7 @@ import { useEthStatus } from "../services/queries";
 import { useActiveAddresses } from "../state/session";
 import { requestOpenWallet } from "../timeline/detailStore";
 import { fmtUsd } from "../ui/format";
+import { ProtocolBadge, brandStyle } from "../ui/ProtocolBadge";
 
 const USDC = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48";
 const USDE = "0x4c9EDD5852cd905f086C759E8383e09bff1E68B3";
@@ -57,7 +58,8 @@ export function UniswapRoutePreview() {
   }
   return (
     <form className="route-preview" onSubmit={submit}>
-      <label className="small" htmlFor={id}>
+      <label className="small brand-heading" htmlFor={id} style={brandStyle("uniswap")}>
+        <ProtocolBadge id="uniswap" name="Uniswap" size={20} />
         Get USDe from USDC first (Uniswap route preview)
       </label>
       <div className="input-row">
