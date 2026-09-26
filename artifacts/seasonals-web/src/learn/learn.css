@@ -1,0 +1,134 @@
+/* Learn — 大きめのカードで読むプロトコル解説。色は token のみ (CLAUDE.md §6) */
+.learn-page {
+  max-width: 1440px;
+  margin: 0 auto var(--sp-xl);
+  padding: var(--sp-xl) 48px;
+  background: var(--s-work);
+  border: 1px solid var(--s-border);
+  border-radius: 32px;
+  box-shadow: var(--sh-soft);
+}
+.learn-header {
+  padding-bottom: var(--sp-lg);
+  border-bottom: 3px double var(--c-sodaText);
+}
+.learn-kicker {
+  margin: 0;
+  font-size: var(--fs-overline);
+  font-weight: var(--w-bold);
+  letter-spacing: 0.24em;
+  text-transform: uppercase;
+  color: var(--c-sodaText);
+}
+.learn-title {
+  margin: 0;
+  font-size: var(--fs-displayLG);
+  font-weight: var(--w-bold);
+  line-height: 1.05;
+  color: var(--c-textPrimary);
+}
+.learn-sub {
+  margin: var(--sp-xs) 0 0;
+  color: var(--c-textSubtitle);
+  font-size: var(--fs-bodyLG);
+}
+
+/* 1280px 以上は 2 列、それ未満は 1 列 */
+.learn-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: var(--sp-xl);
+  margin-top: var(--sp-xl);
+}
+@media (min-width: 1280px) {
+  .learn-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@media (max-width: 1439px) {
+  .learn-page {
+    padding: var(--sp-lg) var(--sp-xl);
+  }
+}
+
+.learn-card {
+  display: grid;
+  align-content: start;
+  gap: var(--sp-md);
+  padding: var(--sp-xl);
+  border-radius: var(--r-xl);
+  background: var(--c-bgPrimary);
+  border: 1px solid var(--c-border);
+  /* 上辺 4px = protocol ブランド色 (brandStyle、無い protocol は透明) */
+  box-shadow: inset 0 4px 0 var(--accent, transparent), 0 1px 0 var(--c-textOnColor) inset, 0 8px 24px var(--c-shadow);
+  scroll-margin-top: 120px; /* 浮遊ナビの下に隠れない */
+}
+.learn-card-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-lg);
+}
+.learn-card-head h2 {
+  width: fit-content; /* deep link で focus した時の枠を文字幅に合わせる */
+  margin: 0;
+  font-size: var(--fs-displaySM);
+  font-weight: var(--w-bold);
+  color: var(--c-textPrimary);
+}
+.learn-card-head h2:focus-visible {
+  outline: none;
+  box-shadow: var(--focus-ring);
+  border-radius: var(--r-sm);
+}
+.learn-tagline {
+  margin: 4px 0 0;
+  color: var(--c-textSubtitle);
+  font-size: var(--fs-bodyLG);
+}
+.learn-section h3 {
+  margin: 0 0 var(--sp-xs);
+  font-size: var(--fs-overline);
+  font-weight: var(--w-bold);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--c-sodaText);
+}
+.learn-section p,
+.learn-list {
+  margin: 0;
+  max-width: 68ch;
+  font-size: var(--fs-body);
+  line-height: 1.6;
+  color: var(--c-textPrimary);
+}
+.learn-list {
+  padding-left: 1.25em;
+  display: grid;
+  gap: 4px;
+}
+.learn-card-foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-sm);
+  padding-top: var(--sp-md);
+  border-top: 1px dashed var(--c-borderStrong);
+}
+.learn-links {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-md);
+}
+.learn-links a:not(.btn) {
+  font-weight: var(--w-semibold);
+  color: var(--c-sodaText);
+  text-decoration: none;
+}
+.learn-links a:not(.btn):hover {
+  text-decoration: underline;
+}
+.learn-disclaimer {
+  margin: var(--sp-xl) 0 0;
+  text-align: center;
+}
