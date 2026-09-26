@@ -166,7 +166,7 @@ for (const vp of WIDTHS) {
   const heldShown = await page.locator(".menu-item .menu-holding").count();
   check("Deposited only narrows the menu to held products", shown > 0 && shown < all && heldShown === shown, `all=${all} shown=${shown} held=${heldShown}`);
   const card = page.locator(".menu-item", { hasText: "sUSDe" }).first();
-  await card.getByRole("button", { name: "Stake USDe" }).click();
+  await card.getByRole("button", { name: "Deposit" }).click();
   await card.getByLabel("Amount").fill("1");
   await card.getByRole("button", { name: "Build plan" }).click();
   const planOrError = await card.locator(".plan-steps, .error").first().waitFor({ timeout: 60_000 }).then(() => card.locator(".plan-steps, .error").first().innerText()).catch((e) => String(e));

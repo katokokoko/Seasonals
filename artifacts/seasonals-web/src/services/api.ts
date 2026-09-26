@@ -8,6 +8,7 @@ import type {
   MenuHoldingsResponse,
   MenuProduct,
   ProtocolMenuEntry,
+  TokenAmountView,
   TimelineEventsResponse,
   UnifiedTimeEventDTO,
 } from "@workspace/lib/types";
@@ -81,7 +82,13 @@ export const api = {
   ethExecuteOnFork: (owner: string, eventId: string, actionType: string) =>
     request<ForkExecution>("/eth/execute", { method: "POST", body: JSON.stringify({ owner, eventId, actionType, approvedBy: "user" }) }),
   /** Menu の deposit / withdraw: 未署名プラン (送信しない) */
-  ethMenuPlan: (input: MenuPlanRequest) => request<ActionPlan>("/eth/menu/plan", { method: "POST", body: JSON.stringify(input) }),
+  /** Pendle 売買パネル用の文脈 (払う / 受け取るトークンと残高、満期、オラクル準備) */
+  ethMenuContext: (address: string, productId: string, action: "deposit" | "withdraw") =>
+    request<PendleTradeContext>(
+      `/eth/menu/context?address=${encodeURIComponent(address)}&productId=${encodeURIComponent(productId)}&action=${action}`
+    ),
+  /** state: "fork" = fork の状態で確かめる (fork 上の swap の続きなど) */
+  ethMenuPlan: (input: MenuPlanRequest & { state?: "fork" }) => request<ActionPlan>("/eth/menu/plan", { method: "POST", body: JSON.stringify(input) }),
   /** Menu の deposit / withdraw を fork で実行 (ユーザーがボタンで承認した時だけ) */
   ethMenuExecuteOnFork: (input: MenuPlanRequest) =>
     request<ForkExecution>("/eth/menu/execute", { method: "POST", body: JSON.stringify({ ...input, approvedBy: "user" }) }),
@@ -113,6 +120,17 @@ export interface MenuPlanRequest {
   action: "deposit" | "withdraw";
   amount: string;
   token?: string;
+}
+
+/** BFF GET /eth/menu/context と同形 */
+export interface PendleTradeContext {
+  oracleReady: boolean;
+  matured: boolean;
+  maturity: string;
+  /** 買う時に払う / 売る時に受け取るトークン (残高付き) */
+  token: TokenAmountView;
+  /** PT / YT 自体 (残高付き) */
+  pyToken: TokenAmountView;
 }
 
 /** BFF src/ethereum/proposals.ts ProposalSchema と同形 */

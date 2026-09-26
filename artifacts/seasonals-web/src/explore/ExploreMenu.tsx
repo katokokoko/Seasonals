@@ -11,8 +11,7 @@ import { requestOpenWallet } from "../timeline/detailStore";
 import { ethHoldingText, solHoldingText } from "./holdingText";
 import { MenuActionPanel, actionLabel, menuActionable, type MenuAction } from "./MenuActionPanel";
 import { useActiveAddresses } from "../state/session";
-import { fmtFullDate, fmtMetric } from "../ui/format";
-import { UniswapRoutePreview } from "./UniswapRoutePreview";
+import { fmtDate, fmtMetric } from "../ui/format";
 import { ChainIcon } from "../ui/ChainIcon";
 import { fmtCompactUsd, fmtRatio } from "../ui/format";
 import { ProtocolBadge, brandStyle } from "../ui/ProtocolBadge";
@@ -245,7 +244,6 @@ export interface EthActionContext {
 }
 
 export function EthMenuCard({ product, holding, ctx }: { product: MenuProduct; holding?: MenuHolding[]; ctx?: EthActionContext }) {
-  const [open, setOpen] = useState(false);
   const [panel, setPanel] = useState<MenuAction | null>(null);
   const canAct = Boolean(ctx) && menuActionable(product);
   const held = Boolean(holding?.some((h) => h.amounts.length > 0));
@@ -278,7 +276,7 @@ export function EthMenuCard({ product, holding, ctx }: { product: MenuProduct; h
         {product.maturity && (
           <div>
             <dt>Maturity</dt>
-            <dd>{fmtFullDate(new Date(product.maturity))}</dd>
+            <dd>{fmtDate(new Date(product.maturity))}</dd>
           </div>
         )}
         {product.facts.map((f) => (
@@ -296,43 +294,34 @@ export function EthMenuCard({ product, holding, ctx }: { product: MenuProduct; h
         ) : (
           <span className="ticket ticket-warn">Rate unavailable</span>
         )}
-        <span className="menu-actions">
-          {product.url && (
-            <a className="btn btn-quiet" href={product.url} target="_blank" rel="noreferrer">
-              Open {product.protocolName} ↗
-            </a>
-          )}
-          {product.protocolId === "ethena" && (
-            <button type="button" className="btn btn-quiet" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
-              {open ? "Hide route" : "Route from USDC"}
-            </button>
-          )}
-        </span>
       </div>
-      {canAct && !panel && (
-        <div className="menu-item-cta">
-          <button type="button" className="btn btn-primary" onClick={() => setPanel("deposit")}>
-            {actionLabel(product, "deposit")}
-          </button>
-          <button
-            type="button"
-            className="btn"
-            onClick={() => setPanel("withdraw")}
-            disabled={!held}
-            title={held ? undefined : "Nothing held at the watched addresses"}
-          >
-            {actionLabel(product, "withdraw")}
-          </button>
-        </div>
-      )}
       {canAct && panel && ctx && (
         <MenuActionPanel key={panel} product={product} action={panel} addresses={ctx.addresses} byAddress={ctx.byAddress} onClose={() => setPanel(null)} />
       )}
-      {open && (
-        <div className="menu-details">
-          <UniswapRoutePreview />
-        </div>
-      )}
+      {/* 最下段: 左に Deposit / Withdraw、右下にプロトコルのサイトへのリンク (小さめ) */}
+      <div className="menu-item-bottom">
+        {canAct && !panel && (
+          <span className="menu-item-cta">
+            <button type="button" className="btn btn-primary" onClick={() => setPanel("deposit")}>
+              {actionLabel("deposit")}
+            </button>
+            <button
+              type="button"
+              className="btn"
+              onClick={() => setPanel("withdraw")}
+              disabled={!held}
+              title={held ? undefined : "Nothing held at the watched addresses"}
+            >
+              {actionLabel("withdraw")}
+            </button>
+          </span>
+        )}
+        {product.url && (
+          <a className="menu-open-link" href={product.url} target="_blank" rel="noreferrer">
+            Open {product.protocolName} ↗
+          </a>
+        )}
+      </div>
     </li>
   );
 }

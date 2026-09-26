@@ -10,8 +10,9 @@ import { ethereumRpcUrl, executionTarget, forkRpcUrl, getEthClient, sanitizeErro
 import { getPublicEvents, getUserEvents } from "../ethereum/events";
 import { buildActionPlan, PlanError } from "../ethereum/plans";
 import { buildProposal } from "../ethereum/proposals";
-import { advanceFork, executeMenuOnFork, executeOnFork, mineFork } from "../ethereum/execute";
-import { buildMenuPlan, type MenuPlanInput } from "../ethereum/menu-actions";
+import { advanceFork, buildMenuPlanOnFork, executeMenuOnFork, executeOnFork, mineFork } from "../ethereum/execute";
+import { buildMenuPlan, pendleTradeContext, type MenuPlanInput } from "../ethereum/menu-actions";
+import { pendleOracleReady } from "../ethereum/pendle-guard";
 import { ensureIndexing, indexProgress } from "../ethereum/cca";
 import { UniswapError, buildUniswapSwapPlan, executeUniswapSwapOnFork, uniswapPreview } from "../ethereum/uniswap";
 import { getEthMenu } from "../ethereum/menu";
@@ -176,12 +177,36 @@ async function ethRoutes(app: FastifyInstance): Promise<void> {
     return { owner, productId, action, amount, ...(typeof token === "string" ? { token } : {}) };
   }
 
-  /** Menu の deposit / withdraw: 未署名プランのみ (送信しない) */
-  app.post<{ Body: Partial<MenuPlanInput> }>("/eth/menu/plan", async (req, reply) => {
+  /** Pendle 売買パネル用: 払う / 受け取るトークンと残高、満期 (on-chain で読む) */
+  app.get<{ Querystring: { address?: string; productId?: string; action?: string } }>("/eth/menu/context", async (req, reply) => {
+    const { address = "", productId = "", action } = req.query;
+    if (!isEvmAddress(address) || !productId || (action !== "deposit" && action !== "withdraw")) return reply.code(400).send({ error: "invalid_argument" });
+    const client = getEthClient();
+    if (!client) return reply.code(502).send({ error: "rpc_unavailable", message: "Ethereum RPC is not configured." });
+    try {
+      const ctx = await pendleTradeContext(client as never, address as `0x${string}`, productId, action);
+      return {
+        oracleReady: await pendleOracleReady(client as never, ctx.market.address),
+        matured: ctx.matured,
+        maturity: ctx.market.expiry,
+        token: { value: ctx.token.balance.toString(), decimals: ctx.token.decimals, symbol: ctx.token.symbol },
+        pyToken: { value: ctx.pyToken.balance.toString(), decimals: ctx.pyToken.decimals, symbol: ctx.pyToken.symbol },
+      };
+    } catch (e) {
+      if (e instanceof PlanError) return reply.code(planErrorStatus(e.code)).send({ error: e.code, message: e.message });
+      return reply.code(502).send({ error: "upstream_error", message: sanitizeError(e) });
+    }
+  });
+
+  /**
+   * Menu の deposit / withdraw: 未署名プランのみ (送信しない)。
+   * state: "fork" は fork の状態で確かめる (fork 上の swap の続きなど、mainnet に無い残高を使う時)
+   */
+  app.post<{ Body: Partial<MenuPlanInput> & { state?: string } }>("/eth/menu/plan", async (req, reply) => {
     const input = menuInput(req.body);
     if (!input) return reply.code(400).send({ error: "invalid_argument" });
     try {
-      return await buildMenuPlan(input);
+      return req.body?.state === "fork" ? await buildMenuPlanOnFork(input) : await buildMenuPlan(input);
     } catch (e) {
       if (e instanceof PlanError) return reply.code(planErrorStatus(e.code)).send({ error: e.code, message: e.message });
       return reply.code(502).send({ error: "upstream_error", message: sanitizeError(e) });

@@ -20,6 +20,10 @@ export interface PendleMarket {
   yt: string;
   sy: string;
   underlyingAsset: string;
+  /** SY に入れられるトークン ("1-0x…")。Convert の入力候補 */
+  inputTokens?: string[];
+  /** SY から出せるトークン ("1-0x…")。Convert の出力候補 */
+  outputTokens?: string[];
   chainId?: number;
   details?: {
     liquidity?: number;
