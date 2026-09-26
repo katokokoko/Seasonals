@@ -10,6 +10,7 @@ import { toHumanReadable } from "@workspace/lib/utils/numeric";
 import type { MenuHoldingsResponse, MenuProduct, TokenAmountView } from "@workspace/lib/types";
 import { api, ApiError, type MenuPlanRequest } from "../services/api";
 import { PlanView, TargetBadge } from "../timeline/PlanView";
+import { UniswapRoutePreview } from "./UniswapRoutePreview";
 import { fmtAmount, shortAddress } from "../ui/format";
 
 export type MenuAction = "deposit" | "withdraw";
@@ -76,6 +77,11 @@ export function MenuActionPanel({
   const [picked, setToken] = useState(heldToken ?? choices[0]!);
   const token = choices.includes(picked) ? picked : choices[0]!;
   const [amount, setAmount] = useState("");
+  // Ethena の Deposit だけ: USDC しか無い人向けに、先に Uniswap で USDe に換える経路をパネル内に出す
+  const needsUsde = product.id === "ethereum:ethena:susde" && action === "deposit";
+  const [routeOpen, setRouteOpen] = useState(false);
+  // fork 上で swap した USDe は fork にしか無いので、続きの Deposit は fork の状態で確かめる
+  const [forkState, setForkState] = useState(false);
   const balance = pendle ? pendleUnit : balanceOf(byAddress.get(owner), product, action, token);
   // 取引できない理由 (Pendle): 満期済み / オラクル未準備。BFF でも同じ理由で拒否される (fail-closed)
   const blocked = ctx.data?.matured
@@ -89,7 +95,7 @@ export function MenuActionPanel({
       : null;
 
   const request = (): MenuPlanRequest => ({ owner, productId: product.id, action, amount: amount.trim(), ...(tokens && choices.length > 1 ? { token } : {}) });
-  const plan = useMutation({ mutationFn: () => api.ethMenuPlan(request()) });
+  const plan = useMutation({ mutationFn: () => api.ethMenuPlan({ ...request(), ...(forkState ? { state: "fork" as const } : {}) }) });
   const exec = useMutation({
     mutationFn: () => api.ethMenuExecuteOnFork(request()),
     onSuccess: () => {
@@ -173,6 +179,11 @@ export function MenuActionPanel({
               {plan.error instanceof ApiError ? plan.error.message : "Could not build the plan."}
             </p>
           )}
+          {forkState && (
+            <p className="muted small">
+              The swapped USDe exists only on the local fork, so this deposit is checked against the fork state instead of mainnet.
+            </p>
+          )}
           <div className="menu-action-buttons">
             <button type="submit" className="btn btn-primary" disabled={!valid || plan.isPending}>
               {plan.isPending ? "Building plan…" : "Build plan"}
@@ -182,7 +193,19 @@ export function MenuActionPanel({
             </button>
           </div>
         </form>
-      ) : (
+      ) : null}
+      {!plan.data && needsUsde && (
+        <div className="menu-route">
+          {routeOpen ? (
+            <UniswapRoutePreview swapper={owner} onSwapped={() => setForkState(true)} />
+          ) : (
+            <button type="button" className="btn-link small" onClick={() => setRouteOpen(true)}>
+              Only have USDC? Swap it to USDe on Uniswap first
+            </button>
+          )}
+        </div>
+      )}
+      {!plan.data ? null : (
         <>
           <PlanView plan={plan.data} exec={exec} />
           {exec.isSuccess && <p className="muted small">Balances above are read from mainnet, so they do not change after a fork run.</p>}

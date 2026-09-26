@@ -110,3 +110,13 @@ describe("Pendle PT / YT", () => {
     expect(await screen.findByText(/Redeem it 1:1 from its calendar event/)).toBeTruthy();
   });
 });
+
+test("Ethena deposit offers the USDC → USDe swap inside the panel; withdraw does not", () => {
+  renderPanel("deposit");
+  expect(screen.getByRole("button", { name: /Only have USDC\? Swap it to USDe on Uniswap first/ })).toBeTruthy();
+});
+
+test("the swap link is not shown for withdraw", () => {
+  renderPanel("withdraw");
+  expect(screen.queryByRole("button", { name: /Only have USDC/ })).toBeNull();
+});

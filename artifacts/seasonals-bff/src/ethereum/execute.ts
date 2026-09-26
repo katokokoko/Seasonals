@@ -223,3 +223,14 @@ export async function executeMenuOnFork(input: import("./menu-actions").MenuPlan
     throw new PlanError("upstream_error", sanitizeError(e));
   }
 }
+
+/**
+ * fork の状態に対して Menu のプランを作る (送信しない)。fork 上の swap で得た USDe など、
+ * mainnet には無い残高を使う続きの操作を、実行前に確かめるため
+ */
+export async function buildMenuPlanOnFork(input: import("./menu-actions").MenuPlanInput): Promise<ActionPlan> {
+  await assertForkEndpoint();
+  const { buildMenuPlan } = await import("./menu-actions");
+  const { pub } = forkClients();
+  return buildMenuPlan(input, { client: pub as unknown as PublicClient, where: "fork" });
+}

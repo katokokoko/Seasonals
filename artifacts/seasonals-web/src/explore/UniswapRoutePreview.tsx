@@ -1,6 +1,7 @@
 /**
  * Uniswap Trading API の route preview (USDC → USDe、Ethena に入る前の資産変換、v3 §3)。
  * quote → (fork 稼働時) Chainlink peg guard を通して fork 上で approve → Permit2 → swap。mainnet には送らない。
+ * Ethena の Deposit パネルに埋め込み、swap の成功を onSwapped で知らせる (続きの Deposit を fork 状態で確かめるため)。
  */
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useId, useState, type FormEvent } from "react";
@@ -15,8 +16,9 @@ import { ProtocolBadge, brandStyle } from "../ui/ProtocolBadge";
 const USDC = "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48";
 const USDE = "0x4c9EDD5852cd905f086C759E8383e09bff1E68B3";
 
-export function UniswapRoutePreview() {
-  const swapper = useActiveAddresses().find((a) => a.chain === "ethereum")?.address;
+export function UniswapRoutePreview({ swapper: fixedSwapper, onSwapped }: { swapper?: string; onSwapped?: () => void } = {}) {
+  const firstEth = useActiveAddresses().find((a) => a.chain === "ethereum")?.address;
+  const swapper = fixedSwapper ?? firstEth;
   const [amount, setAmount] = useState("1000");
   const [err, setErr] = useState<string | null>(null);
   const id = useId();
@@ -26,7 +28,10 @@ export function UniswapRoutePreview() {
   const forkReady = status.data?.executionTarget === "fork" && status.data.forkReachable;
   const exec = useMutation({
     mutationFn: () => api.uniswapExecuteOnFork(swapper!, USDC, USDE, q.data!.amountIn),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ["eth", "events"] }),
+    onSuccess: (data) => {
+      qc.invalidateQueries({ queryKey: ["eth", "events"] });
+      if (data.txs.every((t) => t.status === "success")) onSwapped?.();
+    },
   });
 
   function submit(e: FormEvent) {
@@ -60,7 +65,7 @@ export function UniswapRoutePreview() {
     <form className="route-preview" onSubmit={submit}>
       <label className="small brand-heading" htmlFor={id} style={brandStyle("uniswap")}>
         <ProtocolBadge id="uniswap" name="Uniswap" size={20} />
-        Get USDe from USDC first (Uniswap route preview)
+        Swap USDC → USDe on Uniswap
       </label>
       <div className="input-row">
         <input id={id} className="input" inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} aria-describedby={`${id}-unit`} />

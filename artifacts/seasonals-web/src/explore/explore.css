@@ -311,3 +311,8 @@
   flex-wrap: wrap;
   gap: var(--sp-sm);
 }
+/* Deposit パネル内の「USDC → USDe」経路 (Ethena のみ) */
+.menu-route {
+  padding-top: var(--sp-sm);
+  border-top: 1px dashed var(--c-borderStrong);
+}

@@ -87,7 +87,8 @@ export const api = {
     request<PendleTradeContext>(
       `/eth/menu/context?address=${encodeURIComponent(address)}&productId=${encodeURIComponent(productId)}&action=${action}`
     ),
-  ethMenuPlan: (input: MenuPlanRequest) => request<ActionPlan>("/eth/menu/plan", { method: "POST", body: JSON.stringify(input) }),
+  /** state: "fork" = fork の状態で確かめる (fork 上の swap の続きなど) */
+  ethMenuPlan: (input: MenuPlanRequest & { state?: "fork" }) => request<ActionPlan>("/eth/menu/plan", { method: "POST", body: JSON.stringify(input) }),
   /** Menu の deposit / withdraw を fork で実行 (ユーザーがボタンで承認した時だけ) */
   ethMenuExecuteOnFork: (input: MenuPlanRequest) =>
     request<ForkExecution>("/eth/menu/execute", { method: "POST", body: JSON.stringify({ ...input, approvedBy: "user" }) }),

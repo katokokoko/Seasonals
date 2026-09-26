@@ -10,7 +10,7 @@ import { ethereumRpcUrl, executionTarget, forkRpcUrl, getEthClient, sanitizeErro
 import { getPublicEvents, getUserEvents } from "../ethereum/events";
 import { buildActionPlan, PlanError } from "../ethereum/plans";
 import { buildProposal } from "../ethereum/proposals";
-import { advanceFork, executeMenuOnFork, executeOnFork, mineFork } from "../ethereum/execute";
+import { advanceFork, buildMenuPlanOnFork, executeMenuOnFork, executeOnFork, mineFork } from "../ethereum/execute";
 import { buildMenuPlan, pendleTradeContext, type MenuPlanInput } from "../ethereum/menu-actions";
 import { pendleOracleReady } from "../ethereum/pendle-guard";
 import { ensureIndexing, indexProgress } from "../ethereum/cca";
@@ -198,12 +198,15 @@ async function ethRoutes(app: FastifyInstance): Promise<void> {
     }
   });
 
-  /** Menu の deposit / withdraw: 未署名プランのみ (送信しない) */
-  app.post<{ Body: Partial<MenuPlanInput> }>("/eth/menu/plan", async (req, reply) => {
+  /**
+   * Menu の deposit / withdraw: 未署名プランのみ (送信しない)。
+   * state: "fork" は fork の状態で確かめる (fork 上の swap の続きなど、mainnet に無い残高を使う時)
+   */
+  app.post<{ Body: Partial<MenuPlanInput> & { state?: string } }>("/eth/menu/plan", async (req, reply) => {
     const input = menuInput(req.body);
     if (!input) return reply.code(400).send({ error: "invalid_argument" });
     try {
-      return await buildMenuPlan(input);
+      return req.body?.state === "fork" ? await buildMenuPlanOnFork(input) : await buildMenuPlan(input);
     } catch (e) {
       if (e instanceof PlanError) return reply.code(planErrorStatus(e.code)).send({ error: e.code, message: e.message });
       return reply.code(502).send({ error: "upstream_error", message: sanitizeError(e) });
