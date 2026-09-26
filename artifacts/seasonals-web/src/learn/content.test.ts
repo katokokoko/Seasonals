@@ -2,7 +2,7 @@ import { protocolLogo } from "../ui/ProtocolBadge";
 import { LEARN } from "./content";
 
 const text = (e: (typeof LEARN)[number]) =>
-  [e.tagline, e.whatItIs, ...e.howItWorks, ...e.strengths, ...e.risks, ...e.onYourCalendar, e.inSeasonals].join("\n");
+  [e.tagline, ...e.keyPoints, e.whatItIs, ...e.howItWorks, ...e.strengths, ...e.risks, ...e.onYourCalendar, e.inSeasonals].join("\n");
 
 test("covers the six Ethereum protocols, each with official https links and sources", () => {
   expect(LEARN.map((e) => e.id)).toEqual(["lido", "ethena", "pendle", "uniswap", "aqua", "aave"]);
@@ -36,4 +36,11 @@ test("no live figures in the copy: no dollar amounts, and percentages only for S
 
 test("every protocol has its logo (no monogram fallback)", () => {
   for (const e of LEARN) expect(protocolLogo(e.id)).toBeTruthy();
+});
+
+test("each card has exactly three short key points", () => {
+  for (const e of LEARN) {
+    expect(e.keyPoints).toHaveLength(3);
+    e.keyPoints.forEach((p) => expect(p.length).toBeLessThanOrEqual(120));
+  }
 });

@@ -12,6 +12,8 @@ export interface LearnEntry {
   id: string;
   name: string;
   tagline: string;
+  /** 一覧カードの 3 行: 何ができるか / 一番の利点 / 一番の注意点 (下の裏取り済みの文の要約だけ) */
+  keyPoints: [string, string, string];
   whatItIs: string;
   howItWorks: string[];
   strengths: string[];
@@ -28,6 +30,11 @@ export const LEARN: LearnEntry[] = [
     id: "lido",
     name: "Lido",
     tagline: "Stake ETH and keep a token you can still use.",
+    keyPoints: [
+      "Stake ETH and get stETH, which earns staking rewards.",
+      "Your staked ETH stays usable as a token.",
+      "Withdrawals wait in a queue, usually 1\u20135 days.",
+    ],
     whatItIs:
       "Lido stakes your ETH to help secure Ethereum and gives you stETH in return. stETH stands for the ETH you staked plus the rewards it earns, so you can hold or use it instead of locking your ETH away.",
     howItWorks: [
@@ -65,6 +72,11 @@ export const LEARN: LearnEntry[] = [
     id: "ethena",
     name: "Ethena",
     tagline: "A synthetic dollar (USDe) and a staked version that earns rewards (sUSDe).",
+    keyPoints: [
+      "Stake the USDe synthetic dollar to get sUSDe, which earns rewards.",
+      "Rewards come from staked ETH and hedge funding.",
+      "Unstaking needs a cooldown that Ethena can change.",
+    ],
     whatItIs:
       "USDe is a synthetic dollar. Instead of being backed by cash in a bank, it is backed by crypto assets that are paired with short futures positions of about the same size, so price moves in the crypto roughly cancel out. Staking USDe gives you sUSDe, which earns rewards.",
     howItWorks: [
@@ -106,6 +118,11 @@ export const LEARN: LearnEntry[] = [
     id: "pendle",
     name: "Pendle",
     tagline: "Split a yield-bearing token into its principal (PT) and its future yield (YT).",
+    keyPoints: [
+      "Buy PT for a fixed return if held to maturity.",
+      "YT collects the yield until maturity.",
+      "Selling early gets the market price; YT is worth 0 after maturity.",
+    ],
     whatItIs:
       "Pendle takes a token that earns yield and splits it into two parts with a maturity date: a Principal Token (PT) and a Yield Token (YT). You can buy either part, which lets you lock in a fixed yield or bet on the yield going up.",
     howItWorks: [
@@ -146,6 +163,11 @@ export const LEARN: LearnEntry[] = [
     id: "uniswap",
     name: "Uniswap",
     tagline: "Swap tokens against shared liquidity, and join token auctions (CCA).",
+    keyPoints: [
+      "Swap tokens against shared liquidity pools.",
+      "Bid in token auctions where everyone pays the same price per block.",
+      "Check slippage, and check an auction's settings before bidding.",
+    ],
     whatItIs:
       "Uniswap lets you swap one token for another against pools of liquidity that other people provide, instead of matching with a single seller. It also offers Continuous Clearing Auctions (CCA), where a new token is sold over time and everyone in the same block pays the same price.",
     howItWorks: [
@@ -184,6 +206,11 @@ export const LEARN: LearnEntry[] = [
     id: "aqua",
     name: "1inch Aqua",
     tagline: "Provide liquidity while your tokens stay in your own wallet.",
+    keyPoints: [
+      "Provide liquidity without moving tokens out of your wallet.",
+      "One balance can back several strategies.",
+      "Smart contract and market risk remain; fees are not guaranteed.",
+    ],
     whatItIs:
       "Aqua is 1inch's shared liquidity layer. Instead of depositing tokens into a pool, you approve Aqua once and describe how your tokens may be traded. Your tokens stay in your wallet until a swap actually fills.",
     howItWorks: [
@@ -213,6 +240,11 @@ export const LEARN: LearnEntry[] = [
     id: "aave",
     name: "Aave",
     tagline: "Lend your tokens for interest, or borrow against them.",
+    keyPoints: [
+      "Lend tokens for interest, or borrow against them.",
+      "Borrow without selling what you hold.",
+      "If your health factor drops below 1, you can be liquidated.",
+    ],
     whatItIs:
       "Aave is a lending protocol where you keep custody through smart contracts. Suppliers deposit tokens and earn interest. Borrowers post collateral worth more than what they borrow. Aave V4 is live on Ethereum, organized into Liquidity Hubs that hold funds and Spokes that set their own rules.",
     howItWorks: [

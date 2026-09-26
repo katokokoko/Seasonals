@@ -174,21 +174,26 @@ for (const vp of WIDTHS) {
   await page.close();
 }
 
-// Learn: /learn#pendle で Pendle のカードが見え、見出しに focus。Open site は公式サイトへ
+// Learn: 横 3 枚のカード、/learn#pendle で詳細 dialog が開き見出しに focus、Esc で閉じる
+for (const vp of WIDTHS) {
+  const page = await newPage(vp);
+  await page.goto(BASE + "/learn", { waitUntil: "networkidle" });
+  const tops = await page.locator(".learn-card").evaluateAll((els) => els.slice(0, 3).map((e) => Math.round(e.getBoundingClientRect().top)));
+  check(`${vp.name} Learn shows three cards per row`, tops.length === 3 && new Set(tops).size === 1, tops.join(","));
+  await page.close();
+}
 {
   const page = await newPage(WIDTHS[0]);
   await page.goto(BASE + "/learn#pendle", { waitUntil: "networkidle" });
-  await page.locator("#pendle").waitFor({ timeout: 30_000 });
+  await page.getByRole("dialog", { name: "Pendle" }).waitFor({ timeout: 10_000 }).catch(() => {});
   await page.waitForTimeout(400);
-  const inView = await page.locator("#pendle").evaluate((el) => {
-    const r = el.getBoundingClientRect();
-    return r.top >= 0 && r.top < innerHeight;
-  });
   const focused = await page.evaluate(() => document.activeElement?.id);
-  check("Learn deep link scrolls to the card and focuses its title", inView && focused === "learn-pendle-title", `${inView} ${focused}`);
-  const cards = await page.locator(".learn-card").count();
+  check("Learn deep link opens the guide and focuses its title", focused === "learn-pendle-title", String(focused));
   const sites = await page.locator(".learn-card a", { hasText: "Open site" }).evaluateAll((as) => as.map((a) => a.getAttribute("href")));
-  check("Learn shows 6 cards, each with an https Open site link", cards === 6 && sites.length === 6 && sites.every((h) => h?.startsWith("https://")), sites.join(" "));
+  check("Learn shows 6 cards, each with an https Open site link", sites.length === 6 && sites.every((h) => h?.startsWith("https://")), sites.join(" "));
+  await page.keyboard.press("Escape");
+  await page.waitForTimeout(400);
+  check("Esc closes the Learn guide and clears the hash", (await page.getByRole("dialog").count()) === 0 && !page.url().includes("#"), page.url());
   await page.close();
 }
 
