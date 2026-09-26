@@ -2,50 +2,34 @@
  * FloatingFriends — Home の水面に浮かぶキャラクター 2 匹 (装飾、Home の時だけ mount)。
  *
  * - 水面 canvas (fixed, z0) の上、glass layer / UI の下の fixed 層に置く
- * - 泳ぐ範囲は左右の列の「上の portal card の下端 〜 下の portal card の上端」の空き水面。
- *   毎フレーム DOM から測り (card の hover の浮き上がりで跳ねないよう少し平滑化)、空きが
- *   キャラより狭い時 (縦積みのレイアウト) は出さない
- * - 動きは周期の違う sin の和でゆっくり漂う (1 周 20–40 秒、水面 spec の「15 秒未満で 1 周しない」)
- *   + 小さな上下の揺れと回転。ポインターが近づくとふわっと逃げて、また漂いに戻る
+ * - 動きは friendsMotion.ts: 空き水面 (左右の列の card の間) に浮かび上がり、ゆっくり流れて
+ *   (card の下や画面の外へ流れていってもよい)、沈むように消え、しばらくして別の所に現れる。
+ *   ポインターは避ける対象ではなく、近くで動かすと水がかき混ぜられてゆっくり押される
+ * - 上下の揺れと回転は見た目だけ (位置の計算とは別)
  * - prefers-reduced-motion では空きの中央に静止
- * - `data-water-floater` を付けて水面 shader に位置を渡し、周りの波紋と水底の影を描かせる
+ * - `data-water-floater` を付けて水面 shader に位置を渡し、波紋と水底の影を描かせる
+ *   (不透明度に合わせて波紋と影も薄くなる)
  */
 import { useEffect, useRef } from "react";
 import chara1 from "../assets/characters/chara1.webp";
 import chara2 from "../assets/characters/chara2.webp";
+import { appearance, spawn, stepFriend, type Env, type FriendState, type Pointer, type Zone } from "./friendsMotion";
 import "./floating.css";
 
-interface Friend {
-  src: string;
-  /** 左右どちらの列の空きを泳ぐか (上の card, 下の card) */
-  zone: [string, string];
-  /** 漂いの周期 (秒) と位相 */
-  tx: [number, number];
-  ty: [number, number];
-  phase: number;
-}
-
-const FRIENDS: Friend[] = [
-  { src: chara1, zone: [".portal-card.slot-agent", ".portal-card.slot-setting"], tx: [29, 41], ty: [23, 37], phase: 0.4 },
-  { src: chara2, zone: [".portal-card.slot-menu", ".portal-card.slot-dashboard"], tx: [33, 47], ty: [26, 31], phase: 2.1 },
+const SOURCES = [chara1, chara2];
+/** 空き水面 = 上の card の下端 〜 下の card の上端 (左列 / 右列) */
+const ZONES: [string, string][] = [
+  [".portal-card.slot-agent", ".portal-card.slot-setting"],
+  [".portal-card.slot-menu", ".portal-card.slot-dashboard"],
 ];
-
 const MAX_SIZE = 100;
-const MIN_SIZE = 72;
+const MIN_ZONE = 72;
 const MARGIN = 18;
-const FLEE_RADIUS = 140;
 const TAU = Math.PI * 2;
 
-interface Zone {
-  x0: number;
-  y0: number;
-  x1: number;
-  y1: number;
-}
-
-function measureZone(f: Friend): Zone | null {
-  const top = document.querySelector(f.zone[0])?.getBoundingClientRect();
-  const bottom = document.querySelector(f.zone[1])?.getBoundingClientRect();
+function measureZone([topSel, bottomSel]: [string, string]): Zone | null {
+  const top = document.querySelector(topSel)?.getBoundingClientRect();
+  const bottom = document.querySelector(bottomSel)?.getBoundingClientRect();
   if (!top || !bottom) return null;
   const zone = {
     x0: Math.min(top.left, bottom.left) + MARGIN,
@@ -53,7 +37,7 @@ function measureZone(f: Friend): Zone | null {
     y0: top.bottom + MARGIN,
     y1: bottom.top - MARGIN,
   };
-  return zone.x1 - zone.x0 >= MIN_SIZE && zone.y1 - zone.y0 >= MIN_SIZE ? zone : null;
+  return zone.x1 - zone.x0 >= MIN_ZONE && zone.y1 - zone.y0 >= MIN_ZONE ? zone : null;
 }
 
 export function FloatingFriends() {
@@ -61,72 +45,87 @@ export function FloatingFriends() {
 
   useEffect(() => {
     const reduce = window.matchMedia?.("(prefers-reduced-motion: reduce)");
-    const smooth: (Zone | null)[] = FRIENDS.map(() => null);
-    const push = FRIENDS.map(() => ({ x: 0, y: 0 }));
-    let pointer: { x: number; y: number } | null = null;
+    const states: (FriendState | null)[] = SOURCES.map(() => null);
+    let pointer: Pointer | null = null;
+    let lastPointer: { x: number; y: number; t: number } | null = null;
     let raf = 0;
     let last = performance.now();
     const t0 = last;
 
     const onPointer = (e: PointerEvent) => {
-      pointer = { x: e.clientX, y: e.clientY };
+      const now = performance.now();
+      if (lastPointer) {
+        const dt = Math.max((now - lastPointer.t) / 1000, 1 / 240);
+        const vx = (e.clientX - lastPointer.x) / dt;
+        const vy = (e.clientY - lastPointer.y) / dt;
+        // 速度は平滑化 (1 回の大きな跳びで強く押さない)
+        pointer = { x: e.clientX, y: e.clientY, vx: (pointer?.vx ?? 0) * 0.7 + vx * 0.3, vy: (pointer?.vy ?? 0) * 0.7 + vy * 0.3 };
+      }
+      lastPointer = { x: e.clientX, y: e.clientY, t: now };
     };
     const onLeave = () => {
       pointer = null;
+      lastPointer = null;
     };
 
     const frame = (now: number) => {
       const dt = Math.min((now - last) / 1000, 0.1);
       last = now;
+      const t = (now - t0) / 1000;
+      const zones = ZONES.map(measureZone);
+      const open = zones.filter((z): z is Zone => z !== null);
+      const size = open.length
+        ? Math.round(Math.min(MAX_SIZE, ...open.map((z) => Math.min((z.x1 - z.x0) * 0.38, (z.y1 - z.y0) * 0.42))))
+        : MAX_SIZE;
       const still = reduce?.matches ?? false;
-      const t = still ? 0 : (now - t0) / 1000;
-      FRIENDS.forEach((f, i) => {
+      // ポインターが止まっていれば速度を抜く
+      if (pointer && lastPointer && now - lastPointer.t > 80) pointer = { ...pointer, vx: pointer.vx * 0.8, vy: pointer.vy * 0.8 };
+
+      SOURCES.forEach((_, i) => {
         const el = refs.current[i];
         if (!el) return;
-        const zone = measureZone(f);
-        if (!zone) {
-          el.classList.remove("is-ready");
-          smooth[i] = null;
-          return;
-        }
-        // card の hover の浮き上がり等で範囲が跳ねないよう平滑化
-        const prev = smooth[i];
-        const k = prev ? 1 - Math.exp(-dt / 0.3) : 1;
-        const z = (smooth[i] = prev
-          ? { x0: prev.x0 + (zone.x0 - prev.x0) * k, x1: prev.x1 + (zone.x1 - prev.x1) * k, y0: prev.y0 + (zone.y0 - prev.y0) * k, y1: prev.y1 + (zone.y1 - prev.y1) * k }
-          : zone);
-        const size = Math.round(Math.min(MAX_SIZE, (z.x1 - z.x0) * 0.38, (z.y1 - z.y0) * 0.42));
-        const ax = Math.max(0, (z.x1 - z.x0 - size) / 2);
-        const ay = Math.max(0, (z.y1 - z.y0 - size) / 2);
-        const cx = (z.x0 + z.x1) / 2;
-        const cy = (z.y0 + z.y1) / 2;
-        const p = f.phase;
-        let x = cx + ax * (0.62 * Math.sin((TAU * t) / f.tx[0] + p) + 0.38 * Math.sin((TAU * t) / f.tx[1] + p * 1.7));
-        let y = cy + ay * (0.6 * Math.sin((TAU * t) / f.ty[0] + p * 0.6) + 0.4 * Math.sin((TAU * t) / f.ty[1] + p * 2.3));
-        y += still ? 0 : 4 * Math.sin((TAU * t) / 5.2 + p);
-        const rot = still ? 0 : 5 * Math.sin((TAU * t) / 17 + p * 1.3);
-
-        // ポインターが近いとふわっと逃げる (減衰付きで漂いに戻る)
-        const target = { x: 0, y: 0 };
-        if (pointer && !still) {
-          const dx = x + push[i]!.x - pointer.x;
-          const dy = y + push[i]!.y - pointer.y;
-          const d = Math.hypot(dx, dy);
-          if (d < FLEE_RADIUS && d > 0.001) {
-            const s = ((FLEE_RADIUS - d) / FLEE_RADIUS) * 70;
-            target.x = (dx / d) * s;
-            target.y = (dy / d) * s;
+        let x: number;
+        let y: number;
+        let opacity: number;
+        let scale = 1;
+        let rot = 0;
+        if (still) {
+          const z = zones[i];
+          if (!z) {
+            el.style.opacity = "0";
+            return;
           }
+          x = (z.x0 + z.x1) / 2;
+          y = (z.y0 + z.y1) / 2;
+          opacity = 1;
+        } else {
+          const other = states[1 - i];
+          const env: Env = {
+            zones,
+            viewport: { w: window.innerWidth, h: window.innerHeight },
+            size,
+            pointer,
+            busyZone: other && other.phase !== "away" ? other.zone : null,
+            rand: Math.random,
+          };
+          // 最初の 1 回だけ、2 匹目の漂う時間をずらして同時に沈まないようにする
+          const first = states[i] ? null : spawn(env, i);
+          const cur = states[i] ?? (first && i === 1 ? { ...first, life: first.life + 12 } : first);
+          if (!cur) {
+            el.style.opacity = "0";
+            return;
+          }
+          const s = (states[i] = stepFriend(cur, dt, env));
+          const a = appearance(s);
+          x = s.x;
+          y = s.y + 3 * Math.sin((TAU * t) / 5.2 + i * 2.1); // ぷかぷか
+          rot = 5 * Math.sin((TAU * t) / 17 + i * 1.3);
+          opacity = a.opacity;
+          scale = a.scale;
         }
-        const kp = 1 - Math.exp(-dt / (target.x || target.y ? 0.35 : 1.4));
-        push[i]!.x += (target.x - push[i]!.x) * kp;
-        push[i]!.y += (target.y - push[i]!.y) * kp;
-        x = Math.min(Math.max(x + push[i]!.x, z.x0 + size / 2), z.x1 - size / 2);
-        y = Math.min(Math.max(y + push[i]!.y, z.y0 + size / 2), z.y1 - size / 2);
-
         el.style.width = `${size}px`;
-        el.style.transform = `translate(${(x - size / 2).toFixed(1)}px, ${(y - size / 2).toFixed(1)}px) rotate(${rot.toFixed(2)}deg)`;
-        el.classList.add("is-ready");
+        el.style.opacity = opacity.toFixed(3);
+        el.style.transform = `translate(${(x - size / 2).toFixed(1)}px, ${(y - size / 2).toFixed(1)}px) rotate(${rot.toFixed(2)}deg) scale(${scale.toFixed(3)})`;
       });
       raf = requestAnimationFrame(frame);
     };
@@ -143,14 +142,14 @@ export function FloatingFriends() {
 
   return (
     <div className="floating-friends" aria-hidden="true">
-      {FRIENDS.map((f, i) => (
+      {SOURCES.map((src, i) => (
         <img
-          key={f.src}
+          key={src}
           ref={(el) => {
             refs.current[i] = el;
           }}
           className="floater"
-          src={f.src}
+          src={src}
           alt=""
           draggable={false}
           data-water-floater=""

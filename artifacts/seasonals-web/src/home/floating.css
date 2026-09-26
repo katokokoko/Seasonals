@@ -17,8 +17,5 @@
   will-change: transform;
   /* 水面との接地感 (影の本体は shader が水底に落とす) */
   filter: drop-shadow(0 3px 4px var(--c-shadow));
-  transition: opacity 700ms ease;
-}
-.floater.is-ready {
-  opacity: 1;
+  /* opacity / transform は FloatingFriends が毎フレーム書く (浮かび上がり・沈み込みも含む) */
 }

@@ -350,7 +350,7 @@ async function friendsState(page) {
 for (const vp of WIDTHS) {
   const page = await newPage(vp);
   await page.goto(BASE + "/", { waitUntil: "networkidle" });
-  await page.waitForTimeout(1500);
+  await page.waitForTimeout(2600); // 浮かび上がり (1.8 秒) の後
   const a = await friendsState(page);
   check(`${vp.name} two friends float on the Home water`, a.friends.length === 2 && a.friends.every((f) => f[2] === "1"), JSON.stringify(a.friends));
   check(`${vp.name} friends stay in the open water (no card overlap)`, !a.overlap, JSON.stringify(a.friends));
