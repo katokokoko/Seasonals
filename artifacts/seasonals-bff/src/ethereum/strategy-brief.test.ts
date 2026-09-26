@@ -4,7 +4,7 @@
  */
 import type { EthProposalPreviewSlot, EthProposalStep, MenuHoldingsResponse, MenuProduct } from "@workspace/lib/types";
 import { ETH_ASSET_ADDRESS } from "@workspace/lib/config/eth-assets";
-import { blendedApy, composeStrategyBrief, renderBriefMarkdown } from "./strategy-brief";
+import { blendedApy, composeStrategyBrief, movedApy, renderBriefMarkdown } from "./strategy-brief";
 
 const OWNER = "0x28C6c06298d514Db089934071355E5743bf21d60";
 const USDC = ETH_ASSET_ADDRESS.USDC.toLowerCase();
@@ -59,21 +59,26 @@ const compose = (steps: EthProposalStep[], previews: EthProposalPreviewSlot[], h
 describe("composeStrategyBrief", () => {
   it("moves idle USDC into sUSDe: blended APY 0% → ~5%, value conserved within slippage", () => {
     const b = compose([swapStep, depositStep], [ok("Swap", swapFx), ok("Stake", depositFx)]);
-    expect(b.before.lines.map((l) => [l.label, l.usd, l.apy])).toEqual([["USDC (wallet)", "1000.00000000", 0]]);
-    expect(b.blendedApy.before).toBe(0);
+    expect(b.before.lines.map((l) => [l.label, l.usd, l.apy, l.deployed])).toEqual([["USDC (wallet)", "1000.00000000", 0, false]]);
     const after = Object.fromEntries(b.after.lines.map((l) => [l.label, l]));
     expect(after["USDC (wallet)"]!.usd).toBe("900.00000000");
     expect(after["USDe (wallet)"]!.usd).toBe("0.50000000");
-    expect(after["sUSDe (Ethena)"]).toMatchObject({ usd: "99.00000000", apy: 0.05, productId: "ethereum:ethena:susde" });
+    expect(after["sUSDe (Ethena)"]).toMatchObject({ usd: "99.00000000", apy: 0.05, productId: "ethereum:ethena:susde", deployed: true });
     // 総額: 900 + 0.5 + 99 = 999.5 (0.5% slippage 分だけ減る)
     expect(b.after.totalUsd).toBe("999.50000000");
-    expect(b.blendedApy.after).toBeCloseTo(0.05 * 99 / 999.5, 6);
-    expect(b.blendedApy.delta).toBeCloseTo(b.blendedApy.after!, 6);
+    // 動かす資金: source = USDC −$100 @0% → destination = sUSDe +$99 @5% と USDe +$0.5 @0% (idle の $900 は分母に入らない)
+    expect(b.blendedApy.moved).toMatchObject({ usd: "100.00000000", before: 0 });
+    expect(b.blendedApy.moved.after).toBeCloseTo(4.95 / 99.5, 6);
+    expect(b.blendedApy.moved.delta).toBeCloseTo(4.95 / 99.5, 6);
+    // 運用中 (DeFi) の資金: before は無し、after は sUSDe $99 @5%
+    expect(b.blendedApy.deployed).toEqual({ usdBefore: "0.00000000", usdAfter: "99.00000000", before: null, after: 0.05, delta: null });
     expect(b.unpriced).toEqual([]);
     expect(b.horizon).toEqual([]);
     expect(b.markdown).toContain("# 🍋 Lemon Ladder");
     expect(b.markdown).toContain("_Idle USDC → sUSDe_");
-    expect(b.markdown).toContain("**Blended APY:** 0.00% → 0.50% (+0.50% pts)");
+    expect(b.markdown).toContain("**This rebalance moves $100.00:** 0.00% → 4.97% (+4.97% pts)");
+    expect(b.markdown).toContain("**Deployed capital (DeFi only):** $0.00 → $99.00 · — → 5.00%");
+    expect(b.markdown).not.toContain("Unchanged:");
     expect(b.markdown).toContain("Nothing runs until you approve");
   });
 
@@ -85,7 +90,8 @@ describe("composeStrategyBrief", () => {
     expect(lp).toMatchObject({ label: "Aqua USDC/USDe LP (1inch)", usd: "80.00000000", apy: null });
     expect(lp.amounts.map((a) => `${a.value} ${a.symbol}`)).toEqual(["40000000 USDC", "40000000000000000000 USDe"]);
     expect(b.after.totalUsd).toBe("200.00000000");
-    expect(b.blendedApy.after).toBe(0);
+    expect(b.blendedApy.moved).toEqual({ usd: "80.00000000", before: 0, after: 0, delta: 0 });
+    expect(b.blendedApy.deployed).toEqual({ usdBefore: "0.00000000", usdAfter: "80.00000000", before: null, after: 0, delta: null });
     expect(b.blendedApy.excluded).toEqual(["Aqua USDC/USDe LP (1inch)"]);
     expect(b.aqua).toMatchObject({ bandBps: 50, feeBps: 5, reviewAt: "2026-10-10T00:00:00.000Z", peg: "Within 50 bps (1 bps)." });
     expect(b.horizon).toEqual([{ at: "2026-10-10T00:00:00.000Z", label: "Review the Aqua USDC/USDe strategy" }]);
@@ -108,8 +114,13 @@ describe("composeStrategyBrief", () => {
     expect(byLabel["PT-mystery (Pendle)"]).toMatchObject({ usd: null, apy: null });
     expect(b.unpriced).toEqual(["PT-mystery"]);
     expect(b.before.totalUsd).toBe("100.00000000");
-    // (90 × 14.59% + 10 × −50%) / 100 = 8.131%
-    expect(b.blendedApy.before).toBeCloseTo(0.08131, 6);
+    // (90 × 14.59% + 10 × −50%) / 100 = 8.131% (全部 DeFi なので deployed = 全 line)。step が無いので moved は空
+    expect(b.blendedApy.deployed.before).toBeCloseTo(0.08131, 6);
+    expect(b.blendedApy.deployed.usdBefore).toBe("100.00000000");
+    expect(b.blendedApy.moved).toEqual({ usd: "0.00000000", before: null, after: null, delta: null });
+    expect(b.markdown).toContain("**This rebalance moves nothing measurable.**");
+    expect(b.markdown).toContain("_Unchanged: PT-apyUSD (Pendle, 2026-11-05) $90.00 · YT-apyUSD (Pendle) $10.00 · PT-mystery (Pendle) not priced (3 positions, $100.00)._");
+    expect(b.markdown).toContain("| _(nothing changes)_ |");
     expect(b.horizon).toEqual([{ at: "2026-11-05T00:00:00.000Z", label: "PT-apyUSD matures (Pendle)" }]);
     expect(b.markdown).toContain("**Not priced (excluded from totals):** PT-mystery");
   });
@@ -127,8 +138,8 @@ describe("composeStrategyBrief", () => {
       prices,
       now,
     });
-    expect(b.before.lines[0]).toMatchObject({ label: "PT-old (Pendle, matured 2025-04-10)", apy: 0, apyLabel: "Matured", usd: "1.00000000" });
-    expect(b.blendedApy.before).toBe(0);
+    expect(b.before.lines[0]).toMatchObject({ label: "PT-old (Pendle, matured 2025-04-10)", apy: 0, apyLabel: "Matured", usd: "1.00000000", deployed: true });
+    expect(b.blendedApy.deployed.before).toBe(0);
     expect(b.horizon).toEqual([]);
   });
 
@@ -155,9 +166,12 @@ describe("composeStrategyBrief", () => {
     const h = holdings({ spendable: [], holdings: [{ productId: "ethereum:lido:steth", amounts: [{ value: "2000000000000000000", decimals: 18, symbol: "stETH" }] }] });
     const c = compose([lidoOut], [ok("Withdraw", fx)], h);
     const pending = c.after.lines.find((l) => l.pending)!;
-    expect(pending).toMatchObject({ key: "pending:ETH", label: "ETH arriving later", usd: "3000.00000000", apy: 0 });
+    expect(pending).toMatchObject({ key: "pending:ETH", label: "ETH arriving later", usd: "3000.00000000", apy: 0, deployed: false });
     expect(c.after.totalUsd).toBe("6000.00000000");
-    expect(c.blendedApy.after).toBeCloseTo(0.0225 / 2, 6);
+    // 動かす $3,000 は 2.25% (stETH) → 0% (queue で待つ)。運用中は stETH $6,000 → $3,000 で APY は 2.25% のまま
+    expect(c.blendedApy.moved).toEqual({ usd: "3000.00000000", before: 0.0225, after: 0, delta: -0.0225 });
+    expect(c.blendedApy.deployed).toEqual({ usdBefore: "6000.00000000", usdAfter: "3000.00000000", before: 0.0225, after: 0.0225, delta: 0 });
+    expect(c.markdown).toContain("**This rebalance moves $3,000.00:** 2.25% → 0.00% (-2.25% pts)");
     expect(c.horizon[0]).toMatchObject({ label: "Lido withdrawal claimable (queue, ≈ 1–5 days)", approx: true });
   });
 
@@ -175,12 +189,32 @@ describe("composeStrategyBrief", () => {
 describe("blendedApy", () => {
   it("weights by USD, counts unknown rates as 0 and lists them, ignores unpriced", () => {
     const r = blendedApy([
-      { key: "a", label: "A", amounts: [], usd: "100.00000000", share: null, apy: 0.1 },
-      { key: "b", label: "B", amounts: [], usd: "100.00000000", share: null, apy: null },
-      { key: "c", label: "C", amounts: [], usd: null, share: null, apy: 0.9 },
+      { key: "a", label: "A", amounts: [], usd: "100.00000000", share: null, apy: 0.1, deployed: true },
+      { key: "b", label: "B", amounts: [], usd: "100.00000000", share: null, apy: null, deployed: true },
+      { key: "c", label: "C", amounts: [], usd: null, share: null, apy: 0.9, deployed: true },
     ]);
-    expect(r).toEqual({ value: 0.05, excluded: ["B"] });
-    expect(blendedApy([])).toEqual({ value: null, excluded: [] });
+    expect(r).toEqual({ value: 0.05, usd: "200.00000000", excluded: ["B"] });
+    expect(blendedApy([])).toEqual({ value: null, usd: "0.00000000", excluded: [] });
+  });
+});
+
+describe("movedApy", () => {
+  const line = (key: string, usd: string | null, apy: number | null): Parameters<typeof movedApy>[0]["lines"][number] => ({ key, label: key, amounts: [], usd, share: null, apy, deployed: true });
+  it("weights sources by what leaves and destinations by what arrives, netting chained steps", () => {
+    // USDC −100 @0% → USDe +0.5 @0% (中間 token の net) + sUSDe +99 @5%、PT は変わらず
+    const before = { totalUsd: null, lines: [line("usdc", "1000.00000000", 0), line("pt", "50.00000000", 0.1)] };
+    const after = { totalUsd: null, lines: [line("usdc", "900.00000000", 0), line("usde", "0.50000000", 0), line("susde", "99.00000000", 0.05), line("pt", "50.00000000", 0.1)] };
+    const r = movedApy(before, after);
+    expect(r.usd).toBe("100.00000000");
+    expect(r.before).toBe(0);
+    expect(r.after).toBeCloseTo(4.95 / 99.5, 6);
+    expect(r.excluded).toEqual([]);
+  });
+  it("uses the before-side APY for sources and lists unknown destination rates", () => {
+    const before = { totalUsd: null, lines: [line("pt", "100.00000000", 0.1)] };
+    const after = { totalUsd: null, lines: [line("lp", "100.00000000", null)] };
+    expect(movedApy(before, after)).toEqual({ usd: "100.00000000", before: 0.1, after: 0, delta: -0.1, excluded: ["lp"] });
+    expect(movedApy(before, before)).toEqual({ usd: "0.00000000", before: null, after: null, delta: null, excluded: [] });
   });
 });
 

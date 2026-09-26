@@ -69,6 +69,8 @@ interface Line {
   approx?: boolean;
   /** Aqua LP: 2 token を 1 行で持つ */
   aqua?: { usdc: bigint; usde: bigint };
+  /** DeFi で運用中か (APY の分母に入れるか)。wallet と pending は false */
+  deployed: boolean;
 }
 
 const view = (symbol: string, decimals: number, amount: bigint): TokenAmountView => ({ value: amount.toString(), decimals, symbol });
@@ -76,25 +78,25 @@ const usdOf = (amount: bigint, decimals: number, price8: string): bigint => (amo
 const isPendle = (key: string) => key.startsWith("ethereum:pendle:");
 
 /** key → どの商品 / wallet token か (label と APY の出所) */
-function describeKey(key: string, symbol: string, products: MenuProduct[], now: Date): Pick<Line, "label" | "productId" | "apy" | "apyLabel"> {
+function describeKey(key: string, symbol: string, products: MenuProduct[], now: Date): Pick<Line, "label" | "productId" | "apy" | "apyLabel" | "deployed"> {
   const product = (id: string) => products.find((p) => p.id === id);
   if (isPendle(key)) {
     const p = product(key);
     const maturity = p?.maturity ? p.maturity.slice(0, 10) : null;
     // 満期済み PT は 1:1 で償還するだけで利回りは無い (Pendle の implied APY は見ない)
-    if (maturity && Date.parse(p!.maturity!) <= now.getTime()) return { label: `${symbol} (Pendle, matured ${maturity})`, productId: key, apy: 0, apyLabel: "Matured" };
-    return { label: `${symbol} (Pendle${maturity ? `, ${maturity}` : ""})`, productId: key, apy: p?.rate ? p.rate.value : null, ...(p?.rate ? { apyLabel: p.rate.label } : {}) };
+    if (maturity && Date.parse(p!.maturity!) <= now.getTime()) return { label: `${symbol} (Pendle, matured ${maturity})`, productId: key, apy: 0, apyLabel: "Matured", deployed: true };
+    return { label: `${symbol} (Pendle${maturity ? `, ${maturity}` : ""})`, productId: key, apy: p?.rate ? p.rate.value : null, ...(p?.rate ? { apyLabel: p.rate.label } : {}), deployed: true };
   }
   if (key === K.stETH || key === K.wstETH) {
     const p = product(LIDO_PRODUCT_ID);
-    return { label: `${symbol} (Lido)`, productId: LIDO_PRODUCT_ID, apy: p?.rate ? p.rate.value : null, ...(p?.rate ? { apyLabel: p.rate.label } : {}) };
+    return { label: `${symbol} (Lido)`, productId: LIDO_PRODUCT_ID, apy: p?.rate ? p.rate.value : null, ...(p?.rate ? { apyLabel: p.rate.label } : {}), deployed: true };
   }
   if (key === K.sUSDe) {
     const p = product(ETHENA_PRODUCT_ID);
-    return { label: `${symbol} (Ethena)`, productId: ETHENA_PRODUCT_ID, apy: p?.rate ? p.rate.value : null, ...(p?.rate ? { apyLabel: p.rate.label } : {}) };
+    return { label: `${symbol} (Ethena)`, productId: ETHENA_PRODUCT_ID, apy: p?.rate ? p.rate.value : null, ...(p?.rate ? { apyLabel: p.rate.label } : {}), deployed: true };
   }
-  if (Object.values(WALLET_KEY_BY_SYMBOL).includes(key)) return { label: `${symbol} (wallet)`, apy: 0, apyLabel: "Idle" };
-  return { label: symbol, apy: null };
+  if (Object.values(WALLET_KEY_BY_SYMBOL).includes(key)) return { label: `${symbol} (wallet)`, apy: 0, apyLabel: "Idle", deployed: false };
+  return { label: symbol, apy: null, deployed: false };
 }
 
 function beforeLines(h: MenuHoldingsResponse, products: MenuProduct[], now: Date): Line[] {
@@ -114,7 +116,7 @@ function beforeLines(h: MenuHoldingsResponse, products: MenuProduct[], now: Date
       for (const a of hold.amounts) lines.push({ key: K.sUSDe, symbol: a.symbol, decimals: a.decimals, amount: BigInt(a.value), ...describeKey(K.sUSDe, a.symbol, products, now) });
       if (hold.pending) {
         const p = hold.pending.amount;
-        lines.push({ key: `pending:${K.USDe}`, label: "USDe cooling down (Ethena)", symbol: p.symbol, decimals: p.decimals, amount: BigInt(p.value), apy: 0, pending: true });
+        lines.push({ key: `pending:${K.USDe}`, label: "USDe cooling down (Ethena)", symbol: p.symbol, decimals: p.decimals, amount: BigInt(p.value), apy: 0, pending: true, deployed: false });
       }
     } else if (isPendle(hold.productId)) {
       for (const a of hold.amounts) lines.push({ key: hold.productId, symbol: a.symbol, decimals: a.decimals, amount: BigInt(a.value), ...describeKey(hold.productId, a.symbol, products, now) });
@@ -184,7 +186,7 @@ function applyEffects(lines: Line[], steps: EthProposalStep[], previews: EthProp
       if (lp?.aqua) {
         lp.aqua.usdc += usdc;
         lp.aqua.usde += usde;
-      } else next.push({ key: AQUA_LINE_KEY, label: "Aqua USDC/USDe LP (1inch)", symbol: "LP", decimals: 0, amount: 1n, apy: null, apyLabel: "Fees (not counted)", aqua: { usdc, usde } });
+      } else next.push({ key: AQUA_LINE_KEY, label: "Aqua USDC/USDe LP (1inch)", symbol: "LP", decimals: 0, amount: 1n, apy: null, apyLabel: "Fees (not counted)", aqua: { usdc, usde }, deployed: true });
       return;
     }
     if (!slot || !slot.ok) {
@@ -199,7 +201,7 @@ function applyEffects(lines: Line[], steps: EthProposalStep[], previews: EthProp
     for (const a of e.in) sub(a, n);
     for (const a of e.out) add(a, e.approx ? { approx: true } : {});
     for (const a of e.pending ?? []) {
-      add({ ...a, key: `pending:${a.key}` }, { label: `${a.symbol} arriving later`, apy: 0, pending: true, ...(e.approx ? { approx: true } : {}) });
+      add({ ...a, key: `pending:${a.key}` }, { label: `${a.symbol} arriving later`, apy: 0, pending: true, deployed: false, ...(e.approx ? { approx: true } : {}) });
     }
   });
   return next.filter((l) => l.amount > 0n);
@@ -237,12 +239,17 @@ function valueLines(lines: Line[], prices: Map<string, string>, approxKeys: Set<
       ...(l.apyLabel ? { apyLabel: l.apyLabel } : {}),
       ...(l.approx ? { approx: true } : {}),
       ...(l.pending ? { pending: true } : {}),
+      deployed: l.deployed,
     })),
   };
 }
 
+const apyScaled = (apy: number) => BigInt(Math.round(apy * 1e8));
+const ratio = (num: bigint, den: bigint) => (den === 0n ? null : Number(num / den) / 1e8);
+const deltaOf = (before: number | null, after: number | null) => (before === null || after === null ? null : Math.round((after - before) * 1e8) / 1e8);
+
 /** USD 加重平均 APY (0..1)。APY 不明は 0 として分母に含める。価格の無い line は除外。分母 0 なら null */
-export function blendedApy(lines: EthPortfolioLine[]): { value: number | null; excluded: string[] } {
+export function blendedApy(lines: EthPortfolioLine[]): { value: number | null; usd: string; excluded: string[] } {
   let den = 0n;
   let num = 0n;
   const excluded: string[] = [];
@@ -251,9 +258,55 @@ export function blendedApy(lines: EthPortfolioLine[]): { value: number | null; e
     const usd = usd8ToBigInt(l.usd);
     den += usd;
     if (l.apy === null) excluded.push(l.label);
-    else num += usd * BigInt(Math.round(l.apy * 1e8));
+    else num += usd * apyScaled(l.apy);
   }
-  return { value: den === 0n ? null : Number(num / den) / 1e8, excluded };
+  return { value: ratio(num, den), usd: bigIntToUsd8(den), excluded };
+}
+
+/**
+ * この提案が動かす資金の APY: line ごとの USD 差分で、減る側 (source、before の APY) → 増える側 (destination、after の APY)。
+ * 連鎖 (USDC → USDe → sUSDe) は net で見るので中間の token は二重に数えない。pending は destination の 0% (利回りを手放す)
+ */
+export function movedApy(before: EthPortfolioSnapshot, after: EthPortfolioSnapshot): { usd: string; before: number | null; after: number | null; delta: number | null; excluded: string[] } {
+  const keys = [...new Set([...before.lines, ...after.lines].map((l) => l.key))];
+  let srcUsd = 0n;
+  let srcNum = 0n;
+  let dstUsd = 0n;
+  let dstNum = 0n;
+  const excluded: string[] = [];
+  for (const k of keys) {
+    const b = before.lines.find((l) => l.key === k);
+    const a = after.lines.find((l) => l.key === k);
+    if ((b && b.usd === null) || (a && a.usd === null)) continue;
+    const d = (a ? usd8ToBigInt(a.usd!) : 0n) - (b ? usd8ToBigInt(b.usd!) : 0n);
+    if (d < 0n) {
+      srcUsd += -d;
+      if (b!.apy === null) excluded.push(b!.label);
+      else srcNum += -d * apyScaled(b!.apy);
+    } else if (d > 0n) {
+      dstUsd += d;
+      if (a!.apy === null) excluded.push(a!.label);
+      else dstNum += d * apyScaled(a!.apy);
+    }
+  }
+  const from = ratio(srcNum, srcUsd);
+  const to = ratio(dstNum, dstUsd);
+  return { usd: bigIntToUsd8(srcUsd), before: from, after: to, delta: deltaOf(from, to), excluded };
+}
+
+/** 表示用: 量が変わった line と変わらない line に分ける */
+export function splitChanged(before: EthPortfolioSnapshot, after: EthPortfolioSnapshot): { changed: string[]; unchanged: EthPortfolioLine[] } {
+  const keys = [...new Set([...before.lines, ...after.lines].map((l) => l.key))];
+  const changed: string[] = [];
+  const unchanged: EthPortfolioLine[] = [];
+  for (const k of keys) {
+    const b = before.lines.find((l) => l.key === k);
+    const a = after.lines.find((l) => l.key === k);
+    const same = b && a && b.amounts.length === a.amounts.length && b.amounts.every((x, i) => x.value === a.amounts[i]!.value && x.symbol === a.amounts[i]!.symbol);
+    if (same) unchanged.push(a);
+    else changed.push(k);
+  }
+  return { changed, unchanged };
 }
 
 function horizon(after: EthPortfolioSnapshot, steps: EthProposalStep[], previews: EthProposalPreviewSlot[], h: MenuHoldingsResponse, products: MenuProduct[], now: Date) {
@@ -284,14 +337,16 @@ const amt = (a: TokenAmountView) => `${formatTokenAmount(a.value, a.decimals, { 
 const money = (usd: string | null, approx?: boolean) => (usd === null ? "not priced" : `${approx ? "≈" : ""}${formatUsd(usd)}`);
 
 export function renderBriefMarkdown(b: Omit<EthStrategyBrief, "markdown">, steps: EthProposalStep[], previews: EthProposalPreviewSlot[]): string {
-  const keys = [...new Set([...b.before.lines, ...b.after.lines].map((l) => l.key))];
-  const rows = keys.map((k) => {
+  const { changed, unchanged } = splitChanged(b.before, b.after);
+  const rows = changed.map((k) => {
     const before = b.before.lines.find((l) => l.key === k);
     const after = b.after.lines.find((l) => l.key === k);
     const l = (after ?? before)!;
     const cell = (x: EthPortfolioLine | undefined) => (x ? `${x.amounts.map(amt).join(" + ")} · ${money(x.usd, x.approx)}` : "—");
     return `| ${l.label} | ${cell(before)} | ${cell(after)} | ${l.apy === null ? (l.apyLabel ?? "—") : pct(l.apy)} |`;
   });
+  const unchangedUsd = unchanged.reduce((s, l) => s + (l.usd ? usd8ToBigInt(l.usd) : 0n), 0n);
+  const { moved, deployed } = b.blendedApy;
   const lines = [
     `# ${b.name}`,
     ...(b.tagline ? [`_${b.tagline}_`] : []),
@@ -299,10 +354,17 @@ export function renderBriefMarkdown(b: Omit<EthStrategyBrief, "markdown">, steps
     "## Before → After",
     "| Position | Before | After | APY |",
     "|---|---|---|---|",
-    ...rows,
+    ...(rows.length ? rows : ["| _(nothing changes)_ | | | |"]),
     `| **Total** | ${money(b.before.totalUsd)} | ${money(b.after.totalUsd)} | |`,
+    ...(unchanged.length
+      ? [`_Unchanged: ${unchanged.map((l) => `${l.label} ${money(l.usd, l.approx)}`).join(" · ")} (${unchanged.length} position${unchanged.length === 1 ? "" : "s"}, ${money(bigIntToUsd8(unchangedUsd))})._`]
+      : []),
     "",
-    `**Blended APY:** ${pct(b.blendedApy.before)} → ${pct(b.blendedApy.after)}${pts(b.blendedApy.delta)}`,
+    usd8ToBigInt(moved.usd) === 0n
+      ? "**This rebalance moves nothing measurable.**"
+      : `**This rebalance moves ${formatUsd(moved.usd)}:** ${pct(moved.before)} → ${pct(moved.after)}${pts(moved.delta)}`,
+    `**Deployed capital (DeFi only):** ${formatUsd(deployed.usdBefore)} → ${formatUsd(deployed.usdAfter)} · ${pct(deployed.before)} → ${pct(deployed.after)}${pts(deployed.delta)}`,
+    "_Idle wallet balances are not part of either blend._",
     ...(b.blendedApy.excluded.length ? [`_Not counted in the blend (no rate): ${b.blendedApy.excluded.join(", ")}._`] : []),
     "",
     "## Steps",
@@ -348,8 +410,10 @@ export function composeStrategyBrief(i: BriefInputs): EthStrategyBrief {
   for (const l of [...before.lines, ...after.lines]) {
     if (l.apy === null && l.usd !== null && !l.key.startsWith("aqua:") && !warnings.some((w) => w.includes(l.label))) warnings.push(`No rate is listed for ${l.label}; it counts as 0% in the blend.`);
   }
-  const bBefore = blendedApy(before.lines);
-  const bAfter = blendedApy(after.lines);
+  // wallet の idle 資産は分母に入れない: deployed = DeFi の line だけ、moved = この提案で量が変わる分だけ
+  const dBefore = blendedApy(before.lines.filter((l) => l.deployed));
+  const dAfter = blendedApy(after.lines.filter((l) => l.deployed));
+  const moved = movedApy(before, after);
   const aquaStep = i.steps.find((s): s is Extract<EthProposalStep, { kind: "aqua_ship" }> => s.kind === "aqua_ship");
   const aquaSlot = aquaStep && i.previews[i.steps.indexOf(aquaStep)];
   const body: Omit<EthStrategyBrief, "markdown"> = {
@@ -358,10 +422,9 @@ export function composeStrategyBrief(i: BriefInputs): EthStrategyBrief {
     before,
     after,
     blendedApy: {
-      before: bBefore.value,
-      after: bAfter.value,
-      delta: bBefore.value === null || bAfter.value === null ? null : Math.round((bAfter.value - bBefore.value) * 1e8) / 1e8,
-      excluded: [...new Set([...bBefore.excluded, ...bAfter.excluded])],
+      moved: { usd: moved.usd, before: moved.before, after: moved.after, delta: moved.delta },
+      deployed: { usdBefore: dBefore.usd, usdAfter: dAfter.usd, before: dBefore.value, after: dAfter.value, delta: deltaOf(dBefore.value, dAfter.value) },
+      excluded: [...new Set([...dBefore.excluded, ...dAfter.excluded, ...moved.excluded])],
     },
     ...(aquaStep
       ? {

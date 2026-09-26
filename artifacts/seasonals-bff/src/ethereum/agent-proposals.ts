@@ -102,8 +102,8 @@ const STORE = "eth-agent-proposals";
 let proposals: EthAgentProposal[] | null = null;
 function store(): EthAgentProposal[] {
   if (!proposals) {
-    // brief の無い旧形式 (title のみ) は読まない (dev データ)
-    proposals = (loadJson<EthAgentProposal[]>(STORE) ?? []).filter((p) => typeof p.name === "string" && p.brief);
+    // 旧形式 (title のみ / brief 無し / blendedApy が moved・deployed になる前) は読まない (dev データ。web は型どおりの brief を前提にする)
+    proposals = (loadJson<EthAgentProposal[]>(STORE) ?? []).filter((p) => typeof p.name === "string" && p.brief?.blendedApy?.moved && p.brief.blendedApy.deployed);
     // 実行中にプロセスが落ちた proposal はロックが残らないよう failed にする
     for (const p of proposals) {
       if (p.status === "executing") {

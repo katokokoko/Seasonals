@@ -1,9 +1,10 @@
 /**
  * StrategyBrief — Agent の戦略を人が読める形で (英語)。数字は BFF が実データから決定的に組んだもの
- * (before → after、USD 加重 APY、Aqua sleeve、カレンダー上の次の予定)。ここでは表示だけ。
+ * (before → after、動かす資金 / 運用中の資金の USD 加重 APY、Aqua sleeve、カレンダー上の次の予定)。ここでは表示だけ。
+ * wallet の idle 資産は APY の分母に入らない。量の変わらない line は表に出さず 1 行にまとめる
  */
 import type { EthPortfolioLine, EthStrategyBrief } from "@workspace/lib/types";
-import { formatPercentage } from "@workspace/lib/utils/numeric";
+import { formatPercentage, usd8ToBigInt, bigIntToUsd8 } from "@workspace/lib/utils/numeric";
 import { fmtAmount, fmtDate, fmtRatio, fmtUsd } from "../ui/format";
 
 function Cell({ line }: { line: EthPortfolioLine | undefined }) {
@@ -18,9 +19,32 @@ function Cell({ line }: { line: EthPortfolioLine | undefined }) {
   );
 }
 
-export function StrategyBrief({ brief }: { brief: EthStrategyBrief }) {
+const pct = (r: number | null) => (r === null ? "—" : fmtRatio(r));
+function Delta({ d }: { d: number | null }) {
+  if (d === null) return null;
+  return <span className={`small ${d >= 0 ? "delta-up" : "delta-down"}`}> ({formatPercentage(d, { signDisplay: "always" })} pts)</span>;
+}
+
+/** 量が変わらない line は表から外して 1 行にまとめる */
+function splitChanged(brief: EthStrategyBrief): { changed: string[]; unchanged: EthPortfolioLine[] } {
   const keys = [...new Set([...brief.before.lines, ...brief.after.lines].map((l) => l.key))];
-  const { before, after, delta } = brief.blendedApy;
+  const changed: string[] = [];
+  const unchanged: EthPortfolioLine[] = [];
+  for (const k of keys) {
+    const b = brief.before.lines.find((l) => l.key === k);
+    const a = brief.after.lines.find((l) => l.key === k);
+    const same = b && a && b.amounts.length === a.amounts.length && b.amounts.every((x, i) => x.value === a.amounts[i]!.value && x.symbol === a.amounts[i]!.symbol);
+    if (same) unchanged.push(a);
+    else changed.push(k);
+  }
+  return { changed, unchanged };
+}
+
+export function StrategyBrief({ brief }: { brief: EthStrategyBrief }) {
+  const { changed, unchanged } = splitChanged(brief);
+  const { moved, deployed } = brief.blendedApy;
+  const unchangedUsd = bigIntToUsd8(unchanged.reduce((s, l) => s + (l.usd ? usd8ToBigInt(l.usd) : 0n), 0n));
+  const movesNothing = usd8ToBigInt(moved.usd) === 0n;
   return (
     <div className="strategy-brief">
       <table className="data-table brief-table">
@@ -39,7 +63,14 @@ export function StrategyBrief({ brief }: { brief: EthStrategyBrief }) {
           </tr>
         </thead>
         <tbody>
-          {keys.map((k) => {
+          {changed.length === 0 && (
+            <tr>
+              <td className="muted" colSpan={4}>
+                Nothing changes.
+              </td>
+            </tr>
+          )}
+          {changed.map((k) => {
             const b = brief.before.lines.find((l) => l.key === k);
             const a = brief.after.lines.find((l) => l.key === k);
             const l = (a ?? b)!;
@@ -64,18 +95,38 @@ export function StrategyBrief({ brief }: { brief: EthStrategyBrief }) {
             <td />
           </tr>
           <tr>
-            <th scope="row">Blended APY</th>
-            <td className="cell-num">{before === null ? "—" : fmtRatio(before)}</td>
+            <th scope="row">{movesNothing ? "This rebalance moves nothing measurable" : `This rebalance moves ${fmtUsd(moved.usd)}`}</th>
+            <td className="cell-num">{pct(moved.before)}</td>
             <td className="cell-num">
-              {after === null ? "—" : fmtRatio(after)}
-              {delta !== null && (
-                <span className={`small ${delta >= 0 ? "delta-up" : "delta-down"}`}> ({formatPercentage(delta, { signDisplay: "always" })} pts)</span>
-              )}
+              {pct(moved.after)}
+              <Delta d={moved.delta} />
+            </td>
+            <td />
+          </tr>
+          <tr>
+            <th scope="row">Deployed capital (DeFi only)</th>
+            <td className="cell-num">
+              <span className="small">{fmtUsd(deployed.usdBefore)}</span>
+              <span className="small">{pct(deployed.before)}</span>
+            </td>
+            <td className="cell-num">
+              <span className="small">{fmtUsd(deployed.usdAfter)}</span>
+              <span className="small">
+                {pct(deployed.after)}
+                <Delta d={deployed.delta} />
+              </span>
             </td>
             <td />
           </tr>
         </tfoot>
       </table>
+      {unchanged.length > 0 && (
+        <p className="muted small">
+          Unchanged: {unchanged.map((l) => `${l.label} ${l.usd === null ? "not priced" : fmtUsd(l.usd)}`).join(" · ")} ({unchanged.length} position
+          {unchanged.length === 1 ? "" : "s"}, {fmtUsd(unchangedUsd)}).
+        </p>
+      )}
+      <p className="muted small">Idle wallet balances are not part of either blend.</p>
       {brief.blendedApy.excluded.length > 0 && <p className="muted small">Not counted in the blend (no rate): {brief.blendedApy.excluded.join(", ")}.</p>}
       {brief.aqua && (
         <p className="small">

@@ -91,6 +91,15 @@ export interface EthPortfolioLine {
   approx?: boolean;
   /** 後で届く分 (Lido queue / Ethena cooldown) */
   pending?: boolean;
+  /** DeFi で運用中 (Lido / Ethena / Pendle / Aqua)。wallet の idle 資産と pending は false */
+  deployed: boolean;
+}
+
+/** USD 加重平均 APY (0..1) の before → after */
+export interface EthApyChange {
+  before: number | null;
+  after: number | null;
+  delta: number | null;
 }
 
 export interface EthPortfolioSnapshot {
@@ -103,8 +112,17 @@ export interface EthStrategyBrief {
   tagline?: string;
   before: EthPortfolioSnapshot;
   after: EthPortfolioSnapshot;
-  /** USD 加重平均 (0..1)。APY 不明の line は 0 として分母に含め `excluded` に列挙 */
-  blendedApy: { before: number | null; after: number | null; delta: number | null; excluded: string[] };
+  /**
+   * wallet の idle 資産はどちらの分母にも入れない。
+   * - moved: この提案が動かす資金。減る側 (source) の APY → 増える側 (destination) の APY、USD 加重
+   * - deployed: DeFi で運用中の資金 (Lido / Ethena / Pendle / Aqua) だけの before → after
+   * APY 不明の line (Aqua LP など) は 0 として分母に含め `excluded` に列挙 (数字を膨らませない)
+   */
+  blendedApy: {
+    moved: EthApyChange & { usd: string };
+    deployed: EthApyChange & { usdBefore: string; usdAfter: string };
+    excluded: string[];
+  };
   aqua?: { usdc: TokenAmountView; usde: TokenAmountView; bandBps: number; feeBps: number; reviewAt: string; peg: string };
   /** この戦略の後にカレンダーに来る予定 (PT 満期 / Aqua review / cooldown 終了 / Lido queue) */
   horizon: Array<{ at: string; label: string; approx?: boolean }>;

@@ -89,7 +89,8 @@ BFF の `/eth/*` を読む。UI (web) と同じ endpoint = same source of truth�
 LLM が組んだ戦略を人が読める形にする。**数字は BFF が実データから決定的に組む** (holdings の on-chain 残高 + menu の利回り + 各 step の preview)。LLM が書くのは `name` (絵文字 + 短い英語名、≤ 40 文字)、`tagline`、`rationale` だけ。
 
 - `before` / `after`: line ごとの量・USD・share・APY。after は step の効果 (builder が返す `effects`) を順に適用した結果
-- `blendedApy`: USD 加重平均。APY 不明 (Aqua LP など) は 0 扱いで `excluded` に列挙 (数字を膨らませない)。価格の無い line は `unpriced` に列挙し総額・APY から除外
+- `blendedApy`: USD 加重平均を 2 つ。`moved` = **この提案が動かす資金** (減る側の APY → 増える側の APY、見出し)、`deployed` = **DeFi で運用中の資金だけ** (Lido / Ethena / Pendle / Aqua) の before → after。**wallet の idle 資産はどちらの分母にも入れない** (巨大な idle 残高で効果が埋もれないように)。APY 不明 (Aqua LP など) は 0 扱いで `excluded` に列挙 (数字を膨らませない)。価格の無い line は `unpriced` に列挙し総額・APY から除外
+- 表 (Markdown / web) は量の変わる line だけ。変わらない line は "Unchanged: … (N positions, $X)" の 1 行にまとめる
 - `aqua`: LP sleeve の中身と peg guard、`horizon`: PT 満期 / Aqua review / cooldown 終了 / Lido queue
 - `markdown`: 英語の Markdown (Claude はこれをそのまま見せる)。web の Agent ページも同じ brief を表で描く
 | `wait_for_rebalance_decision` | 人が web の Agent ページで承認 (= fork 実行) / 却下するまで long-poll |

@@ -11,16 +11,27 @@ const SUSDE = "0x9d39a5de30e57443bff2a8307a4256c8797a3497";
 const brief: EthAgentProposal["brief"] = {
   name: "🍋 Lemon Ladder",
   tagline: "Idle USDC → sUSDe",
-  before: { totalUsd: "1000.00000000", lines: [{ key: USDC, label: "USDC (wallet)", amounts: [{ value: "1000000000", decimals: 6, symbol: "USDC" }], usd: "1000.00000000", share: 1, apy: 0, apyLabel: "Idle" }] },
-  after: {
-    totalUsd: "999.50000000",
+  before: {
+    totalUsd: "4000.00000000",
     lines: [
-      { key: USDC, label: "USDC (wallet)", amounts: [{ value: "900000000", decimals: 6, symbol: "USDC" }], usd: "900.00000000", share: 0.9, apy: 0, apyLabel: "Idle" },
-      { key: SUSDE, label: "sUSDe (Ethena)", productId: "ethereum:ethena:susde", amounts: [{ value: "79200000000000000000", decimals: 18, symbol: "sUSDe" }], usd: "99.00000000", share: 0.099, apy: 0.05, approx: true },
-      { key: "aqua:usdc-usde", label: "Aqua USDC/USDe LP (1inch)", amounts: [{ value: "500000", decimals: 6, symbol: "USDC" }], usd: "0.50000000", share: 0.0005, apy: null, apyLabel: "Fees (not counted)" },
+      { key: USDC, label: "USDC (wallet)", amounts: [{ value: "1000000000", decimals: 6, symbol: "USDC" }], usd: "1000.00000000", share: 0.25, apy: 0, apyLabel: "Idle", deployed: false },
+      { key: "ETH", label: "ETH (wallet)", amounts: [{ value: "1000000000000000000", decimals: 18, symbol: "ETH" }], usd: "3000.00000000", share: 0.75, apy: 0, apyLabel: "Idle", deployed: false },
     ],
   },
-  blendedApy: { before: 0, after: 0.05, delta: 0.05, excluded: ["Aqua USDC/USDe LP (1inch)"] },
+  after: {
+    totalUsd: "3999.50000000",
+    lines: [
+      { key: USDC, label: "USDC (wallet)", amounts: [{ value: "900000000", decimals: 6, symbol: "USDC" }], usd: "900.00000000", share: 0.225, apy: 0, apyLabel: "Idle", deployed: false },
+      { key: "ETH", label: "ETH (wallet)", amounts: [{ value: "1000000000000000000", decimals: 18, symbol: "ETH" }], usd: "3000.00000000", share: 0.75, apy: 0, apyLabel: "Idle", deployed: false },
+      { key: SUSDE, label: "sUSDe (Ethena)", productId: "ethereum:ethena:susde", amounts: [{ value: "79200000000000000000", decimals: 18, symbol: "sUSDe" }], usd: "99.00000000", share: 0.025, apy: 0.05, approx: true, deployed: true },
+      { key: "aqua:usdc-usde", label: "Aqua USDC/USDe LP (1inch)", amounts: [{ value: "500000", decimals: 6, symbol: "USDC" }], usd: "0.50000000", share: 0.0001, apy: null, apyLabel: "Fees (not counted)", deployed: true },
+    ],
+  },
+  blendedApy: {
+    moved: { usd: "100.00000000", before: 0, after: 0.0495, delta: 0.0495 },
+    deployed: { usdBefore: "0.00000000", usdAfter: "99.50000000", before: null, after: 0.04975, delta: null },
+    excluded: ["Aqua USDC/USDe LP (1inch)"],
+  },
   aqua: { usdc: { value: "500000", decimals: 6, symbol: "USDC" }, usde: { value: "500000000000000000", decimals: 18, symbol: "USDe" }, bandBps: 50, feeBps: 5, reviewAt: "2026-10-10T00:00:00.000Z", peg: "Within 50 bps (1 bps)." },
   horizon: [{ at: "2026-10-10T00:00:00.000Z", label: "Review the Aqua USDC/USDe strategy" }],
   unpriced: ["PT-mystery"],
@@ -101,8 +112,15 @@ test("shows the strategy brief: name, before → after, blended APY delta, Aqua 
   expect(text).toContain("USDC (wallet)");
   expect(text).toContain("$1,000.00");
   expect(text).toContain("≈$99.00");
-  expect(text).toContain("(+5.00% pts)");
-  expect(screen.getByText("(+5.00% pts)").className).toContain("delta-up");
+  // 動かす資金の APY が見出し。idle の ETH $3,000 は表に出ず "Unchanged" にまとまり、分母にも入らない
+  expect(text).toContain("This rebalance moves $100.00");
+  expect(text).toContain("(+4.95% pts)");
+  expect(screen.getByText("(+4.95% pts)").className).toContain("delta-up");
+  expect(text).toContain("Deployed capital (DeFi only)");
+  expect(text).toContain("$99.50");
+  expect(text).toContain("Unchanged: ETH (wallet) $3,000.00 (1 position, $3,000.00).");
+  expect(screen.queryByRole("cell", { name: /1 ETH/ })).toBeNull();
+  expect(text).toContain("Idle wallet balances are not part of either blend.");
   expect(text).toContain("Fees (not counted)");
   expect(text).toContain("1inch Aqua LP sleeve:");
   expect(text).toContain("Review the Aqua USDC/USDe strategy");
