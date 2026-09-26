@@ -10,10 +10,12 @@ import { ethereumRpcUrl, executionTarget, forkRpcUrl, getEthClient, sanitizeErro
 import { getPublicEvents, getUserEvents } from "../ethereum/events";
 import { buildActionPlan, PlanError } from "../ethereum/plans";
 import { buildProposal } from "../ethereum/proposals";
-import { advanceFork, executeOnFork, mineFork } from "../ethereum/execute";
+import { advanceFork, executeMenuOnFork, executeOnFork, mineFork } from "../ethereum/execute";
+import { buildMenuPlan, type MenuPlanInput } from "../ethereum/menu-actions";
 import { ensureIndexing, indexProgress } from "../ethereum/cca";
 import { UniswapError, buildUniswapSwapPlan, executeUniswapSwapOnFork, uniswapPreview } from "../ethereum/uniswap";
 import { getEthMenu } from "../ethereum/menu";
+import { getMenuHoldings } from "../ethereum/holdings";
 import { getAavePositions } from "../ethereum/aave";
 import { buildAquaShipPlan, fillAquaOnFork, shipAquaOnFork, type AquaShipInput } from "../ethereum/aqua";
 import { checkPeg, getChainlinkPrice, PRICE_ASSETS, type PriceAsset } from "../ethereum/pricing";
@@ -112,6 +114,15 @@ async function ethRoutes(app: FastifyInstance): Promise<void> {
   /** Explore の Ethereum 商品 (利率は label + 出所付き、取れなければ null) */
   app.get("/eth/menu", async () => getEthMenu());
 
+  /** Menu 商品ごとの保有量 (on-chain 残高が正、失敗した source は failed[]) */
+  app.get<{ Querystring: { address?: string } }>("/eth/holdings", async (req, reply) => {
+    const address = req.query.address?.trim() ?? "";
+    if (!isEvmAddress(address)) {
+      return reply.code(400).send({ error: "invalid_address", message: "address must be a 0x-prefixed 20-byte hex string" });
+    }
+    return getMenuHoldings(address);
+  });
+
   app.get<{ Querystring: { address?: string } }>("/eth/events", async (req, reply) => {
     const address = req.query.address?.trim() ?? "";
     if (!isEvmAddress(address)) {
@@ -145,6 +156,47 @@ async function ethRoutes(app: FastifyInstance): Promise<void> {
         return reply.code(code).send({ error: e.code, message: e.message });
       }
       app.log.warn({ err: sanitizeError(e) }, "build-action failed");
+      return reply.code(502).send({ error: "upstream_error", message: sanitizeError(e) });
+    }
+  });
+
+  /** PlanError → HTTP (入力の誤りは 400、状態が合わないのは 409、上流 / RPC は 502) */
+  const planErrorStatus = (code: PlanError["code"]) =>
+    code === "invalid_amount"
+      ? 400
+      : code === "event_not_found"
+        ? 404
+        : code === "rpc_unavailable" || code === "upstream_error" || code === "oracle_unavailable"
+          ? 502
+          : 409;
+
+  function menuInput(body: Partial<MenuPlanInput> | undefined): MenuPlanInput | null {
+    const { owner = "", productId = "", action, amount = "", token } = body ?? {};
+    if (!isEvmAddress(owner) || !productId || (action !== "deposit" && action !== "withdraw") || typeof amount !== "string" || !amount) return null;
+    return { owner, productId, action, amount, ...(typeof token === "string" ? { token } : {}) };
+  }
+
+  /** Menu の deposit / withdraw: 未署名プランのみ (送信しない) */
+  app.post<{ Body: Partial<MenuPlanInput> }>("/eth/menu/plan", async (req, reply) => {
+    const input = menuInput(req.body);
+    if (!input) return reply.code(400).send({ error: "invalid_argument" });
+    try {
+      return await buildMenuPlan(input);
+    } catch (e) {
+      if (e instanceof PlanError) return reply.code(planErrorStatus(e.code)).send({ error: e.code, message: e.message });
+      return reply.code(502).send({ error: "upstream_error", message: sanitizeError(e) });
+    }
+  });
+
+  /** Menu の deposit / withdraw を fork で実行 (人が UI で承認した時だけ、mainnet には送らない) */
+  app.post<{ Body: Partial<MenuPlanInput> & { approvedBy?: string } }>("/eth/menu/execute", async (req, reply) => {
+    const input = menuInput(req.body);
+    if (!input) return reply.code(400).send({ error: "invalid_argument" });
+    if (req.body?.approvedBy !== "user") return reply.code(403).send({ error: "approval_required", message: "Execution requires the user's approval in the app." });
+    try {
+      return await executeMenuOnFork(input);
+    } catch (e) {
+      if (e instanceof PlanError) return reply.code(planErrorStatus(e.code)).send({ error: e.code, message: e.message });
       return reply.code(502).send({ error: "upstream_error", message: sanitizeError(e) });
     }
   });

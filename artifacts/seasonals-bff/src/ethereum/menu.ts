@@ -67,10 +67,10 @@ const PENDLE_MENU_MARKETS = 8;
  * 流動性上位の market ごとに PT → YT の順で 2 商品を返す (隣り合わせで並ぶ)。
  * YT の率は Pendle の Long Yield APY (`ytFloatingApy`)。負の値もそのまま返し、無ければ null。
  */
-export function pendleMenuProducts(markets: PendleMarket[], observedAt: string): MenuProduct[] {
+export function pendleMenuProducts(markets: PendleMarket[], observedAt: string, limit = PENDLE_MENU_MARKETS): MenuProduct[] {
   return [...markets]
     .sort((a, b) => (b.details?.liquidity ?? 0) - (a.details?.liquidity ?? 0))
-    .slice(0, PENDLE_MENU_MARKETS)
+    .slice(0, limit)
     .flatMap((m) => {
       const addr = m.address.toLowerCase();
       const liquidity = usdNumberTo8(m.details?.liquidity);

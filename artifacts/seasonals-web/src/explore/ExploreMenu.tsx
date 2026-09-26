@@ -5,8 +5,12 @@
  */
 import { useMemo, useState } from "react";
 import type { ChainId } from "@workspace/lib/config/chains";
-import type { MenuProduct, PositionCategory, ProtocolMenuEntry, ProtocolPool } from "@workspace/lib/types";
-import { useEthMenu, useMenuListings } from "../services/queries";
+import type { EarnPosition, MenuHolding, MenuProduct, PositionCategory, ProtocolMenuEntry, ProtocolPool } from "@workspace/lib/types";
+import { useEthMenu, useMenuHoldings, useMenuListings, type MenuHoldingsData } from "../services/queries";
+import { requestOpenWallet } from "../timeline/detailStore";
+import { ethHoldingText, solHoldingText } from "./holdingText";
+import { MenuActionPanel, actionLabel, menuActionable, type MenuAction } from "./MenuActionPanel";
+import { useActiveAddresses } from "../state/session";
 import { fmtFullDate, fmtMetric } from "../ui/format";
 import { UniswapRoutePreview } from "./UniswapRoutePreview";
 import { ChainIcon } from "../ui/ChainIcon";
@@ -42,10 +46,15 @@ export default function ExploreMenu() {
   const [tab, setTab] = useState("All");
   const [chain, setChain] = useState<"all" | "solana" | "ethereum">("all");
   const [query, setQuery] = useState("");
+  const [depositedOnly, setDepositedOnly] = useState(false);
+  const holdings = useMenuHoldings(q.data);
+  const active = useActiveAddresses();
+  const ethCtx: EthActionContext = { addresses: active.filter((a) => a.chain === "ethereum").map((a) => a.address), byAddress: holdings.ethByAddress };
+  const extra = depositedOnly ? holdings.extraProducts : [];
 
   const rows = useMemo<Row[]>(
     () => [
-      ...(eth.data ?? []).map<Row>((p) => ({
+      ...[...(eth.data ?? []), ...extra].map<Row>((p) => ({
         kind: "eth",
         key: p.id,
         section: SECTION[p.category] ?? "Other",
@@ -55,13 +64,14 @@ export default function ExploreMenu() {
       ...(q.data ?? []).flatMap((p) =>
         p.pools.map<Row>((pool) => {
           const item = { protocol: p, pool, section: SECTION[pool.category] ?? "Other" };
-          return { kind: "sol", key: pool.pool_id, section: item.section, text: `${p.display_name} ${pool.name} ${pool.asset}`, item };
+          return { kind: "sol", key: `${p.protocol_id}:${pool.pool_id}`, section: item.section, text: `${p.display_name} ${pool.name} ${pool.asset}`, item };
         })
       ),
     ],
-    [q.data, eth.data]
+    [q.data, eth.data, extra]
   );
-  const chainRows = rows.filter((r) => chain === "all" || (chain === "ethereum") === (r.kind === "eth"));
+  const held = (r: Row) => (r.kind === "eth" ? holdings.eth.has(r.key) : holdings.sol.has(r.key));
+  const chainRows = rows.filter((r) => (chain === "all" || (chain === "ethereum") === (r.kind === "eth")) && (!depositedOnly || held(r)));
   const tabs = ["All", ...Array.from(new Set(chainRows.map((i) => i.section)))];
   const activeTab = tabs.includes(tab) ? tab : "All";
   const filtered = chainRows.filter(
@@ -88,6 +98,7 @@ export default function ExploreMenu() {
             {c === "all" ? "All chains" : c === "ethereum" ? "Ethereum" : "Solana"}
           </button>
         ))}
+        <DepositedToggle on={depositedOnly} onChange={setDepositedOnly} holdings={holdings} />
       </div>
       <div className="menu-tabs" role="tablist" aria-label="Menu sections">
         {tabs.map((t) => (
@@ -118,7 +129,13 @@ export default function ExploreMenu() {
           <ul className="menu-items">
             {filtered
               .filter((r) => r.section === section)
-              .map((r) => (r.kind === "eth" ? <EthMenuCard key={r.key} product={r.product} /> : <MenuCard key={r.key} item={r.item} />))}
+              .map((r) =>
+                r.kind === "eth" ? (
+                  <EthMenuCard key={r.key} product={r.product} holding={holdings.eth.get(r.key)} ctx={ethCtx} />
+                ) : (
+                  <MenuCard key={r.key} item={r.item} held={holdings.sol.get(r.key)} />
+                )
+              )}
           </ul>
         </section>
       ))}
@@ -167,7 +184,7 @@ export function noBreakHyphen(name: string): string {
   return name.replace(/-/g, "\u2011");
 }
 
-function MenuCard({ item }: { item: MenuItem }) {
+function MenuCard({ item, held }: { item: MenuItem; held?: EarnPosition[] }) {
   const { protocol, pool } = item;
   const [open, setOpen] = useState(false);
   const avail = availability(pool);
@@ -185,6 +202,7 @@ function MenuCard({ item }: { item: MenuItem }) {
           <span className="menu-price-value">{fmtRatio(pool.apy)}</span>
         </div>
       </div>
+      <HoldingLine sol={held} />
       <div className="menu-rule" aria-hidden="true" />
       <dl className="menu-facts">
         <div>
@@ -221,8 +239,16 @@ function MenuCard({ item }: { item: MenuItem }) {
   );
 }
 
-export function EthMenuCard({ product }: { product: MenuProduct }) {
+export interface EthActionContext {
+  addresses: string[];
+  byAddress: MenuHoldingsData["ethByAddress"];
+}
+
+export function EthMenuCard({ product, holding, ctx }: { product: MenuProduct; holding?: MenuHolding[]; ctx?: EthActionContext }) {
   const [open, setOpen] = useState(false);
+  const [panel, setPanel] = useState<MenuAction | null>(null);
+  const canAct = Boolean(ctx) && menuActionable(product);
+  const held = Boolean(holding?.some((h) => h.amounts.length > 0));
   return (
     <li className="menu-item" style={brandStyle(product.protocolId)}>
       <div className="menu-item-top">
@@ -246,6 +272,7 @@ export function EthMenuCard({ product }: { product: MenuProduct }) {
           </span>
         </div>
       </div>
+      <HoldingLine eth={holding} />
       <div className="menu-rule" aria-hidden="true" />
       <dl className="menu-facts">
         {product.maturity && (
@@ -282,11 +309,72 @@ export function EthMenuCard({ product }: { product: MenuProduct }) {
           )}
         </span>
       </div>
+      {canAct && !panel && (
+        <div className="menu-item-cta">
+          <button type="button" className="btn btn-primary" onClick={() => setPanel("deposit")}>
+            {actionLabel(product, "deposit")}
+          </button>
+          <button
+            type="button"
+            className="btn"
+            onClick={() => setPanel("withdraw")}
+            disabled={!held}
+            title={held ? undefined : "Nothing held at the watched addresses"}
+          >
+            {actionLabel(product, "withdraw")}
+          </button>
+        </div>
+      )}
+      {canAct && panel && ctx && (
+        <MenuActionPanel key={panel} product={product} action={panel} addresses={ctx.addresses} byAddress={ctx.byAddress} onClose={() => setPanel(null)} />
+      )}
       {open && (
         <div className="menu-details">
           <UniswapRoutePreview />
         </div>
       )}
     </li>
+  );
+}
+
+/**
+ * 「Deposited only」: 閲覧中 address が今 deposit している商品だけに絞る。
+ * address が無ければ無効 + Watch への導線。取得中 / 一部失敗は明示し、失敗分を「保有なし」と見せない。
+ */
+function DepositedToggle({ on, onChange, holdings }: { on: boolean; onChange: (v: boolean) => void; holdings: MenuHoldingsData }) {
+  if (!holdings.hasAddress) {
+    return (
+      <span className="deposited-toggle muted small">
+        <button type="button" className="filter-chip" aria-pressed={false} disabled>
+          Deposited only
+        </button>{" "}
+        <button type="button" className="btn-link" onClick={requestOpenWallet}>
+          Watch an address
+        </button>{" "}
+        to see what you hold.
+      </span>
+    );
+  }
+  return (
+    <span className="deposited-toggle">
+      <button type="button" className="filter-chip" aria-pressed={on} onClick={() => onChange(!on)}>
+        Deposited only
+      </button>
+      {on && holdings.isLoading && <span className="muted small">Checking balances…</span>}
+      {on && holdings.failed.length > 0 && (
+        <span className="small menu-warning">Could not check: {holdings.failed.join(", ")}. Those may be missing here.</span>
+      )}
+    </span>
+  );
+}
+
+function HoldingLine({ eth, sol }: { eth?: MenuHolding[]; sol?: EarnPosition[] }) {
+  const h: { text: string; note?: string } | null = eth ? ethHoldingText(eth) : sol ? solHoldingText(sol) : null;
+  if (!h) return null;
+  return (
+    <p className="menu-holding small">
+      <strong>{h.text}</strong>
+      {h.note && <span className="muted block">{h.note}</span>}
+    </p>
   );
 }

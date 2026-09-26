@@ -239,14 +239,15 @@
   padding: var(--sp-sm);
   display: grid;
 }
-.menu-item {
+/* More メニューの項目。Menu (Explore) の商品カードも .menu-item なので、必ず .nav-more-menu で限定する */
+.nav-more-menu .menu-item {
   padding: var(--sp-sm) var(--sp-md);
   border-radius: var(--r-md);
   text-decoration: none;
   font-weight: var(--w-semibold);
 }
-.menu-item:hover,
-.menu-item.is-active {
+.nav-more-menu .menu-item:hover,
+.nav-more-menu .menu-item.is-active {
   background: var(--s-hover);
   color: var(--c-sodaText);
 }

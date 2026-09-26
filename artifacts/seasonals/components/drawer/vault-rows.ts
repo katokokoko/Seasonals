@@ -16,9 +16,10 @@ import type {
   ProtocolMenuEntry,
   ProtocolPool,
 } from "@workspace/lib/types";
-import { findKaminoMarketByReserve, findKaminoVaultByAddress } from "@workspace/lib/config/kamino-markets";
-import { findSaveMarketByCToken } from "@workspace/lib/config/save-markets";
-import { findExponentMarketByPtMint } from "@workspace/lib/config/exponent-markets";
+import { partitionPositions } from "@workspace/lib/derive/earn-positions";
+
+// 対応付けは Web と共有するため lib へ移した (挙動は同一)。既存の import 元を保つため re-export
+export { poolIdForPosition, partitionPositions, type PositionPartition } from "@workspace/lib/derive/earn-positions";
 
 import { depositCapView, type DepositCapView } from "./deposit-cap";
 
@@ -51,71 +52,6 @@ export interface VaultRow {
   borrowedUsd?: number;
 }
 
-/**
- * position → menu の pool_id を registry で解決する。
- *
- * share_mint の意味は protocol ごとに違う (§8.15):
- *   Kamino  … reserve address / kVault address
- *   Save    … cToken mint
- *   Exponent… PT mint
- *   swap-earn (jito/marinade/sanctum/perena/hylo/solstice) … share token mint
- *
- * **swap-earn registry は pool_id を持たない** (`SwapEarnMarket` は protocol_id +
- * underlying_symbol で引く設計) ので、そこは呼び手が asset 一致で fallback する。
- */
-export function poolIdForPosition(position: EarnPosition): string | undefined {
-  const mint = position.share_mint;
-  return (
-    findKaminoMarketByReserve(mint)?.pool_id ??
-    findKaminoVaultByAddress(mint)?.pool_id ??
-    findSaveMarketByCToken(mint)?.pool_id ??
-    findExponentMarketByPtMint(mint)?.market_id
-  );
-}
-
-export interface PositionPartition {
-  /** pool_id → position (行に統合できたもの) */
-  byPool: Map<string, EarnPosition>;
-  /**
-   * どの pool にも紐付かなかった position (Meteora / Orca の LP position、
-   * Kamino best-effort 等)。**捨てずに** 従来の "Your Positions" に出す。
-   */
-  unlinked: EarnPosition[];
-}
-
-/**
- * protocol の pools と保有 positions を突き合わせる。
- * registry で pool_id が引ければそれを使い、引けない protocol は
- * **同 protocol 内の asset 一致**で紐付ける (1 asset 1 pool の swap-earn 系)。
- */
-export function partitionPositions(
-  pools: ProtocolPool[],
-  positions: EarnPosition[]
-): PositionPartition {
-  const byPool = new Map<string, EarnPosition>();
-  const unlinked: EarnPosition[] = [];
-  const poolIds = new Set(pools.map((p) => p.pool_id));
-  for (const position of positions) {
-    const viaRegistry = poolIdForPosition(position);
-    if (viaRegistry && poolIds.has(viaRegistry) && !byPool.has(viaRegistry)) {
-      byPool.set(viaRegistry, position);
-      continue;
-    }
-    // fallback: asset 一致 (registry に pool_id が無い swap-earn 系)。
-    // 既に埋まっている pool は上書きしない (先勝ち = 表示順の安定)
-    const byAsset = pools.find(
-      (p) =>
-        (p.deposit_asset ?? p.asset) === position.asset_symbol &&
-        !byPool.has(p.pool_id)
-    );
-    if (byAsset && !viaRegistry) {
-      byPool.set(byAsset.pool_id, position);
-      continue;
-    }
-    unlinked.push(position);
-  }
-  return { byPool, unlinked };
-}
 
 /** underlying decimals を pool から解決できない場合の既定 (表示のみ) */
 function humanAmount(amount: string, decimals: number): number {

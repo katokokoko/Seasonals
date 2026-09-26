@@ -8,7 +8,8 @@
 import { useQueries, useQuery } from "@tanstack/react-query";
 import { useMemo } from "react";
 import { fromUnifiedTimeEventDTO, mergeTimelineEvents, sortTimeline } from "@workspace/lib/derive/timeline";
-import type { TimelineEvent, TimelineEventsResponse } from "@workspace/lib/types";
+import { heldPoolKeys } from "@workspace/lib/derive/earn-positions";
+import type { EarnPosition, MenuHolding, MenuHoldingsResponse, MenuProduct, ProtocolMenuEntry, TimelineEvent, TimelineEventsResponse } from "@workspace/lib/types";
 import { useActiveAddresses } from "../state/session";
 import { api, ApiError } from "./api";
 import { shortAddress } from "../ui/format";
@@ -19,6 +20,8 @@ export const queryKeys = {
   solEvents: (a: string) => ["sol", "events", a] as const,
   menu: ["menu-listings"] as const,
   ethStatus: ["eth", "status"] as const,
+  ethHoldings: (a: string) => ["eth", "holdings", a.toLowerCase()] as const,
+  solEarn: (a: string) => ["sol", "earn", a] as const,
 };
 
 export interface SourceState {
@@ -126,4 +129,66 @@ export function useEthMenu() {
 
 export function useEthStatus() {
   return useQuery({ queryKey: queryKeys.ethStatus, queryFn: api.ethStatus, staleTime: 30_000, retry: false });
+}
+
+export interface MenuHoldingsData {
+  /** watch / 接続中の address が 1 つでもあるか (無ければトグルは無効) */
+  hasAddress: boolean;
+  isLoading: boolean;
+  /** 取得に失敗した source (address + 種類)。失敗分は「保有なし」とみなさない */
+  failed: string[];
+  /** Ethereum: productId → 各 address の保有 */
+  eth: Map<string, MenuHolding[]>;
+  /** Solana: `${protocol_id}:${pool_id}` → 各 wallet の position */
+  sol: Map<string, EarnPosition[]>;
+  /** 保有しているが Menu の一覧に無い Ethereum 商品 */
+  extraProducts: MenuProduct[];
+  /** Ethereum address ごとの応答 (deposit / withdraw パネルの残高・Max 用) */
+  ethByAddress: Map<string, MenuHoldingsResponse>;
+}
+
+/**
+ * Menu の「Deposited only」用: 閲覧中 address すべての保有をまとめる。
+ * Ethereum は BFF /eth/holdings (on-chain 残高)、Solana は既存の /positions/earn を
+ * lib の heldPoolKeys で menu の pool_id に対応付ける (mobile MenuDrawer と同じ規則)。
+ */
+export function useMenuHoldings(listings: ProtocolMenuEntry[] | undefined): MenuHoldingsData {
+  const active = useActiveAddresses();
+  const eth = active.filter((a) => a.chain === "ethereum");
+  const sol = active.filter((a) => a.chain === "solana");
+  const ethResults = useQueries({
+    queries: eth.map((a) => ({ queryKey: queryKeys.ethHoldings(a.address), queryFn: () => api.ethHoldings(a.address), staleTime: 60_000, retry: 1 })),
+  });
+  const solResults = useQueries({
+    queries: sol.map((a) => ({ queryKey: queryKeys.solEarn(a.address), queryFn: () => api.solanaEarnPositions(a.address), staleTime: 60_000, retry: 1 })),
+  });
+  // 依存配列の長さが address 数で変わるため useMemo は使わない (集計は軽い)
+  {
+    const failed: string[] = [];
+    const ethMap = new Map<string, MenuHolding[]>();
+    const extra = new Map<string, MenuProduct>();
+    const ethByAddress = new Map<string, MenuHoldingsResponse>();
+    ethResults.forEach((r, i) => {
+      const label = `Ethereum ${shortAddress(eth[i]!.address)}`;
+      if (r.isError) failed.push(label);
+      if (!r.data) return;
+      ethByAddress.set(eth[i]!.address, r.data);
+      r.data.failed.forEach((f) => failed.push(`${label} (${f})`));
+      for (const h of r.data.holdings) ethMap.set(h.productId, [...(ethMap.get(h.productId) ?? []), h]);
+      for (const p of r.data.extraProducts) extra.set(p.id, p);
+    });
+    solResults.forEach((r, i) => {
+      if (r.isError) failed.push(`Solana ${shortAddress(sol[i]!.address)}`);
+    });
+    const earns = solResults.flatMap((r) => (r.data ? [r.data] : []));
+    return {
+      hasAddress: active.length > 0,
+      isLoading: [...ethResults, ...solResults].some((r) => r.isPending),
+      failed,
+      eth: ethMap,
+      sol: listings ? heldPoolKeys(listings, earns) : new Map(),
+      extraProducts: [...extra.values()],
+      ethByAddress,
+    };
+  }
 }

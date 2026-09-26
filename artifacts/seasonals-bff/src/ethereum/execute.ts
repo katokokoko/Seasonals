@@ -194,3 +194,32 @@ export async function mineFork(blocks: number): Promise<{ block: string; timesta
   const b = await rpc<{ timestamp: string; number: string }>("eth_getBlockByNumber", ["latest", false]);
   return { timestamp: new Date(Number.parseInt(b.timestamp, 16) * 1000).toISOString(), block: String(Number.parseInt(b.number, 16)) };
 }
+
+/**
+ * Menu の deposit / withdraw を fork 上で実行する (人が UI で承認した時だけ)。
+ * fork の状態でプランを作り直して検証し、receipt を executed event として記録する。
+ */
+export async function executeMenuOnFork(input: import("./menu-actions").MenuPlanInput): Promise<ForkExecution> {
+  await assertForkEndpoint();
+  const { buildMenuPlan } = await import("./menu-actions");
+  const { pub } = forkClients();
+  const plan = await buildMenuPlan(input, { client: pub as unknown as PublicClient, where: "fork" });
+  try {
+    const txs = await sendStepsOnFork(input.owner as Hex, plan.steps);
+    const ok = txs.length === plan.steps.length && txs.every((t) => t.status === "success");
+    const [, protocol] = input.productId.split(":");
+    const executedEvent = await recordExecuted({
+      owner: input.owner,
+      title: plan.summary,
+      protocol: protocol ?? null,
+      protocolName: protocol ? protocol.charAt(0).toUpperCase() + protocol.slice(1) : null,
+      txs,
+      ok,
+    });
+    (await import("./holdings"))._invalidateHoldings(input.owner);
+    return { target: "fork", plan, txs, executedEvent };
+  } catch (e) {
+    if (e instanceof PlanError) throw e;
+    throw new PlanError("upstream_error", sanitizeError(e));
+  }
+}

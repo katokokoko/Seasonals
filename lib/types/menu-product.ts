@@ -5,7 +5,7 @@
  */
 import type { ChainId } from "../config/chains";
 import type { PositionCategory } from "./enums";
-import type { TimelineMetric } from "./timeline";
+import type { TimelineMetric, TokenAmountView } from "./timeline";
 
 export interface MenuProductRate {
   /** "APY" | "APR" | "Implied APY (fixed)" | "30-day avg yield" など */
@@ -31,5 +31,30 @@ export interface MenuProduct {
   /** 満期のある商品 (Pendle PT / YT) の満期 ISO */
   maturity?: string;
   url?: string;
+  observedAt: string;
+}
+
+/**
+ * address が menu 商品に預けている量 (GET /eth/holdings)。mainnet の on-chain 残高が正。
+ * USD は取れた時だけ (8 decimals string)、推測しない。
+ */
+export interface MenuHolding {
+  productId: string;
+  /** 商品内のトークン別残高 (例: Lido は stETH と wstETH)。0 のトークンは含めない */
+  amounts: TokenAmountView[];
+  usd?: string;
+  /** 引き出し待ち (例: Ethena の cooldown 中 USDe)。endsAt は ISO、表示の TZ は client */
+  pending?: { label: string; amount: TokenAmountView; endsAt: string };
+}
+
+export interface MenuHoldingsResponse {
+  address: string;
+  holdings: MenuHolding[];
+  /** 保有しているが Menu の一覧 (流動性上位) に無い商品。トグル ON 時に表示する */
+  extraProducts: MenuProduct[];
+  /** deposit に使える wallet 残高 (ETH / USDe)。deposit フォームの残高表示と Max 用 */
+  spendable: TokenAmountView[];
+  /** 取得に失敗した source (例: "pendle")。失敗分は「保有なし」とみなさない */
+  failed: string[];
   observedAt: string;
 }

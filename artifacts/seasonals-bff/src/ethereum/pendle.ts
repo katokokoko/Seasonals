@@ -137,11 +137,18 @@ export async function fetchPendlePublicEvents(observedAt: string): Promise<Timel
   return derivePendleMarketEvents(await fetchPendleMarkets({ active: true }), observedAt);
 }
 
-export async function fetchPendleUserEvents(owner: string, observedAt: string): Promise<TimelineEvent[]> {
+/** Pendle dashboard の mainnet open positions (どの market を持っているかの索引。残高の正は on-chain) */
+export async function fetchPendleOpenPositions(owner: string): Promise<PendlePosition[]> {
   const res = await getJson<{ positions: Array<{ chainId: number; openPositions: PendlePosition[] }> }>(
     `${PENDLE_API}/v1/dashboard/positions/database/${owner}`
   );
-  const open = res.positions.filter((p) => p.chainId === MAINNET_CHAIN_ID).flatMap((p) => p.openPositions);
+  return res.positions.filter((p) => p.chainId === MAINNET_CHAIN_ID).flatMap((p) => p.openPositions);
+}
+
+export const stripChainPrefix = strip;
+
+export async function fetchPendleUserEvents(owner: string, observedAt: string): Promise<TimelineEvent[]> {
+  const open = await fetchPendleOpenPositions(owner);
   if (open.length === 0) return [];
   // 満期済み (inactive) の market も含めて引く — overdue PT を出すため
   const all = await fetchPendleMarkets();

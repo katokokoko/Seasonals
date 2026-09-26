@@ -258,3 +258,53 @@
 .route-result p {
   margin: 0 0 var(--sp-xs);
 }
+
+/* 「Deposited only」トグル (chain chip の右、状態文は折り返してよい) */
+.deposited-toggle {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-sm);
+  margin-left: auto;
+}
+.menu-warning {
+  color: var(--c-cherryDark);
+}
+/* 保有行: カード上段の直下。量は本文色、補足 (cooldown 等) は muted */
+.menu-holding {
+  margin: 0;
+  padding: var(--sp-xs) var(--sp-sm);
+  border-radius: var(--r-md);
+  background: var(--c-melonTextSoft);
+}
+.menu-holding .block {
+  display: block;
+}
+
+/* deposit / withdraw: カード下段のボタン列とパネル */
+.menu-item-cta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-sm);
+}
+.menu-action {
+  display: grid;
+  gap: var(--sp-sm);
+  padding: var(--sp-md);
+  border-radius: var(--r-lg);
+  border: 1px solid var(--c-borderStrong);
+  background: var(--c-bgPrimary);
+}
+.menu-action-form {
+  display: grid;
+  gap: var(--sp-xs);
+}
+.menu-action-form label {
+  display: grid;
+  gap: 2px;
+}
+.menu-action-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-sm);
+}

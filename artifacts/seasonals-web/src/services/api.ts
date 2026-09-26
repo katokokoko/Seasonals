@@ -4,6 +4,8 @@
  * API key / RPC URL は BFF 側にしか無い。
  */
 import type {
+  EarnPositionsResponse,
+  MenuHoldingsResponse,
   MenuProduct,
   ProtocolMenuEntry,
   TimelineEventsResponse,
@@ -55,6 +57,8 @@ export const api = {
   ethEvents: (address: string) => request<TimelineEventsResponse>(`/eth/events?address=${encodeURIComponent(address)}`),
   ethStatus: () => request<EthStatus>("/eth/status"),
   ethMenu: () => request<MenuProduct[]>("/eth/menu"),
+  ethHoldings: (address: string) => request<MenuHoldingsResponse>(`/eth/holdings?address=${encodeURIComponent(address)}`),
+  solanaEarnPositions: (wallet: string) => request<EarnPositionsResponse>(`/positions/earn?wallet=${encodeURIComponent(wallet)}`),
   ethAave: (address: string) => request<{ positions: AavePositionView[] }>(`/eth/aave?address=${encodeURIComponent(address)}`),
   uniswapExecuteOnFork: (swapper: string, tokenIn: string, tokenOut: string, amount: string) =>
     request<{ target: "fork"; plan: UniswapSwapPlan; txs: ForkExecution["txs"] }>("/eth/uniswap/execute", {
@@ -76,6 +80,11 @@ export const api = {
   /** fork 実行 (ユーザーがボタンで承認した時だけ呼ぶ)。mainnet には送らない */
   ethExecuteOnFork: (owner: string, eventId: string, actionType: string) =>
     request<ForkExecution>("/eth/execute", { method: "POST", body: JSON.stringify({ owner, eventId, actionType, approvedBy: "user" }) }),
+  /** Menu の deposit / withdraw: 未署名プラン (送信しない) */
+  ethMenuPlan: (input: MenuPlanRequest) => request<ActionPlan>("/eth/menu/plan", { method: "POST", body: JSON.stringify(input) }),
+  /** Menu の deposit / withdraw を fork で実行 (ユーザーがボタンで承認した時だけ) */
+  ethMenuExecuteOnFork: (input: MenuPlanRequest) =>
+    request<ForkExecution>("/eth/menu/execute", { method: "POST", body: JSON.stringify({ ...input, approvedBy: "user" }) }),
   ethBuildAction: (owner: string, eventId: string, actionType: string) =>
     request<ActionPlan>("/eth/build-action", { method: "POST", body: JSON.stringify({ owner, eventId, actionType }) }),
 };
@@ -90,9 +99,20 @@ export interface ActionPlan {
   summary: string;
   steps: Array<{ kind: "approval" | "call"; to: string; data: string; value: string; description: string }>;
   simulation: { ran: boolean; ok?: boolean; error?: string; note: string };
+  /** 実行前に知っておくべきこと (cooldown の再スタート、価格 guard の乖離など) */
+  warnings?: string[];
   builtAt: string;
   source: string;
   broadcast: false;
+}
+
+/** BFF src/ethereum/menu-actions.ts MenuPlanInput と同形 (amount は人が入力した decimal string) */
+export interface MenuPlanRequest {
+  owner: string;
+  productId: string;
+  action: "deposit" | "withdraw";
+  amount: string;
+  token?: string;
 }
 
 /** BFF src/ethereum/proposals.ts ProposalSchema と同形 */
