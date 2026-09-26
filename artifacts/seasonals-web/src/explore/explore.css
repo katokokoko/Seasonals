@@ -258,3 +258,25 @@
 .route-result p {
   margin: 0 0 var(--sp-xs);
 }
+
+/* 「Deposited only」トグル (chain chip の右、状態文は折り返してよい) */
+.deposited-toggle {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-sm);
+  margin-left: auto;
+}
+.menu-warning {
+  color: var(--c-cherryDark);
+}
+/* 保有行: カード上段の直下。量は本文色、補足 (cooldown 等) は muted */
+.menu-holding {
+  margin: 0;
+  padding: var(--sp-xs) var(--sp-sm);
+  border-radius: var(--r-md);
+  background: var(--c-melonTextSoft);
+}
+.menu-holding .block {
+  display: block;
+}

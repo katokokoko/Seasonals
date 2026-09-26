@@ -14,6 +14,7 @@ import { advanceFork, executeOnFork, mineFork } from "../ethereum/execute";
 import { ensureIndexing, indexProgress } from "../ethereum/cca";
 import { UniswapError, buildUniswapSwapPlan, executeUniswapSwapOnFork, uniswapPreview } from "../ethereum/uniswap";
 import { getEthMenu } from "../ethereum/menu";
+import { getMenuHoldings } from "../ethereum/holdings";
 import { getAavePositions } from "../ethereum/aave";
 import { buildAquaShipPlan, fillAquaOnFork, shipAquaOnFork, type AquaShipInput } from "../ethereum/aqua";
 import { checkPeg, getChainlinkPrice, PRICE_ASSETS, type PriceAsset } from "../ethereum/pricing";
@@ -111,6 +112,15 @@ async function ethRoutes(app: FastifyInstance): Promise<void> {
 
   /** Explore の Ethereum 商品 (利率は label + 出所付き、取れなければ null) */
   app.get("/eth/menu", async () => getEthMenu());
+
+  /** Menu 商品ごとの保有量 (on-chain 残高が正、失敗した source は failed[]) */
+  app.get<{ Querystring: { address?: string } }>("/eth/holdings", async (req, reply) => {
+    const address = req.query.address?.trim() ?? "";
+    if (!isEvmAddress(address)) {
+      return reply.code(400).send({ error: "invalid_address", message: "address must be a 0x-prefixed 20-byte hex string" });
+    }
+    return getMenuHoldings(address);
+  });
 
   app.get<{ Querystring: { address?: string } }>("/eth/events", async (req, reply) => {
     const address = req.query.address?.trim() ?? "";

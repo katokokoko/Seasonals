@@ -4,6 +4,8 @@
  * API key / RPC URL は BFF 側にしか無い。
  */
 import type {
+  EarnPositionsResponse,
+  MenuHoldingsResponse,
   MenuProduct,
   ProtocolMenuEntry,
   TimelineEventsResponse,
@@ -55,6 +57,8 @@ export const api = {
   ethEvents: (address: string) => request<TimelineEventsResponse>(`/eth/events?address=${encodeURIComponent(address)}`),
   ethStatus: () => request<EthStatus>("/eth/status"),
   ethMenu: () => request<MenuProduct[]>("/eth/menu"),
+  ethHoldings: (address: string) => request<MenuHoldingsResponse>(`/eth/holdings?address=${encodeURIComponent(address)}`),
+  solanaEarnPositions: (wallet: string) => request<EarnPositionsResponse>(`/positions/earn?wallet=${encodeURIComponent(wallet)}`),
   ethAave: (address: string) => request<{ positions: AavePositionView[] }>(`/eth/aave?address=${encodeURIComponent(address)}`),
   uniswapExecuteOnFork: (swapper: string, tokenIn: string, tokenOut: string, amount: string) =>
     request<{ target: "fork"; plan: UniswapSwapPlan; txs: ForkExecution["txs"] }>("/eth/uniswap/execute", {
