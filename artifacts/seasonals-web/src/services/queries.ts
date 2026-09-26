@@ -13,6 +13,8 @@ import { heldPoolKeys } from "@workspace/lib/derive/earn-positions";
 import { rangeToDays, type RangeKey } from "@workspace/lib/derive/portfolio";
 import type {
   EarnPosition,
+  EthAgentProposal,
+  EthProposalListResponse,
   MenuHolding,
   MenuHoldingsResponse,
   MenuProduct,
@@ -37,6 +39,7 @@ export const queryKeys = {
   solEarn: (a: string) => ["sol", "earn", a] as const,
   portfolioHistory: (a: ActiveAddress, days: number) => ["portfolio", "history", a.chain, addressKey(a), days] as const,
   portfolioHoldings: (a: ActiveAddress) => ["portfolio", "holdings", a.chain, addressKey(a)] as const,
+  ethAgentProposals: (a: string) => ["eth", "agent-proposals", a.toLowerCase()] as const,
 };
 
 /** EVM address は大小文字を区別しない (Solana の base58 は区別する) */
@@ -155,6 +158,42 @@ export function useEthMenu() {
 
 export function useEthStatus() {
   return useQuery({ queryKey: queryKeys.ethStatus, queryFn: api.ethStatus, staleTime: 30_000, retry: false });
+}
+
+export interface AgentProposalsData {
+  proposals: EthAgentProposal[];
+  isLoading: boolean;
+  /** 閲覧中の Ethereum address が 1 つでもあるか */
+  hasAddress: boolean;
+  error?: string;
+}
+
+/**
+ * Agent が提出したリバランス案 (閲覧中の Ethereum address すべて)。
+ * 承認待ち / 実行中がある間だけ 5 秒ごとに再取得する (Agent の提出やチャット承認が反映されるように)
+ */
+export function useAgentProposals(): AgentProposalsData {
+  const eth = useActiveAddresses().filter((a) => a.chain === "ethereum");
+  const results = useQueries({
+    queries: eth.map((a) => ({
+      queryKey: queryKeys.ethAgentProposals(a.address),
+      queryFn: () => api.ethAgentProposals(a.address),
+      staleTime: 5_000,
+      retry: 1,
+      refetchInterval: (q: { state: { data?: EthProposalListResponse } }) =>
+        q.state.data?.proposals.some((p) => p.status === "pending" || p.status === "executing") ? 5_000 : false,
+    })),
+  });
+  const proposals = results
+    .flatMap((r) => r.data?.proposals ?? [])
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  const failed = results.find((r) => r.isError);
+  return {
+    proposals,
+    isLoading: results.some((r) => r.isLoading),
+    hasAddress: eth.length > 0,
+    ...(failed ? { error: errorText(failed.error) } : {}),
+  };
 }
 
 export interface MenuHoldingsData {

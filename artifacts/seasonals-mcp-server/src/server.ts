@@ -24,9 +24,14 @@ import { z } from "zod";
 import type {
   AgentPlan,
   ApprovalToken,
+  EthAgentProposal,
+  EthProposalPreviewSlot,
+  MenuHoldingsResponse,
+  MenuProduct,
   ProtocolMenuEntry,
   UnifiedTimeEventDTO,
 } from "@workspace/lib/types";
+import { SWAP_SYMBOLS } from "@workspace/lib/types";
 
 import type { BffClient } from "./bff-client";
 import type { TimelineEvent, TimelineEventsResponse } from "@workspace/lib/types";
@@ -632,6 +637,197 @@ export function buildMcpServer(
         return jsonContent(plan);
       } catch (err) {
         audit("ship_lp_strategy", null, "rejected", t0);
+        throw err;
+      }
+    }
+  );
+
+  // ── Agent rebalance proposals (Ethereum) ──────────────────────────────────
+  // 読む (menu / holdings) → 1 step ずつ preview → 複数 step の proposal を提出 → 人が承認
+  // (web の Agent ページ、または chat で明示的な yes) → fork でだけ実行。Agent は署名しない。
+
+  const DECIMAL = z.string().regex(/^[0-9]+(\.[0-9]+)?$/, "decimal string like \"100\" or \"1.5\"");
+  const PROPOSAL_STEP = z.discriminatedUnion("kind", [
+    z.object({
+      kind: z.literal("menu"),
+      productId: z.string().min(1).describe('From list_yield_menu, e.g. "ethereum:ethena:susde", "ethereum:lido:steth", "ethereum:pendle:pt:0x…"'),
+      action: z.enum(["deposit", "withdraw"]),
+      amount: DECIMAL.describe("Human-readable decimal of the token being paid (deposit) or sold/withdrawn (withdraw)"),
+      token: z.string().min(1).optional().describe('Withdraw token when the product offers a choice (Lido: "stETH" | "wstETH")'),
+    }),
+    z.object({
+      kind: z.literal("uniswap_swap"),
+      tokenIn: z.enum(SWAP_SYMBOLS),
+      tokenOut: z.enum(SWAP_SYMBOLS),
+      amount: DECIMAL.describe("Human-readable decimal of tokenIn"),
+    }),
+    z.object({
+      kind: z.literal("event_action"),
+      eventId: z.string().min(1).describe("An event id from list_events"),
+      actionType: z.string().regex(/^[a-z_]+$/).describe("One of that event's actions (lido_claim, ethena_unstake, pendle_redeem, aqua_dock …)"),
+    }),
+  ]);
+  const proposalPath = (id: string) => `/eth/agent-proposals/${encodeURIComponent(id)}`;
+
+  server.registerTool(
+    "list_yield_menu",
+    {
+      description:
+        "List the Ethereum yield menu the Seasonals Menu page shows: Lido stETH, Ethena sUSDe and the top Pendle PT / YT markets " +
+        "with live rates (APR / 30d yield / implied APY; null when the source was unavailable), product ids, maturities and facts. " +
+        "Use the product ids in propose_rebalance menu steps.",
+      inputSchema: {},
+    },
+    async () => {
+      const t0 = Date.now();
+      try {
+        const menu = await bff.get<MenuProduct[]>("/eth/menu");
+        audit("list_yield_menu", null, "ok", t0);
+        return jsonContent({ products: menu });
+      } catch (err) {
+        audit("list_yield_menu", null, "error", t0);
+        throw err;
+      }
+    }
+  );
+
+  server.registerTool(
+    "get_holdings",
+    {
+      description:
+        "Read what an address holds in the menu products (stETH / wstETH, sUSDe incl. cooldown, Pendle PT / YT) plus spendable ETH / USDe, " +
+        "as the Menu page shows them (mainnet state; amounts are smallest-unit strings with decimals). Also reports whether the local " +
+        "Anvil fork is reachable, which is where approved proposals run.",
+      inputSchema: { address: EVM_ADDRESS },
+    },
+    async ({ address }) => {
+      const t0 = Date.now();
+      try {
+        const [holdings, status] = await Promise.all([
+          bff.get<MenuHoldingsResponse>(`/eth/holdings?address=${address}`),
+          bff.get<{ executionTarget: "fork" | "mainnet"; forkReachable: boolean }>("/eth/status"),
+        ]);
+        audit("get_holdings", null, "ok", t0);
+        return jsonContent({ ...holdings, executionTarget: status.executionTarget, forkReachable: status.forkReachable });
+      } catch (err) {
+        audit("get_holdings", null, "error", t0);
+        throw err;
+      }
+    }
+  );
+
+  server.registerTool(
+    "preview_rebalance_step",
+    {
+      description:
+        "Build the UNSIGNED plan for one rebalance step against current mainnet state, without submitting anything. Runs the same " +
+        "guards as execution (Chainlink peg for swaps, Pendle TWAP for PT / YT, balances). For a uniswap_swap it returns amountOut " +
+        "(smallest units of tokenOut) so you can size the next step. Nothing is signed or sent.",
+      inputSchema: { address: EVM_ADDRESS, step: PROPOSAL_STEP },
+    },
+    async ({ address, step }) => {
+      const t0 = Date.now();
+      try {
+        const preview = await bff.post<EthProposalPreviewSlot>("/eth/agent-proposals/preview", { owner: address, step });
+        audit("preview_rebalance_step", null, "ok", t0);
+        return jsonContent(preview);
+      } catch (err) {
+        audit("preview_rebalance_step", null, "rejected", t0);
+        throw err;
+      }
+    }
+  );
+
+  server.registerTool(
+    "propose_rebalance",
+    {
+      description:
+        "Submit a multi-step rebalance (up to 6 steps: menu deposit / withdraw, USDC ⇄ USDe swap, event action) as an UNSIGNED proposal. " +
+        "The server builds every step and refuses the whole proposal if any guard fails; a later step that spends what an earlier step " +
+        "produces is deferred and checked on the fork when it runs. Size such steps from the previous step's preview amountOut (leave ~1% margin). " +
+        "Withdrawals from Lido (queue) and Ethena (cooldown) are not liquid in the same run — end the proposal at the request and let the " +
+        "calendar event handle the claim later. Nothing runs until a human approves: after submitting, show the user the id, the steps and the " +
+        "bundleHash, then either ask them to approve it on the Seasonals web Agent page (then call wait_for_rebalance_decision) or ask for an " +
+        "explicit yes in this conversation (then call execute_rebalance). Execution happens only on the local Anvil fork; the Agent never signs.",
+      inputSchema: {
+        address: EVM_ADDRESS,
+        title: z.string().min(1).max(120),
+        rationale: z.string().min(1).max(2000).describe("Why this rebalance, in plain words the user will read before approving"),
+        steps: z.array(PROPOSAL_STEP).min(1).max(6),
+      },
+    },
+    async ({ address, title, rationale, steps }) => {
+      const t0 = Date.now();
+      try {
+        const proposal = await bff.post<EthAgentProposal>("/eth/agent-proposals", { owner: address, title, rationale, steps });
+        audit("propose_rebalance", proposal.id, "ok", t0);
+        return jsonContent(proposal);
+      } catch (err) {
+        audit("propose_rebalance", null, "rejected", t0);
+        throw err;
+      }
+    }
+  );
+
+  server.registerTool(
+    "wait_for_rebalance_decision",
+    {
+      description:
+        "Wait for the human to approve (and thereby execute on the fork) or reject a proposal on the web Agent page. Long-polls until the " +
+        "status is no longer pending, then returns the proposal with per-step fork transaction results. Returns {status:\"timeout\"} if nothing " +
+        "happened within timeout_seconds; safe to call again.",
+      inputSchema: { proposalId: z.string().min(1), timeout_seconds: z.number().int().min(1).max(600).default(300) },
+    },
+    async ({ proposalId, timeout_seconds }) => {
+      const t0 = Date.now();
+      const deadline = Date.now() + timeout_seconds * 1000;
+      try {
+        for (;;) {
+          let p: EthAgentProposal | null = null;
+          try {
+            p = await bff.get<EthAgentProposal>(proposalPath(proposalId));
+          } catch (err) {
+            // 一過性の BFF エラーでは待ちを止めない (request_user_approval と同じ)。404 は即座に返す
+            if ((err as { status?: number }).status === 404) throw err;
+          }
+          if (p && p.status !== "pending") {
+            audit("wait_for_rebalance_decision", proposalId, p.status === "executed" ? "ok" : "rejected", t0);
+            return jsonContent(p);
+          }
+          if (Date.now() >= deadline) {
+            audit("wait_for_rebalance_decision", proposalId, "rejected", t0);
+            return jsonContent({ status: "timeout", proposalId });
+          }
+          await sleep(pollIntervalMs);
+        }
+      } catch (err) {
+        audit("wait_for_rebalance_decision", proposalId, "error", t0);
+        throw err;
+      }
+    }
+  );
+
+  server.registerTool(
+    "execute_rebalance",
+    {
+      description:
+        "Execute a pending proposal on the local Anvil fork after the user explicitly approved it IN THIS CONVERSATION (user_confirmed must be true " +
+        "and you must have shown them the steps). Pass the bundleHash from propose_rebalance: the server refuses anything that differs from what " +
+        "was shown. Steps run in order and stop at the first failure. Never sends to mainnet; the Agent never signs.",
+      inputSchema: {
+        proposalId: z.string().min(1),
+        bundleHash: z.string().regex(/^0x[0-9a-f]{64}$/),
+        user_confirmed: z.literal(true).describe("Only true after the user said yes to this exact proposal"),
+      },
+    },
+    async ({ proposalId, bundleHash }) => {
+      const t0 = Date.now();
+      try {
+        const p = await bff.post<EthAgentProposal>(`${proposalPath(proposalId)}/execute`, { approvedBy: "user", via: "chat", bundleHash });
+        audit("execute_rebalance", proposalId, p.status === "executed" ? "ok" : "rejected", t0);
+        return jsonContent(p);
+      } catch (err) {
+        audit("execute_rebalance", proposalId, "rejected", t0);
         throw err;
       }
     }

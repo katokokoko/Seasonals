@@ -10,7 +10,7 @@
 import { encodeFunctionData, type PublicClient } from "viem";
 import { z } from "zod";
 import { formatTokenAmount } from "@workspace/lib/utils/numeric";
-import type { TimelineEvent } from "@workspace/lib/types";
+import type { ActionPlan, TimelineEvent, TxStep } from "@workspace/lib/types";
 import { executionTarget, getEthClient, getJson, sanitizeError } from "./client";
 import { ccaAuctionAbi, erc20Abi, sUSDeAbi, withdrawalQueueAbi } from "./abis";
 import { ETHENA, LIDO, MAINNET_CHAIN_ID, PENDLE_API } from "./config";
@@ -41,8 +41,10 @@ export const ActionPlanSchema = z.object({
   source: z.string(),
   broadcast: z.literal(false),
 });
-export type ActionPlan = z.infer<typeof ActionPlanSchema>;
-export type TxStep = z.infer<typeof TxStepSchema>;
+// 型は lib が canonical (web / MCP と共有、CLAUDE.md §1)。zod の出力が lib 型に収まることをここで固定する
+({}) as z.infer<typeof ActionPlanSchema> satisfies ActionPlan;
+({}) as z.infer<typeof TxStepSchema> satisfies TxStep;
+export type { ActionPlan, TxStep };
 
 export class PlanError extends Error {
   constructor(

@@ -121,11 +121,11 @@ function canonicalJson(value: unknown): string {
 }
 
 /**
- * selected_action の canonical JSON (再帰キーソート) の sha256。
- * 同じ action には常に同じ hash (決定的) — 改ざん検出の実体。
+ * selected_action (Solana) や agent proposal の `{id, owner, steps}` (Ethereum) の
+ * canonical JSON (再帰キーソート) の sha256。同じ入力には常に同じ hash (決定的) — 改ざん検出の実体。
  */
-export function computeBundleHash(action: ActionSpec): string {
-  return `0x${createHash("sha256").update(canonicalJson(action)).digest("hex")}`;
+export function computeBundleHash(value: unknown): string {
+  return `0x${createHash("sha256").update(canonicalJson(value)).digest("hex")}`;
 }
 
 // ── approval tokens (§11.8 / §29.3) ─────────────────────────────────────────

@@ -71,6 +71,24 @@ pnpm --filter @seasonals/bff start
 - `execute_approved_action` v1 は **swap-earn の deposit/withdraw のみ** tx 構築
   (他 protocol は `unsupported_action_v1`)。mobile への tx push も後続 (§24.10)
 
+## Ethereum tools (web / ETHGlobal track)
+
+BFF の `/eth/*` を読む。UI (web) と同じ endpoint = same source of truth。
+
+| tool | 何をするか |
+|---|---|
+| `list_events` / `get_proposal` / `build_action` | 期日イベント (Pendle PT 満期 / Ethena cooldown / Lido withdrawal / CCA / Aqua review) と、その対応の未署名プラン |
+| `ship_lp_strategy` | 1inch Aqua PEGGED_STABLE (USDC/USDe) の未署名 ship plan (Chainlink peg guard) |
+| `list_yield_menu` / `get_holdings` | Menu の利回り (Lido / Ethena / Pendle PT・YT) と address の保有・spendable、fork の到達性 |
+| `preview_rebalance_step` | 1 step の未署名プラン (swap は `amountOut` を返す → 次 step の金額決め) |
+| `propose_rebalance` | 最大 6 step (menu deposit / withdraw、USDC ⇄ USDe swap、event action) の **提案** を BFF に保存。全 step を組んで guard を通し、`bundleHash` を付ける |
+| `wait_for_rebalance_decision` | 人が web の Agent ページで承認 (= fork 実行) / 却下するまで long-poll |
+| `execute_rebalance` | chat で人が明示的に yes と言った後、`bundleHash` 付きで fork 実行 (`user_confirmed: true` 必須) |
+
+不変条件: Agent は署名しない / mainnet 送信経路なし / 実行は Anvil fork のみ / 表示した `bundleHash` と違う内容は BFF が拒否 / peg・TWAP・残高 guard は fail-closed。
+step は symbol + 人が読む decimal (`{kind:"uniswap_swap", tokenIn:"USDC", tokenOut:"USDe", amount:"100"}`) で書き、address / smallest unit への変換は BFF だけが行う。
+承認の 2 経路 (web のワンタップ / chat の yes) はどちらも同じ `POST /eth/agent-proposals/:id/execute` に収束し、web の Agent ページには chat 承認分も同じ状態で出る。
+
 ## v2 backlog
 
 plan_rollover / prompts 残 3 種 / HTTP+SSE transport / rate limit (§15.4) /

@@ -150,3 +150,14 @@ code {
   color: var(--c-caramelDark);
   font-weight: var(--w-bold);
 }
+.proposal-inbox {
+  display: grid;
+  gap: var(--sp-md);
+}
+.proposal-card .plan-steps li {
+  display: grid;
+  gap: 2px;
+}
+.proposal-card .fork-exec {
+  flex-wrap: wrap;
+}

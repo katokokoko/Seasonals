@@ -12,3 +12,5 @@ export * from "./autonomous";
 export * from "./timeline";
 export * from "./menu-product";
 export * from "./portfolio";
+export * from "./eth-plan";
+export * from "./eth-agent-proposal";

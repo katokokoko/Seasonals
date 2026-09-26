@@ -243,6 +243,13 @@ Web 側 (`artifacts/seasonals-web`) は `BFF_URL` (Vite dev proxy 先、node 側
 - 未検証: `ETHERSCAN_API_KEY` を入れた実 address での Ethereum 履歴 (key 未設定のため)
 - 既知: category 色 (Seeker と共有) は dataviz の CVD / contrast 検査を満たさない組み合わせがあるため、凡例に名前・割合・金額を併記し、保有表を table view にしている
 
+### Agent rebalance proposals (MCP → BFF → web / chat approval → fork)
+- 実装済み: `lib/types/eth-agent-proposal.ts` (step は symbol + decimal、proposal / preview / execution の wire 型)、`lib/types/eth-plan.ts` (`ActionPlan` / `ForkExecution` を web のローカル定義から lib へ)、BFF `ethereum/agent-proposals.ts` (submit で全 step を既存 builder で組み guard を fail-closed で通す、後続 step の `insufficient_balance` だけ「fork 実行時に検証」として保留、`bundleHash = sha256({id, owner, steps})`、24h 期限、fork 実行は既存 executor を順に呼び最初の失敗で停止、`.data/eth-agent-proposals.json` に永続化、pending は `user_plan` / `agent_proposal` event としてカレンダーに出す)、routes `/eth/agent-proposals` (submit / preview / list / get / execute / reject)、MCP 6 tools (`list_yield_menu` / `get_holdings` / `preview_rebalance_step` / `propose_rebalance` / `wait_for_rebalance_decision` / `execute_rebalance`)、web `/agent` の ProposalInbox (ワンタップ承認 = fork 実行、reject、step 毎の tx 結果、pending がある間 5 秒 poll)
+- 判断: 承認は approval token ではなく `bundleHash` + status + 期限 + per-id lock (web と chat の両経路が同じ execute に収束、表示したものと違う内容は 409)。LLM は MCP client 側 (BFF は決定的のまま)。Lido queue / Ethena cooldown は流動化しないので proposal は「withdraw 要求」で終え、claim は既存のカレンダーイベント → `get_proposal` / `build_action` に任せる。`amount:"max"` は未対応 (swap preview の `amountOut` から Agent が決める)
+- §32.2 enum 変更: `USER_EVENT_KINDS` に `agent_proposal` 追加 (web `labels.ts` の KIND_LABEL / shapeForKind も更新)
+- 検証: unit (BFF `agent-proposals.test.ts` 10 件、route 4xx、MCP 19 件、web ProposalInbox 3 件)。実 fork での e2e (USDC → USDe → sUSDe、PT 売り → 別 PT 買い) は未実施
+- 既知: 認証なし (既存 `/eth/execute` と同水準)。holdings / events は mainnet を読むので fork 実行後も保有表示は変わらない (tx 結果と executed event で見せる)
+
 ## 最終状態 (2026-09-26 05:30 JST 時点)
 
 | 領域 | 状態 | 実際に確認したこと |

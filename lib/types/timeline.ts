@@ -36,7 +36,8 @@ export const ETHEREUM_EVENT_KINDS = [
 ] as const;
 export type EthereumEventKind = (typeof ETHEREUM_EVENT_KINDS)[number];
 
-export const USER_EVENT_KINDS = ["user_cashflow", "user_note", "action_executed"] as const;
+/** agent_proposal: Agent が提案し、人の承認を待っているリバランス (eth-agent-proposal.ts) */
+export const USER_EVENT_KINDS = ["user_cashflow", "user_note", "action_executed", "agent_proposal"] as const;
 export type UserEventKind = (typeof USER_EVENT_KINDS)[number];
 
 export type TimelineEventKind = TimeEventCategory | EthereumEventKind | UserEventKind;
