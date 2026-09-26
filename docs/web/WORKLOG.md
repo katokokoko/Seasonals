@@ -41,6 +41,7 @@ Branch: `ethglobal-tokyo-web` (main から分岐)。ETHGlobal Tokyo 2026 期間�
 | 変数 | 用途 |
 |---|---|
 | `INFURA_API_KEY` | Ethereum mainnet RPC (Infura)。`ETHEREUM_RPC_URL` で上書き可 |
+| `ETHERSCAN_API_KEY` | Dashboard の Ethereum 評価額履歴 (Etherscan API V2 の tx 差分)。無ければ `/eth/portfolio/*` は 503 `etherscan_not_configured` |
 | `UNISWAP_API_KEY` | Uniswap Trading API proxy |
 | `ETH_EXECUTION_TARGET` | `fork` (既定) / `mainnet` (送信拒否、plan のみ) |
 | `ETH_FORK_RPC_URL` | Anvil fork (既定 `http://127.0.0.1:8545`) |
@@ -234,6 +235,13 @@ Web 側 (`artifacts/seasonals-web`) は `BFF_URL` (Vite dev proxy 先、node 側
 - 未実装: Aave への supply / borrow action、hidden concentration warning
 
 ### Aave — `84e6b74` (push 済み)
+
+### Dashboard Portfolio — 資産推移グラフ + category 別 Allocation
+- 実装済み: `lib/derive/portfolio.ts` (mobile から chain 非依存 helper を移設 + 複数 address 合算)、BFF の履歴 engine を chain 非依存化 (`portfolio/engine.ts`)、`/portfolio/holdings`、Ethereum source (`/eth/portfolio/history` / `holdings`、Etherscan V2 + RPC + Chainlink + DeFiLlama)、web Dashboard の Portfolio (推移 / donut / 保有一覧 / address chip / Total・Deposited)
+- 判断: indexer は Etherscan (gas・internal tx まで厳密)。stETH は approximated、Aave V4 は履歴から除外して現在値のみ。取れなかった address は合算から外し理由を表示 (0 / $0.00 と見せない)。設計と新チェーン手順は `docs/portfolio-history-design.md`
+- 検証: `pnpm -r test` (lib 196 / mobile 475 / BFF 460 / web 41 / mcp 15) と `pnpm -r typecheck` green、e2e 失敗 0。fixture で 1440 / 1280 を screenshot 目視、実 BFF で key 未設定時の表示を確認
+- 未検証: `ETHERSCAN_API_KEY` を入れた実 address での Ethereum 履歴 (key 未設定のため)
+- 既知: category 色 (Seeker と共有) は dataviz の CVD / contrast 検査を満たさない組み合わせがあるため、凡例に名前・割合・金額を併記し、保有表を table view にしている
 
 ## 最終状態 (2026-09-26 05:30 JST 時点)
 
