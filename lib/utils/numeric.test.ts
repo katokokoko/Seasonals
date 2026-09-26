@@ -22,6 +22,8 @@ import {
   fromBigInt,
   usd8ToBigInt,
   compareUsd8,
+  signedUsd8ToBigInt,
+  bigIntToUsd8,
   // human ↔ smallest
   toHumanReadable,
   toSmallestUnit,
@@ -356,5 +358,19 @@ describe("usd8ToBigInt / compareUsd8 (§4.5、Phase 8.29)", () => {
     expect(compareUsd8("500.00000000", "500.00000001")).toBe(-1);
     expect(compareUsd8("500.00000001", "500.00000000")).toBe(1);
     expect(compareUsd8("500", "500.00000000")).toBe(0);
+  });
+});
+
+describe("signedUsd8ToBigInt / bigIntToUsd8", () => {
+  it("round-trips signed values without precision loss", () => {
+    expect(signedUsd8ToBigInt("-12.5")).toBe(-1_250_000_000n);
+    expect(signedUsd8ToBigInt("0.00000001")).toBe(1n);
+    expect(bigIntToUsd8(-1_250_000_000n)).toBe("-12.50000000");
+    expect(bigIntToUsd8(1n)).toBe("0.00000001");
+    expect(bigIntToUsd8(0n)).toBe("0.00000000");
+  });
+  it("rejects invalid input", () => {
+    expect(() => signedUsd8ToBigInt("--1")).toThrow();
+    expect(() => signedUsd8ToBigInt("1e5")).toThrow();
   });
 });
