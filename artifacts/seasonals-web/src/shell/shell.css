@@ -101,6 +101,13 @@
   color: var(--c-textSubtitle);
   background: var(--c-bgSecondary);
 }
+/* chain mark (Ethereum 公式ロゴ: 縦長なので高さ基準、inline で文字と並ぶ) ── */
+.chain-logo {
+  display: inline-block;
+  flex: none;
+  vertical-align: -0.15em;
+  object-fit: contain;
+}
 
 /* ── buttons ─────────────────────────────────────────────────────────────── */
 .icon-button {

@@ -277,6 +277,10 @@
   background: var(--c-textOnColor);
   box-shadow: var(--sh-inset);
 }
+.protocol-badge.contain {
+  object-fit: contain;
+  padding: 14%;
+}
 .protocol-badge.monogram {
   display: inline-grid;
   place-items: center;
