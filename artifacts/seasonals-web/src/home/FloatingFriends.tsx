@@ -30,8 +30,8 @@ const FRIENDS: Friend[] = [
   { src: chara2, zone: [".portal-card.slot-menu", ".portal-card.slot-dashboard"], tx: [33, 47], ty: [26, 31], phase: 2.1 },
 ];
 
-const MAX_SIZE = 168;
-const MIN_SIZE = 96;
+const MAX_SIZE = 100;
+const MIN_SIZE = 72;
 const MARGIN = 18;
 const FLEE_RADIUS = 140;
 const TAU = Math.PI * 2;
@@ -95,7 +95,7 @@ export function FloatingFriends() {
         const z = (smooth[i] = prev
           ? { x0: prev.x0 + (zone.x0 - prev.x0) * k, x1: prev.x1 + (zone.x1 - prev.x1) * k, y0: prev.y0 + (zone.y0 - prev.y0) * k, y1: prev.y1 + (zone.y1 - prev.y1) * k }
           : zone);
-        const size = Math.round(Math.min(MAX_SIZE, (z.x1 - z.x0) * 0.62, (z.y1 - z.y0) * 0.7));
+        const size = Math.round(Math.min(MAX_SIZE, (z.x1 - z.x0) * 0.38, (z.y1 - z.y0) * 0.42));
         const ax = Math.max(0, (z.x1 - z.x0 - size) / 2);
         const ay = Math.max(0, (z.y1 - z.y0 - size) / 2);
         const cx = (z.x0 + z.x1) / 2;

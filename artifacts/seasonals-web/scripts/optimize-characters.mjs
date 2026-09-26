@@ -3,10 +3,10 @@
  * 表示用の WebP に変換する (1 回だけ手で実行する。画像処理の依存を増やさないよう
  * e2e と同じ headless Chrome の canvas で処理する)。
  *
- *   node scripts/optimize-characters.mjs <in.png> <out.webp> [longSide=360]
+ *   node scripts/optimize-characters.mjs <in.png> <out.webp> [longSide=240]
  *
  * - 透過の余白を alpha の bounding box で切り詰める (alpha > 8 を中身とみなし、4px の余白を残す)
- * - 長辺 longSide px に縮小 (表示 ~170px × DPR 2)
+ * - 長辺 longSide px に縮小 (表示 ~100px × DPR 2 + 余裕)
  * - WebP (quality 0.9、alpha 付き) で書き出す
  */
 import { readFileSync, writeFileSync } from "node:fs";
@@ -14,10 +14,10 @@ import { chromium } from "playwright-core";
 
 const [input, output, longSideArg] = process.argv.slice(2);
 if (!input || !output) {
-  console.error("usage: node scripts/optimize-characters.mjs <in.png> <out.webp> [longSide=360]");
+  console.error("usage: node scripts/optimize-characters.mjs <in.png> <out.webp> [longSide=240]");
   process.exit(2);
 }
-const longSide = Number(longSideArg ?? 360);
+const longSide = Number(longSideArg ?? 240);
 const src = `data:image/png;base64,${readFileSync(input).toString("base64")}`;
 
 const browser = await chromium.launch({ channel: "chrome", headless: true });
