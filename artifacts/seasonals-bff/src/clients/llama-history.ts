@@ -60,9 +60,25 @@ export function _clearLlamaHistoryCacheForTest(): void {
   cache.clear();
 }
 
-/** mint → coins API のキー (Solana chain 固定) */
-export function llamaCoinKey(mint: string): string {
-  return `solana:${mint}`;
+/** DeFiLlama coins API の chain prefix (Seasonals の ChainId と同名) */
+export type LlamaChain = "solana" | "ethereum";
+
+/** Ethereum の native ETH を表す asset key (ERC-20 address と衝突しない擬似キー) */
+export const ETH_NATIVE_KEY = "ETH";
+
+/**
+ * asset key → coins API のキー。
+ * Solana は `solana:<mint>`、Ethereum は `ethereum:<address>`、native ETH は
+ * contract address を持たないので `coingecko:ethereum`。
+ */
+export function llamaCoinKey(
+  mint: string,
+  chain: LlamaChain = "solana"
+): string {
+  if (chain === "ethereum" && mint === ETH_NATIVE_KEY) {
+    return "coingecko:ethereum";
+  }
+  return `${chain}:${mint}`;
 }
 
 /**
@@ -122,7 +138,8 @@ export async function fetchLlamaPriceSeries(
   mints: string[],
   fromSec: number,
   toSec: number,
-  stepSec: number
+  stepSec: number,
+  chain: LlamaChain = "solana"
 ): Promise<Map<string, PriceSeries>> {
   const unique = [...new Set(mints)].sort();
   const out = new Map<string, PriceSeries>();
@@ -133,11 +150,11 @@ export async function fetchLlamaPriceSeries(
     MAX_SPAN,
     Math.max(1, Math.ceil((toSec - fromSec) / Math.max(1, stepSec)) + 1)
   );
-  const cacheKey = `${unique.join(",")}|${period}|${span}|${fromSec}`;
+  const cacheKey = `${chain}|${unique.join(",")}|${period}|${span}|${fromSec}`;
   const cached = cache.get(cacheKey);
   if (cached && Date.now() - cached.at < CACHE_TTL_MS) return cached.data;
 
-  const coins = unique.map(llamaCoinKey).join(",");
+  const coins = unique.map((m) => llamaCoinKey(m, chain)).join(",");
   const url =
     `${CHART_URL}/${coins}?start=${fromSec}&span=${span}` +
     `&period=${period}&searchWidth=${period}`;
@@ -158,7 +175,7 @@ export async function fetchLlamaPriceSeries(
         coins?: Record<string, LlamaChartCoin>;
       };
       for (const mint of unique) {
-        const coin = json.coins?.[llamaCoinKey(mint)];
+        const coin = json.coins?.[llamaCoinKey(mint, chain)];
         if (!coin || !Array.isArray(coin.prices)) continue;
         // confidence は「この価格をどれだけ信用してよいか」。低い値は採用しない
         if (

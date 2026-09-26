@@ -47,6 +47,8 @@ import {
   type EarnPosition,
   type EarnPositionsResponse,
   type Position,
+  type PortfolioHistoryResponse,
+  type PortfolioHoldingsResponse,
   type UnifiedTimeEventDTO,
 } from "@workspace/lib/types";
 import {
@@ -96,7 +98,6 @@ import {
 // 8.58: 過去価格 (Pyth Benchmarks) と履歴組み立ての純関数
 import {
   fetchPriceSeries,
-  priceAtOrBefore,
   type PriceSeries,
 } from "./clients/pyth-history";
 // 8.73: LST の交換レートを protocol 自身の実データから取る (Sanctum の集計値は
@@ -116,15 +117,10 @@ import { anchorSeries, fetchLlamaPriceSeries } from "./clients/llama-history";
 import { readableUpstreamError } from "./clients/http";
 import { isDepositedMint } from "@workspace/lib/config/deposited-mints";
 import {
-  buildHistorySeries,
-  firstFundedTime,
-  replayBalances,
-  sampleTimestamps,
-  HISTORY_PRICE_LAG_SEC,
   type BalanceDelta,
   type HistoryAsset,
-  type HistoryPoint,
 } from "./portfolio-history";
+import { createHistoryEngine, type HistoryInputs } from "./portfolio/engine";
 import {
   SWAP_EARN_MARKETS,
   findMarketByProtocolAsset,
@@ -403,68 +399,29 @@ export function normalizeJup8DecimalUsd(
 }
 
 // ── Phase 8.58: portfolio history (tx 遡り + 過去価格) ───────────────────────
+//
+// 逆算・値付け・cache / SWR は chain 非依存の portfolio/engine.ts に切り出した
+// (Ethereum も同じエンジンを使う)。ここに残るのは Solana 固有の
+// 「現在残高 + tx 差分の取り方」と「過去価格の出所」だけ。
 
-/** wallet+days 単位の応答 cache (5 分)。過去価格自体は pyth-history が別途保持 */
 /** native SOL は DAS が WSOL mint の synthetic entry で返す (helius.ts:151) */
 const WSOL_MINT = "So11111111111111111111111111111111111111112";
 
-const historyCache = new Map<
-  string,
-  { at: number; data: PortfolioHistoryResponse }
->();
-const HISTORY_CACHE_TTL_MS = 5 * 60_000;
 /** tx ページングの安全弁 (100 件 × 10 = 1000 tx) */
 const HISTORY_MAX_TX_PAGES = 10;
 
-/**
- * 8.60: wallet 単位の上流キャッシュ。range が違っても「現在残高 + tx 差分」は
- * 同じなので、90/365/730 で Helius DAS と tx ページングを 3 回やり直していた。
- * range をまたいで共有する (価格系列は pyth-history 側が別途 cache)。
- */
-interface WalletHistoryInputs {
-  current: Map<string, bigint>;
-  assets: HistoryAsset[];
-  deltas: BalanceDelta[];
-  oldestSeen: number;
-  /** この差分が何日前まで遡れているか (これより長い range は再取得が要る) */
-  fetchedDays: number;
-}
-const walletInputsCache = new Map<
-  string,
-  { at: number; data: WalletHistoryInputs }
->();
-
-export function _clearPortfolioHistoryCacheForTest(): void {
-  historyCache.clear();
-  walletInputsCache.clear();
-}
-
-export interface PortfolioHistoryResponse {
-  points: HistoryPoint[];
-  /** 残高を保証できる最も古い時刻 (unix 秒、tx window の制約)。空なら null */
-  oldest_at: number | null;
-  /** その日の実価格が無く現在価格で近似した asset */
-  approximated_symbols: string[];
-}
+const protocolCategoryById = new Map(
+  fixtureProtocols.map((p) => [p.protocol_id, p.category] as const)
+);
 
 /**
- * 8.60: 「現在残高 + tx 差分」を wallet 単位で取得・キャッシュする。
- * 要求 range より短い期間しか遡っていない cache は再取得する。
+ * 8.60: 「現在残高 + tx 差分」を取得する (cache は engine 側)。
  */
-async function loadWalletHistoryInputs(
+async function loadSolanaHistoryInputs(
   wallet: string,
   days: number,
   nowSeconds: number
-): Promise<WalletHistoryInputs | null> {
-  const cached = walletInputsCache.get(wallet);
-  if (
-    cached &&
-    Date.now() - cached.at < HISTORY_CACHE_TTL_MS &&
-    cached.data.fetchedDays >= days
-  ) {
-    return cached.data;
-  }
-
+): Promise<HistoryInputs | null> {
   // 1. 現在残高 (DAS)。native SOL は WSOL mint の synthetic entry で入る。
   // 8.70: jlToken の単価は DAS ではなく protocol の交換レートを使う (取得失敗は
   // DAS に degrade)。ここを直さないと 8.64 のアンカーが誤差を系列全体に広げる
@@ -485,6 +442,9 @@ async function loadWalletHistoryInputs(
     const symbol =
       known?.asset_symbol ?? asset.token_info?.symbol ?? asset.id.slice(0, 4);
     const priceFloat = asset.token_info?.price_info?.price_per_token;
+    // holdings 用の protocol / category は /positions (mapAssetsToPositions) と
+    // 同じ規則 → mobile の aggregateAllocation と同じ category に落ちる
+    const protocolId = known?.protocol_id ?? deriveWalletProtocol(symbol);
     current.set(asset.id, toBigInt(balance));
     historyAssets.push({
       mint: asset.id,
@@ -498,6 +458,11 @@ async function loadWalletHistoryInputs(
         (typeof priceFloat === "number" && Number.isFinite(priceFloat)
           ? priceFloat.toFixed(8)
           : undefined),
+      protocolId,
+      category:
+        protocolCategoryById.get(protocolId) ??
+        known?.category ??
+        PositionCategory.Other,
     });
   }
   if (historyAssets.length === 0) return null;
@@ -524,6 +489,7 @@ async function loadWalletHistoryInputs(
   const collectDeltas = async (): Promise<{
     deltas: BalanceDelta[];
     oldestSeen: number;
+    complete: boolean;
   }> => {
     const deltas: BalanceDelta[] = [];
     let before: string | undefined;
@@ -533,7 +499,7 @@ async function loadWalletHistoryInputs(
         limit: 100,
         ...(before ? { before } : {}),
       });
-      if (txs.length === 0) break;
+      if (txs.length === 0) return { deltas, oldestSeen, complete: true };
       for (const tx of txs) {
         oldestSeen = Math.min(oldestSeen, tx.timestamp);
         for (const account of tx.accountData ?? []) {
@@ -558,102 +524,42 @@ async function loadWalletHistoryInputs(
         }
       }
       before = txs[txs.length - 1]?.signature;
-      if (!before || oldestSeen <= cutoff) break;
+      if (!before || oldestSeen <= cutoff) {
+        return { deltas, oldestSeen, complete: true };
+      }
     }
-    return { deltas, oldestSeen };
+    // page 上限で打ち切り = これより前の残高は不明
+    return { deltas, oldestSeen, complete: false };
   };
 
-  const [{ deltas, oldestSeen }] = await Promise.all([
+  const [{ deltas, oldestSeen, complete }] = await Promise.all([
     collectDeltas(),
     fillOraclePrices,
   ]);
 
-  const data: WalletHistoryInputs = {
+  return {
     current,
     assets: historyAssets,
     deltas,
     oldestSeen,
     fetchedDays: days,
+    complete,
   };
-  walletInputsCache.set(wallet, { at: Date.now(), data });
-  return data;
 }
 
-/** 8.83: SWR の背景再計算が同一 key で多重に走らないためのガード */
-const historyRefreshing = new Set<string>();
-
-export async function buildPortfolioHistory(
-  wallet: string,
-  days: number,
-  nowSeconds = Math.floor(Date.now() / 1000)
-): Promise<PortfolioHistoryResponse> {
-  const cacheKey = `${wallet}|${days}`;
-  const cached = historyCache.get(cacheKey);
-  if (cached) {
-    if (Date.now() - cached.at < HISTORY_CACHE_TTL_MS) {
-      return cached.data;
-    }
-    // 8.83: stale-while-revalidate — TTL 超過でも即返し、裏で作り直す。
-    // チャートは display-only なので bounded staleness は許容 (§4.6 の
-    // oracle fail-closed 系とは別経路で、実行判定には一切使われない)
-    if (!historyRefreshing.has(cacheKey)) {
-      historyRefreshing.add(cacheKey);
-      void computePortfolioHistory(wallet, days, Math.floor(Date.now() / 1000))
-        .then((data) => {
-          historyCache.set(cacheKey, { at: Date.now(), data });
-        })
-        .catch(() => undefined)
-        .finally(() => {
-          historyRefreshing.delete(cacheKey);
-        });
-    }
-    return cached.data;
-  }
-
-  const data = await computePortfolioHistory(wallet, days, nowSeconds);
-  historyCache.set(cacheKey, { at: Date.now(), data });
-  return data;
-}
-
-async function computePortfolioHistory(
-  wallet: string,
-  days: number,
-  nowSeconds: number
-): Promise<PortfolioHistoryResponse> {
-  const cutoff = nowSeconds - days * 86_400;
-  const inputs = await loadWalletHistoryInputs(wallet, days, nowSeconds);
-  if (!inputs) {
-    return { points: [], oldest_at: null, approximated_symbols: [] };
-  }
-  const { current, assets: historyAssets, deltas, oldestSeen } = inputs;
-
-  // 3. 描画する時刻の並び → 残高の逆算
-  //
-  // 8.59: 刻みは **実際に描ける期間** から決める。要求 range から決めると、
-  // 履歴が range より短い wallet で密度が落ちる (1Y 指定なのに描けるのが 80 日
-  // しかない場合、4 日刻みで 20 点にしかならず 3M より粗くなっていた)。
-  // 最初に資産を持った時刻より前は差分から何も言えないので下限にする。
-  // 途中のゼロ期間は 0 の点として描かれる (8.60)
-  const fundedFrom = firstFundedTime(current, deltas, cutoff);
-  const oldestProvable = Math.max(oldestSeen, cutoff, fundedFrom ?? 0);
-  const provableDays = Math.max(1, (nowSeconds - oldestProvable) / 86_400);
-  const stamps1 = sampleTimestamps(
-    Math.min(days, provableDays),
-    nowSeconds
-  ).filter((at) => at >= oldestProvable);
-  if (stamps1.length === 0) {
-    return { points: [], oldest_at: null, approximated_symbols: [] };
-  }
-  const balancesByTime = replayBalances(current, deltas, stamps1);
-
-  // 4. その時点の実価格。8.59: **symbol ごとに 1 リクエスト**で範囲全体の系列を
-  // 取り、各点は「その時刻以前の直近」を引く。点ごとに個別取得すると ~90 本の
-  // リクエストになり rate limit で大半が落ちていた (実機で平坦線として露見)
-  const step = stamps1.length > 1 ? stamps1[1]! - stamps1[0]! : 86_400;
-  // 先頭の点にも「その時刻以前の bar」が要るので刻み 2 個分手前から
-  // (D 解像度は UTC 深夜境界なので、padding が無いと初日が近似落ちする)
-  const priceFrom = stamps1[0]! - 2 * step;
-  const priceTo = stamps1[stamps1.length - 1]!;
+/**
+ * 8.59 / 8.64: 過去価格。Pyth feed がある asset は **symbol ごとに 1 リクエスト**で
+ * 範囲全体の系列を取り (点ごとに取ると ~90 本で rate limit に落ちた)、feed が無い
+ * asset (jlUSDC / LST / vault share) は DeFiLlama から。これが無いと利回りで単価が
+ * 上がる token の過去が全部「現在価格」になり、Deposited のグラフが横一直線になる。
+ * 価格マップは **mint キー** で合流させる (8.64)。
+ */
+async function solanaPriceSeries(
+  historyAssets: HistoryAsset[],
+  priceFrom: number,
+  priceTo: number,
+  step: number
+): Promise<Map<string, PriceSeries>> {
   const pricedSymbols = [
     ...new Set(
       historyAssets
@@ -661,9 +567,6 @@ async function computePortfolioHistory(
         .map((a) => (a.symbol === "WSOL" ? "SOL" : a.symbol))
     ),
   ];
-  // 8.64: Pyth feed が無い asset (jlUSDC / LST / vault share) は DeFiLlama から。
-  // これが無いと利回りで単価が上がる token の過去が全部「現在価格」になり、
-  // Deposited のグラフが横一直線になっていた
   const feedlessMints = historyAssets
     .filter((a) => !a.feedId)
     .map((a) => a.mint);
@@ -680,8 +583,6 @@ async function computePortfolioHistory(
     fetchLlamaPriceSeries(feedlessMints, priceFrom, priceTo, step),
   ]);
 
-  // 8.64: 価格マップは **mint キー**。Pyth (symbol 単位) / llama (mint 単位) の
-  // どちらの出所もここで同じ形に合流する
   const seriesByMint = new Map<string, PriceSeries>();
   for (const asset of historyAssets) {
     if (asset.feedId) {
@@ -694,29 +595,44 @@ async function computePortfolioHistory(
     // 見出しの現在値 (DAS 価格) と chart の右端を揃える。形は観測値のまま
     if (llama) seriesByMint.set(asset.mint, anchorSeries(llama, asset.currentUsd8));
   }
-  const pricesByTime = new Map<number, Map<string, string>>();
-  for (const at of stamps1) {
-    const forPoint = new Map<string, string>();
-    for (const [mint, series] of seriesByMint) {
-      const usd8 = priceAtOrBefore(series, at);
-      if (usd8) forPoint.set(mint, usd8);
-    }
-    if (forPoint.size > 0) pricesByTime.set(at, forPoint);
-  }
+  return seriesByMint;
+}
 
-  const series = buildHistorySeries(
-    stamps1,
-    balancesByTime,
-    historyAssets,
-    pricesByTime,
-    WSOL_MINT
-  );
-  // cache 書き込みは buildPortfolioHistory (SWR wrapper) 側の責務 (8.83)
+const solanaHistoryEngine = createHistoryEngine({
+  chain: "solana",
+  nativePriceKey: WSOL_MINT,
+  loadInputs: loadSolanaHistoryInputs,
+  priceSeries: solanaPriceSeries,
+});
+
+export function _clearPortfolioHistoryCacheForTest(): void {
+  solanaHistoryEngine.clear();
+}
+
+/**
+ * Solana の履歴。応答は lib の `PortfolioHistoryResponse` に、mobile 互換の
+ * `sol` / `deposited_sol` alias (= native) を足したもの。
+ */
+export async function buildPortfolioHistory(
+  wallet: string,
+  days: number,
+  nowSeconds = Math.floor(Date.now() / 1000)
+): Promise<PortfolioHistoryResponse> {
+  const res = await solanaHistoryEngine.history(wallet, days, nowSeconds);
   return {
-    points: series.points,
-    oldest_at: series.points[0]?.at ?? null,
-    approximated_symbols: series.approximatedSymbols,
+    ...res,
+    points: res.points.map((p) => ({
+      ...p,
+      sol: p.native,
+      deposited_sol: p.deposited_native,
+    })),
   };
+}
+
+export function buildPortfolioHoldings(
+  wallet: string
+): Promise<PortfolioHoldingsResponse> {
+  return solanaHistoryEngine.holdings(wallet);
 }
 
 /**
@@ -4346,6 +4262,35 @@ export async function buildServer(
         return {
           error: "portfolio_history_unavailable",
           message: readableUpstreamError(err, "Portfolio history sources"),
+        };
+      }
+    }
+  );
+
+  /**
+   * web Dashboard: 現在の保有を category 付きで返す (Allocation donut 用)。
+   * 履歴と同じ入力 cache から作るので、グラフの右端とパイの合計が揃う。
+   * 単価が不明な asset は載せない (0 として見せない)。失敗は履歴と同じく 503。
+   */
+  app.get<{ Querystring: { wallet?: string } }>(
+    "/portfolio/holdings",
+    async (req, reply) => {
+      const wallet = req.query?.wallet?.trim();
+      if (!wallet) {
+        reply.code(400);
+        return { error: "wallet_required" };
+      }
+      try {
+        return await buildPortfolioHoldings(wallet);
+      } catch (err) {
+        req.log.warn(
+          { err: (err as Error).message, wallet },
+          "portfolio holdings failed"
+        );
+        reply.code(503);
+        return {
+          error: "portfolio_holdings_unavailable",
+          message: readableUpstreamError(err, "Portfolio holdings sources"),
         };
       }
     }
