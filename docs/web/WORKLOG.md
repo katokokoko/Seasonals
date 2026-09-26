@@ -249,7 +249,9 @@ Web 側 (`artifacts/seasonals-web`) は `BFF_URL` (Vite dev proxy 先、node 側
 - §32.2 enum 変更: `USER_EVENT_KINDS` に `agent_proposal` 追加 (web `labels.ts` の KIND_LABEL / shapeForKind も更新)
 - 検証: unit (BFF `agent-proposals.test.ts` 10 件、route 4xx、MCP 19 件、web ProposalInbox 3 件)。**実 fork で e2e (シナリオ A、2026-09-26)**: stdio の MCP から `get_holdings` → `list_yield_menu` → `preview_rebalance_step` (amountOut 100.03 USDe) → `propose_rebalance` (100 USDC → USDe swap、99 USDe → sUSDe) → web `/agent` のカードで承認 → fork で 5 tx すべて success (approve Permit2 / permit / swap / approve sUSDe / stake 99 USDe ≈ 79.2 sUSDe) → `wait_for_rebalance_decision` が `executed` を返し、カレンダーに Executed イベント 2 件。owner は Binance 14 (`0x28C6…1d60`) を impersonate
 - e2e で直したもの: `wait_for_rebalance_decision` が `executing` で即返っていた (終端状態まで待つように)。web の proposal 一覧は pending / executing が無くても 15 秒ごとに再取得 (Agent の新しい提出が触らずに出るように)
-- 既知: 起動直後の fork では最初の実行が upstream の state 取得待ちで viem の 10 秒 timeout に当たり `failed` になることがある (2 回目以降は state がキャッシュされ数十秒で完走)。認証なし (既存 `/eth/execute` と同水準)。holdings / events は mainnet を読むので fork 実行後も保有表示は変わらない (tx 結果と executed event で見せる)。シナリオ B (PT 売り → 別 PT 買い、chat 承認) は未実施
+- 既知: 起動直後の fork では最初の実行が upstream の state 取得待ちで viem の 10 秒 timeout に当たり `failed` になることがある (2 回目以降は state がキャッシュされ数十秒で完走)。認証なし (既存 `/eth/execute` と同水準)。holdings / events は mainnet を読むので fork 実行後も保有表示は変わらない (tx 結果と executed event で見せる)
+- **シナリオ B (chat 承認、2026-09-26)**: owner `0x1121…0a11` で `propose_rebalance` (0.1 PT-apyUSD を売る、TWAP 0.03% 乖離で通過) → Agent が id / steps / bundleHash を人に提示して yes をもらう → `execute_rebalance(user_confirmed: true)` → fork で 2 tx success (router approve / sell 0.1 PT → 0.0688 apyUSD)、`execution.via: "chat"`。同時に oracle 未準備の PT-USDx を売る提案は提出時点で `oracle_unavailable` として拒否 (fail-closed は提案段階で効く)。実行済み proposal の再実行 / 誤 bundleHash / approvedBy 無しは live BFF でも 409 / 409 / 403
+- Pendle の「PT 売り → 別 PT 買い」は market ごとに underlying が違う (apyUSD / USDx / reUSD …) ため、同じ underlying の後続 market が無いと組めない。デモでは単発の売りにした
 
 ## 最終状態 (2026-09-26 05:30 JST 時点)
 
