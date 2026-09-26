@@ -25,14 +25,12 @@ export function menuActionable(product: MenuProduct): boolean {
   return product.id in TOKENS || Boolean(product.tokenKind);
 }
 
-const LABEL: Record<string, Record<MenuAction, string>> = {
-  "ethereum:lido:steth": { deposit: "Stake ETH", withdraw: "Request withdrawal" },
-  "ethereum:ethena:susde": { deposit: "Stake USDe", withdraw: "Start cooldown" },
-};
-
-export function actionLabel(product: MenuProduct, action: MenuAction): string {
-  if (product.tokenKind) return `${action === "deposit" ? "Buy" : "Sell"} ${product.tokenKind.toUpperCase()}`;
-  return LABEL[product.id]?.[action] ?? (action === "deposit" ? "Deposit" : "Withdraw");
+/**
+ * ボタンと見出しは全商品で Deposit / Withdraw に統一する。
+ * 中身の違い (Lido の stake / 出金申請、Ethena の cooldown、Pendle の売買) はプランの summary と注意書きで示す
+ */
+export function actionLabel(action: MenuAction): string {
+  return action === "deposit" ? "Deposit" : "Withdraw";
 }
 
 function balanceOf(data: MenuHoldingsResponse | undefined, product: MenuProduct, action: MenuAction, symbol: string): TokenAmountView | undefined {
@@ -112,7 +110,7 @@ export function MenuActionPanel({
   return (
     <div className="menu-action" aria-live="polite">
       <div className="preview-head">
-        <p className="overline">{actionLabel(product, action)}</p>
+        <p className="overline">{actionLabel(action)}</p>
         {plan.data && <TargetBadge plan={plan.data} />}
       </div>
       {!plan.data ? (

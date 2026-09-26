@@ -312,7 +312,7 @@ export function EthMenuCard({ product, holding, ctx }: { product: MenuProduct; h
       {canAct && !panel && (
         <div className="menu-item-cta">
           <button type="button" className="btn btn-primary" onClick={() => setPanel("deposit")}>
-            {actionLabel(product, "deposit")}
+            {actionLabel("deposit")}
           </button>
           <button
             type="button"
@@ -321,7 +321,7 @@ export function EthMenuCard({ product, holding, ctx }: { product: MenuProduct; h
             disabled={!held}
             title={held ? undefined : "Nothing held at the watched addresses"}
           >
-            {actionLabel(product, "withdraw")}
+            {actionLabel("withdraw")}
           </button>
         </div>
       )}
