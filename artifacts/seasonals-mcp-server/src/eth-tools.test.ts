@@ -126,10 +126,12 @@ test("preview_rebalance_step / propose_rebalance forward symbol + decimal steps 
 test("wait_for_rebalance_decision polls until the human decided on the web page", async () => {
   const b = bff();
   const client = await connect(b);
-  setTimeout(() => (b.proposalStatus = "executed"), 20);
+  // 承認直後は executing (fork で実行中) → 終端の executed まで待つ
+  setTimeout(() => (b.proposalStatus = "executing"), 10);
+  setTimeout(() => (b.proposalStatus = "executed"), 40);
   const done = text(await client.callTool({ name: "wait_for_rebalance_decision", arguments: { proposalId: "ethprop_1", timeout_seconds: 5 } }));
   expect(done.status).toBe("executed");
-  expect(b.gets.filter((g) => g === "/eth/agent-proposals/ethprop_1").length).toBeGreaterThan(1);
+  expect(b.gets.filter((g) => g === "/eth/agent-proposals/ethprop_1").length).toBeGreaterThan(2);
   b.proposalStatus = "pending";
   const timeout = text(await client.callTool({ name: "wait_for_rebalance_decision", arguments: { proposalId: "ethprop_1", timeout_seconds: 1 } }));
   expect(timeout.status).toBe("timeout");

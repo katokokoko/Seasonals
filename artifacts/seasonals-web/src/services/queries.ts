@@ -170,7 +170,8 @@ export interface AgentProposalsData {
 
 /**
  * Agent が提出したリバランス案 (閲覧中の Ethereum address すべて)。
- * 承認待ち / 実行中がある間だけ 5 秒ごとに再取得する (Agent の提出やチャット承認が反映されるように)
+ * 承認待ち / 実行中がある間は 5 秒、それ以外も 15 秒ごとに再取得する
+ * (Agent の新しい提出やチャット承認が、ページを触らなくても反映されるように)
  */
 export function useAgentProposals(): AgentProposalsData {
   const eth = useActiveAddresses().filter((a) => a.chain === "ethereum");
@@ -181,7 +182,7 @@ export function useAgentProposals(): AgentProposalsData {
       staleTime: 5_000,
       retry: 1,
       refetchInterval: (q: { state: { data?: EthProposalListResponse } }) =>
-        q.state.data?.proposals.some((p) => p.status === "pending" || p.status === "executing") ? 5_000 : false,
+        q.state.data?.proposals.some((p) => p.status === "pending" || p.status === "executing") ? 5_000 : 15_000,
     })),
   });
   const proposals = results

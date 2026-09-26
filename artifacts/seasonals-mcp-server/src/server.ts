@@ -790,7 +790,8 @@ export function buildMcpServer(
             // 一過性の BFF エラーでは待ちを止めない (request_user_approval と同じ)。404 は即座に返す
             if ((err as { status?: number }).status === 404) throw err;
           }
-          if (p && p.status !== "pending") {
+          // executing は fork で走っている途中 (数十秒かかる)。終端状態になるまで待つ
+          if (p && p.status !== "pending" && p.status !== "executing") {
             audit("wait_for_rebalance_decision", proposalId, p.status === "executed" ? "ok" : "rejected", t0);
             return jsonContent(p);
           }
