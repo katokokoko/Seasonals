@@ -11,6 +11,11 @@ uniform float uCaustic; // caustic brightness
 uniform float uRefr;    // refraction amount
 uniform float uTint;    // 0 = soda blue, 1 = melon
 uniform float uQuiet;   // how much to calm the water under UI rects
+uniform vec4  uGlassRects[6]; // glass surfaces: center x, y (device px, bottom-left origin), w, h
+uniform vec4  uGlassMeta[6];  // corner radius (device px), rotation (radians, CSS clockwise), lens, frost
+uniform int   uGlassCount;    // how many of uGlassRects are in use (0..6)
+uniform float uGlass;         // liquid glass lens strength (0 = off)
+uniform vec2  uLight;         // specular light direction (screen space, y up)
 
 // ---------- noise ----------
 float hash21(vec2 p) {
@@ -68,20 +73,21 @@ float voroEdge(vec2 x, float t) {
   }
   return sqrt(F2) - sqrt(F1);
 }
-float causticLine(vec2 x, float t) {
+// sharp = 16 is the tuned caustic line; glass frost lowers it so the lines read as blurred
+float causticLine(vec2 x, float t, float sharp) {
   float e = voroEdge(x, t);
-  return exp(-e * 16.0) + exp(-e * 4.5) * 0.07;
+  return exp(-e * sharp) + exp(-e * 4.5) * 0.07;
 }
-vec3 causticsRGB(vec2 cp, vec2 dir, float t) {
+vec3 causticsRGB(vec2 cp, vec2 dir, float t, float sharp, float spread) {
   vec2 cp2 = mat2(0.8, -0.6, 0.6, 0.8) * cp * 1.7 + 13.7;
-  float spread = 0.014;
   vec3 c;
-  c.r = causticLine(cp - dir * spread, t * 0.35) + 0.3 * causticLine(cp2 - dir * spread, t * 0.27);
-  c.g = causticLine(cp,                t * 0.35) + 0.3 * causticLine(cp2,                t * 0.27);
-  c.b = causticLine(cp + dir * spread, t * 0.35) + 0.3 * causticLine(cp2 + dir * spread, t * 0.27);
+  c.r = causticLine(cp - dir * spread, t * 0.35, sharp) + 0.3 * causticLine(cp2 - dir * spread, t * 0.27, sharp);
+  c.g = causticLine(cp,                t * 0.35, sharp) + 0.3 * causticLine(cp2,                t * 0.27, sharp);
+  c.b = causticLine(cp + dir * spread, t * 0.35, sharp) + 0.3 * causticLine(cp2 + dir * spread, t * 0.27, sharp);
   return c;
 }
-vec3 renderB(vec2 frag, float t, float quiet) {
+// frost: 0 outside glass, uGlass inside. bevel: 1 at a glass edge, 0 in its flat middle
+vec3 renderB(vec2 frag, float t, float quiet, float frost, float bevel) {
   vec2 p = (frag - 0.5 * uRes) / uRes.y;
 
   // surface
@@ -99,7 +105,7 @@ vec3 renderB(vec2 frag, float t, float quiet) {
   // sand / vanilla bottom, sampled through the refraction
   vec2 sp = p + off;
   float patches = fbm(sp * 1.6 + 11.0);
-  float grain = gnoise(sp * 190.0) + 0.5 * gnoise(sp * 420.0);
+  float grain = (gnoise(sp * 190.0) + 0.5 * gnoise(sp * 420.0)) * (1.0 - 0.7 * frost);
   vec3 sand = mix(vec3(0.90, 0.86, 0.74), vec3(0.985, 0.955, 0.88), smoothstep(-0.3, 0.35, patches));
   sand += grain * 0.022;
 
@@ -114,7 +120,7 @@ vec3 renderB(vec2 frag, float t, float quiet) {
   cp += grad * 0.012 * uScale;
   cp += 0.2 * vec2(gnoise(cp * 0.9 + t * 0.08), gnoise(cp * 0.9 + 5.1 - t * 0.08));
   vec2 dir = normalize(grad + vec2(1e-4));
-  vec3 c = causticsRGB(cp, dir, t);
+  vec3 c = causticsRGB(cp, dir, t, mix(16.0, 6.0, frost), 0.014 + 0.05 * bevel);
   float shallow = mix(1.0, 0.55, clamp(d / 1.3, 0.0, 1.0));
   c *= shallow * uCaustic;
   c = mix(c, vec3(0.06 * uCaustic), quiet);
@@ -124,7 +130,7 @@ vec3 renderB(vec2 frag, float t, float quiet) {
   float cg = c.g;
   float tw = gnoise(p * 95.0 + vec2(t * 0.9, -t * 0.7)) * 0.5 + 0.5;
   float sparkle = pow(max(cg, 0.0), 3.0) * smoothstep(0.62, 0.9, tw);
-  col += sparkle * 1.1 * (1.0 - quiet);
+  col += sparkle * 1.1 * (1.0 - quiet) * (1.0 - frost);
 
   // bubbles (sparse, drifting slowly)
   vec2 bp = p * 6.0 + vec2(t * 0.02, t * 0.012) + off * 3.0;
@@ -157,8 +163,76 @@ float quietMask(vec2 frag) {
   return m;
 }
 
+// =====================================================
+// Liquid glass (Apple "Liquid Glass" model): each glass rect is a lens over the water.
+// The bevel has a convex squircle profile y = (1 - (1 - x)^4)^(1/4) (x = 0 at the edge),
+// so the slope, and with it the refraction, is steep at the rim and flat in the middle:
+// the middle stays clear, the rim bends the water hard toward the centre. The rim
+// catches light from uLight (plus a weaker internal reflection on the far side), the
+// bevel splits colour slightly, and the body lifts saturation.
+// One renderB call per pixel, two more only on the thin bevel band for dispersion.
+// =====================================================
+float sdRoundBox(vec2 p, vec2 b, float r) {
+  vec2 q = abs(p) - b + r;
+  return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;
+}
+float squircleSlope(float x) {
+  float u = 1.0 - clamp(x, 0.0, 1.0);
+  float s = 1.0 - u * u * u * u;
+  return u * u * u * pow(max(s, 1e-4), -0.75);
+}
+void glassLens(vec2 frag, out vec2 off, out float rim, out float frost, out float bevel, out float body) {
+  off = vec2(0.0);
+  rim = 0.0;
+  frost = 0.0;
+  bevel = 0.0;
+  body = 0.0;
+  vec2 L = normalize(uLight + vec2(1e-5));
+  for (int i = 0; i < 6; i++) {
+    if (i >= uGlassCount) break;
+    vec4 g = uGlassRects[i];
+    vec4 meta = uGlassMeta[i];
+    float cs = cos(meta.y);
+    float sn = sin(meta.y);
+    vec2 d = frag - g.xy;
+    vec2 lp = mat2(cs, sn, -sn, cs) * d; // screen -> element space (undo the CSS rotation)
+    vec2 hb = g.zw * 0.5;
+    float sd = sdRoundBox(lp, hb, meta.x);
+    float inside = 1.0 - smoothstep(-1.0, 1.0, sd);
+    if (inside <= 0.0) continue;
+    float e = max(-sd, 0.0);
+    float bz = max(min(min(hb.x, hb.y), 0.06 * uRes.y), 1.0);
+    float slope = min(squircleSlope(e / bz), 3.0) / 3.0; // 1 at the rim, 0 on the flat middle
+    vec2 n = vec2(sdRoundBox(lp + vec2(1.0, 0.0), hb, meta.x) - sd, sdRoundBox(lp + vec2(0.0, 1.0), hb, meta.x) - sd);
+    n = mat2(cs, -sn, sn, cs) * normalize(n + vec2(1e-5)); // outward normal, screen space
+    // Snell (air 1.0 -> glass 1.5): displacement grows with the surface slope
+    vec2 o = -n * slope * (0.55 * bz * meta.z) - d * (0.035 * meta.z);
+    off += o * uGlass * inside;
+    float nl = dot(n, L);
+    float light = 0.3 + 0.7 * max(nl, 0.0) + 0.35 * pow(max(-nl, 0.0), 2.0);
+    float band = (1.0 - smoothstep(0.0, 3.0, e)) + 0.35 * (1.0 - smoothstep(0.0, 12.0, e));
+    rim = max(rim, inside * band * light * uGlass);
+    frost = max(frost, inside * meta.w * uGlass);
+    bevel = max(bevel, inside * slope * uGlass);
+    body = max(body, inside * uGlass);
+  }
+}
+
 void main() {
   vec2 frag = gl_FragCoord.xy;
-  vec3 col = renderB(frag, uTime, quietMask(frag) * uQuiet);
+  vec2 goff;
+  float rim, frost, bevel, body;
+  glassLens(frag, goff, rim, frost, bevel, body);
+  float quiet = quietMask(frag) * uQuiet;
+  vec3 col = renderB(frag + goff, uTime, quiet, frost, bevel);
+  if (bevel > 0.02) {
+    // chromatic dispersion on the bevel: red bends a little less, blue a little more
+    col.r = renderB(frag + goff * 0.92, uTime, quiet, frost, bevel).r;
+    col.b = renderB(frag + goff * 1.08, uTime, quiet, frost, bevel).b;
+  }
+  float lum = dot(col, vec3(0.299, 0.587, 0.114));
+  col = mix(vec3(lum), col, 1.0 + 0.25 * body); // glass lifts saturation
+  col = mix(col, col * 1.03 + 0.035, frost * 0.6); // milky body (regular glass)
+  col += bevel * 0.04 + rim * 0.5;
   gl_FragColor = vec4(clamp(col, 0.0, 1.0), 1.0);
 }

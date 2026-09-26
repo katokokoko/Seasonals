@@ -18,16 +18,26 @@ function renderAt(path: string) {
 test("global nav reaches every workspace", () => {
   renderAt("/");
   const nav = screen.getByRole("navigation", { name: "Primary" });
-  for (const name of ["Overview", "Explore", "Calendar", "Agent", "Dashboard"]) {
+  for (const name of ["Overview", "Menu", "Calendar", "Agent", "Dashboard"]) {
     expect(within(nav).getAllByRole("link", { name }).length).toBeGreaterThan(0);
   }
   expect(screen.getByRole("link", { name: "Settings" }).getAttribute("href")).toBe("/settings");
 });
 
+test("top bar is clear liquid glass with one decorative selection droplet", () => {
+  renderAt("/");
+  const header = document.querySelector(".global-nav")!;
+  expect(header.getAttribute("data-water-glass")).toBe("clear");
+  const drops = header.querySelectorAll(".nav-droplet");
+  expect(drops).toHaveLength(1);
+  expect(drops[0]!.getAttribute("aria-hidden")).toBe("true");
+  expect(drops[0]!.getAttribute("data-water-glass")).toBe("clear");
+});
+
 test("portal cards are single links to their workspaces", () => {
   renderAt("/");
   expect(screen.getByRole("link", { name: /Agent\s*Your seasonal companion/ }).getAttribute("href")).toBe("/agent");
-  expect(screen.getByRole("link", { name: /Menu\s*Explore Seasonals/ }).getAttribute("href")).toBe("/explore");
+  expect(screen.getByRole("link", { name: /Menu\s*Explore Seasonals/ }).getAttribute("href")).toBe("/menu");
   expect(screen.getByRole("link", { name: /Setting\s*Make it yours/ }).getAttribute("href")).toBe("/settings");
   expect(screen.getByRole("link", { name: /Dashboard\s*Your seasonal snapshot/ }).getAttribute("href")).toBe("/dashboard");
 });

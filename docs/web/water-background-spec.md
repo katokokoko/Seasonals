@@ -91,12 +91,13 @@ export type WaterParams = {
   refraction: number;
   tint: number;     // 0 = soda blue, 1 = melon
   quiet: number;    // 0 = ignore UI rects, 1 = fully calm under them
+  glass: number;    // liquid glass lens strength under data-water-glass surfaces (0 = off)
   maxDpr: number;   // device pixel ratio cap
 };
 
 export const waterDefaults: WaterParams = {
   speed: 1, scale: 4.5, caustic: 0.5, refraction: 0.012,
-  tint: 0.5, quiet: 0.85, maxDpr: 1.25,
+  tint: 0.5, quiet: 0.85, glass: 1, maxDpr: 1.25,
 };
 
 type Props = { params?: Partial<WaterParams>; paused?: boolean; className?: string };
@@ -105,15 +106,36 @@ type Props = { params?: Partial<WaterParams>; paused?: boolean; className?: stri
 Quiet zone contract:
 
 - Any element with the attribute `data-water-quiet` registers its bounding rect as a quiet zone. The calendar and floating cards get it; the top bar does not need it.
-- `useQuietZones()` observes those elements with one `ResizeObserver` plus `scroll` and `resize` listeners (passive), and returns up to 4 rects in device pixels with a bottom-left origin: `x = rect.left * dpr`, `y = (innerHeight - rect.bottom) * dpr`, `w = rect.width * dpr`, `h = rect.height * dpr`. Elements appearing or disappearing (route change, modal) must re-run the query; a `MutationObserver` on the UI root or an explicit `registerQuietZone(el)` helper are both acceptable.
+- `useQuietZones()` observes those elements with one `ResizeObserver` plus `scroll` and `resize` listeners (passive), and returns up to 4 rects in device pixels with a bottom-left origin: `x = rect.left * dpr`, `y = (viewportHeight - rect.bottom) * dpr`, `w = rect.width * dpr`, `h = rect.height * dpr`. `viewportHeight` is the canvas's real CSS height, `document.documentElement.clientHeight` (the fixed `inset: 0` box), not `innerHeight`: with always-visible scrollbars (macOS "Always", Windows) `innerHeight` includes the scrollbar and every rect would land about one scrollbar height too high. Elements appearing or disappearing (route change, modal) must re-run the query; a `MutationObserver` on the UI root or an explicit `registerQuietZone(el)` helper are both acceptable.
 - More than 4 candidates: keep the 4 largest by area. The shader unions the rects with a soft edge of 12% of the viewport height, so adjacent cards merge into one calm region.
 - The quiet mask does not darken the water. It lowers caustic contrast and refraction motion so text above stays readable without the background looking dirty.
 
 Rect uniforms are uploaded once per frame only when the values changed since the last frame; compare the flattened `Float32Array` before calling `uniform4fv`.
 
+Tracking rules (revised 2026-09 after glass surfaces drifted off their DOM frames):
+
+- Coordinates are relative to the canvas's own box, not the viewport: `x = (r.left - canvasBox.left) * scale`, `y = (canvasBox.bottom - r.bottom) * scale`, `scale = canvas.height / canvasBox.height` (`canvasFrame()`). Never assume `innerHeight` or `dpr`.
+- While animating, the draw loop re-measures every quiet / glass rect right before each draw (at most 10 elements; the element lists are cached and refreshed only by the `MutationObserver`). Any DOM movement, including ones that fire no event (Web Animations, sticky, elastic scroll, HMR), is picked up on the next frame. The event-driven recompute remains for the still (reduced-motion) mode.
+- Waking the loop must never cancel an already scheduled frame. Rect changes can arrive every frame (a moving droplet, hover tilt writing `style`); cancel-and-reschedule then starves the draw callback forever and the canvas freezes with stale glass while the DOM moves on.
+- Animate moving glass with a main-thread property (`left`, `width`), not a compositor-only `transform`: if the main thread stalls (lazy route load), the compositor would keep moving the DOM while the canvas cannot redraw.
+- `?glass-debug` overlays the rects read back from the GPU (`gl.getUniform`) in cyan over the DOM frames in red, with viewport / canvas / scroll numbers, for diagnosing drift on a real machine.
+
+### Glass lens (added 2026-09, Home liquid glass)
+
+Surfaces that should read as liquid glass (the global nav and the four Home portal cards) carry `data-water-glass`. The shader treats each one as a convex lens over the water, so the refraction is real and costs one extra SDF loop per pixel, not a second `renderB` call.
+
+- The collector (`collectGlassRects`) returns up to 6 rotated rounded rects in device pixels: centre (bbox centre, bottom-left origin), layout size (`offsetWidth/Height`, so a rotated card is not inflated to its bbox), corner radius (clamped to half the short side), and the CSS rotation angle read from the computed transform (`atan2(b, a)`, clockwise positive). The same `ResizeObserver` / `MutationObserver` loop as the quiet zones tracks them; pointer tilt writes `style`, which the mutation observer already watches.
+- Optics follow Apple's Liquid Glass (WWDC25 "Meet Liquid Glass": lensing rather than scattering). The bevel has a convex squircle profile `y = (1 - (1 - x)^4)^(1/4)` (`x = 0` at the edge, bevel width = `min(half short side, 6% of viewport height)`), so its slope, and therefore the Snell refraction toward the centre, is steep at the rim and zero on the flat middle. The middle magnifies by `3.5% × lens`.
+- Two variants, chosen by the attribute value and packed into `uGlassMeta[i] = (radius, angle, lens, frost)`: `clear` (lens 1.5, frost 0.3: the middle stays see-through, used by the top bar and its selection droplet) and `regular` (lens 1, frost 1: caustic lines soften 16 → 6, sparkles and sand grain drop out, used by the Home portal cards). Empty means `regular`. Surfaces with `opacity: 0` are skipped.
+- The rim is lit from `uLight`: `0.3 + 0.7·max(n·L, 0) + 0.35·max(-n·L, 0)²` (bright on the light side, a weaker internal reflection opposite), a crisp 3px band plus a soft 12px band. `WaterBackground` eases `uLight` toward the pointer direction (viewport centre → pointer), the web stand-in for the iPhone gyroscope; it stays at the top-left `(-0.6, 0.8)` under reduced motion and on touch devices. CSS uses the same direction for its conic rim (`--glass-light-angle`, written on `<html>` by `useGlassLight`).
+- On the bevel band only (`bevel > 0.02`) red and blue are re-sampled at 0.92× / 1.08× of the refraction offset for a slight chromatic dispersion; the rest of the screen still costs one `renderB` per pixel. Glass also lifts saturation by 1.25×.
+- Moving glass (the top bar's selection droplet, animated with the Web Animations API, which does not touch the `style` attribute) calls `requestGlassTracking(ms)`; the collector then re-measures every animation frame for that long.
+- With `uGlassCount = 0` or `glass = 0` the output is identical to the original shader.
+- CSS on the glass element only adds a thin tint, a 1px gradient rim, and a pointer-following specular (`src/ui/glass.css`). It still never uses `backdrop-filter` while the canvas is running. `WaterBackground` sets `<html data-water="webgl | fallback">`; only in `fallback` (no canvas, static background, so no per-frame re-composite) does CSS blur with `backdrop-filter`.
+
 ## Shader
 
-The fragment shader below is final and compiled and rendered as-is under WebGL 1. Copy it byte for byte into `water.frag.glsl`; do not reformat, rename uniforms, or "improve" the noise. If a visual change is wanted, change the uniform defaults first.
+The fragment shader below is final and compiled and rendered as-is under WebGL 1. Copy it byte for byte into `water.frag.glsl`; do not reformat, rename uniforms, or "improve" the noise. If a visual change is wanted, change the uniform defaults first. (Revised 2026-09 to add the glass lens; the water itself is unchanged when no glass surface is registered.)
 
 Uniforms (set every frame unless noted):
 
@@ -128,6 +150,11 @@ Uniforms (set every frame unless noted):
 | `uRefr` | float | `refraction` | 0.012 |
 | `uTint` | float | `tint` | 0.5 |
 | `uQuiet` | float | `quiet` | 0.85 |
+| `uGlassRects[0]` | vec4[6] | glass surfaces: centre x, y (device px, bottom-left origin), w, h | zeros |
+| `uGlassMeta[0]` | vec4[6] | corner radius (device px), rotation (rad, CSS clockwise), lens, frost | zeros |
+| `uGlassCount` | int | number of glass surfaces in use, 0 to 6 | 0 |
+| `uGlass` | float | `glass` | 1 |
+| `uLight` | vec2 | specular light direction, screen space y up (pointer-driven) | (-0.6, 0.8) |
 
 Get the array location with `gl.getUniformLocation(prog, 'uQuietRects[0]')` and upload with `gl.uniform4fv(loc, new Float32Array(16))`. The bare name `uQuietRects` returns null on some implementations.
 
@@ -154,6 +181,11 @@ uniform float uCaustic; // caustic brightness
 uniform float uRefr;    // refraction amount
 uniform float uTint;    // 0 = soda blue, 1 = melon
 uniform float uQuiet;   // how much to calm the water under UI rects
+uniform vec4  uGlassRects[6]; // glass surfaces: center x, y (device px, bottom-left origin), w, h
+uniform vec4  uGlassMeta[6];  // corner radius (device px), rotation (radians, CSS clockwise), lens, frost
+uniform int   uGlassCount;    // how many of uGlassRects are in use (0..6)
+uniform float uGlass;         // liquid glass lens strength (0 = off)
+uniform vec2  uLight;         // specular light direction (screen space, y up)
 
 // ---------- noise ----------
 float hash21(vec2 p) {
@@ -211,20 +243,21 @@ float voroEdge(vec2 x, float t) {
   }
   return sqrt(F2) - sqrt(F1);
 }
-float causticLine(vec2 x, float t) {
+// sharp = 16 is the tuned caustic line; glass frost lowers it so the lines read as blurred
+float causticLine(vec2 x, float t, float sharp) {
   float e = voroEdge(x, t);
-  return exp(-e * 16.0) + exp(-e * 4.5) * 0.07;
+  return exp(-e * sharp) + exp(-e * 4.5) * 0.07;
 }
-vec3 causticsRGB(vec2 cp, vec2 dir, float t) {
+vec3 causticsRGB(vec2 cp, vec2 dir, float t, float sharp, float spread) {
   vec2 cp2 = mat2(0.8, -0.6, 0.6, 0.8) * cp * 1.7 + 13.7;
-  float spread = 0.014;
   vec3 c;
-  c.r = causticLine(cp - dir * spread, t * 0.35) + 0.3 * causticLine(cp2 - dir * spread, t * 0.27);
-  c.g = causticLine(cp,                t * 0.35) + 0.3 * causticLine(cp2,                t * 0.27);
-  c.b = causticLine(cp + dir * spread, t * 0.35) + 0.3 * causticLine(cp2 + dir * spread, t * 0.27);
+  c.r = causticLine(cp - dir * spread, t * 0.35, sharp) + 0.3 * causticLine(cp2 - dir * spread, t * 0.27, sharp);
+  c.g = causticLine(cp,                t * 0.35, sharp) + 0.3 * causticLine(cp2,                t * 0.27, sharp);
+  c.b = causticLine(cp + dir * spread, t * 0.35, sharp) + 0.3 * causticLine(cp2 + dir * spread, t * 0.27, sharp);
   return c;
 }
-vec3 renderB(vec2 frag, float t, float quiet) {
+// frost: 0 outside glass, uGlass inside. bevel: 1 at a glass edge, 0 in its flat middle
+vec3 renderB(vec2 frag, float t, float quiet, float frost, float bevel) {
   vec2 p = (frag - 0.5 * uRes) / uRes.y;
 
   // surface
@@ -242,7 +275,7 @@ vec3 renderB(vec2 frag, float t, float quiet) {
   // sand / vanilla bottom, sampled through the refraction
   vec2 sp = p + off;
   float patches = fbm(sp * 1.6 + 11.0);
-  float grain = gnoise(sp * 190.0) + 0.5 * gnoise(sp * 420.0);
+  float grain = (gnoise(sp * 190.0) + 0.5 * gnoise(sp * 420.0)) * (1.0 - 0.7 * frost);
   vec3 sand = mix(vec3(0.90, 0.86, 0.74), vec3(0.985, 0.955, 0.88), smoothstep(-0.3, 0.35, patches));
   sand += grain * 0.022;
 
@@ -257,7 +290,7 @@ vec3 renderB(vec2 frag, float t, float quiet) {
   cp += grad * 0.012 * uScale;
   cp += 0.2 * vec2(gnoise(cp * 0.9 + t * 0.08), gnoise(cp * 0.9 + 5.1 - t * 0.08));
   vec2 dir = normalize(grad + vec2(1e-4));
-  vec3 c = causticsRGB(cp, dir, t);
+  vec3 c = causticsRGB(cp, dir, t, mix(16.0, 6.0, frost), 0.014 + 0.05 * bevel);
   float shallow = mix(1.0, 0.55, clamp(d / 1.3, 0.0, 1.0));
   c *= shallow * uCaustic;
   c = mix(c, vec3(0.06 * uCaustic), quiet);
@@ -267,7 +300,7 @@ vec3 renderB(vec2 frag, float t, float quiet) {
   float cg = c.g;
   float tw = gnoise(p * 95.0 + vec2(t * 0.9, -t * 0.7)) * 0.5 + 0.5;
   float sparkle = pow(max(cg, 0.0), 3.0) * smoothstep(0.62, 0.9, tw);
-  col += sparkle * 1.1 * (1.0 - quiet);
+  col += sparkle * 1.1 * (1.0 - quiet) * (1.0 - frost);
 
   // bubbles (sparse, drifting slowly)
   vec2 bp = p * 6.0 + vec2(t * 0.02, t * 0.012) + off * 3.0;
@@ -300,9 +333,77 @@ float quietMask(vec2 frag) {
   return m;
 }
 
+// =====================================================
+// Liquid glass (Apple "Liquid Glass" model): each glass rect is a lens over the water.
+// The bevel has a convex squircle profile y = (1 - (1 - x)^4)^(1/4) (x = 0 at the edge),
+// so the slope, and with it the refraction, is steep at the rim and flat in the middle:
+// the middle stays clear, the rim bends the water hard toward the centre. The rim
+// catches light from uLight (plus a weaker internal reflection on the far side), the
+// bevel splits colour slightly, and the body lifts saturation.
+// One renderB call per pixel, two more only on the thin bevel band for dispersion.
+// =====================================================
+float sdRoundBox(vec2 p, vec2 b, float r) {
+  vec2 q = abs(p) - b + r;
+  return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;
+}
+float squircleSlope(float x) {
+  float u = 1.0 - clamp(x, 0.0, 1.0);
+  float s = 1.0 - u * u * u * u;
+  return u * u * u * pow(max(s, 1e-4), -0.75);
+}
+void glassLens(vec2 frag, out vec2 off, out float rim, out float frost, out float bevel, out float body) {
+  off = vec2(0.0);
+  rim = 0.0;
+  frost = 0.0;
+  bevel = 0.0;
+  body = 0.0;
+  vec2 L = normalize(uLight + vec2(1e-5));
+  for (int i = 0; i < 6; i++) {
+    if (i >= uGlassCount) break;
+    vec4 g = uGlassRects[i];
+    vec4 meta = uGlassMeta[i];
+    float cs = cos(meta.y);
+    float sn = sin(meta.y);
+    vec2 d = frag - g.xy;
+    vec2 lp = mat2(cs, sn, -sn, cs) * d; // screen -> element space (undo the CSS rotation)
+    vec2 hb = g.zw * 0.5;
+    float sd = sdRoundBox(lp, hb, meta.x);
+    float inside = 1.0 - smoothstep(-1.0, 1.0, sd);
+    if (inside <= 0.0) continue;
+    float e = max(-sd, 0.0);
+    float bz = max(min(min(hb.x, hb.y), 0.06 * uRes.y), 1.0);
+    float slope = min(squircleSlope(e / bz), 3.0) / 3.0; // 1 at the rim, 0 on the flat middle
+    vec2 n = vec2(sdRoundBox(lp + vec2(1.0, 0.0), hb, meta.x) - sd, sdRoundBox(lp + vec2(0.0, 1.0), hb, meta.x) - sd);
+    n = mat2(cs, -sn, sn, cs) * normalize(n + vec2(1e-5)); // outward normal, screen space
+    // Snell (air 1.0 -> glass 1.5): displacement grows with the surface slope
+    vec2 o = -n * slope * (0.55 * bz * meta.z) - d * (0.035 * meta.z);
+    off += o * uGlass * inside;
+    float nl = dot(n, L);
+    float light = 0.3 + 0.7 * max(nl, 0.0) + 0.35 * pow(max(-nl, 0.0), 2.0);
+    float band = (1.0 - smoothstep(0.0, 3.0, e)) + 0.35 * (1.0 - smoothstep(0.0, 12.0, e));
+    rim = max(rim, inside * band * light * uGlass);
+    frost = max(frost, inside * meta.w * uGlass);
+    bevel = max(bevel, inside * slope * uGlass);
+    body = max(body, inside * uGlass);
+  }
+}
+
 void main() {
   vec2 frag = gl_FragCoord.xy;
-  vec3 col = renderB(frag, uTime, quietMask(frag) * uQuiet);
+  vec2 goff;
+  float rim, frost, bevel, body;
+  glassLens(frag, goff, rim, frost, bevel, body);
+  float quiet = quietMask(frag) * uQuiet;
+  vec3 col = renderB(frag + goff, uTime, quiet, frost, bevel);
+  if (bevel > 0.02) {
+    // chromatic dispersion on the bevel: red bends a little less, blue a little more
+    col.r = renderB(frag + goff * 0.92, uTime, quiet, frost, bevel).r;
+    col.b = renderB(frag + goff * 1.08, uTime, quiet, frost, bevel).b;
+  }
+  float lum = dot(col, vec3(0.299, 0.587, 0.114));
+  col = mix(vec3(lum), col, 1.0 + 0.25 * body); // glass lifts saturation
+  col = mix(col, col * 1.03 + 0.035, frost * 0.6); // milky body (regular glass)
+  col += bevel * 0.04 + rim * 0.5;
   gl_FragColor = vec4(clamp(col, 0.0, 1.0), 1.0);
 }
 ```
@@ -314,7 +415,7 @@ Frame loop:
 - One `requestAnimationFrame` loop owned by the component; cancel it on unmount and release the GL context with `WEBGL_lose_context` if available.
 - Time accumulates as `t += min(dt, 0.1) * speed`, so changing `speed` never jumps the animation and a long frame stall does not skip ahead.
 - Skip the draw entirely (keep the loop idle) when `document.visibilityState === 'hidden'`, when `paused` is true, or when the canvas is fully covered by an opaque overlay the app controls (optional prop later).
-- On `resize`, set `canvas.width/height = innerWidth/innerHeight * dpr` where `dpr = min(devicePixelRatio, maxDpr)`, call `gl.viewport`, and re-upload `uRes`. Debounce is unnecessary; the draw is cheap.
+- On `resize`, set `canvas.width/height = clientWidth/clientHeight * dpr` (of `document.documentElement`, i.e. the viewport minus scrollbars) where `dpr = min(devicePixelRatio, maxDpr)`, call `gl.viewport`, and re-upload `uRes`. Scrollbars can appear or disappear without a `resize` event, so also watch the canvas host with a `ResizeObserver` (both the canvas size and the quiet / glass rects). Debounce is unnecessary; the draw is cheap.
 
 Quality:
 
@@ -342,7 +443,8 @@ Fallback:
 - [ ] Switching tabs stops the draw loop (verify with the Performance panel: zero GPU work while hidden). Returning resumes without a time jump.
 - [ ] With `prefers-reduced-motion: reduce` the background is a single still frame.
 - [ ] Frame time under 8 ms at 1440p on an M-series MacBook and under 12 ms on Intel Iris Xe, measured with the calendar mounted.
-- [ ] No `backdrop-filter` anywhere above the canvas. No three.js or other 3D dependency added to the bundle.
+- [ ] No `backdrop-filter` anywhere above the canvas. No three.js or other 3D dependency added to the bundle. (The glass fallback blur applies only when there is no canvas.)
+- [ ] Under a `data-water-glass` card the water visibly bends at the edges and the caustic lines soften; rotated portal cards get a lens that follows their rotation.
 - [ ] `water.frag.glsl` is byte-identical to this spec. Tuning is done through `waterDefaults` only.
 
 Pitfalls to avoid (each of these was tried and rejected during prototyping):
@@ -365,6 +467,7 @@ Pitfalls to avoid (each of these was tried and rejected during prototyping):
 - シェーダーは1バイトも変えない前提です。見た目を調整したいときは `waterDefaults` の値だけを動かします。
 - UIの下を落ち着かせる仕組みは `data-water-quiet` 属性で登録します。暗くするのではなく、光の網目のコントラストと屈折の動きを下げる方式です。
 - UIカードに `backdrop-filter` は使いません。背景が毎フレーム描き換わるので、ぼかしは毎回再合成になり、特にSafariで重くなります。
+- (2026-09 追加) Home の top bar と四隅のカードは `data-water-glass` で「液体ガラス」にします。屈折・すりガラス感・縁の光はシェーダーが GPU で描き、CSS は薄い色と光沢の縁だけです。WebGL が使えない時だけ、背景が静止しているので CSS の `backdrop-filter` で代替します。
 - 解像度は devicePixelRatio を1.25で頭打ちにします。このぼんやりした絵では2倍描画の恩恵がなく、GPU負荷だけ倍になります。
 
 未確認の前提:

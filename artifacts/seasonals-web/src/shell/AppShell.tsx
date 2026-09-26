@@ -6,10 +6,12 @@ import { Outlet, useLocation } from "react-router";
 import { WaterBackground } from "../background/WaterBackground";
 import { waterCalm, waterDefaults } from "../background/waterDefaults";
 import { GlobalFloatingNav } from "./GlobalFloatingNav";
-import { useEffect } from "react";
+import { GlassDebugOverlay } from "../background/GlassDebugOverlay";
+import { useEffect, useState } from "react";
 import { useTimeline } from "../services/queries";
 import { EventDetailCard } from "../timeline/EventDetailCard";
 import { useDetail } from "../timeline/detailStore";
+import { useGlassLight } from "../ui/useGlassLight";
 import "./shell.css";
 
 export function AppShell() {
@@ -18,6 +20,15 @@ export function AppShell() {
   const { events } = useTimeline();
   const closeDetail = useDetail((s) => s.close);
   useEffect(() => closeDetail(), [pathname, closeDetail]);
+  useGlassLight();
+  // ?glass-debug で開いた時だけ、WebGL の glass と DOM の枠の重なりを診断表示する (route を移っても維持)
+  const [glassDebug] = useState(() => {
+    try {
+      return new URLSearchParams(window.location.search).has("glass-debug");
+    } catch {
+      return false;
+    }
+  });
   return (
     <>
       <WaterBackground className="water-canvas" params={isHome ? waterDefaults : waterCalm} />
@@ -31,6 +42,7 @@ export function AppShell() {
         </main>
       </div>
       <EventDetailCard events={events} />
+      {glassDebug && <GlassDebugOverlay />}
     </>
   );
 }

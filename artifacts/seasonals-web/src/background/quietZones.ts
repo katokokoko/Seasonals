@@ -12,11 +12,43 @@
 
 export const MAX_QUIET_RECTS = 4;
 
+/**
+ * canvas (position: fixed; inset: 0) が実際に占める CSS px。常時表示の scrollbar
+ * (macOS「スクロールバーを常に表示」/ Windows) があると innerWidth / innerHeight より
+ * 小さくなるので、canvas の解像度と rect の座標変換は必ずこれを使う
+ * (innerHeight を使うと shader の glass / quiet rect が上にずれる)。
+ */
+export function canvasViewport(): { width: number; height: number } {
+  const el = document.documentElement;
+  return { width: el.clientWidth || window.innerWidth, height: el.clientHeight || window.innerHeight };
+}
+
 export interface QuietRect {
   x: number;
   y: number;
   w: number;
   h: number;
+}
+
+/**
+ * canvas の実 box (CSS px) と、CSS px → drawing buffer px の倍率。
+ * rect の座標変換は必ずこれを基準にする (viewport / innerHeight / dpr を前提にしない):
+ *   x = (r.left - left) * scale、y = (bottom - r.bottom) * scale (bottom-left origin)
+ */
+export interface CanvasFrame {
+  left: number;
+  bottom: number;
+  scale: number;
+}
+
+export function canvasFrame(canvas: HTMLCanvasElement): CanvasFrame {
+  const b = canvas.getBoundingClientRect();
+  return { left: b.left, bottom: b.bottom, scale: b.height > 0 ? canvas.height / b.height : 1 };
+}
+
+/** root から探すか、キャッシュ済みの要素列をそのまま使う (毎フレーム計測で querySelectorAll を避ける) */
+function elementsOf(src: ParentNode | Iterable<HTMLElement>, selector: string): Iterable<HTMLElement> {
+  return "querySelectorAll" in src ? (src as ParentNode).querySelectorAll<HTMLElement>(selector) : src;
 }
 
 interface CssRect {
@@ -26,16 +58,12 @@ interface CssRect {
   bottom: number;
 }
 
-export function collectQuietRects(
-  root: ParentNode,
-  viewport: { width: number; height: number },
-  dpr: number
-): QuietRect[] {
+export function collectQuietRects(src: ParentNode | Iterable<HTMLElement>, frame: CanvasFrame): QuietRect[] {
   const groups = new Map<string, CssRect>();
   let anon = 0;
-  root.querySelectorAll<HTMLElement>("[data-water-quiet]").forEach((el) => {
+  for (const el of elementsOf(src, "[data-water-quiet]")) {
     const r = el.getBoundingClientRect();
-    if (r.width <= 0 || r.height <= 0) return;
+    if (r.width <= 0 || r.height <= 0) continue;
     const key = el.dataset.waterQuiet ? `g:${el.dataset.waterQuiet}` : `a:${anon++}`;
     const prev = groups.get(key);
     groups.set(
@@ -49,13 +77,13 @@ export function collectQuietRects(
           }
         : { left: r.left, top: r.top, right: r.right, bottom: r.bottom }
     );
-  });
+  }
   return [...groups.values()]
     .map((r) => ({
-      x: r.left * dpr,
-      y: (viewport.height - r.bottom) * dpr,
-      w: (r.right - r.left) * dpr,
-      h: (r.bottom - r.top) * dpr,
+      x: (r.left - frame.left) * frame.scale,
+      y: (frame.bottom - r.bottom) * frame.scale,
+      w: (r.right - r.left) * frame.scale,
+      h: (r.bottom - r.top) * frame.scale,
     }))
     .sort((a, b) => b.w * b.h - a.w * a.h)
     .slice(0, MAX_QUIET_RECTS);
@@ -77,4 +105,100 @@ export function sameRects(a: Float32Array, b: Float32Array): boolean {
   if (a.length !== b.length) return false;
   for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
   return true;
+}
+
+// ── glass surfaces (liquid glass lens、docs/web/water-background-spec.md "Glass lens") ──
+
+export const MAX_GLASS_RECTS = 6;
+
+/**
+ * glass の種類 (Apple Liquid Glass の variant)。`data-water-glass` の値で指定し、空は regular。
+ * - clear: 中央が透けて縁の屈折が強い (top bar / 選択しずく)
+ * - regular: すりガラス寄り (Home の portal card)
+ */
+export const GLASS_VARIANTS = {
+  clear: { lens: 1.5, frost: 0.3 },
+  regular: { lens: 1, frost: 1 },
+} as const;
+export type GlassVariant = keyof typeof GLASS_VARIANTS;
+
+export function glassVariant(value: string | undefined): GlassVariant {
+  return value === "clear" ? "clear" : "regular";
+}
+
+/** 回転を持つ角丸矩形。device px、中心は bottom-left origin、angle は CSS rotate と同じ向き (rad、時計回り正) */
+export interface GlassRect {
+  cx: number;
+  cy: number;
+  w: number;
+  h: number;
+  radius: number;
+  angle: number;
+  /** 屈折の強さ (中央の拡大と縁の曲がり) */
+  lens: number;
+  /** すりガラス度 (0 = 透明、1 = caustic がぼける) */
+  frost: number;
+}
+
+/** computed transform ("matrix(...)" / "matrix3d(...)" / "none") → 2D 回転角 (rad) */
+export function transformAngle(transform: string | null | undefined): number {
+  const m = /^matrix(3d)?\(([^)]+)\)$/.exec((transform ?? "").trim());
+  if (!m) return 0;
+  const v = m[2]!.split(",").map((x) => Number.parseFloat(x));
+  const a = v[0] ?? 1;
+  const b = v[1] ?? 0;
+  return Number.isFinite(a) && Number.isFinite(b) ? Math.atan2(b, a) : 0;
+}
+
+/**
+ * `[data-water-glass]` 要素を回転付き角丸矩形として集める。
+ * 回転している portal card は bounding box が膨らむので、中心だけ bbox から取り、
+ * 大きさは layout size (offsetWidth / offsetHeight)、角度は computed transform から取る。
+ */
+export function collectGlassRects(src: ParentNode | Iterable<HTMLElement>, frame: CanvasFrame): GlassRect[] {
+  const out: GlassRect[] = [];
+  const k = frame.scale;
+  for (const el of elementsOf(src, "[data-water-glass]")) {
+    const r = el.getBoundingClientRect();
+    if (r.width <= 0 || r.height <= 0) continue;
+    const cs = getComputedStyle(el);
+    const w = el.offsetWidth || r.width;
+    const h = el.offsetHeight || r.height;
+    const radius = Math.min(Number.parseFloat(cs.borderTopLeftRadius) || 0, w / 2, h / 2);
+    // 透明 (opacity 0) の面は shader にも出さない (例: active link が無い画面の選択しずく)
+    if (Number.parseFloat(cs.opacity || "1") === 0) continue;
+    out.push({
+      ...GLASS_VARIANTS[glassVariant(el.dataset.waterGlass)],
+      cx: (r.left + r.width / 2 - frame.left) * k,
+      cy: (frame.bottom - (r.top + r.height / 2)) * k,
+      w: w * k,
+      h: h * k,
+      radius: radius * k,
+      angle: transformAngle(cs.transform),
+    });
+  }
+  return out.sort((a, b) => b.w * b.h - a.w * a.h).slice(0, MAX_GLASS_RECTS);
+}
+
+/** uGlassRects (vec4 × 6: cx, cy, w, h) / uGlassMeta (vec4 × 6: radius, angle, lens, frost) 用に詰める */
+export function packGlassRects(
+  rects: readonly GlassRect[],
+  out = { rects: new Float32Array(MAX_GLASS_RECTS * 4), meta: new Float32Array(MAX_GLASS_RECTS * 4) }
+): { rects: Float32Array; meta: Float32Array } {
+  out.rects.fill(0);
+  out.meta.fill(0);
+  rects.slice(0, MAX_GLASS_RECTS).forEach((g, i) => {
+    out.rects.set([g.cx, g.cy, g.w, g.h], i * 4);
+    out.meta.set([g.radius, g.angle, g.lens, g.frost], i * 4);
+  });
+  return out;
+}
+
+/**
+ * glass 面を Web Animations 等で動かす時に呼ぶ。WAAPI は style 属性を変えないので
+ * MutationObserver では拾えない。受け取った useQuietZones が ms の間 rAF ごとに rect を取り直す。
+ */
+export const GLASS_TRACKING_EVENT = "seasonals:glass-tracking";
+export function requestGlassTracking(ms: number): void {
+  window.dispatchEvent(new CustomEvent(GLASS_TRACKING_EVENT, { detail: ms }));
 }

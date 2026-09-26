@@ -15,12 +15,43 @@ const ROUTES = [
   ["/", "home"],
   ["/calendar?view=month", "calendar"],
   ["/calendar?view=timeline", "timeline"],
-  ["/explore", "explore"],
+  ["/menu", "menu"],
   ["/agent", "agent"],
   ["/dashboard", "dashboard"],
   ["/settings", "settings"],
 ];
 mkdirSync(".screenshots", { recursive: true });
+
+/**
+ * shader (GPU に upload 済みの uGlassRects を gl.getUniform で読み戻す) と DOM の glass 面の
+ * 中心の最大ずれ (CSS px)。WebGL の光・縁が DOM の枠からずれていないかの検出に使う。
+ * 画面に出ている frame 同士で比べるため、rAF の中 (WaterBackground の描画 callback の後) で測る
+ * (evaluate の時点で直接測ると、animation 中は「次の frame の DOM」と「今の frame の shader」を比べてしまう)。
+ */
+async function glassDrift(page) {
+  return page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => resolve((() => {
+    const c = document.querySelector(".water-canvas canvas");
+    const gl = c?.getContext("webgl");
+    const prog = gl?.getParameter(gl.CURRENT_PROGRAM);
+    if (!prog) return { max: Infinity, detail: "no WebGL program" };
+    const b = c.getBoundingClientRect();
+    const k = c.height / b.height;
+    const n = gl.getUniform(prog, gl.getUniformLocation(prog, "uGlassCount"));
+    const shader = [];
+    for (let i = 0; i < n; i++) {
+      const g = gl.getUniform(prog, gl.getUniformLocation(prog, `uGlassRects[${i}]`));
+      shader.push([b.left + g[0] / k, b.bottom - g[1] / k]);
+    }
+    const dom = [...document.querySelectorAll("[data-water-glass]")]
+      .filter((el) => getComputedStyle(el).opacity !== "0")
+      .map((el) => {
+        const r = el.getBoundingClientRect();
+        return [el.className.split(" ")[0], r.left + r.width / 2, r.top + r.height / 2];
+      });
+    const d = dom.map(([name, x, y]) => [name, Math.min(...shader.map(([sx, sy]) => Math.hypot(sx - x, sy - y)))]);
+    return { max: Math.max(0, ...d.map((x) => x[1])), detail: d.map(([nm, v]) => `${nm}:${v.toFixed(1)}`).join(" ") };
+  })()))));
+}
 const results = [];
 const check = (name, ok, detail = "") => results.push({ name, ok: Boolean(ok), detail: String(detail) });
 
@@ -41,7 +72,7 @@ for (const vp of WIDTHS) {
 
   // nav reachability (Agent / Dashboard は 1280 で More の中)
   const navNames = await page.locator("nav[aria-label=Primary] a:visible").allInnerTexts();
-  if (vp.width >= 1440) check(`${vp.name} nav shows all items`, ["Overview", "Explore", "Calendar", "Agent", "Dashboard"].every((n) => navNames.includes(n)), navNames);
+  if (vp.width >= 1440) check(`${vp.name} nav shows all items`, ["Overview", "Menu", "Calendar", "Agent", "Dashboard"].every((n) => navNames.includes(n)), navNames);
   else {
     await page.getByRole("button", { name: "More", exact: true }).click();
     const more = await page.locator(".nav-more-menu a").allInnerTexts();
@@ -135,6 +166,128 @@ for (const vp of WIDTHS) {
   await page.close();
 }
 
+// Menu 改名 / liquid glass / 自分の予定 (custom plan)
+{
+  const page = await newPage(WIDTHS[0]);
+  await page.goto(BASE + "/explore", { waitUntil: "networkidle" });
+  check("/explore redirects to /menu", new URL(page.url()).pathname === "/menu", page.url());
+  await page.goto(BASE + "/", { waitUntil: "networkidle" });
+  await page.waitForTimeout(800);
+  check("glass surfaces = nav + droplet + 4 portal cards", (await page.locator("[data-water-glass]").count()) === 6);
+  check("top bar is clear glass", (await page.locator(".global-nav").getAttribute("data-water-glass")) === "clear");
+  check("top bar stays sticky under the glass class", (await page.locator(".global-nav").evaluate((el) => getComputedStyle(el).position)) === "sticky");
+  check("droplet is out of the link flow", (await page.locator(".nav-droplet").evaluate((el) => getComputedStyle(el).position)) === "absolute");
+  check("WebGL glass mode", (await page.evaluate(() => document.documentElement.dataset.water)) === "webgl");
+  // pointer tilt が portal card に乗る
+  const menuCard = page.locator(".portal-card.slot-menu");
+  const box = await menuCard.boundingBox();
+  if (box) await page.mouse.move(box.x + box.width * 0.85, box.y + box.height * 0.2, { steps: 4 });
+  await page.waitForTimeout(250);
+  const tilt = await menuCard.evaluate((el) => el.style.getPropertyValue("--tiltY"));
+  check("portal card tilts toward the pointer", tilt !== "" && Number.parseFloat(tilt) > 0, tilt);
+  await page.screenshot({ path: ".screenshots/home-glass-1440.png" });
+  // specular の光源角度が pointer に追従する
+  await page.mouse.move(5, 5);
+  await page.waitForTimeout(100);
+  const a1 = await page.evaluate(() => document.documentElement.style.getPropertyValue("--glass-light-angle"));
+  await page.mouse.move(1400, 880, { steps: 3 });
+  await page.waitForTimeout(100);
+  const a2 = await page.evaluate(() => document.documentElement.style.getPropertyValue("--glass-light-angle"));
+  check("glass light angle follows the pointer", a1 !== "" && a2 !== "" && a1 !== a2, `${a1} → ${a2}`);
+  await page.mouse.move(5, 5);
+
+  // 選択しずく: Overview → Menu へばねで移動し、active link の中心に止まる
+  const center = async (loc) => {
+    const b = await loc.boundingBox();
+    return b ? b.x + b.width / 2 : NaN;
+  };
+  const droplet = page.locator(".nav-droplet");
+  check("droplet under Overview", Math.abs((await center(droplet)) - (await center(page.locator(".nav-link.is-active").first()))) <= 2);
+  await page.locator("nav[aria-label=Primary]").getByRole("link", { name: "Menu" }).click();
+  await page.waitForTimeout(160);
+  await page.screenshot({ path: ".screenshots/nav-droplet-moving-1440.png", clip: { x: 0, y: 0, width: 1440, height: 120 } });
+  await page.waitForTimeout(700);
+  const dMenu = await center(droplet);
+  const lMenu = await center(page.locator("nav[aria-label=Primary] .nav-link.is-active").first());
+  check("droplet settles under Menu", Math.abs(dMenu - lMenu) <= 2, `${dMenu} vs ${lMenu}`);
+  await page.screenshot({ path: ".screenshots/nav-droplet-menu-1440.png", clip: { x: 0, y: 0, width: 1440, height: 120 } });
+  await page.getByRole("link", { name: "Settings" }).click();
+  await page.waitForTimeout(400);
+  check("droplet hidden without an active nav item", (await droplet.evaluate((el) => getComputedStyle(el).opacity)) === "0");
+  await page.goto(BASE + "/", { waitUntil: "networkidle" });
+  await page.waitForTimeout(600);
+
+  await page.locator(".home-card .month-cell-hit").nth(15).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByRole("button", { name: "+ Add plan" }).click();
+  await dialog.getByRole("radio", { name: "TGE / launch" }).click();
+  await dialog.getByLabel("What's happening").fill("E2E TGE");
+  await dialog.getByRole("button", { name: "Add plan", exact: true }).click();
+  check("plan appears in the day dialog", await dialog.getByText("E2E TGE").isVisible());
+  await page.screenshot({ path: ".screenshots/home-plan-1440.png" });
+  await page.keyboard.press("Escape");
+  check("plan chip shows its emoji", ((await page.locator(".home-card .event-chip", { hasText: "E2E TGE" }).first().innerText()) ?? "").includes("🚀"));
+  await page.reload({ waitUntil: "networkidle" });
+  check("plan survives reload", (await page.locator(".home-card .event-chip", { hasText: "E2E TGE" }).count()) === 1);
+  await page.goto(BASE + "/calendar?view=list", { waitUntil: "networkidle" });
+  await page.waitForTimeout(500);
+  await page.screenshot({ path: ".screenshots/calendar-list-1440.png" });
+  check("no page errors (menu / glass / plan)", page.errors.length === 0, page.errors.join(" | "));
+  await page.close();
+}
+
+// WebGL の glass (光・縁) が DOM の枠に常に重なる: scroll / route 遷移 / WAAPI / しずくの移動中
+{
+  const page = await newPage({ width: 1512, height: 862 }, { deviceScaleFactor: 2 });
+  await page.goto(BASE + "/", { waitUntil: "networkidle" });
+  await page.waitForTimeout(800);
+  let d = await glassDrift(page);
+  check("glass aligned at rest (Home)", d.max <= 1, d.detail);
+  // pointer が glass の上を動き続けても (style 書き込み → 再計算が毎 frame 走っても) 水面の描画は止まらない
+  const uTime = () =>
+    page.evaluate(() => {
+      const c = document.querySelector(".water-canvas canvas");
+      const gl = c.getContext("webgl");
+      const prog = gl.getParameter(gl.CURRENT_PROGRAM);
+      return gl.getUniform(prog, gl.getUniformLocation(prog, "uTime"));
+    });
+  const t0 = await uTime();
+  for (let i = 0; i < 12; i++) await page.mouse.move(200 + i * 60, 50 + (i % 2) * 10, { steps: 3 });
+  const t1 = await uTime();
+  check("water keeps drawing while the pointer moves over glass", t1 - t0 > 0.1, `${t0.toFixed(2)} → ${t1.toFixed(2)}`);
+  d = await glassDrift(page);
+  check("glass aligned while hovering the top bar", d.max <= 1, d.detail);
+  // イベントを出さない WAAPI の移動 (以前は rect が古いまま残った)
+  await page.evaluate(() =>
+    document.querySelector(".portal-card.slot-menu").animate([{ translate: "0 0" }, { translate: "0 30px" }], { duration: 150, fill: "forwards" })
+  );
+  await page.waitForTimeout(400);
+  d = await glassDrift(page);
+  check("glass follows an event-less WAAPI move", d.max <= 1, d.detail);
+  await page.locator("nav[aria-label=Primary]").getByRole("link", { name: "Calendar" }).click();
+  await page.waitForTimeout(120);
+  d = await glassDrift(page);
+  check("glass follows the droplet mid-animation", d.max <= 1, d.detail);
+  await page.waitForTimeout(700);
+  d = await glassDrift(page);
+  check("glass aligned after a route change", d.max <= 1, d.detail);
+  await page.mouse.move(700, 500);
+  await page.mouse.wheel(0, 400);
+  await page.waitForTimeout(80);
+  d = await glassDrift(page);
+  check("glass aligned right after scrolling", d.max <= 1, d.detail);
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await page.waitForTimeout(80);
+  d = await glassDrift(page);
+  check("glass aligned after scrolling back", d.max <= 1, d.detail);
+  await page.goto(BASE + "/?glass-debug", { waitUntil: "networkidle" });
+  await page.waitForTimeout(800);
+  check("glass-debug overlay renders", (await page.locator(".glass-debug-info").innerText()).includes("shader − DOM"));
+  await page.screenshot({ path: ".screenshots/glass-debug-1512.png" });
+  check("no page errors (glass alignment)", page.errors.length === 0, page.errors.join(" | "));
+  await page.close();
+}
+
 // reduced motion → 静止画
 {
   const page = await newPage(WIDTHS[0], { reducedMotion: "reduce" });
@@ -149,6 +302,29 @@ for (const vp of WIDTHS) {
   await anim.close();
 }
 await browser.close();
+
+// 常時表示の scrollbar (macOS「常に表示」/ Windows): canvas と glass rect は scrollbar を除いた
+// 実寸で計算する (innerWidth / innerHeight を使うと shader の glass が DOM から上にずれる)
+{
+  const b = await chromium.launch({ channel: "chrome", headless: true, ignoreDefaultArgs: ["--hide-scrollbars"], args });
+  const page = await b.newPage({ viewport: { width: 1512, height: 862 }, deviceScaleFactor: 2 });
+  await page.addInitScript(() =>
+    document.addEventListener("DOMContentLoaded", () => {
+      const st = document.createElement("style");
+      st.textContent = "html{overflow:scroll} ::-webkit-scrollbar{width:15px;height:15px}";
+      document.head.append(st);
+    })
+  );
+  await page.goto(BASE + "/", { waitUntil: "networkidle" });
+  await page.waitForTimeout(1000);
+  const m = await page.evaluate(() => {
+    const c = document.querySelector(".water-canvas canvas");
+    const dpr = Math.min(devicePixelRatio, 1.25);
+    return { cw: c.width, ch: c.height, want: [Math.round(document.documentElement.clientWidth * dpr), Math.round(document.documentElement.clientHeight * dpr)], inner: [innerWidth, innerHeight] };
+  });
+  check("canvas matches the viewport minus scrollbars", m.cw === m.want[0] && m.ch === m.want[1] && m.want[1] < Math.round(m.inner[1] * 1.25), JSON.stringify(m));
+  await b.close();
+}
 
 // WebGL 無し → fallback
 {
