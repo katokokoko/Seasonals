@@ -1,6 +1,6 @@
 /**
  * GlassDebugOverlay — `?glass-debug` で開いた時だけ出す診断表示。
- * GPU に実際に upload されている glass / quiet rect を `gl.getUniform` で読み戻し
+ * glass layer (無ければ水面 layer) の GPU に実際に upload されている glass / quiet rect を `gl.getUniform` で読み戻し
  * (= shader が本当に使っている値)、canvas の box 基準で CSS px に戻して シアン の枠で描く。
  * DOM 要素の実際の枠は 赤 で描く。2 つが重ならなければ WebGL の光・縁が DOM からずれている。
  * 左下に viewport / canvas / scroll の数値と、glass ごとの中心のずれ (px) を出す。
@@ -24,7 +24,8 @@ interface Snapshot {
 }
 
 function read(): Snapshot | null {
-  const canvas = document.querySelector<HTMLCanvasElement>(".water-canvas canvas");
+  const canvas =
+    document.querySelector<HTMLCanvasElement>(".glass-canvas canvas") ?? document.querySelector<HTMLCanvasElement>(".water-canvas canvas");
   const gl = canvas?.getContext("webgl");
   const prog = gl?.getParameter(gl.CURRENT_PROGRAM) as WebGLProgram | null | undefined;
   if (!canvas || !gl || !prog) return null;

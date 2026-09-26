@@ -3,6 +3,8 @@
  * (docs/web/water-background-spec.md "Quiet zone contract" / "Glass lens")。
  *
  * - 座標は canvas の実 box 基準 (canvasFrame)。viewport / innerHeight / dpr を前提にしない
+ * - canvas は 2 枚 (水面 = fixed、glass = スクロール内容と一緒に動く sticky)。rect は canvas ごとに
+ *   その box 基準で詰める。glass rect は glass layer にだけ入れる
  * - `measure()` は WaterBackground の描画ループが **アニメーション中は毎フレーム** 呼ぶ。
  *   scroll / sticky / macOS の弾性スクロール / route 遷移 / WAAPI / HMR など、どんな動きでも
  *   次のフレームで追従し、古い rect が残らない (要素の一覧はキャッシュし、毎フレームは rect だけ読む)
@@ -26,60 +28,73 @@ export interface QuietZoneState {
   version: number;
 }
 
+/** rect を詰める先の canvas。glass: true の layer にだけ glass rect を入れる */
+export interface ZoneLayer {
+  canvas: HTMLCanvasElement;
+  glass: boolean;
+}
+
 export interface QuietZoneTracker {
-  state: QuietZoneState;
-  /** 今の DOM から rect を取り直す。変わっていれば true */
+  /** canvas ごとの最新値 (無ければ空) */
+  stateFor: (canvas: HTMLCanvasElement) => QuietZoneState;
+  /** 今の DOM から rect を取り直す。どれかの layer が変わっていれば true */
   measure: () => boolean;
 }
+
+const EMPTY: QuietZoneState = {
+  rects: new Float32Array(16),
+  count: 0,
+  glassRects: new Float32Array(24),
+  glassMeta: new Float32Array(24),
+  glassCount: 0,
+  version: 0,
+};
 
 const QUIET = "[data-water-quiet]";
 const GLASS = "[data-water-glass]";
 
 export function useQuietZones(
-  getCanvas: () => HTMLCanvasElement | null,
+  getLayers: () => ZoneLayer[],
   onChange: () => void,
   host?: RefObject<HTMLElement | null>
 ): RefObject<QuietZoneTracker> {
   const quietEls = useRef<HTMLElement[]>([]);
   const glassEls = useRef<HTMLElement[]>([]);
+  const states = useRef(new WeakMap<HTMLCanvasElement, QuietZoneState>());
   const tracker = useRef<QuietZoneTracker>({
-    state: {
-      rects: new Float32Array(16),
-      count: 0,
-      glassRects: new Float32Array(24),
-      glassMeta: new Float32Array(24),
-      glassCount: 0,
-      version: 0,
-    },
+    stateFor: (canvas) => states.current.get(canvas) ?? EMPTY,
     measure: () => false,
   });
 
   tracker.current.measure = () => {
-    const canvas = getCanvas();
-    if (!canvas) return false;
-    const frame = canvasFrame(canvas);
-    const rects = collectQuietRects(quietEls.current, frame);
-    const glass = collectGlassRects(glassEls.current, frame);
-    const next = packQuietRects(rects);
-    const nextGlass = packGlassRects(glass);
-    const cur = tracker.current.state;
-    const changed =
-      cur.count !== rects.length ||
-      cur.glassCount !== glass.length ||
-      !sameRects(cur.rects, next) ||
-      !sameRects(cur.glassRects, nextGlass.rects) ||
-      !sameRects(cur.glassMeta, nextGlass.meta);
-    if (changed) {
-      tracker.current.state = {
-        rects: next,
-        count: rects.length,
-        glassRects: nextGlass.rects,
-        glassMeta: nextGlass.meta,
-        glassCount: glass.length,
-        version: cur.version + 1,
-      };
+    let any = false;
+    for (const layer of getLayers()) {
+      const frame = canvasFrame(layer.canvas);
+      const rects = collectQuietRects(quietEls.current, frame);
+      const glass = layer.glass ? collectGlassRects(glassEls.current, frame) : [];
+      const next = packQuietRects(rects);
+      const nextGlass = packGlassRects(glass);
+      const cur = states.current.get(layer.canvas) ?? EMPTY;
+      const changed =
+        cur === EMPTY ||
+        cur.count !== rects.length ||
+        cur.glassCount !== glass.length ||
+        !sameRects(cur.rects, next) ||
+        !sameRects(cur.glassRects, nextGlass.rects) ||
+        !sameRects(cur.glassMeta, nextGlass.meta);
+      if (changed) {
+        states.current.set(layer.canvas, {
+          rects: next,
+          count: rects.length,
+          glassRects: nextGlass.rects,
+          glassMeta: nextGlass.meta,
+          glassCount: glass.length,
+          version: cur.version + 1,
+        });
+        any = true;
+      }
     }
-    return changed;
+    return any;
   };
 
   useEffect(() => {

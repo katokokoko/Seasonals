@@ -16,6 +16,7 @@ uniform vec4  uGlassMeta[6];  // corner radius (device px), rotation (radians, C
 uniform int   uGlassCount;    // how many of uGlassRects are in use (0..6)
 uniform float uGlass;         // liquid glass lens strength (0 = off)
 uniform vec2  uLight;         // specular light direction (screen space, y up)
+uniform float uGlassOnly;     // 1 = glass layer: transparent outside glass (drawn over the water layer)
 
 // ---------- noise ----------
 float hash21(vec2 p) {
@@ -181,12 +182,13 @@ float squircleSlope(float x) {
   float s = 1.0 - u * u * u * u;
   return u * u * u * pow(max(s, 1e-4), -0.75);
 }
-void glassLens(vec2 frag, out vec2 off, out float rim, out float frost, out float bevel, out float body) {
+void glassLens(vec2 frag, out vec2 off, out float rim, out float frost, out float bevel, out float body, out float cover) {
   off = vec2(0.0);
   rim = 0.0;
   frost = 0.0;
   bevel = 0.0;
   body = 0.0;
+  cover = 0.0;
   vec2 L = normalize(uLight + vec2(1e-5));
   for (int i = 0; i < 6; i++) {
     if (i >= uGlassCount) break;
@@ -215,14 +217,20 @@ void glassLens(vec2 frag, out vec2 off, out float rim, out float frost, out floa
     frost = max(frost, inside * meta.w * uGlass);
     bevel = max(bevel, inside * slope * uGlass);
     body = max(body, inside * uGlass);
+    cover = max(cover, inside);
   }
 }
 
 void main() {
   vec2 frag = gl_FragCoord.xy;
   vec2 goff;
-  float rim, frost, bevel, body;
-  glassLens(frag, goff, rim, frost, bevel, body);
+  float rim, frost, bevel, body, cover;
+  glassLens(frag, goff, rim, frost, bevel, body, cover);
+  // glass layer: nothing to draw outside the glass, the water layer below shows through
+  if (uGlassOnly > 0.5 && cover <= 0.0) {
+    gl_FragColor = vec4(0.0);
+    return;
+  }
   float quiet = quietMask(frag) * uQuiet;
   vec3 col = renderB(frag + goff, uTime, quiet, frost, bevel);
   if (bevel > 0.02) {
@@ -234,5 +242,6 @@ void main() {
   col = mix(vec3(lum), col, 1.0 + 0.25 * body); // glass lifts saturation
   col = mix(col, col * 1.03 + 0.035, frost * 0.6); // milky body (regular glass)
   col += bevel * 0.04 + rim * 0.5;
-  gl_FragColor = vec4(clamp(col, 0.0, 1.0), 1.0);
+  float alpha = uGlassOnly > 0.5 ? cover : 1.0; // premultiplied for the glass layer
+  gl_FragColor = vec4(clamp(col, 0.0, 1.0) * alpha, alpha);
 }

@@ -49,12 +49,13 @@ Motion: the water should feel like a still image that happens to be alive. Cells
 
 ## Architecture
 
-One `<canvas>` at `z-index: 0` draws the water (sticky inside the scrolling content, see "Rubber band" below; it was `position: fixed` before 2026-09); the whole UI sits above it at `z-index: 10` in a normal DOM layer. The canvas never receives pointer events and is `aria-hidden`.
+Two canvases draw the background (see "Rubber band" below): a `position: fixed` water layer at `z-index: 0`, and a transparent glass layer that lives in the scrolling content and draws only inside the glass surfaces; the whole UI sits above it at `z-index: 10` in a normal DOM layer. The canvas never receives pointer events and is `aria-hidden`.
 
 ```text
 <main class="app">
-  <div class="water-track">      position: absolute; top: -100px; bottom: 0 (inside #root, display: flow-root)
-    <WaterBackground ... />      position: sticky; top: -100px; height: calc(100vh + 100px); z-index: 0
+  <WaterBackground ... />        water layer: position: fixed; inset: 0; z-index: 0
+    .water-track                 position: absolute; inset: 0; z-index: 1 (inside #root, display: flow-root)
+      .glass-canvas              glass layer: position: sticky; top: 0; height: 100vh (uGlassOnly = 1)
   <div class="ui">               position: relative; z-index: 10
     <TopNavigation />
     <Calendar data-water-quiet /> registers its rect as a quiet zone
@@ -113,7 +114,12 @@ Quiet zone contract:
 
 Rect uniforms are uploaded once per frame only when the values changed since the last frame; compare the flattened `Float32Array` before calling `uniform4fv`.
 
-Rubber band (added 2026-09): macOS elastic overscroll at the top / bottom edge translates the scrolling content on the compositor and leaves `position: fixed` elements in place. No JS value reports that offset, so a fixed canvas cannot follow it, and the glass light / rim stayed behind while the DOM frames bounced. The canvas therefore lives in the scrolling content: an absolutely positioned `.water-track` (from 100px above the document top to its bottom) holds a `position: sticky; top: -100px` host, `100vh + 100px` tall. During normal scrolling it behaves like a fixed layer; during a bounce it moves with the content, so glass and frames stay together in any browser. The 100px overscan above the top hides the gap when pulling down at the top. Overflow above the document top adds no scroll height, but overflow below would, so there is no overscan at the bottom (a bottom bounce briefly shows the page background colour). `#root` is `display: flow-root` so the top bar's margin does not collapse through it and shift the track. The canvas resolution comes from the host's own box, not the viewport.
+Rubber band (added 2026-09): macOS elastic overscroll at the top / bottom edge translates the scrolling content on the compositor and leaves `position: fixed` elements in place. No JS value reports that offset. With glass drawn into the fixed water canvas, the glass light / rim stayed behind while the DOM frames bounced; moving the whole water canvas into the scrolling content instead fixed that but exposed a band of page background at the stretched edge. So the background is split into two layers:
+
+- Water layer: `position: fixed`, `uGlassCount = 0`. It never moves, so a bounce never reveals a band.
+- Glass layer: a transparent canvas (`alpha: true`, premultiplied) inside `.water-track`, `position: sticky; top: 0; height: 100vh`, drawn with `uGlassOnly = 1`: outside every glass surface the fragment returns `vec4(0)` right after the cheap SDF loop, inside it renders the refracted water + rim with alpha = coverage. It moves with the scrolling content, so glass and frames stay together. The water under the lens comes from the same `uTime` / coordinates, so it is seamless except during a bounce, when the glass carries its refracted water along (reads as glass moving over water).
+- The quiet zones are uploaded to both layers, each measured against its own canvas box. If the glass context cannot be created, the water layer draws the glass as before.
+- `#root` is `display: flow-root` so the top bar's margin does not collapse through it and shift the track. The skip link is hidden with `clip-path` until focused (a top bounce would otherwise expose it above the page).
 
 Tracking rules (revised 2026-09 after glass surfaces drifted off their DOM frames):
 
@@ -189,6 +195,7 @@ uniform vec4  uGlassMeta[6];  // corner radius (device px), rotation (radians, C
 uniform int   uGlassCount;    // how many of uGlassRects are in use (0..6)
 uniform float uGlass;         // liquid glass lens strength (0 = off)
 uniform vec2  uLight;         // specular light direction (screen space, y up)
+uniform float uGlassOnly;     // 1 = glass layer: transparent outside glass (drawn over the water layer)
 
 // ---------- noise ----------
 float hash21(vec2 p) {
@@ -354,12 +361,13 @@ float squircleSlope(float x) {
   float s = 1.0 - u * u * u * u;
   return u * u * u * pow(max(s, 1e-4), -0.75);
 }
-void glassLens(vec2 frag, out vec2 off, out float rim, out float frost, out float bevel, out float body) {
+void glassLens(vec2 frag, out vec2 off, out float rim, out float frost, out float bevel, out float body, out float cover) {
   off = vec2(0.0);
   rim = 0.0;
   frost = 0.0;
   bevel = 0.0;
   body = 0.0;
+  cover = 0.0;
   vec2 L = normalize(uLight + vec2(1e-5));
   for (int i = 0; i < 6; i++) {
     if (i >= uGlassCount) break;
@@ -388,14 +396,20 @@ void glassLens(vec2 frag, out vec2 off, out float rim, out float frost, out floa
     frost = max(frost, inside * meta.w * uGlass);
     bevel = max(bevel, inside * slope * uGlass);
     body = max(body, inside * uGlass);
+    cover = max(cover, inside);
   }
 }
 
 void main() {
   vec2 frag = gl_FragCoord.xy;
   vec2 goff;
-  float rim, frost, bevel, body;
-  glassLens(frag, goff, rim, frost, bevel, body);
+  float rim, frost, bevel, body, cover;
+  glassLens(frag, goff, rim, frost, bevel, body, cover);
+  // glass layer: nothing to draw outside the glass, the water layer below shows through
+  if (uGlassOnly > 0.5 && cover <= 0.0) {
+    gl_FragColor = vec4(0.0);
+    return;
+  }
   float quiet = quietMask(frag) * uQuiet;
   vec3 col = renderB(frag + goff, uTime, quiet, frost, bevel);
   if (bevel > 0.02) {
@@ -407,7 +421,8 @@ void main() {
   col = mix(vec3(lum), col, 1.0 + 0.25 * body); // glass lifts saturation
   col = mix(col, col * 1.03 + 0.035, frost * 0.6); // milky body (regular glass)
   col += bevel * 0.04 + rim * 0.5;
-  gl_FragColor = vec4(clamp(col, 0.0, 1.0), 1.0);
+  float alpha = uGlassOnly > 0.5 ? cover : 1.0; // premultiplied for the glass layer
+  gl_FragColor = vec4(clamp(col, 0.0, 1.0) * alpha, alpha);
 }
 ```
 
@@ -446,6 +461,7 @@ Fallback:
 - [ ] Switching tabs stops the draw loop (verify with the Performance panel: zero GPU work while hidden). Returning resumes without a time jump.
 - [ ] With `prefers-reduced-motion: reduce` the background is a single still frame.
 - [ ] Frame time under 8 ms at 1440p on an M-series MacBook and under 12 ms on Intel Iris Xe, measured with the calendar mounted.
+- [ ] Pulling past the top / bottom edge (macOS rubber band) moves glass light and rim with their frames and shows no band.
 - [ ] No `backdrop-filter` anywhere above the canvas. No three.js or other 3D dependency added to the bundle. (The glass fallback blur applies only when there is no canvas.)
 - [ ] Under a `data-water-glass` card the water visibly bends at the edges and the caustic lines soften; rotated portal cards get a lens that follows their rotation.
 - [ ] `water.frag.glsl` is byte-identical to this spec. Tuning is done through `waterDefaults` only.

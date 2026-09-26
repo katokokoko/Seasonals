@@ -9,6 +9,10 @@
   background: var(--s-detail);
   box-shadow: var(--sh-soft);
 }
+/* 画面外に置くだけだと rubber band (上端の引っぱり) で見えてしまうので、focus まで clip で隠す */
+.skip-link:not(:focus) {
+  clip-path: inset(50%);
+}
 .skip-link:focus {
   top: var(--sp-md);
 }

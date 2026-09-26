@@ -44,38 +44,38 @@ a {
   border: 0;
 }
 /*
- * 水面 canvas は fixed ではなく「スクロール内容の中の sticky」にする。macOS の rubber band
- * (上下端を越えたスクロールの伸び縮み) はスクロール内容だけを平行移動し fixed を動かさないので、
- * fixed だと DOM の glass 枠だけ動いて WebGL の光・縁が置いていかれる (JS からはその移動量を読めない)。
- * sticky ならスクロール内容と一緒に動く。上端で伸びた時に単色の帯が見えないよう、上にだけ
- * overscan を持たせる (document の上にはみ出した分はスクロール量に入らない。下にはみ出すと
- * スクロール量が増えるので、下端は document の終わりで止める — 下端の伸びでは背景色が少し見える)。
- * #root は flow-root にして nav の margin-top が #root の外へ相殺されないようにする
- * (相殺されると track が 16px 下にずれて overscan が減る)。
+ * 背景は canvas 2 枚 (background/WaterBackground.tsx)。
+ * - .water-canvas: 水面。fixed なので macOS の rubber band (上下端を越えたスクロールの伸び縮み) 中も
+ *   画面を覆い続け、端に背景色の帯が出ない
+ * - .glass-canvas: glass の中だけを描く透明な canvas。rubber band はスクロール内容だけを平行移動し
+ *   fixed を動かさない (JS からは移動量を読めない) ので、glass を fixed に描くと光・縁が DOM の枠から
+ *   置いていかれる。スクロール内容の中の sticky にして DOM の枠と一緒に動かす
+ * #root は flow-root にして nav の margin-top が #root の外へ相殺されないようにする (track がずれる)。
  */
-:root {
-  --water-overscan: 100px;
-}
 #root {
   position: relative;
   display: flow-root;
 }
-.water-track {
-  position: absolute;
-  left: 0;
-  right: 0;
-  top: calc(-1 * var(--water-overscan));
-  bottom: 0;
+.water-canvas {
+  position: fixed;
+  inset: 0;
   z-index: 0;
   pointer-events: none;
 }
-.water-canvas {
-  position: sticky;
-  top: calc(-1 * var(--water-overscan));
-  width: 100%;
-  height: calc(100vh + var(--water-overscan));
+.water-track {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
   pointer-events: none;
 }
+.glass-canvas {
+  position: sticky;
+  top: 0;
+  width: 100%;
+  height: 100vh;
+  pointer-events: none;
+}
+.glass-canvas canvas,
 .water-canvas canvas {
   display: block;
   width: 100%;

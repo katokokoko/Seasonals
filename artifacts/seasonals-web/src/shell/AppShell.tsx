@@ -31,10 +31,8 @@ export function AppShell() {
   });
   return (
     <>
-      {/* track + sticky canvas: rubber band scroll でも glass と一緒に動く (styles/base.css) */}
-      <div className="water-track" aria-hidden="true">
-        <WaterBackground className="water-canvas" params={isHome ? waterDefaults : waterCalm} />
-      </div>
+      {/* 水面 (fixed) + glass layer (sticky、rubber band でも glass の枠と一緒に動く)。styles/base.css */}
+      <WaterBackground className="water-canvas" glassClassName="glass-canvas" params={isHome ? waterDefaults : waterCalm} />
       <div className={`ui-layer ${isHome ? "is-home" : "is-work"}`}>
         <a className="skip-link" href="#main">
           Skip to content

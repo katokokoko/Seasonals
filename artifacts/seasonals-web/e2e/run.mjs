@@ -30,7 +30,8 @@ mkdirSync(".screenshots", { recursive: true });
  */
 async function glassDrift(page) {
   return page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => resolve((() => {
-    const c = document.querySelector(".water-canvas canvas");
+    // glass は glass layer (sticky) に描く。無い環境では水面 layer
+    const c = document.querySelector(".glass-canvas canvas") ?? document.querySelector(".water-canvas canvas");
     const gl = c?.getContext("webgl");
     const prog = gl?.getParameter(gl.CURRENT_PROGRAM);
     if (!prog) return { max: Infinity, detail: "no WebGL program" };
@@ -280,28 +281,36 @@ for (const vp of WIDTHS) {
   await page.waitForTimeout(80);
   d = await glassDrift(page);
   check("glass aligned after scrolling back", d.max <= 1, d.detail);
-  // rubber band 対策: canvas は sticky + 上に 100px の overscan。どのスクロール位置でも viewport を覆い、
-  // document のスクロール量は増えない (rubber band 自体は headless で再現できないので実機で確認)
+  // rubber band 対策: 水面は fixed (端に帯が出ない)、glass layer はスクロール内容の中の sticky
+  // (枠と一緒に動く)。どのスクロール位置でも両方が viewport を覆い、スクロール量は増えない
+  // (rubber band 自体は headless で再現できないので実機で確認)
   const cover = () =>
     page.evaluate(() => {
-      const r = document.querySelector(".water-canvas").getBoundingClientRect();
+      const box = (sel) => {
+        const el = document.querySelector(sel);
+        const r = el.getBoundingClientRect();
+        return { top: r.top, bottom: r.bottom - innerHeight, position: getComputedStyle(el).position };
+      };
       const ui = document.querySelector(".ui-layer");
       return {
-        top: r.top,
-        bottom: r.bottom - innerHeight,
-        position: getComputedStyle(document.querySelector(".water-canvas")).position,
+        water: box(".water-canvas"),
+        glass: box(".glass-canvas"),
         extra: document.documentElement.scrollHeight - (ui.offsetTop + ui.offsetHeight),
       };
     });
   await page.goto(BASE + "/calendar?view=timeline&range=all", { waitUntil: "networkidle" });
   await page.waitForTimeout(500);
   let cv = await cover();
-  check("water canvas is sticky with overscan above the top", cv.position === "sticky" && cv.top === -100 && cv.bottom === 0, JSON.stringify(cv));
-  check("overscan does not add scroll height", cv.extra <= 1, JSON.stringify(cv));
+  check(
+    "water layer is fixed, glass layer is sticky, both cover the viewport",
+    cv.water.position === "fixed" && cv.glass.position === "sticky" && cv.water.top === 0 && cv.glass.top === 0 && Math.abs(cv.glass.bottom) <= 0.5,
+    JSON.stringify(cv)
+  );
+  check("background layers do not add scroll height", cv.extra <= 1, JSON.stringify(cv));
   await page.evaluate(() => window.scrollTo(0, document.documentElement.scrollHeight));
   await page.waitForTimeout(150);
   cv = await cover();
-  check("water canvas still covers the viewport at the bottom", cv.top <= -99.5 && Math.abs(cv.bottom) <= 0.5, JSON.stringify(cv)); // sub-pixel の丸めは許容
+  check("glass layer still covers the viewport at the bottom", Math.abs(cv.glass.top) <= 0.5 && Math.abs(cv.glass.bottom) <= 0.5, JSON.stringify(cv)); // sub-pixel の丸めは許容
   d = await glassDrift(page);
   check("glass aligned at the bottom of a long page", d.max <= 1, d.detail);
   await page.goto(BASE + "/?glass-debug", { waitUntil: "networkidle" });
