@@ -5,7 +5,7 @@
  * Max は BFF が返した残高 (smallest unit) を toHumanReadable で正確に戻したもの (Number を通さない)。
  */
 import { useId, useState } from "react";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toHumanReadable } from "@workspace/lib/utils/numeric";
 import type { MenuHoldingsResponse, MenuProduct, TokenAmountView } from "@workspace/lib/types";
 import { api, ApiError, type MenuPlanRequest } from "../services/api";
@@ -20,9 +20,9 @@ const TOKENS: Record<string, { deposit: string; withdraw: string[] }> = {
   "ethereum:ethena:susde": { deposit: "USDe", withdraw: ["sUSDe"] },
 };
 
-/** Menu から deposit / withdraw できる商品か (Pendle は価格 guard 付きで別途対応) */
+/** Menu から deposit / withdraw できる商品か (Pendle PT / YT は BFF の価格 guard 付き) */
 export function menuActionable(product: MenuProduct): boolean {
-  return product.id in TOKENS;
+  return product.id in TOKENS || Boolean(product.tokenKind);
 }
 
 const LABEL: Record<string, Record<MenuAction, string>> = {
@@ -31,6 +31,7 @@ const LABEL: Record<string, Record<MenuAction, string>> = {
 };
 
 export function actionLabel(product: MenuProduct, action: MenuAction): string {
+  if (product.tokenKind) return `${action === "deposit" ? "Buy" : "Sell"} ${product.tokenKind.toUpperCase()}`;
   return LABEL[product.id]?.[action] ?? (action === "deposit" ? "Deposit" : "Withdraw");
 }
 
@@ -58,30 +59,52 @@ export function MenuActionPanel({
 }) {
   const id = useId();
   const qc = useQueryClient();
-  const tokens = TOKENS[product.id]!;
-  const choices = action === "deposit" ? [tokens.deposit] : tokens.withdraw;
+  const pendle = Boolean(product.tokenKind);
   // withdraw は保有のある address / トークンを既定にする
   const firstHolder = addresses.find((a) => byAddress.get(a)?.holdings.some((h) => h.productId === product.id));
   const [owner, setOwner] = useState(action === "withdraw" && firstHolder ? firstHolder : (addresses[0] ?? ""));
+  // Pendle: 払う / 受け取るトークンは market ごとに違うので BFF が on-chain で読んだ文脈を使う
+  const ctx = useQuery({
+    queryKey: ["eth", "menu-context", owner.toLowerCase(), product.id, action],
+    queryFn: () => api.ethMenuContext(owner, product.id, action),
+    enabled: pendle && Boolean(owner),
+    staleTime: 30_000,
+    retry: 1,
+  });
+  const tokens = TOKENS[product.id];
+  const pendleUnit = ctx.data ? (action === "deposit" ? ctx.data.token : ctx.data.pyToken) : undefined;
+  const choices = tokens ? (action === "deposit" ? [tokens.deposit] : tokens.withdraw) : [pendleUnit?.symbol ?? "…"];
   const heldToken = choices.find((s) => balanceOf(byAddress.get(owner), product, action, s));
-  const [token, setToken] = useState(heldToken ?? choices[0]!);
+  const [picked, setToken] = useState(heldToken ?? choices[0]!);
+  const token = choices.includes(picked) ? picked : choices[0]!;
   const [amount, setAmount] = useState("");
-  const balance = balanceOf(byAddress.get(owner), product, action, token);
+  const balance = pendle ? pendleUnit : balanceOf(byAddress.get(owner), product, action, token);
+  // 取引できない理由 (Pendle): 満期済み / オラクル未準備。BFF でも同じ理由で拒否される (fail-closed)
+  const blocked = ctx.data?.matured
+    ? action === "deposit"
+      ? "This market has matured; it can no longer be bought."
+      : product.tokenKind === "pt"
+        ? "This PT has matured. Redeem it 1:1 from its calendar event."
+        : "This YT has matured and is worth 0."
+    : ctx.data && !ctx.data.oracleReady
+      ? "Pendle's on-chain price oracle is not ready for this market, so trading it is blocked (prices cannot be checked)."
+      : null;
 
-  const request = (): MenuPlanRequest => ({ owner, productId: product.id, action, amount: amount.trim(), ...(choices.length > 1 ? { token } : {}) });
+  const request = (): MenuPlanRequest => ({ owner, productId: product.id, action, amount: amount.trim(), ...(tokens && choices.length > 1 ? { token } : {}) });
   const plan = useMutation({ mutationFn: () => api.ethMenuPlan(request()) });
   const exec = useMutation({
     mutationFn: () => api.ethMenuExecuteOnFork(request()),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: ["eth", "holdings"] });
       qc.invalidateQueries({ queryKey: ["eth", "events"] });
+      qc.invalidateQueries({ queryKey: ["eth", "menu-context"] });
     },
   });
   const reset = () => {
     plan.reset();
     exec.reset();
   };
-  const valid = DECIMAL.test(amount.trim()) && !/^0+(\.0+)?$/.test(amount.trim());
+  const valid = DECIMAL.test(amount.trim()) && !/^0+(\.0+)?$/.test(amount.trim()) && !blocked && (!pendle || Boolean(ctx.data));
 
   if (addresses.length === 0) {
     return <p className="muted small">Watch or connect an Ethereum address to {action}.</p>;
@@ -131,8 +154,22 @@ export function MenuActionPanel({
             </button>
           </div>
           <p className="muted small">
-            {balance ? `Available: ${fmtAmount(balance, 6)} (mainnet)` : byAddress.get(owner) ? `No ${token} at ${shortAddress(owner)}.` : "Checking balance…"}
+            {balance
+              ? `Available: ${fmtAmount(balance, 6)} (mainnet)`
+              : (pendle ? ctx.isSuccess : byAddress.get(owner))
+                ? `No ${token} at ${shortAddress(owner)}.`
+                : "Checking balance…"}
           </p>
+          {blocked && (
+            <p className="menu-warning small" role="alert">
+              {blocked}
+            </p>
+          )}
+          {ctx.isError && (
+            <p className="error small" role="alert">
+              {ctx.error instanceof ApiError ? ctx.error.message : "Could not read this market."}
+            </p>
+          )}
           {plan.isError && (
             <p className="error small" role="alert">
               {plan.error instanceof ApiError ? plan.error.message : "Could not build the plan."}

@@ -80,3 +80,14 @@ export const wstETHAbi = parseAbi([
   "function getStETHByWstETH(uint256 _wstETHAmount) view returns (uint256)",
   "function getWstETHByStETH(uint256 _stETHAmount) view returns (uint256)",
 ]);
+
+/** Pendle PYLpOracle (TWAP) と SY (standardized yield) の換算 */
+export const pendleOracleAbi = parseAbi([
+  "function getOracleState(address market, uint32 duration) view returns (bool increaseCardinalityRequired, uint16 cardinalityRequired, bool oldestObservationSatisfied)",
+  "function getPtToSyRate(address market, uint32 duration) view returns (uint256)",
+  "function getYtToSyRate(address market, uint32 duration) view returns (uint256)",
+]);
+export const pendleSyAbi = parseAbi([
+  "function previewDeposit(address tokenIn, uint256 amountTokenToDeposit) view returns (uint256 amountSharesOut)",
+  "function previewRedeem(address tokenOut, uint256 amountSharesToRedeem) view returns (uint256 amountTokenOut)",
+]);

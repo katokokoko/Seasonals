@@ -67,3 +67,46 @@ test("invalid amounts keep Build plan disabled; an empty balance disables Max", 
   expect(screen.getByText(/Available: 0 USDe/)).toBeTruthy();
   expect((screen.getByRole("button", { name: "Max" }) as HTMLButtonElement).disabled).toBe(true);
 });
+
+describe("Pendle PT / YT", () => {
+  const pt = { ...product, id: `ethereum:pendle:pt:0x${"3".repeat(40)}`, protocolId: "pendle", protocolName: "Pendle", name: "PT-wstETH", tokenKind: "pt" } as MenuProduct;
+
+  function renderPendle(ctx: { oracleReady: boolean; matured: boolean }) {
+    globalThis.fetch = (async (url: string) => {
+      if (url.includes("/eth/menu/context"))
+        return new Response(
+          JSON.stringify({
+            ...ctx,
+            maturity: "2027-12-30T00:00:00.000Z",
+            token: { value: "0", decimals: 18, symbol: "wstETH" },
+            pyToken: { value: "13056763778244012", decimals: 18, symbol: "PT-wstETH" },
+          })
+        );
+      return new Response(JSON.stringify({ executionTarget: "fork", forkReachable: true }));
+    }) as typeof fetch;
+    render(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <MenuActionPanel product={pt} action="withdraw" addresses={[OWNER]} byAddress={new Map()} onClose={() => {}} />
+      </QueryClientProvider>
+    );
+  }
+
+  test("uses the market's own token and balance from the BFF context", async () => {
+    renderPendle({ oracleReady: true, matured: false });
+    expect(await screen.findByText(/Available: 0\.013057 PT-wstETH/)).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("Amount"), { target: { value: "0.01" } });
+    expect((screen.getByRole("button", { name: "Build plan" }) as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  test("an unready oracle blocks trading before a plan is requested (fail closed)", async () => {
+    renderPendle({ oracleReady: false, matured: false });
+    expect(await screen.findByText(/oracle is not ready/)).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("Amount"), { target: { value: "0.01" } });
+    expect((screen.getByRole("button", { name: "Build plan" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  test("a matured PT points to Redeem instead of selling", async () => {
+    renderPendle({ oracleReady: true, matured: true });
+    expect(await screen.findByText(/Redeem it 1:1 from its calendar event/)).toBeTruthy();
+  });
+});

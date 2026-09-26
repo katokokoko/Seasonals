@@ -93,6 +93,9 @@
 }
 .menu-item {
   display: grid;
+  /* 同じ行のカードがパネルで伸びても、他のカードの中身を引き伸ばさない */
+  align-self: start;
+  align-content: start;
   gap: var(--sp-sm);
   padding: var(--sp-md) var(--sp-lg);
   border-radius: var(--r-xl);

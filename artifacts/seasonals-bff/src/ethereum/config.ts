@@ -28,4 +28,9 @@ export const CCA = {
 } as const;
 
 export const PENDLE_API = "https://api-v2.pendle.finance/core";
+/**
+ * Pendle PYLpOracle (mainnet)。PT / YT の SY 建て TWAP を返す。2026-09-26 に eth_getCode と
+ * getOracleState / getPtToSyRate / getYtToSyRate の応答で実在を確認済み
+ */
+export const PENDLE_PY_LP_ORACLE = "0x9a9Fa8338dd5E5B2188006f1Cd2Ef26d921650C2";
 export const MAINNET_CHAIN_ID = 1;

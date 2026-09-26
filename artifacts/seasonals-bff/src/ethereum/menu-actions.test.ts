@@ -83,7 +83,7 @@ test("Ethena withdraw starts a cooldown and warns when one is already running", 
   expect(plan.warnings?.some((w) => w.includes("restarts the timer"))).toBe(true);
 });
 
-test("Pendle and unknown products are not planned here (fail closed)", async () => {
+test("unknown products are not planned (fail closed)", async () => {
   expect(await code(buildMenuPlan({ owner: OWNER, productId: "ethereum:pendle:pt:0x1", action: "deposit", amount: "1" }, { client: fakeClient({}) }))).toBe(
     "unsupported_action"
   );

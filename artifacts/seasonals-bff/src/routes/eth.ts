@@ -11,7 +11,8 @@ import { getPublicEvents, getUserEvents } from "../ethereum/events";
 import { buildActionPlan, PlanError } from "../ethereum/plans";
 import { buildProposal } from "../ethereum/proposals";
 import { advanceFork, executeMenuOnFork, executeOnFork, mineFork } from "../ethereum/execute";
-import { buildMenuPlan, type MenuPlanInput } from "../ethereum/menu-actions";
+import { buildMenuPlan, pendleTradeContext, type MenuPlanInput } from "../ethereum/menu-actions";
+import { pendleOracleReady } from "../ethereum/pendle-guard";
 import { ensureIndexing, indexProgress } from "../ethereum/cca";
 import { UniswapError, buildUniswapSwapPlan, executeUniswapSwapOnFork, uniswapPreview } from "../ethereum/uniswap";
 import { getEthMenu } from "../ethereum/menu";
@@ -175,6 +176,27 @@ async function ethRoutes(app: FastifyInstance): Promise<void> {
     if (!isEvmAddress(owner) || !productId || (action !== "deposit" && action !== "withdraw") || typeof amount !== "string" || !amount) return null;
     return { owner, productId, action, amount, ...(typeof token === "string" ? { token } : {}) };
   }
+
+  /** Pendle 売買パネル用: 払う / 受け取るトークンと残高、満期 (on-chain で読む) */
+  app.get<{ Querystring: { address?: string; productId?: string; action?: string } }>("/eth/menu/context", async (req, reply) => {
+    const { address = "", productId = "", action } = req.query;
+    if (!isEvmAddress(address) || !productId || (action !== "deposit" && action !== "withdraw")) return reply.code(400).send({ error: "invalid_argument" });
+    const client = getEthClient();
+    if (!client) return reply.code(502).send({ error: "rpc_unavailable", message: "Ethereum RPC is not configured." });
+    try {
+      const ctx = await pendleTradeContext(client as never, address as `0x${string}`, productId, action);
+      return {
+        oracleReady: await pendleOracleReady(client as never, ctx.market.address),
+        matured: ctx.matured,
+        maturity: ctx.market.expiry,
+        token: { value: ctx.token.balance.toString(), decimals: ctx.token.decimals, symbol: ctx.token.symbol },
+        pyToken: { value: ctx.pyToken.balance.toString(), decimals: ctx.pyToken.decimals, symbol: ctx.pyToken.symbol },
+      };
+    } catch (e) {
+      if (e instanceof PlanError) return reply.code(planErrorStatus(e.code)).send({ error: e.code, message: e.message });
+      return reply.code(502).send({ error: "upstream_error", message: sanitizeError(e) });
+    }
+  });
 
   /** Menu の deposit / withdraw: 未署名プランのみ (送信しない) */
   app.post<{ Body: Partial<MenuPlanInput> }>("/eth/menu/plan", async (req, reply) => {
