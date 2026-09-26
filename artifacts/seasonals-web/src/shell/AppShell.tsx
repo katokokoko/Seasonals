@@ -7,6 +7,7 @@ import { WaterBackground } from "../background/WaterBackground";
 import { waterCalm, waterDefaults } from "../background/waterDefaults";
 import { GlobalFloatingNav } from "./GlobalFloatingNav";
 import { GlassDebugOverlay } from "../background/GlassDebugOverlay";
+import { FloatingFriends } from "../home/FloatingFriends";
 import { useEffect, useState } from "react";
 import { useTimeline } from "../services/queries";
 import { EventDetailCard } from "../timeline/EventDetailCard";
@@ -33,6 +34,8 @@ export function AppShell() {
     <>
       {/* 水面 (fixed) + glass layer (sticky、rubber band でも glass の枠と一緒に動く)。styles/base.css */}
       <WaterBackground className="water-canvas" glassClassName="glass-canvas" params={isHome ? waterDefaults : waterCalm} />
+      {/* Home の水面に浮かぶキャラクター (水面の上、glass / UI の下) */}
+      {isHome && <FloatingFriends />}
       <div className={`ui-layer ${isHome ? "is-home" : "is-work"}`}>
         <a className="skip-link" href="#main">
           Skip to content

@@ -1,0 +1,24 @@
+/* Home の水面に浮かぶキャラクター (FloatingFriends.tsx)。水面 canvas の上、glass layer / UI の下 */
+.floating-friends {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+.floater {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 150px;
+  height: auto;
+  opacity: 0;
+  user-select: none;
+  will-change: transform;
+  /* 水面との接地感 (影の本体は shader が水底に落とす) */
+  filter: drop-shadow(0 3px 4px var(--c-shadow));
+  transition: opacity 700ms ease;
+}
+.floater.is-ready {
+  opacity: 1;
+}

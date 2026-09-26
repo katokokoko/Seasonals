@@ -16,7 +16,7 @@
  * 値が変わった時だけ version を増やし、WaterBackground はその時だけ uniform を upload する。
  */
 import { useEffect, useRef, type RefObject } from "react";
-import { canvasFrame, collectGlassRects, collectQuietRects, GLASS_TRACKING_EVENT, packGlassRects, packQuietRects, sameRects } from "./quietZones";
+import { canvasFrame, collectFloaters, collectGlassRects, collectQuietRects, GLASS_TRACKING_EVENT, packFloaters, packGlassRects, packQuietRects, sameRects } from "./quietZones";
 
 export interface QuietZoneState {
   rects: Float32Array;
@@ -24,6 +24,9 @@ export interface QuietZoneState {
   glassRects: Float32Array;
   glassMeta: Float32Array;
   glassCount: number;
+  /** 水面に浮かぶもの (vec4 × 2) と数 */
+  floaters: Float32Array;
+  floaterCount: number;
   /** 値が変わるたびに増える (uniform upload / still mode の再描画トリガ) */
   version: number;
 }
@@ -47,11 +50,14 @@ const EMPTY: QuietZoneState = {
   glassRects: new Float32Array(24),
   glassMeta: new Float32Array(24),
   glassCount: 0,
+  floaters: new Float32Array(8),
+  floaterCount: 0,
   version: 0,
 };
 
 const QUIET = "[data-water-quiet]";
 const GLASS = "[data-water-glass]";
+const FLOATER = "[data-water-floater]";
 
 export function useQuietZones(
   getLayers: () => ZoneLayer[],
@@ -60,6 +66,7 @@ export function useQuietZones(
 ): RefObject<QuietZoneTracker> {
   const quietEls = useRef<HTMLElement[]>([]);
   const glassEls = useRef<HTMLElement[]>([]);
+  const floaterEls = useRef<HTMLElement[]>([]);
   const states = useRef(new WeakMap<HTMLCanvasElement, QuietZoneState>());
   const tracker = useRef<QuietZoneTracker>({
     stateFor: (canvas) => states.current.get(canvas) ?? EMPTY,
@@ -74,6 +81,8 @@ export function useQuietZones(
       const glass = layer.glass ? collectGlassRects(glassEls.current, frame) : [];
       const next = packQuietRects(rects);
       const nextGlass = packGlassRects(glass);
+      const floaters = collectFloaters(floaterEls.current, frame);
+      const nextFloaters = packFloaters(floaters);
       const cur = states.current.get(layer.canvas) ?? EMPTY;
       const changed =
         cur === EMPTY ||
@@ -81,7 +90,9 @@ export function useQuietZones(
         cur.glassCount !== glass.length ||
         !sameRects(cur.rects, next) ||
         !sameRects(cur.glassRects, nextGlass.rects) ||
-        !sameRects(cur.glassMeta, nextGlass.meta);
+        !sameRects(cur.glassMeta, nextGlass.meta) ||
+        cur.floaterCount !== floaters.length ||
+        !sameRects(cur.floaters, nextFloaters);
       if (changed) {
         states.current.set(layer.canvas, {
           rects: next,
@@ -89,6 +100,8 @@ export function useQuietZones(
           glassRects: nextGlass.rects,
           glassMeta: nextGlass.meta,
           glassCount: glass.length,
+          floaters: nextFloaters,
+          floaterCount: floaters.length,
           version: cur.version + 1,
         });
         any = true;
@@ -101,6 +114,7 @@ export function useQuietZones(
     const refreshElements = () => {
       quietEls.current = [...document.querySelectorAll<HTMLElement>(QUIET)];
       glassEls.current = [...document.querySelectorAll<HTMLElement>(GLASS)];
+      floaterEls.current = [...document.querySelectorAll<HTMLElement>(FLOATER)];
     };
     refreshElements();
     // jsdom 等 ResizeObserver の無い環境では要素一覧だけ (背景自体も fallback になる)
@@ -152,7 +166,7 @@ export function useQuietZones(
       childList: true,
       subtree: true,
       attributes: true,
-      attributeFilter: ["data-water-quiet", "data-water-glass", "class", "style"],
+      attributeFilter: ["data-water-quiet", "data-water-glass", "data-water-floater", "class", "style"],
     });
     window.addEventListener(GLASS_TRACKING_EVENT, onTrack);
     window.addEventListener("resize", schedule, { passive: true });

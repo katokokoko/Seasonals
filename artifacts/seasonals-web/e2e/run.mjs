@@ -321,6 +321,62 @@ for (const vp of WIDTHS) {
   await page.close();
 }
 
+// Home の水面に浮かぶキャラクター 2 匹: 左右の空き水面で漂い、shader に波紋と影の位置が渡る
+async function friendsState(page) {
+  return page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => {
+    const cards = [...document.querySelectorAll(".portal-card")].map((c) => c.getBoundingClientRect());
+    const friends = [...document.querySelectorAll(".floater")].map((el) => {
+      const r = el.getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2, r, opacity: getComputedStyle(el).opacity };
+    });
+    const overlap = friends.some((f) => cards.some((c) => f.r.left < c.right && f.r.right > c.left && f.r.top < c.bottom && f.r.bottom > c.top));
+    const c = document.querySelector(".water-canvas canvas");
+    const gl = c?.getContext("webgl");
+    const prog = gl?.getParameter(gl.CURRENT_PROGRAM);
+    let shader = [];
+    if (prog) {
+      const b = c.getBoundingClientRect();
+      const k = c.height / b.height;
+      const n = gl.getUniform(prog, gl.getUniformLocation(prog, "uFloaterCount"));
+      for (let i = 0; i < n; i++) {
+        const f = gl.getUniform(prog, gl.getUniformLocation(prog, `uFloaters[${i}]`));
+        shader.push([b.left + f[0] / k, b.bottom - f[1] / k]);
+      }
+    }
+    const drift = Math.max(0, ...friends.map((f) => Math.min(...shader.map(([sx, sy]) => Math.hypot(sx - f.x, sy - f.y)))));
+    resolve({ friends: friends.map((f) => [Math.round(f.x), Math.round(f.y), f.opacity]), overlap, shaderCount: shader.length, drift });
+  })));
+}
+for (const vp of WIDTHS) {
+  const page = await newPage(vp);
+  await page.goto(BASE + "/", { waitUntil: "networkidle" });
+  await page.waitForTimeout(1500);
+  const a = await friendsState(page);
+  check(`${vp.name} two friends float on the Home water`, a.friends.length === 2 && a.friends.every((f) => f[2] === "1"), JSON.stringify(a.friends));
+  check(`${vp.name} friends stay in the open water (no card overlap)`, !a.overlap, JSON.stringify(a.friends));
+  check(`${vp.name} shader draws ripples / shadow at the friends`, a.shaderCount === 2 && a.drift <= 1, `count=${a.shaderCount} drift=${a.drift.toFixed(2)}`);
+  await page.waitForTimeout(1000);
+  const b = await friendsState(page);
+  check(`${vp.name} friends drift`, a.friends.some((f, i) => Math.hypot(f[0] - b.friends[i][0], f[1] - b.friends[i][1]) >= 1), `${JSON.stringify(a.friends)} → ${JSON.stringify(b.friends)}`);
+  if (vp.width >= 1440) await page.screenshot({ path: `.screenshots/home-friends-${vp.name}.png` });
+  await page.locator("nav[aria-label=Primary]").getByRole("link", { name: "Menu" }).click();
+  await page.waitForTimeout(400);
+  const m = await friendsState(page);
+  check(`${vp.name} no friends and no ripples off Home`, m.friends.length === 0 && m.shaderCount === 0, JSON.stringify(m));
+  check(`${vp.name} no page errors (friends)`, page.errors.length === 0, page.errors.join(" | "));
+  await page.close();
+}
+{
+  const page = await newPage(WIDTHS[0], { reducedMotion: "reduce" });
+  await page.goto(BASE + "/", { waitUntil: "networkidle" });
+  await page.waitForTimeout(1200);
+  const a = await friendsState(page);
+  await page.waitForTimeout(1000);
+  const b = await friendsState(page);
+  check("reduced motion → friends rest still", a.friends.length === 2 && JSON.stringify(a.friends) === JSON.stringify(b.friends), `${JSON.stringify(a.friends)} → ${JSON.stringify(b.friends)}`);
+  await page.close();
+}
+
 // reduced motion → 静止画
 {
   const page = await newPage(WIDTHS[0], { reducedMotion: "reduce" });

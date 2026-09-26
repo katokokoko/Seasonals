@@ -121,6 +121,8 @@ Rubber band (added 2026-09): macOS elastic overscroll at the top / bottom edge t
 - The quiet zones are uploaded to both layers, each measured against its own canvas box. If the glass context cannot be created, the water layer draws the glass as before.
 - `#root` is `display: flow-root` so the top bar's margin does not collapse through it and shift the track. The skip link is hidden with `clip-path` until focused (a top bounce would otherwise expose it above the page).
 
+Floaters (added 2026-09): Home shows two characters drifting on the water (`src/home/FloatingFriends.tsx`, decorative, `aria-hidden`). They live in a `position: fixed; z-index: 0` layer after the water canvas (above the water, below the glass layer and the UI) and swim only in the open water of the left / right columns between the portal cards, measured every frame (hidden when the layout leaves no room). Motion is slow sums of sines (20–40 s periods, a ~5 s bob, ±5° roll), a gentle flee from a nearby pointer, and a still pose under reduced motion. Each carries `data-water-floater`; the tracker packs up to 2 of them (`collectFloaters`, relative to the canvas box, skipped at opacity 0) into `uFloaters`. The shader adds outward ripple rings around each (they bend the caustics and their crests catch the light, so they read even over quiet zones) and a soft shadow on the sand shifted down-right by the depth, which also blocks the caustics. With no floaters the output is unchanged. The images are 360 px WebP made once with `scripts/optimize-characters.mjs` (headless Chrome: trim transparent margins, resize, encode).
+
 Tracking rules (revised 2026-09 after glass surfaces drifted off their DOM frames):
 
 - Coordinates are relative to the canvas's own box, not the viewport: `x = (r.left - canvasBox.left) * scale`, `y = (canvasBox.bottom - r.bottom) * scale`, `scale = canvas.height / canvasBox.height` (`canvasFrame()`). Never assume `innerHeight` or `dpr`.
@@ -164,6 +166,9 @@ Uniforms (set every frame unless noted):
 | `uGlassCount` | int | number of glass surfaces in use, 0 to 6 | 0 |
 | `uGlass` | float | `glass` | 1 |
 | `uLight` | vec2 | specular light direction, screen space y up (pointer-driven) | (-0.6, 0.8) |
+| `uGlassOnly` | float | 1 on the glass layer (transparent outside glass), 0 on the water layer | 0 |
+| `uFloaters[0]` | vec4[2] | floaters: centre x, y (device px, bottom-left origin), body radius (device px), strength | zeros |
+| `uFloaterCount` | int | number of floaters in use, 0 to 2 | 0 |
 
 Get the array location with `gl.getUniformLocation(prog, 'uQuietRects[0]')` and upload with `gl.uniform4fv(loc, new Float32Array(16))`. The bare name `uQuietRects` returns null on some implementations.
 
@@ -196,6 +201,8 @@ uniform int   uGlassCount;    // how many of uGlassRects are in use (0..6)
 uniform float uGlass;         // liquid glass lens strength (0 = off)
 uniform vec2  uLight;         // specular light direction (screen space, y up)
 uniform float uGlassOnly;     // 1 = glass layer: transparent outside glass (drawn over the water layer)
+uniform vec4  uFloaters[2];   // things floating on the surface: centre x, y (device px, bottom-left), radius (device px), strength
+uniform int   uFloaterCount;  // how many of uFloaters are in use (0..2)
 
 // ---------- noise ----------
 float hash21(vec2 p) {
@@ -267,6 +274,29 @@ vec3 causticsRGB(vec2 cp, vec2 dir, float t, float sharp, float spread) {
   return c;
 }
 // frost: 0 outside glass, uGlass inside. bevel: 1 at a glass edge, 0 in its flat middle
+// Floaters (Home characters): outward ripple rings on the surface around each one (they bend
+// the caustics and their crests catch the light, so they read even over calm quiet zones),
+// and a soft shadow on the sand, shifted down-right by the water depth. Zero floaters = no change.
+void floaterField(vec2 frag, float t, out vec2 rip, out float shade, out float glint) {
+  rip = vec2(0.0);
+  shade = 0.0;
+  glint = 0.0;
+  for (int i = 0; i < 2; i++) {
+    if (i >= uFloaterCount) break;
+    vec4 f = uFloaters[i];
+    vec2 d = frag - f.xy;
+    float dist = length(d);
+    float r = max(f.z, 1.0);
+    float x = max(dist - r * 0.75, 0.0) / uRes.y; // distance past the body, in viewport heights
+    float wave = sin(x * 90.0 - t * 2.2);
+    float env = exp(-x * 9.0) * smoothstep(r * 0.6, r * 0.9, dist);
+    rip += (d / max(dist, 1.0)) * wave * env * 0.0045 * f.w;
+    glint += pow(max(wave, 0.0), 4.0) * env * f.w;
+    vec2 sd = (frag - (f.xy + vec2(0.42, -0.5) * r)) / vec2(r * 1.0, r * 0.85);
+    shade = max(shade, (1.0 - smoothstep(0.3, 1.0, length(sd))) * f.w);
+  }
+}
+
 vec3 renderB(vec2 frag, float t, float quiet, float frost, float bevel) {
   vec2 p = (frag - 0.5 * uRes) / uRes.y;
 
@@ -278,6 +308,10 @@ vec3 renderB(vec2 frag, float t, float quiet, float frost, float bevel) {
   vec2 grad = vec2(hx - h, hy - h) / eps;
   float motion = mix(1.0, 0.4, quiet);
   vec2 off = -grad * uRefr * motion;
+  vec2 rip;
+  float shade, glint;
+  floaterField(frag, t, rip, shade, glint);
+  off += rip;
 
   // depth (low frequency, drifts very slowly)
   float d = clamp(0.52 + 1.2 * fbm3(p * 0.9 + vec2(3.1, 1.7) + t * 0.006), 0.15, 1.3);
@@ -298,13 +332,17 @@ vec3 renderB(vec2 frag, float t, float quiet, float frost, float bevel) {
   vec2 cp = p * uScale;
   cp += 0.55 * vec2(fbm3(p * 0.9 + t * 0.03), fbm3(p * 0.9 + 7.3 - t * 0.03));
   cp += grad * 0.012 * uScale;
+  cp += rip * 3.0 * uScale; // ripple rings bend the caustic network
   cp += 0.2 * vec2(gnoise(cp * 0.9 + t * 0.08), gnoise(cp * 0.9 + 5.1 - t * 0.08));
   vec2 dir = normalize(grad + vec2(1e-4));
   vec3 c = causticsRGB(cp, dir, t, mix(16.0, 6.0, frost), 0.014 + 0.05 * bevel);
   float shallow = mix(1.0, 0.55, clamp(d / 1.3, 0.0, 1.0));
   c *= shallow * uCaustic;
   c = mix(c, vec3(0.06 * uCaustic), quiet);
+  c *= 1.0 - 0.7 * shade;   // the floater blocks the light that makes caustics
+  col *= 1.0 - 0.13 * shade; // and casts a soft shadow on the sand
   col += c * vec3(1.0, 0.99, 0.93);
+  col += glint * 0.09;       // ripple crests catch the light
 
   // sparkles at bright crossings
   float cg = c.g;

@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { createMemoryRouter, RouterProvider } from "react-router";
 import { routes } from "./App";
 
@@ -61,4 +61,17 @@ test("clicking a date opens the detail dialog without navigating, Esc closes it"
   expect(within(dialog).getByText("Nothing scheduled.")).toBeTruthy();
   fireEvent.keyDown(document, { key: "Escape" });
   expect(screen.queryByRole("dialog")).toBeNull();
+});
+
+test("two decorative friends float on the Home water only", async () => {
+  const router = renderAt("/");
+  const friends = document.querySelectorAll(".floating-friends .floater");
+  expect(friends).toHaveLength(2);
+  expect(document.querySelector(".floating-friends")!.getAttribute("aria-hidden")).toBe("true");
+  friends.forEach((f) => {
+    expect(f.getAttribute("alt")).toBe("");
+    expect(f.hasAttribute("data-water-floater")).toBe(true);
+  });
+  await act(() => router.navigate("/menu"));
+  expect(document.querySelectorAll(".floating-friends .floater")).toHaveLength(0);
 });

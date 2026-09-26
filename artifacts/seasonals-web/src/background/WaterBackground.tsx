@@ -49,6 +49,8 @@ const UNIFORMS = [
   "uGlass",
   "uLight",
   "uGlassOnly",
+  "uFloaters[0]",
+  "uFloaterCount",
 ] as const;
 type UniformName = (typeof UNIFORMS)[number];
 
@@ -234,6 +236,8 @@ export function WaterBackground({ params, paused = false, className, glassClassN
         g.uniform4fv(loc["uGlassRects[0]"], q.glassRects);
         g.uniform4fv(loc["uGlassMeta[0]"], q.glassMeta);
         g.uniform1i(loc.uGlassCount, q.glassCount);
+        g.uniform4fv(loc["uFloaters[0]"], q.floaters);
+        g.uniform1i(loc.uFloaterCount, q.floaterCount);
         l.uploadedVersion = q.version;
       }
       g.uniform1f(loc.uScale, cur.scale);

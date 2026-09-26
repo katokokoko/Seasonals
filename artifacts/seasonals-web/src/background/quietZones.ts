@@ -191,3 +191,50 @@ export const GLASS_TRACKING_EVENT = "seasonals:glass-tracking";
 export function requestGlassTracking(ms: number): void {
   window.dispatchEvent(new CustomEvent(GLASS_TRACKING_EVENT, { detail: ms }));
 }
+
+// ── floaters (Home の水面に浮かぶキャラクター、docs/web/water-background-spec.md "Floaters") ──
+
+export const MAX_FLOATERS = 2;
+
+/** 水面に浮かぶもの。device px、中心は bottom-left origin。radius は体の半径 */
+export interface Floater {
+  cx: number;
+  cy: number;
+  radius: number;
+  /** 波紋と影の強さ (0..1、`data-water-floater` の値。空なら 1) */
+  strength: number;
+}
+
+/**
+ * `[data-water-floater]` 要素を水面の floater として集める。中心は bbox の中心、半径は
+ * layout size (回転で bbox が膨らむのを避ける) の短辺の半分。見えていない (opacity 0) ものは
+ * 出さず、fade 中は強さに opacity を掛ける。
+ */
+export function collectFloaters(src: ParentNode | Iterable<HTMLElement>, frame: CanvasFrame): Floater[] {
+  const out: Floater[] = [];
+  const k = frame.scale;
+  for (const el of elementsOf(src, "[data-water-floater]")) {
+    const r = el.getBoundingClientRect();
+    if (r.width <= 0 || r.height <= 0) continue;
+    const w = el.offsetWidth || r.width;
+    const h = el.offsetHeight || r.height;
+    const opacity = Number.parseFloat(getComputedStyle(el).opacity || "1");
+    if (!(opacity > 0)) continue;
+    const v = Number.parseFloat(el.dataset.waterFloater ?? "");
+    out.push({
+      cx: (r.left + r.width / 2 - frame.left) * k,
+      cy: (frame.bottom - (r.top + r.height / 2)) * k,
+      radius: (Math.min(w, h) / 2) * k,
+      strength: (Number.isFinite(v) ? Math.min(Math.max(v, 0), 1) : 1) * Math.min(opacity, 1),
+    });
+    if (out.length === MAX_FLOATERS) break;
+  }
+  return out;
+}
+
+/** uFloaters (vec4 × 2: cx, cy, radius, strength) 用に詰める */
+export function packFloaters(floaters: readonly Floater[], out = new Float32Array(MAX_FLOATERS * 4)): Float32Array {
+  out.fill(0);
+  floaters.slice(0, MAX_FLOATERS).forEach((f, i) => out.set([f.cx, f.cy, f.radius, f.strength], i * 4));
+  return out;
+}

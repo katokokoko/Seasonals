@@ -1,14 +1,14 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { canvasFrame, collectGlassRects, collectQuietRects, GLASS_VARIANTS, packGlassRects, packQuietRects, sameRects, transformAngle } from "./quietZones";
+import { canvasFrame, collectFloaters, collectGlassRects, collectQuietRects, packFloaters, GLASS_VARIANTS, packGlassRects, packQuietRects, sameRects, transformAngle } from "./quietZones";
 import { resolveWaterParams, waterCalm, waterDefaults } from "./waterDefaults";
 
 describe("water.frag.glsl", () => {
   it("is byte-identical to the shader spec (sha256 recorded at copy time)", () => {
     const buf = readFileSync(resolve(process.cwd(), "src/background/water.frag.glsl"));
     expect(createHash("sha256").update(buf).digest("hex")).toBe(
-      "d4b560f2e9ebacc914cd94858c99c0a3f9b8384c1a1c479aaeab408e7ddd944a"
+      "a3335ca656c0bc5ac86e5ba72ae5bc93e433c72b7e6fc17d6e3b752e27fe52b0"
     );
   });
 });
@@ -123,5 +123,37 @@ describe("glass surfaces", () => {
     expect(Array.from(packed.rects.slice(0, 4))).toEqual([35, 800 - 75, 70, 10]);
     expect(packed.meta).toHaveLength(24);
     expect(Array.from(packed.meta.slice(0, 4))).toEqual([4, 0, GLASS_VARIANTS.regular.lens, GLASS_VARIANTS.regular.frost]);
+  });
+});
+
+describe("floaters", () => {
+  afterEach(() => document.body.replaceChildren());
+  function floater(r: { left: number; top: number; width: number; height: number }, value = "", style: Partial<CSSStyleDeclaration> = {}) {
+    const d = document.createElement("img");
+    d.setAttribute("data-water-floater", value);
+    Object.assign(d.style, style);
+    d.getBoundingClientRect = () =>
+      ({ ...r, right: r.left + r.width, bottom: r.top + r.height, x: r.left, y: r.top, toJSON() {} }) as DOMRect;
+    document.body.append(d);
+    return d;
+  }
+  it("returns centre and body radius relative to the canvas box", () => {
+    floater({ left: 100, top: 200, width: 160, height: 150 });
+    const [f] = collectFloaters(document, { left: 0, bottom: 800, scale: 1.25 });
+    expect(f).toEqual({ cx: 180 * 1.25, cy: (800 - 275) * 1.25, radius: 75 * 1.25, strength: 1 });
+  });
+  it("skips invisible floaters, caps at 2 and reads the strength", () => {
+    floater({ left: 0, top: 0, width: 100, height: 100 }, "", { opacity: "0" });
+    floater({ left: 0, top: 0, width: 100, height: 100 }, "0.5");
+    floater({ left: 200, top: 0, width: 100, height: 100 });
+    floater({ left: 400, top: 0, width: 100, height: 100 });
+    const fs = collectFloaters(document, { left: 0, bottom: 800, scale: 1 });
+    expect(fs.map((f) => [f.cx, f.strength])).toEqual([
+      [50, 0.5],
+      [250, 1],
+    ]);
+    const packed = packFloaters(fs);
+    expect(packed).toHaveLength(8);
+    expect(Array.from(packed.slice(0, 4))).toEqual([50, 750, 50, 0.5]);
   });
 });
