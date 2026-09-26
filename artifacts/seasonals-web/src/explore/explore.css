@@ -116,7 +116,24 @@
   margin: 2px 0 0;
 }
 .menu-item-name h3 {
-  overflow-wrap: anywhere;
+  /* 語の途中では割らない (名前のハイフンは表示時に U+2011 にして改行させない) */
+  overflow-wrap: break-word;
+}
+/* 左の列: chain ロゴ → protocol ロゴ → PT / YT バッジを縦に積む */
+.menu-media {
+  display: grid;
+  justify-items: center;
+  align-content: start;
+  gap: 6px;
+}
+.menu-media-chain {
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  color: var(--c-textSubtitle);
+  background: var(--c-bgSecondary);
 }
 .menu-item-protocol {
   font-weight: var(--w-semibold);
@@ -145,6 +162,9 @@
   font-weight: var(--w-bold);
   color: var(--c-melonText);
   font-variant-numeric: tabular-nums;
+}
+.menu-price-value.negative {
+  color: var(--c-cherryDark);
 }
 .menu-rule {
   border-top: 1px dashed var(--c-borderStrong);

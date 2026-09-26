@@ -34,3 +34,26 @@
   padding-left: var(--sp-sm);
   box-shadow: inset 3px 0 0 var(--accent, transparent);
 }
+/* Pendle PT / YT バッジ (TokenKindBadge)。PT = 塗り、YT = 縁取り (形でも区別) */
+.token-kind {
+  display: inline-grid;
+  place-items: center;
+  min-width: 28px;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: var(--r-pill);
+  font-size: var(--fs-overline);
+  font-weight: var(--w-bold);
+  letter-spacing: 0.06em;
+  line-height: 1;
+}
+.token-kind-pt {
+  color: var(--c-textOnColor);
+  background: var(--brand-pendle);
+  border: 1.5px solid var(--brand-pendle);
+}
+.token-kind-yt {
+  color: var(--c-textPrimary);
+  background: var(--brandbg-pendle);
+  border: 1.5px solid var(--brand-pendle);
+}
