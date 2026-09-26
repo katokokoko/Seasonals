@@ -41,11 +41,11 @@ for (const vp of WIDTHS) {
 
   // nav reachability (Agent / Dashboard は 1280 で More の中)
   const navNames = await page.locator("nav[aria-label=Primary] a:visible").allInnerTexts();
-  if (vp.width >= 1440) check(`${vp.name} nav shows all items`, ["Overview", "Explore", "Calendar", "Agent", "Dashboard"].every((n) => navNames.includes(n)), navNames);
+  if (vp.width >= 1440) check(`${vp.name} nav shows all items`, ["Overview", "Explore", "Calendar", "Agent", "Dashboard", "Learn"].every((n) => navNames.includes(n)), navNames);
   else {
     await page.getByRole("button", { name: "More", exact: true }).click();
     const more = await page.locator(".nav-more-menu a").allInnerTexts();
-    check(`${vp.name} More menu holds Agent & Dashboard`, more.includes("Agent") && more.includes("Dashboard"), more);
+    check(`${vp.name} More menu holds Agent, Dashboard & Learn`, more.includes("Agent") && more.includes("Dashboard") && more.includes("Learn"), more);
     await page.keyboard.press("Escape");
   }
   check(`${vp.name} settings gear`, (await page.getByRole("link", { name: "Settings" }).getAttribute("href")) === "/settings");
@@ -171,6 +171,29 @@ for (const vp of WIDTHS) {
   await card.getByRole("button", { name: "Build plan" }).click();
   const planOrError = await card.locator(".plan-steps, .error").first().waitFor({ timeout: 60_000 }).then(() => card.locator(".plan-steps, .error").first().innerText()).catch((e) => String(e));
   check("Menu deposit builds a plan or a clear on-chain refusal", planOrError.length > 0 && !/Timeout/.test(planOrError), planOrError.slice(0, 120));
+  await page.close();
+}
+
+// Learn: 横 3 枚のカード、/learn#pendle で詳細 dialog が開き見出しに focus、Esc で閉じる
+for (const vp of WIDTHS) {
+  const page = await newPage(vp);
+  await page.goto(BASE + "/learn", { waitUntil: "networkidle" });
+  const tops = await page.locator(".learn-card").evaluateAll((els) => els.slice(0, 3).map((e) => Math.round(e.getBoundingClientRect().top)));
+  check(`${vp.name} Learn shows three cards per row`, tops.length === 3 && new Set(tops).size === 1, tops.join(","));
+  await page.close();
+}
+{
+  const page = await newPage(WIDTHS[0]);
+  await page.goto(BASE + "/learn#pendle", { waitUntil: "networkidle" });
+  await page.getByRole("dialog", { name: "Pendle" }).waitFor({ timeout: 10_000 }).catch(() => {});
+  await page.waitForTimeout(400);
+  const focused = await page.evaluate(() => document.activeElement?.id);
+  check("Learn deep link opens the guide and focuses its title", focused === "learn-pendle-title", String(focused));
+  const sites = await page.locator(".learn-card a", { hasText: "Open site" }).evaluateAll((as) => as.map((a) => a.getAttribute("href")));
+  check("Learn shows 6 cards, each with an https Open site link", sites.length === 6 && sites.every((h) => h?.startsWith("https://")), sites.join(" "));
+  await page.keyboard.press("Escape");
+  await page.waitForTimeout(400);
+  check("Esc closes the Learn guide and clears the hash", (await page.getByRole("dialog").count()) === 0 && !page.url().includes("#"), page.url());
   await page.close();
 }
 

@@ -10,6 +10,7 @@ const CalendarWorkspace = lazy(() => import("./calendar/CalendarWorkspace"));
 const AgentWorkspace = lazy(() => import("./agent/AgentWorkspace"));
 const DashboardWorkspace = lazy(() => import("./dashboard/DashboardWorkspace"));
 const SettingsScreen = lazy(() => import("./settings/SettingsScreen"));
+const LearnPage = lazy(() => import("./learn/LearnPage"));
 
 const lazyEl = (node: ReactNode) => <Suspense fallback={<div className="route-loading" aria-busy="true" />}>{node}</Suspense>;
 
@@ -24,6 +25,7 @@ export const routes = [
       { path: "agent", element: lazyEl(<AgentWorkspace />) },
       { path: "dashboard", element: lazyEl(<DashboardWorkspace />) },
       { path: "settings", element: lazyEl(<SettingsScreen />) },
+      { path: "learn", element: lazyEl(<LearnPage />) },
       { path: "*", element: lazyEl(<NotFound />) },
     ],
   },

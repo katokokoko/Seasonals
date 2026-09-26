@@ -1,16 +1,16 @@
 import { render } from "@testing-library/react";
 import { ProtocolBadge, brandStyle, protocolBrandKey, protocolLogo } from "./ProtocolBadge";
 
-test.each(["pendle", "lido", "ethena", "uniswap", "cca", "aqua"])("%s has a logo image", (id) => {
+test.each(["pendle", "lido", "ethena", "uniswap", "cca", "aqua", "aave"])("%s has a logo image", (id) => {
   expect(protocolLogo(id)).toBeTruthy();
   const { container } = render(<ProtocolBadge id={id} name={id} size={22} />);
   expect(container.querySelector("img.protocol-badge")).not.toBeNull();
 });
 
 test("protocol without a supplied logo falls back to a monogram", () => {
-  const { container } = render(<ProtocolBadge id="aave" name="Aave" size={22} />);
+  const { container } = render(<ProtocolBadge id="morpho" name="Morpho" size={22} />);
   expect(container.querySelector("img")).toBeNull();
-  expect(container.querySelector(".monogram")?.textContent).toBe("A");
+  expect(container.querySelector(".monogram")?.textContent).toBe("M");
 });
 
 test("CCA uses Uniswap's brand color and Aqua uses 1inch's", () => {

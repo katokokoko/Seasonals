@@ -10,7 +10,7 @@ import { useDetail } from "../timeline/detailStore";
 import { StatusBadge } from "../timeline/StatusBadge";
 import { statusText } from "../timeline/labels";
 import { fmtAmount, fmtFullDate, fmtUsd } from "../ui/format";
-import { ProtocolBadge } from "../ui/ProtocolBadge";
+import { ProtocolBadge, brandStyle } from "../ui/ProtocolBadge";
 import { useTimeline } from "../services/queries";
 import { WorkspaceShell } from "../shell/WorkspaceShell";
 import { requestOpenWallet } from "../timeline/detailStore";
@@ -104,7 +104,8 @@ export default function DashboardWorkspace() {
           <p className="muted small">Portfolio value and exposure across positions without dates are not connected yet.</p>
         </section>
         <section aria-labelledby="aave-context">
-          <h2 id="aave-context" className="section-heading">
+          <h2 id="aave-context" className="section-heading brand-heading" style={brandStyle("aave")}>
+            <ProtocolBadge id="aave" name="Aave" size={24} />
             Aave V4 (context)
           </h2>
           <AaveContext />
