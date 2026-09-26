@@ -8,6 +8,7 @@ import { fetchWithTimeout } from "./http";
 import {
   _clearLlamaHistoryCacheForTest,
   anchorSeries,
+  CHUNK,
   fetchLlamaPriceSeries,
   llamaCoinKey,
   periodForStep,
@@ -157,5 +158,33 @@ describe("llamaCoinKey (ethereum)", () => {
     expect(llamaCoinKey("ETH", "ethereum")).toBe("coingecko:ethereum");
     // Solana の "ETH" という mint 名は特別扱いしない
     expect(llamaCoinKey("ETH")).toBe("solana:ETH");
+  });
+});
+
+describe("fetchLlamaPriceSeries — 多数の asset (Ethereum の Pendle PT など)", () => {
+  const addr = (i: number) => `0x${i.toString(16).padStart(40, "0")}`;
+  /** URL に含まれる coin にだけ 1 点の系列を返す (失敗させたい coin を含む束は 400) */
+  function llamaFor(bad?: string) {
+    return async (url: unknown) => {
+      const coins = decodeURIComponent(String(url).split("/chart/")[1]!.split("?")[0]!).split(",");
+      if (bad && coins.includes(`ethereum:${bad}`)) return { ok: false, json: async () => ({}) } as unknown as Response;
+      return reply({ coins: Object.fromEntries(coins.map((c) => [c, { confidence: 0.99, prices: [{ timestamp: 100, price: 1 }] }])) });
+    };
+  }
+
+  it(`${CHUNK} 個ずつに分けて取り、全部の系列がそろう (1 本の長い URL で空応答になるのを避ける)`, async () => {
+    const mints = Array.from({ length: 45 }, (_, i) => addr(i + 1));
+    mockFetch.mockImplementation(llamaFor());
+    const out = await fetchLlamaPriceSeries(mints, 100, 300, DAY, "ethereum");
+    expect(mockFetch).toHaveBeenCalledTimes(Math.ceil(45 / CHUNK));
+    expect(out.size).toBe(45);
+  });
+
+  it("失敗した束は半分に割って再試行し、不正な 1 coin だけを落とす", async () => {
+    const mints = Array.from({ length: 8 }, (_, i) => addr(i + 1));
+    mockFetch.mockImplementation(llamaFor(addr(3)));
+    const out = await fetchLlamaPriceSeries(mints, 100, 300, DAY, "ethereum");
+    expect(out.size).toBe(7);
+    expect(out.has(addr(3))).toBe(false);
   });
 });

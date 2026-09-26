@@ -464,7 +464,9 @@ export const LABEL_BY_CATEGORY: Record<PositionCategory, string> = {
   vault: "Vault",
   lp: "Liquidity Pool",
   pt_yt: "PT-YT",
-  stable: "Yield-Bearing Stablecoins",
+  // wallet に置いた USDC / USDT (利回り無し) と sUSDe 等の利回り付きの両方が入る category なので
+  // 「Yield-Bearing」とは言わない (Ethereum の USDC が利回り付きに見えていた)
+  stable: "Stablecoins",
   vesting: "Vesting",
   governance: "Governance",
   other: "Other",

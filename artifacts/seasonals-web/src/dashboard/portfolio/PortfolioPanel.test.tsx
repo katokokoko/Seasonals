@@ -116,7 +116,7 @@ test("sums every watched address across chains and groups allocation by category
   const labels = within(legend).getAllByRole("listitem").map((li) => li.textContent);
   expect(labels[0]).toContain("Lending");
   expect(labels.some((l) => l?.includes("Staking"))).toBe(true);
-  expect(labels.some((l) => l?.includes("Yield-Bearing Stablecoins"))).toBe(true);
+  expect(labels.some((l) => l?.includes("Stablecoins"))).toBe(true);
   expect(labels.some((l) => l?.includes("Other"))).toBe(true);
   // 1020 + 151 − (1000 + 50) − 100 (入金) = +21
   expect((await screen.findByTestId("portfolio-change")).textContent).toContain("+$21.00");
