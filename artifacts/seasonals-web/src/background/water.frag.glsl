@@ -103,8 +103,9 @@ vec4 causticsRGB(vec2 cp, vec2 dir, float t, float sharp, float spread) {
   vec3 e = vec3(eg.x);
   if (spread > 0.002) e = vec3(cellWalls(cp - dir * spread, t * 0.35).x, eg.x, cellWalls(cp + dir * spread, t * 0.35).x);
   float taper = mix(0.4, 1.7, smoothstep(0.0, 0.55, eg.y)); // thick near the knots, hair-thin between
-  vec3 c = exp(-e * sharp * taper) + 0.04 * exp(-e * sharp * 0.3);
-  c += 0.9 * exp(-eg.y * max(sharp, 10.0) * 1.6); // the knots where walls meet are the brightest
+  vec3 c = 0.75 * exp(-e * sharp * taper) + 0.03 * exp(-e * sharp * 0.3);
+  c += 0.7 * exp(-e * sharp * taper * 3.5); // a crisp near-white core inside each line
+  c += 1.3 * exp(-eg.y * max(sharp, 10.0) * 1.8); // the knots where walls meet are the brightest
   float band = smoothstep(0.08, 0.45, eg.x); // the cell interior: the light was pulled out of it into the walls
   return vec4(c, band);
 }
@@ -150,7 +151,7 @@ vec3 renderB(vec2 frag, float t, float quiet, float frost, float bevel) {
   float bend = fbm3(p * 0.8 + vec2(t * 0.02, -t * 0.015)) + 0.35 * gnoise(p * 3.2 + vec2(-t * 0.03, t * 0.02));
   vec2 sq = vec2(dot(p, nf) * 16.0 + bend * 13.0, dot(p, FLOW) * 2.6 - t * 0.05);
   float sn = gnoise(sq) + 0.4 * gnoise(sq * vec2(1.9, 1.1) + 3.3);
-  float bundle = smoothstep(-0.12, 0.28, fbm3(p * 1.4 + 4.0 + vec2(-t * 0.012, t * 0.01)));
+  float bundle = smoothstep(-0.2, 0.26, fbm3(p * 1.4 + 4.0 + vec2(-t * 0.012, t * 0.01)));
   vec2 off = -grad * uRefr * motion + nf * (sn * 0.004 * bundle * motion);
   vec2 rip;
   float shade, glint;
@@ -220,8 +221,8 @@ vec3 renderB(vec2 frag, float t, float quiet, float frost, float bevel) {
   col -= vec3(max(hiL - 0.88, 0.0) * 0.55);
 
   // surface: the ripple strands catch the light as thin flowing bright lines
-  float strand = exp(-abs(sn) * 11.0) * bundle;
-  col += strand * 0.36 * clear * vec3(1.0, 0.99, 0.94);
+  float strand = exp(-abs(sn) * 16.0) * bundle;
+  col += strand * 0.26 * clear * vec3(1.0, 0.99, 0.94);
   col += glint * 0.05;       // floater ripple crests catch the light
 
   // sparkles: a soft dot at bright crossings, and sparse twinkling four-point stars

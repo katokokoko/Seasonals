@@ -31,10 +31,10 @@ What the picture is made of, in order of importance:
 
 Updated 2026-10-05 (tuned against a photo of shallow sea water seen straight down, `docs/web/reference/water-*.md`; the photo itself is local-only):
 
-1. Caustics: the sunlight the swell focuses. A sum of six travelling waves is the surface; the bottom is lit by 1 / |det(I − s∇²h)|, so the fold lines (det → 0) form a network of curved warm-cream lines that swell and thin, with a crisp core and a tight glow (the broad tail of 1/det is cut). The light is conserved: the defocused patches between the lines sit a little deeper and more aqua (never greyer). No colour fringe in open water; only a glass bevel splits colour. This is the element that reads as water.
-2. Liquid colour: the water absorbs red first (then blue for soda, green for melon) with depth, plus a thin turquoise in-scatter where deep. Depth comes in patches: shallow sand-beige over most of the view and larger mint-to-turquoise patches, a little deeper toward the top.
-3. Sand: warm vanilla with soft patches, faint ripple marks, a fine grain plus a per-grain hash, and sparse small specks (pebble and shell). Grain and specks follow the refraction only loosely, so the ripple train never stretches them into streaks.
-4. Surface: the view of the bottom wobbles with the swell and a train of small ripples; the ripples show as thin flowing strands in bundles (zero lines of a noise field squeezed across the flow). Sparse twinkling four-point stars, a soft dot at bright crossings, and tiny sparse bubbles.
+1. Caustics: a network of rounded cells, a multiplicatively weighted Voronoi diagram (each site's distance scaled by its own weight, so every wall is a circular arc and the cells bow like pebbles of varied size), domain-warped so the walls curve and stretched along the flow into lobes. Each wall is a warm-cream line with a crisp near-white core, a tight glow, and a width that swells near the knots where walls meet (the brightest points) and thins between them. The light is conserved: cell interiors sit a little deeper and more aqua (never greyer). No colour fringe in open water; only a glass bevel splits colour. This is the element that reads as water.
+2. Liquid colour: the water absorbs red first (then blue for soda, green for melon), growing with depth squared, so shallow water keeps the pale vanilla sand (≈ #FAF7EA in the light, the app's vanilla) and deep water goes turquoise-teal, plus a thin turquoise in-scatter where deep. Depth comes in patches, a little deeper toward the top; under UI the depth pattern is softened but kept, so the vanilla shallows still show.
+3. Sand: pale vanilla cream with soft patches, faint ripple marks, a visible fine grain plus a per-grain hash, and sparse small specks (pebble and shell). Grain and specks follow the refraction only loosely, so the ripple train never stretches them into streaks.
+4. Surface: the view of the bottom wobbles with the swell and a train of small ripples; the ripples show as thin flowing strands in bundles (zero lines of a noise field squeezed across the flow) and kink the caustic lines where they cross. Sparse twinkling four-point stars, a soft dot at bright crossings, and tiny sparse bubbles.
 5. Quiet zones keep blurred lines and the same colour, slightly lighter, so the calm still reads as the same water. A soft highlight shoulder keeps wide bright patches from blowing out.
 
 Palette baked into the shader (do not restyle these in CSS):
@@ -293,8 +293,9 @@ vec4 causticsRGB(vec2 cp, vec2 dir, float t, float sharp, float spread) {
   vec3 e = vec3(eg.x);
   if (spread > 0.002) e = vec3(cellWalls(cp - dir * spread, t * 0.35).x, eg.x, cellWalls(cp + dir * spread, t * 0.35).x);
   float taper = mix(0.4, 1.7, smoothstep(0.0, 0.55, eg.y)); // thick near the knots, hair-thin between
-  vec3 c = exp(-e * sharp * taper) + 0.04 * exp(-e * sharp * 0.3);
-  c += 0.9 * exp(-eg.y * max(sharp, 10.0) * 1.6); // the knots where walls meet are the brightest
+  vec3 c = 0.75 * exp(-e * sharp * taper) + 0.03 * exp(-e * sharp * 0.3);
+  c += 0.7 * exp(-e * sharp * taper * 3.5); // a crisp near-white core inside each line
+  c += 1.3 * exp(-eg.y * max(sharp, 10.0) * 1.8); // the knots where walls meet are the brightest
   float band = smoothstep(0.08, 0.45, eg.x); // the cell interior: the light was pulled out of it into the walls
   return vec4(c, band);
 }
@@ -340,7 +341,7 @@ vec3 renderB(vec2 frag, float t, float quiet, float frost, float bevel) {
   float bend = fbm3(p * 0.8 + vec2(t * 0.02, -t * 0.015)) + 0.35 * gnoise(p * 3.2 + vec2(-t * 0.03, t * 0.02));
   vec2 sq = vec2(dot(p, nf) * 16.0 + bend * 13.0, dot(p, FLOW) * 2.6 - t * 0.05);
   float sn = gnoise(sq) + 0.4 * gnoise(sq * vec2(1.9, 1.1) + 3.3);
-  float bundle = smoothstep(-0.12, 0.28, fbm3(p * 1.4 + 4.0 + vec2(-t * 0.012, t * 0.01)));
+  float bundle = smoothstep(-0.2, 0.26, fbm3(p * 1.4 + 4.0 + vec2(-t * 0.012, t * 0.01)));
   vec2 off = -grad * uRefr * motion + nf * (sn * 0.004 * bundle * motion);
   vec2 rip;
   float shade, glint;
@@ -410,8 +411,8 @@ vec3 renderB(vec2 frag, float t, float quiet, float frost, float bevel) {
   col -= vec3(max(hiL - 0.88, 0.0) * 0.55);
 
   // surface: the ripple strands catch the light as thin flowing bright lines
-  float strand = exp(-abs(sn) * 11.0) * bundle;
-  col += strand * 0.36 * clear * vec3(1.0, 0.99, 0.94);
+  float strand = exp(-abs(sn) * 16.0) * bundle;
+  col += strand * 0.26 * clear * vec3(1.0, 0.99, 0.94);
   col += glint * 0.05;       // floater ripple crests catch the light
 
   // sparkles: a soft dot at bright crossings, and sparse twinkling four-point stars

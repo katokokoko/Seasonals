@@ -21,7 +21,7 @@ describe("water.frag.glsl", () => {
   it("is byte-identical to the shader spec (sha256 recorded at copy time)", () => {
     const buf = readFileSync(resolve(process.cwd(), "src/background/water.frag.glsl"));
     expect(createHash("sha256").update(buf).digest("hex")).toBe(
-      "8930158db9273eaefbadf0d7370fdf14eb017adc82bd0a1a78d583d677c873ad"
+      "5c6127915b757e683d2a7a6ae38997ee497f0eebe1628a47916ca8270e604b49"
     );
   });
 });
