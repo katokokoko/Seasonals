@@ -153,7 +153,7 @@ vec3 renderB(vec2 frag, float t, float quiet, float frost, float bevel) {
   float bend = fbm3(p * 0.8 + vec2(t * 0.02, -t * 0.015)) + 0.35 * gnoise(p * 3.2 + vec2(-t * 0.03, t * 0.02));
   vec2 sq = vec2(dot(p, nf) * 16.0 + bend * 13.0, dot(p, FLOW) * 2.6 - t * 0.05);
   float sn = gnoise(sq) + 0.4 * gnoise(sq * vec2(1.9, 1.1) + 3.3);
-  float bundle = smoothstep(-0.05, 0.3, fbm3(p * 1.4 + 4.0 + vec2(-t * 0.012, t * 0.01)));
+  float bundle = smoothstep(-0.12, 0.28, fbm3(p * 1.4 + 4.0 + vec2(-t * 0.012, t * 0.01)));
   vec2 off = -grad * uRefr * motion + nf * (sn * 0.004 * bundle * motion);
   vec2 rip;
   float shade, glint;
@@ -163,12 +163,13 @@ vec3 renderB(vec2 frag, float t, float quiet, float frost, float bevel) {
   // depth (low frequency, drifts very slowly; a little deeper toward the top)
   // shallow sand patches and deeper aqua patches, like the photo (not one even tint)
   float d = 0.05 + 1.0 * smoothstep(-0.14, 0.36, fbm3(p * 0.7 + vec2(3.1, 1.7) + t * 0.006) + 0.22 * dot(p, vec2(-0.35, 0.95)));
-  float dv = mix(0.62, d, mix(1.0, 0.3, quiet)); // calmer depth changes under UI
+  float dv = mix(0.5, d, mix(1.0, 0.55, quiet)); // calmer depth changes under UI (the vanilla shallows still show)
 
   // sand bottom, sampled through the refraction: patches, ripple marks, grain, specks
   vec2 sp = p + off;
   float patches = fbm(sp * 1.6 + 11.0);
-  vec3 sand = mix(vec3(0.91, 0.86, 0.73), vec3(0.99, 0.955, 0.86), mix(smoothstep(-0.3, 0.35, patches), 0.6, 0.6 * quiet));
+  // pale vanilla cream sand (the app's vanilla, ≈ #FAF7EA in the light), never grey-beige
+  vec3 sand = mix(vec3(0.965, 0.935, 0.84), vec3(1.0, 0.985, 0.93), mix(smoothstep(-0.3, 0.35, patches), 0.6, 0.6 * quiet));
   sand *= 1.0 + 0.03 * calm * sin(dot(sp, vec2(0.45, 0.89)) * 70.0 + 4.0 * patches);
   // grain and specks follow the bottom only loosely: the ripple train's refraction would stretch
   // anything this fine into hair-like streaks. The grain is a fine noise plus a per-grain hash
@@ -189,6 +190,7 @@ vec3 renderB(vec2 frag, float t, float quiet, float frost, float bevel) {
   cp += 0.85 * vec2(fbm3(p * 0.9 + t * 0.03), fbm3(p * 0.9 + 7.3 - t * 0.03)); // cells grow and shrink across the view
   cp += grad * 0.012 * uScale;
   cp += rip * 3.0 * uScale; // ripple rings bend the caustic network
+  cp += nf * (sn * 0.12 * bundle * motion); // so do the surface ripples: the lines kink where a strand crosses
   // stretch the cells along the swell and let them wave across it
   float along = dot(cp, FLOW);
   float across = dot(cp, nf);
@@ -204,14 +206,14 @@ vec3 renderB(vec2 frag, float t, float quiet, float frost, float bevel) {
   c *= 1.0 - 0.7 * shade;   // the floater blocks the light that makes caustics
 
   // water: absorbs red most, then blue (soda) or green less (melon), with depth; a thin aqua in-scatter
-  vec3 k = mix(vec3(0.62, 0.07, 0.03), vec3(0.56, 0.04, 0.1), uTint); // red goes first: turquoise, never grey
-  vec3 bottom = sand * exp(-k * dv * 1.25);
+  vec3 k = mix(vec3(0.62, 0.13, 0.07), vec3(0.56, 0.09, 0.14), uTint); // red goes first: turquoise, never grey
+  vec3 bottom = sand * exp(-k * dv * 1.45);
   // light on the bottom: conserved, so cell interiors sit below the lines and the band beside them
   // lower still. The focused lines run toward cream white (they saturate like the photo's)
   // defocused patches sit a little deeper and more aqua (not greyer)
   bottom *= mix(vec3(1.0), vec3(0.88, 0.97, 0.98), cb.a * uCaustic * 2.0 * calm);
   float base = 0.95;
-  vec3 col = bottom * base + c * 1.05 * mix(bottom, vec3(1.0, 0.97, 0.88), 0.75); // warm cream light
+  vec3 col = bottom * base + c * 0.8 * mix(bottom, vec3(1.0, 0.97, 0.88), 0.75); // warm cream light
   col *= 1.0 - 0.13 * shade; // the floater casts a soft shadow on the sand
   col += vec3(0.32, 0.74, 0.74) * (1.0 - exp(-dv * 0.9)) * 0.17; // the water body glows turquoise where deep
   col = mix(col, col * 1.04 + 0.025, quiet); // quiet zones sit a little lighter behind the UI
@@ -221,7 +223,7 @@ vec3 renderB(vec2 frag, float t, float quiet, float frost, float bevel) {
 
   // surface: the ripple strands catch the light as thin flowing bright lines
   float strand = exp(-abs(sn) * 11.0) * bundle;
-  col += strand * 0.26 * clear * vec3(1.0, 0.99, 0.94);
+  col += strand * 0.36 * clear * vec3(1.0, 0.99, 0.94);
   col += glint * 0.05;       // floater ripple crests catch the light
 
   // sparkles: a soft dot at bright crossings, and sparse twinkling four-point stars
