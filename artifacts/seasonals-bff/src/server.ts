@@ -22,6 +22,7 @@ import Fastify, {
 } from "fastify";
 import cors from "@fastify/cors";
 import { registerEthRoutes } from "./routes/eth";
+import { registerSkrStakingRoutes } from "./routes/skr-staking";
 import {
   Connection,
   PublicKey,
@@ -3070,6 +3071,9 @@ export async function buildServer(
 
   // ── Ethereum (docs/web/WORKLOG.md Stage B、読み取り + unsigned plan のみ) ──
   await registerEthRoutes(app);
+
+  // ── SKR staking cooldown の読取 (docs/skr-r0-implementation.md §3、read-only) ──
+  await registerSkrStakingRoutes(app);
 
   // ── health ────────────────────────────────────────────────────────────
   app.get("/health", async () => ({
