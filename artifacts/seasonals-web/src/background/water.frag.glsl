@@ -102,9 +102,10 @@ vec4 causticsRGB(vec2 cp, vec2 dir, float t, float sharp, float spread) {
   vec2 eg = cellWalls(cp, t * 0.35);
   vec3 e = vec3(eg.x);
   if (spread > 0.002) e = vec3(cellWalls(cp - dir * spread, t * 0.35).x, eg.x, cellWalls(cp + dir * spread, t * 0.35).x);
-  vec3 c = exp(-e * sharp) + 0.04 * exp(-e * sharp * 0.3);
+  float taper = mix(0.4, 1.7, smoothstep(0.0, 0.55, eg.y)); // thick near the knots, hair-thin between
+  vec3 c = exp(-e * sharp * taper) + 0.04 * exp(-e * sharp * 0.3);
   c += 0.9 * exp(-eg.y * max(sharp, 10.0) * 1.6); // the knots where walls meet are the brightest
-  float band = exp(-eg.x * 3.0) * (1.0 - exp(-eg.x * sharp * 0.5));
+  float band = smoothstep(0.08, 0.45, eg.x); // the cell interior: the light was pulled out of it into the walls
   return vec4(c, band);
 }
 // frost: 0 outside glass, uGlass inside. bevel: 1 at a glass edge, 0 in its flat middle
@@ -165,7 +166,7 @@ vec3 renderB(vec2 frag, float t, float quiet, float frost, float bevel) {
   vec2 sp = p + off;
   float patches = fbm(sp * 1.6 + 11.0);
   // pale vanilla cream sand (the app's vanilla, ≈ #FAF7EA in the light), never grey-beige
-  vec3 sand = mix(vec3(0.965, 0.935, 0.84), vec3(1.0, 0.985, 0.93), mix(smoothstep(-0.3, 0.35, patches), 0.6, 0.6 * quiet));
+  vec3 sand = mix(vec3(0.975, 0.94, 0.83), vec3(1.0, 0.98, 0.91), mix(smoothstep(-0.3, 0.35, patches), 0.6, 0.6 * quiet));
   sand *= 1.0 + 0.03 * calm * sin(dot(sp, vec2(0.45, 0.89)) * 70.0 + 4.0 * patches);
   // grain and specks follow the bottom only loosely: the ripple train's refraction would stretch
   // anything this fine into hair-like streaks. The grain is a fine noise plus a per-grain hash
@@ -191,6 +192,7 @@ vec3 renderB(vec2 frag, float t, float quiet, float frost, float bevel) {
   float along = dot(cp, FLOW);
   float across = dot(cp, nf);
   cp = FLOW * along * 0.6 + nf * (across * 1.35 + 0.25 * sin(along * 0.8 + t * 0.05)); // lobes stretched and bent along the flow
+  cp += 0.2 * vec2(gnoise(cp * 1.15 + 3.7 + t * 0.04), gnoise(cp * 1.15 + 8.2 - t * 0.04)); // every wall bends into a smooth curve
   vec2 dir = normalize(grad + vec2(1e-4));
   float width = mix(0.55, 1.4, gnoise(cp * 0.35 + 2.3) + 0.5) * mix(0.55, 1.9, gnoise(cp * 1.3 + 6.1) + 0.5); // line width swells and pinches along each wall
   float sharp = mix(16.0, 6.0, frost) * width * mix(1.0, 0.4, quiet);
@@ -203,11 +205,11 @@ vec3 renderB(vec2 frag, float t, float quiet, float frost, float bevel) {
 
   // water: absorbs red most, then blue (soda) or green less (melon), with depth; a thin aqua in-scatter
   vec3 k = mix(vec3(0.62, 0.13, 0.07), vec3(0.56, 0.09, 0.14), uTint); // red goes first: turquoise, never grey
-  vec3 bottom = sand * exp(-k * dv * 1.45);
+  vec3 bottom = sand * exp(-k * dv * (0.35 + 1.9 * dv)); // shallow water keeps the vanilla, deep goes teal
   // light on the bottom: conserved, so the band beside the walls sits a little deeper and more aqua
   // (not greyer) and the focused lines run to warm cream white (they saturate like the photo's,
   // added after the water's glow so they are never tinted cyan)
-  bottom *= mix(vec3(1.0), vec3(0.88, 0.97, 0.98), cb.a * uCaustic * 2.0 * calm);
+  bottom *= mix(vec3(1.0), vec3(0.8, 0.93, 0.95), cb.a * uCaustic * 2.0 * calm); // interiors sit deeper aqua
   vec3 col = bottom * 0.92;
   col *= 1.0 - 0.13 * shade; // the floater casts a soft shadow on the sand
   col += vec3(0.32, 0.74, 0.74) * (1.0 - exp(-dv * 0.9)) * 0.17; // the water body glows turquoise where deep
