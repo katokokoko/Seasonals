@@ -33,8 +33,8 @@ Updated 2026-10-05 (tuned against a photo of shallow sea water seen straight dow
 
 1. Caustics: a network of rounded cells, a multiplicatively weighted Voronoi diagram (each site's distance scaled by its own weight, so every wall is a circular arc and the cells bow like pebbles of varied size), domain-warped so the walls curve and stretched along the flow into lobes. Each wall is a warm-cream line with a crisp near-white core, a tight glow, and a width that swells near the knots where walls meet (the brightest points) and thins between them. The light is conserved: cell interiors sit a little deeper and more aqua (never greyer). No colour fringe in open water; only a glass bevel splits colour. This is the element that reads as water.
 2. Liquid colour: the water absorbs red first (then blue for soda, green for melon), growing with depth squared, so shallow water keeps the pale vanilla sand (≈ #FAF7EA in the light, the app's vanilla) and deep water goes turquoise-teal, plus a thin turquoise in-scatter where deep. Depth comes in patches, a little deeper toward the top; under UI the depth pattern is softened but kept, so the vanilla shallows still show.
-3. Sand: pale vanilla cream with soft patches, faint ripple marks, a visible fine grain plus a per-grain hash, and sparse small specks (pebble and shell). Grain and specks follow the refraction only loosely, so the ripple train never stretches them into streaks.
-4. Surface: the view of the bottom wobbles with the swell and a train of small ripples; the ripples show as thin flowing strands in bundles (zero lines of a noise field squeezed across the flow) and kink the caustic lines where they cross. Sparse twinkling four-point stars, a soft dot at bright crossings, and tiny sparse bubbles.
+3. Sand: pale vanilla cream with soft patches, faint ripple marks, a visible fine grain (smooth noise, finest octave about 3 canvas px, so it stays fine when the DPR ≤ 1.25 canvas is stretched on Retina), and sparse small specks (pebble and pale shell). Grain and specks follow the refraction only loosely, so the ripple train never stretches them into streaks.
+4. Surface: the view of the bottom wobbles with the swell and a train of small ripples; the ripples show as a few long, thin strands curving along the flow (zero lines of a noise field squeezed across the flow, shown only where a sparse bundle mask allows) and kink the caustic lines where they cross. Small crisp four-point glints sit on the caustic knots (each glint cell maps its centre into the caustic space and lights only near a knot) and twinkle; a soft dot at bright crossings and tiny sparse bubbles.
 5. Quiet zones keep blurred lines and the same colour, slightly lighter, so the calm still reads as the same water. A soft highlight shoulder keeps wide bright patches from blowing out.
 
 Palette baked into the shader (do not restyle these in CSS):
@@ -340,7 +340,7 @@ vec3 renderB(vec2 frag, float t, float quiet, float frost, float bevel) {
   // strands running with it. They come in bundles and wobble the view of the bottom
   vec2 nf = vec2(-FLOW.y, FLOW.x);
   float bend = fbm3(p * 0.8 + vec2(t * 0.02, -t * 0.015)) + 0.35 * gnoise(p * 3.2 + vec2(-t * 0.03, t * 0.02));
-  vec2 sq = vec2(dot(p, nf) * 16.0 + bend * 13.0, dot(p, FLOW) * 2.6 - t * 0.05);
+  vec2 sq = vec2(dot(p, nf) * 16.0 + bend * 13.0, dot(p, FLOW) * 1.3 - t * 0.05); // long along the flow
   float sn = gnoise(sq) + 0.4 * gnoise(sq * vec2(1.9, 1.1) + 3.3);
   float bundle = smoothstep(-0.2, 0.26, fbm3(p * 1.4 + 4.0 + vec2(-t * 0.012, t * 0.01)));
   vec2 off = -grad * uRefr * motion + nf * (sn * 0.004 * bundle * motion);
@@ -367,14 +367,14 @@ vec3 renderB(vec2 frag, float t, float quiet, float frost, float bevel) {
   // grain fades, so the lens never smears it into swirls
   vec2 gp0 = p + off * 0.25;
   float grain = (gnoise(gp0 * 210.0) + 0.6 * gnoise(gp0 * uRes.y * 0.33 + 7.7)) * (1.0 - 0.7 * frost) * (1.0 - 0.8 * bevel) * mix(1.0, 0.3, quiet);
-  sand += grain * 0.08;
+  sand += grain * 0.1;
   vec2 gp = gp0 * 150.0;
   vec2 gi = floor(gp);
   float hs = hash21(gi + 5.0);
   if (hs > 0.9) {
     float sd = length(fract(gp) - 0.5 - (hash22(gi) - 0.5) * 0.5);
     float sk = (1.0 - smoothstep(0.1, 0.28, sd)) * mix(0.7, 0.3, quiet) * (1.0 - 0.8 * bevel);
-    sand = mix(sand, hs > 0.97 ? vec3(1.0, 0.985, 0.94) : sand * 0.84, sk);
+    sand = mix(sand, hs > 0.95 ? vec3(1.0, 0.985, 0.94) : sand * 0.84, sk); // more pale shell specks
   }
 
   // caustics
@@ -415,11 +415,10 @@ vec3 renderB(vec2 frag, float t, float quiet, float frost, float bevel) {
   col -= vec3(max(hiL - 0.88, 0.0) * 0.55);
 
   // surface: the ripple strands catch the light as thin flowing bright lines
-  // fewer, broken, slightly wider highlights (not evenly spaced contour lines): each strand fades in
-  // and out along its length
-  float broken = smoothstep(0.0, 0.32, gnoise(vec2(dot(p, FLOW) * 9.0, dot(p, nf) * 3.0) + vec2(t * 0.05, 1.7)));
-  float strand = exp(-abs(sn) * 9.0) * smoothstep(0.08, 0.35, bundle * 0.5 + fbm3(p * 1.4 + 4.0 + vec2(-t * 0.012, t * 0.01))) * broken;
-  col += strand * 0.3 * clear * (1.0 - bevel) * vec3(1.0, 0.99, 0.94); // a glass rim would bend them into rings
+  // a few long, thin, continuous strands that curve along the flow across several cells (sparse,
+  // never a stack of evenly spaced contour lines or short hatch marks)
+  float strand = exp(-abs(sn) * 15.0) * smoothstep(0.16, 0.4, bundle * 0.5 + fbm3(p * 1.4 + 4.0 + vec2(-t * 0.012, t * 0.01)));
+  col += strand * 0.34 * clear * (1.0 - bevel) * vec3(1.0, 0.99, 0.94); // a glass rim would bend them into rings
   col += glint * 0.05;       // floater ripple crests catch the light
 
   // sparkles: a soft dot at bright crossings, and sparse twinkling four-point stars
@@ -434,9 +433,9 @@ vec3 renderB(vec2 frag, float t, float quiet, float frost, float bevel) {
     vec2 sc = (si + 0.2 + 0.6 * hash22(si + 3.0)) * 30.0;
     vec2 dpx = (sc - frag) / uRes.y * uScale * 1.35;
     vec2 kc = cellWalls(cp + FLOW * dot(dpx, FLOW) * 0.6 + nf * dot(dpx, nf) * 1.35, t * 0.35);
-    float atKnot = exp(-kc.y * 18.0);
+    float atKnot = exp(-kc.y * 12.0);
     float on = 0.4 + 0.6 * max(sin(t * (0.6 + sh) + sh * 40.0), 0.0);
-    col += starGlint(frag - sc, 3.0 + 2.5 * hash21(si + 9.0)) * on * atKnot * 1.3 * clear * (1.0 - bevel);
+    col += starGlint(frag - sc, 4.0 + 3.0 * hash21(si + 9.0)) * on * atKnot * 2.0 * clear * (1.0 - bevel);
   }
 
   // tiny bubbles (sparse, drifting slowly)

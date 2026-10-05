@@ -274,6 +274,7 @@ Web 側 (`artifacts/seasonals-web`) は `BFF_URL` (Vite dev proxy 先、node 側
 - 採点 (fresh な Opus、全軸 4 以上 2 回連続が完了条件) は上限 10 回で未達。元の shader の 2/3/2/2/3 から 3/3/3/3/4 (iter 5 と 7) まで。iter 2 以降は全軸 3 前後で頭打ちで、網目の形 (Voronoi はタイル的、焦点の折れ線は稲妻的、重み付き Voronoi の iter 9 / 10 も多角形と言われた) と水面の筋の弱さが毎回残った。規則どおり最低軸が最も高い commit のうち後の iter 7 に戻した。iter 9 / 10 の丸い網目は `0ccdeec` / `a10006f` に残してある
 - gate は全 iteration で通過: 文字のコントラスト (iter 0 の値以上)、作業画面の静かさ、reduced motion で静止、描画コストの比 ≤ 1.4。作業マシンは別セッションの test / build で負荷が高く、perf は iter 0 の shader と同じ page で交互に測る比にした。撮影中の vite reload は撮り直す
 - 延長 (iter 11–15、ユーザーの指示): 浅い砂を app の vanilla cream (別の UI mock の上端の色) に変え、採点の depth 軸も合わせた。網目は乗法重み付き Voronoi (壁が円弧の小石状の網目) に替え、吸収を深さの 2 乗に (浅い所は vanilla、深い所はティール)。最良は iter 14 / 15 の 3/3/3/4/4 (depth が初めて 4) で、後の iter 15 を採用。完了条件 (全軸 4 × 2 回) は未達。e2e 110 件全 pass、描画コストは元の 0.95 倍
+- 粒の修正と 2 回目の延長 (iter 16–20): 砂の粒を正方形の hash から滑らかな noise に (Retina で荒く見えない)、droplet card の縁で粒・砂紋・筋を薄める。線の太さを細線〜太い帯に、knot に hot spot と小さなきらめき、水面の筋を流れに沿う長い細線に。最良は iter 16 / 19 / 20 の 3/4/3/4/4 (caustics と depth が 4) で iter 20 を採用。完了条件は未達。採点には ±1 のぶれ (同じ線で Ca が 4 と 3)。e2e 110 件全 pass、描画コストは元の 1.05 倍
 
 ## 最終状態 (2026-09-26 05:30 JST 時点)
 
