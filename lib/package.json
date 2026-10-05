@@ -15,6 +15,7 @@
     "./policy/*": "./policy/*.ts",
     "./design-system": "./design-system.ts",
     "./__fixtures__": "./__fixtures__/index.ts",
+    "./__fixtures__/*": "./__fixtures__/*.ts",
     "./adapters": "./adapters/index.ts",
     "./adapters/*": "./adapters/*.ts"
   },
