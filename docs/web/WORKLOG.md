@@ -259,6 +259,11 @@ Web 側 (`artifacts/seasonals-web`) は `BFF_URL` (Vite dev proxy 先、node 側
 - 検証: unit (BFF `strategy-brief.test.ts` 11 件 / `prices.test.ts` 5 件 / agent-proposals 追加 4 件、MCP 20 件、web ProposalInbox 4 件)。**fork e2e (2026-09-26、🍋 Lemon Ladder、owner `0x28C6…1d60`)**: `POST /eth/agent-proposals` で 3 step (100 USDC → USDe swap / 99 USDe → sUSDe / Aqua PEGGED_STABLE 40 + 40 ship) を提出 → brief は "This rebalance moves $178.94: 0.00% → 2.67% (+2.67% pts)" / "Deployed capital (DeFi only): $924.80 → $1,103.77 · 2.25% → 2.32%"、表は 4 行 + Unchanged 2 件 → web `/agent` のカードで承認 → 36 秒で `executed` (`via: "web"`)、**8 tx すべて success** (Permit2 approve / permit / swap、sUSDe approve / deposit → 79.2001 sUSDe、Aqua USDC approve / USDe approve / ship)。カレンダーに Executed 3 件 + `strategy_review` (2026-10-10) が出て、brief の horizon で予告した予定がそのまま乗った
 - 既知: Pendle の暗黙単価は 8 桁に丸めるため 1e-6 USD 程度ずれる (approx 表示)。YT は Llama に無いことが多く dashboard 評価額が無ければ unpriced
 
+### Home portal card を水の blob に (droplet glass、2026-10-05)
+- 経緯: 水面に独立した blob を浮かべる案 (`web-liquid-blobs-attempt1`) は想定と違ったため取り消し、4 隅の portal card 自体を blob の質感にした
+- `data-water-glass="droplet"` (`GLASS_VARIANTS.droplet`、lens 1.2 / frost 0) + `uGlassShape` (輪郭の揺らぎ 4 CSS px、seed)。shader は透明な「水への窓」(quiet × 0.6 で線の間を沈める、縁だけ薄い水色)、光の側の細い光の線、光に向いた角の 4 点星、水面 layer (`uGlassLens = 0`) にカードの外の集光。CSS は WebGL 中だけ tint / rim / 影を外し、文字の後ろに薄い vanilla の楕円と白い縁取り。WebGL 不可 / reduced transparency は従来の glass
+- 計測: drawArrays + readPixels で水面 layer 7.60 → 7.97 ms、glass layer 4.58 → 4.29 ms (droplet は bevel の色分散を省く)。`e2e/run.mjs` 全 pass (droplet の 2 check 追加)
+
 ## 最終状態 (2026-09-26 05:30 JST 時点)
 
 | 領域 | 状態 | 実際に確認したこと |

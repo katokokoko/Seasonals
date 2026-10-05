@@ -23,6 +23,8 @@ export interface QuietZoneState {
   count: number;
   glassRects: Float32Array;
   glassMeta: Float32Array;
+  /** droplet の形 (vec4 × 6: 揺らぎ, droplet 0/1, seed, 0) */
+  glassShape: Float32Array;
   glassCount: number;
   /** 水面に浮かぶもの (vec4 × 2) と数 */
   floaters: Float32Array;
@@ -31,7 +33,10 @@ export interface QuietZoneState {
   version: number;
 }
 
-/** rect を詰める先の canvas。glass: true の layer にだけ glass rect を入れる */
+/**
+ * rect を詰める先の canvas。glass: true の layer に glass rect を入れる (lens を描く)。
+ * glass: false の layer (水面) にも droplet の rect だけは入れる (カードの外の砂に集光を描くため)
+ */
 export interface ZoneLayer {
   canvas: HTMLCanvasElement;
   glass: boolean;
@@ -49,6 +54,7 @@ const EMPTY: QuietZoneState = {
   count: 0,
   glassRects: new Float32Array(24),
   glassMeta: new Float32Array(24),
+  glassShape: new Float32Array(24),
   glassCount: 0,
   floaters: new Float32Array(8),
   floaterCount: 0,
@@ -78,7 +84,7 @@ export function useQuietZones(
     for (const layer of getLayers()) {
       const frame = canvasFrame(layer.canvas);
       const rects = collectQuietRects(quietEls.current, frame);
-      const glass = layer.glass ? collectGlassRects(glassEls.current, frame) : [];
+      const glass = collectGlassRects(glassEls.current, frame, { dropletsOnly: !layer.glass });
       const next = packQuietRects(rects);
       const nextGlass = packGlassRects(glass);
       const floaters = collectFloaters(floaterEls.current, frame);
@@ -91,6 +97,7 @@ export function useQuietZones(
         !sameRects(cur.rects, next) ||
         !sameRects(cur.glassRects, nextGlass.rects) ||
         !sameRects(cur.glassMeta, nextGlass.meta) ||
+        !sameRects(cur.glassShape, nextGlass.shape) ||
         cur.floaterCount !== floaters.length ||
         !sameRects(cur.floaters, nextFloaters);
       if (changed) {
@@ -99,6 +106,7 @@ export function useQuietZones(
           count: rects.length,
           glassRects: nextGlass.rects,
           glassMeta: nextGlass.meta,
+          glassShape: nextGlass.shape,
           glassCount: glass.length,
           floaters: nextFloaters,
           floaterCount: floaters.length,

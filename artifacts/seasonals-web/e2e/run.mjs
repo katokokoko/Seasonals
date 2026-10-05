@@ -284,6 +284,26 @@ for (const vp of WIDTHS) {
   check("top bar stays sticky under the glass class", (await page.locator(".global-nav").evaluate((el) => getComputedStyle(el).position)) === "sticky");
   check("droplet is out of the link flow", (await page.locator(".nav-droplet").evaluate((el) => getComputedStyle(el).position)) === "absolute");
   check("WebGL glass mode", (await page.evaluate(() => document.documentElement.dataset.water)) === "webgl");
+  // Home の portal card は水の blob (droplet glass): lens は glass layer が描き、水面 layer には集光用に droplet の rect だけが入る
+  check("portal cards are droplet glass", (await page.locator(".portal-card[data-water-glass=droplet]").count()) === 4);
+  const dropletLayers = await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => {
+    const read = (sel) => {
+      const c = document.querySelector(sel);
+      const gl = c?.getContext("webgl");
+      const p = gl?.getParameter(gl.CURRENT_PROGRAM);
+      if (!p) return null;
+      const n = gl.getUniform(p, gl.getUniformLocation(p, "uGlassCount"));
+      let drops = 0;
+      for (let i = 0; i < n; i++) drops += gl.getUniform(p, gl.getUniformLocation(p, `uGlassShape[${i}]`))[1] > 0.5 ? 1 : 0;
+      return { n, drops, lens: gl.getUniform(p, gl.getUniformLocation(p, "uGlassLens")) };
+    };
+    resolve({ water: read(".water-canvas canvas"), glass: read(".glass-canvas canvas") });
+  })));
+  check(
+    "droplet cards: glass layer draws the lenses, water layer only casts their light pools",
+    dropletLayers.glass?.lens === 1 && dropletLayers.glass?.drops === 4 && dropletLayers.water?.lens === 0 && dropletLayers.water?.n === 4 && dropletLayers.water?.drops === 4,
+    JSON.stringify(dropletLayers)
+  );
   // pointer tilt が portal card に乗る
   const menuCard = page.locator(".portal-card.slot-menu");
   const box = await menuCard.boundingBox();

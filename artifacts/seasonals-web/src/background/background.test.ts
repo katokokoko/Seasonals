@@ -1,14 +1,27 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
-import { canvasFrame, collectFloaters, collectGlassRects, collectQuietRects, packFloaters, GLASS_VARIANTS, packGlassRects, packQuietRects, sameRects, transformAngle } from "./quietZones";
+import {
+  canvasFrame,
+  collectFloaters,
+  collectGlassRects,
+  collectQuietRects,
+  DROPLET_WOBBLE_PX,
+  glassVariant,
+  packFloaters,
+  GLASS_VARIANTS,
+  packGlassRects,
+  packQuietRects,
+  sameRects,
+  transformAngle,
+} from "./quietZones";
 import { resolveWaterParams, waterCalm, waterDefaults } from "./waterDefaults";
 
 describe("water.frag.glsl", () => {
   it("is byte-identical to the shader spec (sha256 recorded at copy time)", () => {
     const buf = readFileSync(resolve(process.cwd(), "src/background/water.frag.glsl"));
     expect(createHash("sha256").update(buf).digest("hex")).toBe(
-      "a3335ca656c0bc5ac86e5ba72ae5bc93e433c72b7e6fc17d6e3b752e27fe52b0"
+      "a3182931c67b6dbe1d0e0a2b4c35aa8e3ce78943fffaf5ae056ef87474935f7c"
     );
   });
 });
@@ -87,7 +100,7 @@ describe("glass surfaces", () => {
   it("uses the bbox centre, layout size, clamped radius and device px", () => {
     glass({ left: 100, top: 50, width: 200, height: 100 }, { borderTopLeftRadius: "9999px" });
     const [g] = collectGlassRects(document, { left: 0, bottom: 800, scale: 2 });
-    expect(g).toEqual({ cx: 400, cy: (800 - 100) * 2, w: 400, h: 200, radius: 100, angle: 0, ...GLASS_VARIANTS.regular });
+    expect(g).toEqual({ cx: 400, cy: (800 - 100) * 2, w: 400, h: 200, radius: 100, angle: 0, ...GLASS_VARIANTS.regular, droplet: false, wobble: 0, seed: 0 });
   });
   it("reads the clear / regular variant and skips invisible surfaces", () => {
     glass({ left: 0, top: 0, width: 300, height: 60 }, {}, "clear");
@@ -123,6 +136,24 @@ describe("glass surfaces", () => {
     expect(Array.from(packed.rects.slice(0, 4))).toEqual([35, 800 - 75, 70, 10]);
     expect(packed.meta).toHaveLength(24);
     expect(Array.from(packed.meta.slice(0, 4))).toEqual([4, 0, GLASS_VARIANTS.regular.lens, GLASS_VARIANTS.regular.frost]);
+    expect(packed.shape).toHaveLength(24);
+    expect(Array.from(packed.shape.slice(0, 4))).toEqual([0, 0, Math.fround(6 * 2.39), 0]);
+  });
+  it("droplet surfaces: clear lens, a few px of outline wobble in device px, and the only ones the water layer gets", () => {
+    glass({ left: 0, top: 0, width: 300, height: 60 }, {}, "clear");
+    glass({ left: 0, top: 100, width: 300, height: 140 }, { borderTopLeftRadius: "28px" }, "droplet");
+    const all = collectGlassRects(document, { left: 0, bottom: 800, scale: 1.25 });
+    const d = all.find((g) => g.droplet)!;
+    expect(d.frost).toBe(0);
+    expect(d.wobble).toBe(DROPLET_WOBBLE_PX * 1.25);
+    expect(all.find((g) => !g.droplet)!.wobble).toBe(0);
+    const water = collectGlassRects(document, { left: 0, bottom: 800, scale: 1.25 }, { dropletsOnly: true });
+    expect(water).toHaveLength(1);
+    expect(water[0]!.seed).toBe(d.seed);
+    const packed = packGlassRects(water);
+    expect(Array.from(packed.shape.slice(0, 2))).toEqual([DROPLET_WOBBLE_PX * 1.25, 1]);
+    expect(glassVariant("droplet")).toBe("droplet");
+    expect(glassVariant("whatever")).toBe("regular");
   });
 });
 

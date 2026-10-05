@@ -45,7 +45,9 @@ const UNIFORMS = [
   "uQuiet",
   "uGlassRects[0]",
   "uGlassMeta[0]",
+  "uGlassShape[0]",
   "uGlassCount",
+  "uGlassLens",
   "uGlass",
   "uLight",
   "uGlassOnly",
@@ -235,6 +237,7 @@ export function WaterBackground({ params, paused = false, className, glassClassN
         g.uniform1i(loc.uQuietCount, q.count);
         g.uniform4fv(loc["uGlassRects[0]"], q.glassRects);
         g.uniform4fv(loc["uGlassMeta[0]"], q.glassMeta);
+        g.uniform4fv(loc["uGlassShape[0]"], q.glassShape);
         g.uniform1i(loc.uGlassCount, q.glassCount);
         g.uniform4fv(loc["uFloaters[0]"], q.floaters);
         g.uniform1i(loc.uFloaterCount, q.floaterCount);
@@ -248,6 +251,8 @@ export function WaterBackground({ params, paused = false, className, glassClassN
       g.uniform1f(loc.uGlass, cur.glass);
       g.uniform2f(loc.uLight, light.x, light.y);
       g.uniform1f(loc.uGlassOnly, l.glassOnly ? 1 : 0);
+      // lens は glass layer (無ければ水面 layer) だけ。水面 layer の droplet rect は集光用
+      g.uniform1f(loc.uGlassLens, l.glassOnly || !glassLayer ? 1 : 0);
       g.drawArrays(g.TRIANGLES, 0, 3);
     };
     const draw = () => {

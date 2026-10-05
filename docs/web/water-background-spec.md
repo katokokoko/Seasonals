@@ -137,7 +137,8 @@ Surfaces that should read as liquid glass (the global nav and the four Home port
 
 - The collector (`collectGlassRects`) returns up to 6 rotated rounded rects in device pixels: centre (bbox centre, bottom-left origin), layout size (`offsetWidth/Height`, so a rotated card is not inflated to its bbox), corner radius (clamped to half the short side), and the CSS rotation angle read from the computed transform (`atan2(b, a)`, clockwise positive). The same `ResizeObserver` / `MutationObserver` loop as the quiet zones tracks them; pointer tilt writes `style`, which the mutation observer already watches.
 - Optics follow Apple's Liquid Glass (WWDC25 "Meet Liquid Glass": lensing rather than scattering). The bevel has a convex squircle profile `y = (1 - (1 - x)^4)^(1/4)` (`x = 0` at the edge, bevel width = `min(half short side, 6% of viewport height)`), so its slope, and therefore the Snell refraction toward the centre, is steep at the rim and zero on the flat middle. The middle magnifies by `3.5% × lens`.
-- Two variants, chosen by the attribute value and packed into `uGlassMeta[i] = (radius, angle, lens, frost)`: `clear` (lens 1.5, frost 0.3: the middle stays see-through, used by the top bar and its selection droplet) and `regular` (lens 1, frost 1: caustic lines soften 16 → 6, sparkles and sand grain drop out, used by the Home portal cards). Empty means `regular`. Surfaces with `opacity: 0` are skipped.
+- Three variants, chosen by the attribute value and packed into `uGlassMeta[i] = (radius, angle, lens, frost)`: `clear` (lens 1.5, frost 0.3: the middle stays see-through, used by the top bar and its selection droplet), `regular` (lens 1, frost 1: caustic lines soften 16 → 6, sparkles and sand grain drop out) and `droplet` (lens 1.2, frost 0, see below; used by the Home portal cards). Empty means `regular`. Surfaces with `opacity: 0` are skipped.
+- Droplet (added 2026-10, Home portal cards as water blobs): `uGlassShape[i] = (wobble, droplet 0/1, seed, 0)`. The rounded box's outline breathes by `DROPLET_WOBBLE_PX` (4 CSS px) along its perimeter (two sines of the element-space angle, > 15 s cycles, still under reduced motion). The body is a window into the water: the water under it is sampled a little less calmed (quiet × 0.6) and its contrast is deepened between the lines (crossings never blow out to white), with a thin aqua tint toward the rim only, so the middle stays clear. No frost, no saturation lift, no bevel dispersion. The rim is a single crisp ~2 px light line, brightest where it faces `uLight`, with a faint internal reflection opposite, and a small four-point sparkle sits on the rim at the corner facing the light. The droplet also casts a light pool: the water layer receives only the droplet rects (`uGlassLens = 0`: no lens there) and draws, outside each card, a bright band on the sand along the edges away from the light with a faint aqua shade beyond; there is no grey drop shadow. While WebGL runs, CSS removes the droplet's tint, rim ring, specular and box shadow (`.glass-droplet` in `src/ui/glass.css`) so no rectangular CSS edge fights the moving outline; text legibility comes from a soft vanilla ellipse that fades before the edges and the clear glass's text halo. Without WebGL, or with reduced transparency, the cards fall back to the regular glass look.
 - The rim is lit from `uLight`: `0.3 + 0.7·max(n·L, 0) + 0.35·max(-n·L, 0)²` (bright on the light side, a weaker internal reflection opposite), a crisp 3px band plus a soft 12px band. `WaterBackground` eases `uLight` toward the pointer direction (viewport centre → pointer), the web stand-in for the iPhone gyroscope; it stays at the top-left `(-0.6, 0.8)` under reduced motion and on touch devices. CSS uses the same direction for its conic rim (`--glass-light-angle`, written on `<html>` by `useGlassLight`).
 - On the bevel band only (`bevel > 0.02`) red and blue are re-sampled at 0.92× / 1.08× of the refraction offset for a slight chromatic dispersion; the rest of the screen still costs one `renderB` per pixel. Glass also lifts saturation by 1.25×.
 - Moving glass (the top bar's selection droplet, animated with the Web Animations API, which does not touch the `style` attribute) calls `requestGlassTracking(ms)`; the collector then re-measures every animation frame for that long.
@@ -163,7 +164,9 @@ Uniforms (set every frame unless noted):
 | `uQuiet` | float | `quiet` | 0.85 |
 | `uGlassRects[0]` | vec4[6] | glass surfaces: centre x, y (device px, bottom-left origin), w, h | zeros |
 | `uGlassMeta[0]` | vec4[6] | corner radius (device px), rotation (rad, CSS clockwise), lens, frost | zeros |
+| `uGlassShape[0]` | vec4[6] | droplet outline wobble (device px), droplet 0/1, wobble seed, unused | zeros |
 | `uGlassCount` | int | number of glass surfaces in use, 0 to 6 | 0 |
+| `uGlassLens` | float | 1 = draw the glass lenses (glass layer, or the water layer when there is no glass layer); 0 = only the droplets' light pools (water layer) | 1 |
 | `uGlass` | float | `glass` | 1 |
 | `uLight` | vec2 | specular light direction, screen space y up (pointer-driven) | (-0.6, 0.8) |
 | `uGlassOnly` | float | 1 on the glass layer (transparent outside glass), 0 on the water layer | 0 |
@@ -197,6 +200,8 @@ uniform float uTint;    // 0 = soda blue, 1 = melon
 uniform float uQuiet;   // how much to calm the water under UI rects
 uniform vec4  uGlassRects[6]; // glass surfaces: center x, y (device px, bottom-left origin), w, h
 uniform vec4  uGlassMeta[6];  // corner radius (device px), rotation (radians, CSS clockwise), lens, frost
+uniform vec4  uGlassShape[6]; // droplet variant: outline wobble (device px), droplet 0/1, wobble seed, unused
+uniform float uGlassLens;     // 1 = draw the glass lenses; 0 = this layer only casts the droplets' light pools
 uniform int   uGlassCount;    // how many of uGlassRects are in use (0..6)
 uniform float uGlass;         // liquid glass lens strength (0 = off)
 uniform vec2  uLight;         // specular light direction (screen space, y up)
@@ -399,24 +404,43 @@ float squircleSlope(float x) {
   float s = 1.0 - u * u * u * u;
   return u * u * u * pow(max(s, 1e-4), -0.75);
 }
-void glassLens(vec2 frag, out vec2 off, out float rim, out float frost, out float bevel, out float body, out float cover) {
+// Droplet outline: the rounded box breathes by a few px along its perimeter (slow, > 15 s cycles)
+float dropletWobble(vec2 lp, vec2 hb, vec4 shape) {
+  if (shape.y < 0.5) return 0.0;
+  float th = atan(lp.y / max(hb.y, 1.0), lp.x / max(hb.x, 1.0));
+  return shape.x * (0.6 * sin(3.0 * th + uTime * 0.22 + shape.z) + 0.4 * sin(5.0 * th - uTime * 0.15 + 1.7 * shape.z));
+}
+// a small four-point sparkle; d = offset from its centre (device px), len = arm length
+float starGlint(vec2 d, float len) {
+  float core = exp(-dot(d, d) / 3.0);
+  float arms = exp(-abs(d.x) / 0.8) * exp(-abs(d.y) / len) + exp(-abs(d.y) / 0.8) * exp(-abs(d.x) / len);
+  return core * 0.9 + arms * 0.55;
+}
+// drop: coverage of droplet surfaces; dropRim: their crisp light line; glint: their sparkle
+void glassLens(vec2 frag, out vec2 off, out float rim, out float frost, out float bevel, out float body, out float cover,
+               out float drop, out float dropRim, out float glint) {
   off = vec2(0.0);
   rim = 0.0;
   frost = 0.0;
   bevel = 0.0;
   body = 0.0;
   cover = 0.0;
+  drop = 0.0;
+  dropRim = 0.0;
+  glint = 0.0;
+  if (uGlassLens < 0.5) return;
   vec2 L = normalize(uLight + vec2(1e-5));
   for (int i = 0; i < 6; i++) {
     if (i >= uGlassCount) break;
     vec4 g = uGlassRects[i];
     vec4 meta = uGlassMeta[i];
+    vec4 shape = uGlassShape[i];
     float cs = cos(meta.y);
     float sn = sin(meta.y);
     vec2 d = frag - g.xy;
     vec2 lp = mat2(cs, sn, -sn, cs) * d; // screen -> element space (undo the CSS rotation)
     vec2 hb = g.zw * 0.5;
-    float sd = sdRoundBox(lp, hb, meta.x);
+    float sd = sdRoundBox(lp, hb, meta.x) + dropletWobble(lp, hb, shape);
     float inside = 1.0 - smoothstep(-1.0, 1.0, sd);
     if (inside <= 0.0) continue;
     float e = max(-sd, 0.0);
@@ -428,21 +452,79 @@ void glassLens(vec2 frag, out vec2 off, out float rim, out float frost, out floa
     vec2 o = -n * slope * (0.55 * bz * meta.z) - d * (0.035 * meta.z);
     off += o * uGlass * inside;
     float nl = dot(n, L);
+    bevel = max(bevel, inside * slope * uGlass);
+    cover = max(cover, inside);
+    if (shape.y > 0.5) {
+      // droplet: only a crisp ~2 px light line, bright where the rim faces the light, a faint
+      // internal reflection opposite; a sparkle placed from the centre toward the light
+      float line = exp(-pow((e - 1.6) / 1.1, 2.0));
+      float facing = smoothstep(-0.1, 0.85, nl) + 0.22 * smoothstep(0.3, 1.0, -nl);
+      dropRim = max(dropRim, inside * line * facing * uGlass);
+      // the sparkle sits on the curved rim at the corner that faces the light (where a real drop
+      // shows its highlight), clear of the text in the middle
+      float m = min(hb.x, hb.y);
+      vec2 Ll = mat2(cs, sn, -sn, cs) * L;
+      vec2 corner = vec2(sign(Ll.x) * (hb.x - 0.24 * m), sign(Ll.y) * (hb.y - 0.24 * m));
+      vec2 at = g.xy + mat2(cs, -sn, sn, cs) * corner;
+      glint = max(glint, inside * starGlint(frag - at, 0.16 * m) * uGlass);
+      drop = max(drop, inside);
+      continue;
+    }
     float light = 0.3 + 0.7 * max(nl, 0.0) + 0.35 * pow(max(-nl, 0.0), 2.0);
     float band = (1.0 - smoothstep(0.0, 3.0, e)) + 0.35 * (1.0 - smoothstep(0.0, 12.0, e));
     rim = max(rim, inside * band * light * uGlass);
     frost = max(frost, inside * meta.w * uGlass);
-    bevel = max(bevel, inside * slope * uGlass);
     body = max(body, inside * uGlass);
-    cover = max(cover, inside);
   }
+}
+
+// Droplet light pools: each droplet card is a thick water lens, so it gathers the light into a
+// bright band on the sand just outside its lower-right edges (away from the top-left light), with a
+// faint aqua shade beyond. Drawn on the water layer, outside the cards only. No grey drop shadow.
+void dropletPools(vec2 frag, inout vec3 col) {
+  float pool = 0.0;
+  float shade = 0.0;
+  for (int i = 0; i < 6; i++) {
+    if (i >= uGlassCount) break;
+    vec4 shape = uGlassShape[i];
+    if (shape.y < 0.5) continue;
+    vec4 g = uGlassRects[i];
+    vec4 meta = uGlassMeta[i];
+    float cs = cos(meta.y);
+    float sn = sin(meta.y);
+    vec2 hb = g.zw * 0.5;
+    float shift = 0.18 * min(hb.x, hb.y);
+    mat2 toLocal = mat2(cs, sn, -sn, cs);
+    vec2 lp = toLocal * (frag - g.xy);
+    float sdCard = sdRoundBox(lp, hb, meta.x) + dropletWobble(lp, hb, shape);
+    if (sdCard <= 0.0 || sdCard > 2.0 * shift) continue;
+    vec2 lps = toLocal * (frag + vec2(-0.6, 0.8) * shift - g.xy);
+    float sdS = sdRoundBox(lps, hb, meta.x);
+    float outside = smoothstep(0.0, 3.0, sdCard);
+    float p = (1.0 - smoothstep(-0.6 * shift, 0.0, sdS)) * outside;
+    pool = max(pool, p);
+    shade = max(shade, (1.0 - smoothstep(0.0, 0.8 * shift, sdS)) * (1.0 - p) * outside);
+  }
+  col = mix(col, col * vec3(0.9, 0.97, 0.96), 0.6 * shade);
+  col += vec3(1.0, 0.99, 0.92) * pool * 0.16;
+}
+// Droplet body: a window into the water. The lens shows the water a little less calmed, with the
+// contrast deepened between the lines (crossings never blow out to white), and a thin aqua tint
+// toward the rim only, so the middle stays clear
+vec3 dropletWindow(vec2 p, float quiet, vec3 plain, float bevel) {
+  vec3 bg = renderB(p, uTime, quiet * 0.6, 0.0, bevel);
+  vec3 lw = vec3(0.299, 0.587, 0.114);
+  float dl = dot(bg - plain, lw);
+  vec3 b = bg + vec3(dl < 0.0 ? dl * 0.9 : -dl * 0.25);
+  b -= vec3(max(dot(b, lw) - dot(plain, lw) - 0.08, 0.0) * 0.6);
+  return b * mix(vec3(1.0), vec3(0.88, 0.97, 0.96), 0.7 * bevel);
 }
 
 void main() {
   vec2 frag = gl_FragCoord.xy;
   vec2 goff;
-  float rim, frost, bevel, body, cover;
-  glassLens(frag, goff, rim, frost, bevel, body, cover);
+  float rim, frost, bevel, body, cover, drop, dropRim, glint;
+  glassLens(frag, goff, rim, frost, bevel, body, cover, drop, dropRim, glint);
   // glass layer: nothing to draw outside the glass, the water layer below shows through
   if (uGlassOnly > 0.5 && cover <= 0.0) {
     gl_FragColor = vec4(0.0);
@@ -450,7 +532,9 @@ void main() {
   }
   float quiet = quietMask(frag) * uQuiet;
   vec3 col = renderB(frag + goff, uTime, quiet, frost, bevel);
-  if (bevel > 0.02) {
+  if (drop > 0.0) {
+    col = mix(col, dropletWindow(frag + goff, quiet, col, bevel), drop);
+  } else if (bevel > 0.02) {
     // chromatic dispersion on the bevel: red bends a little less, blue a little more
     col.r = renderB(frag + goff * 0.92, uTime, quiet, frost, bevel).r;
     col.b = renderB(frag + goff * 1.08, uTime, quiet, frost, bevel).b;
@@ -458,7 +542,10 @@ void main() {
   float lum = dot(col, vec3(0.299, 0.587, 0.114));
   col = mix(vec3(lum), col, 1.0 + 0.25 * body); // glass lifts saturation
   col = mix(col, col * 1.03 + 0.035, frost * 0.6); // milky body (regular glass)
-  col += bevel * 0.04 + rim * 0.5;
+  col += bevel * 0.04 * (1.0 - drop) + rim * 0.5;
+  col = mix(col, vec3(1.0, 0.998, 0.985), clamp(dropRim * 0.9, 0.0, 0.9));
+  col += vec3(1.0, 0.995, 0.98) * min(glint, 1.0);
+  if (uGlassOnly < 0.5 && cover <= 0.0) dropletPools(frag, col);
   float alpha = uGlassOnly > 0.5 ? cover : 1.0; // premultiplied for the glass layer
   gl_FragColor = vec4(clamp(col, 0.0, 1.0) * alpha, alpha);
 }
@@ -502,6 +589,7 @@ Fallback:
 - [ ] Pulling past the top / bottom edge (macOS rubber band) moves glass light and rim with their frames and shows no band.
 - [ ] No `backdrop-filter` anywhere above the canvas. No three.js or other 3D dependency added to the bundle. (The glass fallback blur applies only when there is no canvas.)
 - [ ] Under a `data-water-glass` card the water visibly bends at the edges and the caustic lines soften; rotated portal cards get a lens that follows their rotation.
+- [ ] The Home portal cards read as clear water drops: the water shows through with crisp lines, the outline breathes by a few px, a crisp light line and a small sparkle sit on the light side, and a light pool (no grey shadow) lies on the sand beside them; the card text stays readable.
 - [ ] `water.frag.glsl` is byte-identical to this spec. Tuning is done through `waterDefaults` only.
 
 Pitfalls to avoid (each of these was tried and rejected during prototyping):
