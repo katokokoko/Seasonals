@@ -27,9 +27,9 @@ export const waterDefaults: WaterParams = {
   caustic: 0.5,
   refraction: 0.012,
   tint: 0.5,
-  // Home は 0.4 (2026-10-06): 0.85 だと列ごとに束ねた quiet zone が画面のほぼ全体を淡いミントの膜にしていた。
+  // Home は 0.6 (2026-10-06、0.4 を試した後にユーザー指定): 0.85 だと列ごとに束ねた quiet zone が画面のほぼ全体を淡いミントの膜にしていた。
   // カレンダーは不透明、portal card は文字の下に vanilla の楕円があるので、強く静めなくても読める
-  quiet: 0.4,
+  quiet: 0.6,
   glass: 1,
   maxDpr: 1.25,
 };

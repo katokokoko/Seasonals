@@ -28,7 +28,7 @@ describe("water.frag.glsl", () => {
 
 describe("waterDefaults", () => {
   it("matches the spec defaults", () => {
-    expect(waterDefaults).toEqual({ speed: 1, scale: 4.5, caustic: 0.5, refraction: 0.012, tint: 0.5, quiet: 0.4, glass: 1, maxDpr: 1.25 });
+    expect(waterDefaults).toEqual({ speed: 1, scale: 4.5, caustic: 0.5, refraction: 0.012, tint: 0.5, quiet: 0.6, glass: 1, maxDpr: 1.25 });
   });
   it("calm preset is quieter than defaults", () => {
     expect(waterCalm.caustic).toBeLessThan(waterDefaults.caustic);
