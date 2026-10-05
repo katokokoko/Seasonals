@@ -46,6 +46,9 @@ import {
   type UnifiedTimeEventDTO,
   type UserPolicy,
   type Wallet,
+  type CooldownSource,
+  type CooldownStateResponse,
+  isCooldownStateResponse,
 } from "@workspace/lib/types";
 
 import {
@@ -809,6 +812,47 @@ export async function getWalletTimeEvents(
     ...d,
     triggerAt: new Date(d.triggerAt),
   }));
+}
+
+/** SKR state 取得の上限 (BFF の read も 10 秒) */
+export const SKR_STATE_TIMEOUT_MS = 10_000;
+
+/**
+ * SKR staking cooldown の状態 (docs/skr-r0-implementation.md §3)。
+ *
+ * - **fixture に fallback しない** (tryHttpThenFixture を使わない)。live の失敗を
+ *   fixture / demo で埋めると「解除待ちが無い」「ready」と誤表示し得る
+ * - 10 秒で abort。`cache: "no-store"` (BFF も Cache-Control: no-store を返す)
+ * - response は lib の runtime guard で検査し、要求と違う wallet / source なら捨てる
+ */
+export async function getSkrStakingState(
+  wallet: string,
+  source: CooldownSource
+): Promise<CooldownStateResponse> {
+  const path = `/protocols/skr-staking/state?wallet=${encodeURIComponent(wallet)}&source=${source}`;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), SKR_STATE_TIMEOUT_MS);
+  let body: unknown;
+  try {
+    const res = await fetch(`${BFF_BASE_URL}${path}`, {
+      cache: "no-store",
+      signal: ctrl.signal,
+    });
+    if (!res.ok) {
+      const err = await bffError(res, path);
+      throw new BffError(err.message, err.message);
+    }
+    body = await res.json();
+  } finally {
+    clearTimeout(timer);
+  }
+  if (!isCooldownStateResponse(body)) {
+    throw new BffError("invalid_skr_state_response", "invalid_skr_state_response");
+  }
+  if (body.wallet_address !== wallet || body.source !== source) {
+    throw new BffError("skr_scope_mismatch", "skr_scope_mismatch");
+  }
+  return body;
 }
 
 export async function getAgentPlan(planId: string): Promise<AgentPlan> {

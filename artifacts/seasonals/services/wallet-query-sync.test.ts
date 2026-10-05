@@ -66,12 +66,13 @@ describe("shouldResyncWallet", () => {
 });
 
 describe("WALLET_SCOPED_QUERY_KEYS", () => {
-  it("wallet 由来の 4 系統をすべて含む (履歴を落とすとグラフが 5 分固まる)", () => {
+  it("wallet 由来の 5 系統をすべて含む (履歴を落とすとグラフが 5 分固まる / SKR は旧 wallet の応答を使わない)", () => {
     expect([...WALLET_SCOPED_QUERY_KEYS]).toEqual([
       "positions",
       "earn-positions",
       "wallet-time-events",
       "portfolio-history",
+      "skr-staking",
     ]);
   });
 });

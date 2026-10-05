@@ -33,8 +33,15 @@ import type {
   Wallet,
 } from "@workspace/lib/types";
 import type { ProtocolMenuEntry } from "@workspace/lib/types";
+import type { CooldownSource, CooldownStateResponse } from "@workspace/lib/types";
+import { SKR_STAKING_CLUSTER } from "@workspace/lib/config/skr-staking";
+import {
+  COOLDOWN_POLL_INTERVAL_MS,
+  shouldAcceptCooldownResponse,
+} from "@workspace/lib/derive/cooldown-client";
 
 import * as api from "./api";
+import { SKR_SOURCE } from "./config";
 import type { JupiterLendMarketDTO } from "./api";
 // 8.78: oracle blocked 中の自動再チェック間隔 (純関数、oracle-gate.test で担保)
 import { oracleRefetchInterval } from "../components/action/oracle-gate";
@@ -53,6 +60,9 @@ export const queryKeys = {
   /** Phase 8.3: wallet tx 履歴から派生する time events、address 必須 */
   walletTimeEvents: (address: string) =>
     ["wallet-time-events", address] as const,
+  /** SKR cooldown (docs/skr-r0-implementation.md §3): scope (source / cluster / wallet) ごとに cache を分ける */
+  skrStakingState: (source: CooldownSource, cluster: string, address: string) =>
+    ["skr-staking", source, cluster, address] as const,
   /** Phase 8.6: Jupiter Lend Earn の 7 markets */
   jupiterLendMarkets: () => ["jupiter-lend-markets"] as const,
   /** Phase 8.14: underlying mint 別の oracle 判定 (§4.6) */
@@ -172,6 +182,47 @@ export function useWalletTimeEvents(
     queryFn: () =>
       address ? api.getWalletTimeEvents(address) : Promise.resolve([]),
     enabled: Boolean(address),
+  });
+}
+
+/**
+ * SKR staking cooldown (docs/skr-r0-implementation.md §3「鮮度とcache」)。
+ *
+ * - 表示中は 5 分 poll、foreground 復帰 / 手動 refresh / 通知 tap でも BFF を読む (staleTime 0)
+ * - retry しない (失敗は即 stale 表示。境界 retry は useCooldownBoundaryRetry が別に持つ)
+ * - 要求と違う scope の応答、slot が後退した応答、fresh を持っている時の unavailable / unsupported は
+ *   cache を上書きせず error にする → 旧値を残したまま stale (取消済み・ready と解釈しない)
+ * - SKR_SOURCE は build 時の env。live の失敗を demo / fixture に差し替えない
+ */
+export function useSkrStakingState(
+  address: string | null
+): UseQueryResult<CooldownStateResponse, Error> {
+  const qc = useQueryClient();
+  const source = SKR_SOURCE;
+  const cluster = SKR_STAKING_CLUSTER;
+  const queryKey = queryKeys.skrStakingState(source, cluster, address ?? "disabled");
+  return useQuery({
+    queryKey,
+    queryFn: async () => {
+      if (!address) throw new Error("wallet_required");
+      const next = await api.getSkrStakingState(address, source);
+      const prev = qc.getQueryData<CooldownStateResponse>(queryKey);
+      const verdict = shouldAcceptCooldownResponse(prev, next, {
+        source,
+        cluster,
+        wallet_address: address,
+      });
+      if (!verdict.ok) {
+        throw new api.BffError(`skr_${verdict.reason}`, `skr_${verdict.reason}`);
+      }
+      return next;
+    },
+    enabled: Boolean(address),
+    staleTime: 0,
+    refetchInterval: COOLDOWN_POLL_INTERVAL_MS,
+    refetchIntervalInBackground: false,
+    refetchOnWindowFocus: true,
+    retry: 0,
   });
 }
 
