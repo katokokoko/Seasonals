@@ -101,7 +101,7 @@ vec4 causticsRGB(vec2 cp, vec2 dir, float t, float sharp, float spread) {
   vec2 eg = voroEdge3(cp, t * 0.35);
   vec3 e = vec3(voroEdge(cp - dir * spread, t * 0.35), eg.x, voroEdge(cp + dir * spread, t * 0.35));
   vec3 c = exp(-e * sharp) + 0.1 * exp(-e * sharp * 0.22);
-  c += 0.45 * exp(-eg.y * sharp * 0.7); // where walls meet, the focused light is brightest
+  c += 0.45 * exp(-eg.y * max(sharp, 10.0)); // where walls meet, the focused light is brightest
   // a second, wider network only as a faint glow (the photo's doubled lines, never a crisp tile pattern)
   vec2 cp2 = mat2(0.8, -0.6, 0.6, 0.8) * cp * 0.62 + 13.7;
   c += 0.1 * exp(-voroEdge(cp2, t * 0.27) * 5.0);
@@ -144,10 +144,14 @@ vec3 renderB(vec2 frag, float t, float quiet, float frost, float bevel) {
   float hy = heightB(p + vec2(0.0, eps), t);
   vec2 grad = vec2(hx - h, hy - h) / eps;
   float motion = mix(1.0, 0.4, quiet);
+  // ripples: the zero lines of a noise field squeezed across the swell are long, thin, wavy
+  // strands running with it. They come in bundles and wobble the view of the bottom
+  vec2 nf = vec2(-FLOW.y, FLOW.x);
   float bend = fbm3(p * 1.1 + vec2(t * 0.02, -t * 0.015));
-  float phase = dot(p, FLOW) * 34.0 + bend * 14.0 - t * 0.35;
-  float bundle = smoothstep(0.0, 0.3, fbm3(p * 1.6 + 4.0 + vec2(-t * 0.012, t * 0.01)));
-  vec2 off = -grad * uRefr * motion + FLOW * (sin(phase) * 0.0016 * bundle * motion);
+  vec2 sq = vec2(dot(p, nf) * 22.0 + bend * 6.0, dot(p, FLOW) * 2.6 - t * 0.05);
+  float sn = gnoise(sq) + 0.4 * gnoise(sq * vec2(1.9, 1.1) + 3.3);
+  float bundle = smoothstep(-0.05, 0.3, fbm3(p * 1.4 + 4.0 + vec2(-t * 0.012, t * 0.01)));
+  vec2 off = -grad * uRefr * motion + nf * (sn * 0.004 * bundle * motion);
   vec2 rip;
   float shade, glint;
   floaterField(frag, t, rip, shade, glint);
@@ -185,14 +189,13 @@ vec3 renderB(vec2 frag, float t, float quiet, float frost, float bevel) {
   cp += 0.32 * vec2(gnoise(cp * 0.9 + t * 0.08), gnoise(cp * 0.9 + 5.1 - t * 0.08)); // bends the cell walls round
   cp += 0.16 * vec2(gnoise(cp * 1.9 + 2.7 - t * 0.06), gnoise(cp * 1.9 + 9.4 + t * 0.06));
   // stretch the cells along the swell and let them wave across it
-  vec2 nf = vec2(-FLOW.y, FLOW.x);
   float along = dot(cp, FLOW);
   float across = dot(cp, nf);
   cp = FLOW * along * 0.7 + nf * (across * 1.3 + 0.3 * sin(along * 0.9 + t * 0.05));
   vec2 dir = normalize(grad + vec2(1e-4));
   float width = mix(0.55, 1.4, gnoise(cp * 0.35 + 2.3) + 0.5); // line width varies along the network
   float sharp = mix(16.0, 6.0, frost) * width * mix(1.0, 0.4, quiet);
-  vec4 cb = causticsRGB(cp, dir, t, sharp, 0.014 + 0.05 * bevel);
+  vec4 cb = causticsRGB(cp, dir, t, sharp, 0.005 + 0.05 * bevel);
   vec3 c = cb.rgb;
   float shallow = mix(1.0, 0.55, clamp(d / 1.2, 0.0, 1.0));
   c *= shallow * uCaustic * mix(1.0, 1.25, gnoise(cp * 0.21 + 8.1) + 0.5);
@@ -205,14 +208,17 @@ vec3 renderB(vec2 frag, float t, float quiet, float frost, float bevel) {
   // light on the bottom: conserved, so cell interiors sit below the lines and the band beside them
   // lower still. The focused lines run toward cream white (they saturate like the photo's)
   float base = 0.92 - 0.14 * cb.a * uCaustic * 2.0 * calm;
-  vec3 col = bottom * base + c * 1.05 * mix(bottom, vec3(1.0, 0.99, 0.93), 0.7);
+  vec3 col = bottom * base + c * 1.05 * mix(bottom, vec3(1.0, 0.97, 0.88), 0.75); // warm cream light
   col *= 1.0 - 0.13 * shade; // the floater casts a soft shadow on the sand
   col += vec3(0.25, 0.65, 0.7) * (1.0 - exp(-dv * 0.9)) * 0.16;
   col = mix(col, col * 1.04 + 0.025, quiet); // quiet zones sit a little lighter behind the UI
+  // soft shoulder: wide bright patches keep their sand instead of blowing out (thin line cores still clip)
+  float hiL = dot(col, vec3(0.299, 0.587, 0.114));
+  col -= vec3(max(hiL - 0.88, 0.0) * 0.55);
 
-  // surface: ripple crests that face the light show as thin flowing strands
-  float strand = pow(max(sin(phase + 0.9), 0.0), 30.0) * bundle;
-  col += strand * 0.4 * clear * vec3(1.0, 1.0, 0.97);
+  // surface: the ripple strands catch the light as thin flowing bright lines
+  float strand = exp(-abs(sn) * 15.0) * bundle;
+  col += strand * 0.32 * clear * vec3(1.0, 0.99, 0.94);
   col += glint * 0.09;       // floater ripple crests catch the light
 
   // sparkles: a soft dot at bright crossings, and sparse twinkling four-point stars

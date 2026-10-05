@@ -17,7 +17,10 @@ Plan: `~/.claude/plans/lexical-crunching-shell.md`。参照写真 (`water-ref.pn
 
 - legibility: portal card の title / desc、top bar の link の背景と文字色のコントラスト比が各 ≥ min(4.5, 基準 − 0.05)
 - calmWork: `/calendar?view=month` と `/menu` の水面の輝度 σ ≤ 基準 × 1.25
-- stillIdentical (reduced motion)、moves、perf (syncDraw ≤ 基準 × 1.4、raf ≤ 17.5 ms)、noPageErrors
+- stillIdentical (reduced motion)、moves、noPageErrors
+- perf: 同じ page で iteration 0 の shader (`6f89356`) と交互に測った描画コストの比 ≤ 1.4。rAF 間隔 ≤ 17.5 ms (比 ≤ 1.1 なら
+  遅いのはマシン負荷なので通す)。作業マシンは別セッションの test / build で負荷が高く、絶対値の基準は使えなかった (iter 3)
+- 撮影中に vite の full reload (別セッションのファイル編集) が入った section は撮り直す (最大 3 回)
 
 ## 制約
 

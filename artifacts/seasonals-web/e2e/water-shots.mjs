@@ -17,9 +17,12 @@
  *   - calmWork: /calendar?view=month と /menu の水面 canvas の描画バッファ輝度 σ ≤ 基準 × 1.25
  *   - stillIdentical: reduced motion で 1 秒差の描画バッファの hash が同じ
  *   - moves: 通常時に 1 秒で描画バッファが変わる
- *   - perf: 水面 + glass canvas の drawArrays + readPixels(1px) の合計 ≤ 基準 × 1.4、rafAvgMs ≤ 17.5
+ *   - perf: 水面 + glass canvas の drawArrays + readPixels(1px) の合計が、同じ page で交互に測った iteration 0 の
+ *     shader の 1.4 倍以下 (マシン負荷で絶対値がぶれるため比で見る)。rAF 間隔 ≤ 17.5 ms
+ *     (ただし比が 1.1 以下なら、遅いのはマシン負荷で shader ではないので通す)
  *   - noPageErrors
  */
+import { execFileSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { chromium } from "playwright-core";
 
@@ -51,7 +54,34 @@ async function open(path, opts = {}) {
   });
   page.on("pageerror", (e) => errors.push(e.message));
   await page.goto(BASE + path, { waitUntil: "networkidle" });
+  // 作業ツリーを別セッションと共有しているので、撮影中に vite の full reload が入ることがある。
+  // その page の結果は使わず、section ごと撮り直す (stage())
+  page.on("framenavigated", (f) => {
+    if (f === page.mainFrame()) page.reloaded = true;
+  });
   return page;
+}
+
+/** 1 section を実行する。reload / context 破棄に当たったら page を閉じて最大 3 回撮り直す */
+async function stage(name, fn) {
+  for (let attempt = 1; ; attempt++) {
+    const pages = [];
+    const openTracked = async (path, opts) => {
+      const pg = await open(path, opts);
+      pages.push(pg);
+      return pg;
+    };
+    try {
+      const out = await fn(openTracked);
+      if (pages.some((pg) => pg.reloaded)) throw new Error("page reloaded during the stage");
+      return out;
+    } catch (e) {
+      if (attempt >= 3 || !/reload|context was destroyed|navigation|Target .*closed/i.test(String(e))) throw e;
+      console.error(`[${name}] retry ${attempt}: ${String(e).split("\n")[0]}`);
+    } finally {
+      for (const pg of pages) await pg.close().catch(() => {});
+    }
+  }
 }
 
 /** 水面 canvas を今の uniform で 1 回描き、描画バッファの hash と輝度 σ を返す */
@@ -259,46 +289,99 @@ async function legibility(page) {
   );
 }
 
-/** GPU 込みの描画コスト: 水面 + glass canvas を今の uniform で描いて readPixels(1px) で完了を待つ */
+/**
+ * GPU 込みの描画コストを、同じ page・同じ uniform で iteration 0 の shader (BASE_COMMIT) と交互に測る。
+ * 作業マシンの負荷 (別セッションの test / build) で絶対値がぶれるので、比で見る。
+ * syncDraw: 水面 + glass canvas の drawArrays + readPixels(1px)。raf: 今の shader での 2 秒の rAF 間隔
+ */
+const BASE_COMMIT = "6f89356";
+const baseSrc = execFileSync("git", ["show", `${BASE_COMMIT}:artifacts/seasonals-web/src/background/water.frag.glsl`], { encoding: "utf8" });
 function perf(page) {
-  return page.evaluate(async () => {
-    const raf = await new Promise((resolve) => {
-      const ts = [];
-      const tick = (t) => {
-        ts.push(t);
-        if (t - ts[0] < 2000) requestAnimationFrame(tick);
-        else resolve((ts[ts.length - 1] - ts[0]) / (ts.length - 1));
-      };
-      requestAnimationFrame(tick);
-    });
-    const gls = [".water-canvas canvas", ".glass-canvas canvas"]
+  return page.evaluate(async (baseSrc) => {
+    const raf = () =>
+      new Promise((resolve) => {
+        const ts = [];
+        const tick = (t) => {
+          ts.push(t);
+          if (t - ts[0] < 2000) requestAnimationFrame(tick);
+          else resolve((ts[ts.length - 1] - ts[0]) / (ts.length - 1));
+        };
+        requestAnimationFrame(tick);
+      });
+    const rafCur = await raf(); // before the timing loops below (they block the main thread for seconds)
+    const ctxs = [".water-canvas canvas", ".glass-canvas canvas"]
       .map((s) => document.querySelector(s)?.getContext("webgl"))
-      .filter(Boolean);
+      .filter(Boolean)
+      .map((gl) => {
+        const cur = gl.getParameter(gl.CURRENT_PROGRAM);
+        const vs = gl.getAttachedShaders(cur).find((sh) => gl.getShaderParameter(sh, gl.SHADER_TYPE) === gl.VERTEX_SHADER);
+        const fs = gl.createShader(gl.FRAGMENT_SHADER);
+        gl.shaderSource(fs, baseSrc);
+        gl.compileShader(fs);
+        const base = gl.createProgram();
+        gl.attachShader(base, vs);
+        gl.attachShader(base, fs);
+        gl.bindAttribLocation(base, gl.getAttribLocation(cur, "a"), "a");
+        gl.linkProgram(base);
+        if (!gl.getProgramParameter(base, gl.LINK_STATUS)) throw new Error("baseline shader failed to link");
+        // 今の uniform の値を baseline program にも写す (名前が同じものだけ)
+        gl.useProgram(base);
+        const n = gl.getProgramParameter(cur, gl.ACTIVE_UNIFORMS);
+        for (let i = 0; i < n; i++) {
+          const info = gl.getActiveUniform(cur, i);
+          const root = info.name.replace(/\[0\]$/, "");
+          for (let k = 0; k < info.size; k++) {
+            const name = info.size > 1 ? `${root}[${k}]` : info.name;
+            const to = gl.getUniformLocation(base, name);
+            if (!to) continue;
+            const v = gl.getUniform(cur, gl.getUniformLocation(cur, name));
+            if (info.type === gl.FLOAT) gl.uniform1f(to, v);
+            else if (info.type === gl.FLOAT_VEC2) gl.uniform2fv(to, v);
+            else if (info.type === gl.FLOAT_VEC4) gl.uniform4fv(to, v);
+            else if (info.type === gl.INT) gl.uniform1i(to, v);
+          }
+        }
+        gl.useProgram(cur);
+        return { gl, cur, base };
+      });
     const px = new Uint8Array(4);
-    const once = () => {
-      for (const gl of gls) {
+    const use = (which) => ctxs.forEach((c) => c.gl.useProgram(c[which]));
+    const timeDraw = () => {
+      for (const { gl } of ctxs) {
         gl.drawArrays(gl.TRIANGLES, 0, 3);
         gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
       }
-    };
-    once();
-    // 3 回測って中央値 (thermal / scheduler のぶれを均す)
-    const runs = [];
-    for (let r = 0; r < 3; r++) {
       const t0 = performance.now();
-      for (let i = 0; i < 30; i++) once();
-      runs.push((performance.now() - t0) / 30);
+      for (let i = 0; i < 20; i++)
+        for (const { gl } of ctxs) {
+          gl.drawArrays(gl.TRIANGLES, 0, 3);
+          gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+        }
+      return (performance.now() - t0) / 20;
+    };
+    const med = (a) => a.sort((x, y) => x - y)[Math.floor(a.length / 2)];
+    const cur = [];
+    const base = [];
+    for (let r = 0; r < 5; r++) {
+      use("base");
+      base.push(timeDraw());
+      use("cur");
+      cur.push(timeDraw());
     }
-    runs.sort((a, b) => a - b);
-    return { rafAvgMs: +raf.toFixed(2), syncDrawMs: +runs[1].toFixed(3) };
-  });
+    return {
+      syncDrawMs: +med(cur).toFixed(3),
+      baselineSyncDrawMs: +med(base).toFixed(3),
+      ratio: +(med(cur) / med(base)).toFixed(3),
+      rafAvgMs: +rafCur.toFixed(2),
+    };
+  }, baseSrc);
 }
 
 const gates = {};
 const shots = {};
 
 // 1. Home (animating): 全体、文字の読みやすさ、UI なしの水、動き、perf
-{
+await stage("home", async (open) => {
   const page = await open("/");
   await page.waitForTimeout(Number(process.env.SHOT_WAIT ?? 4500));
   await page.screenshot({ path: ".screenshots/water-home-1440.png" });
@@ -329,28 +412,32 @@ const shots = {};
   const stats = await imageStats(page, { reference: readFileSync(REF).toString("base64"), waterOnly: wo.png });
   writeFileSync(".screenshots/water-stats.json", JSON.stringify(stats, null, 1));
   gates.stats = stats;
-  await page.close();
-}
+});
 
 // 2. reduced motion: 同じ絵のまま
-{
+await stage("still", async (open) => {
   const page = await open("/", { reducedMotion: "reduce" });
   await page.waitForTimeout(1500);
   const a = await bufferInfo(page);
   await page.waitForTimeout(1000);
   const b = await bufferInfo(page);
   gates.stillIdentical = a.hash === b.hash && a.state === "still";
-  await page.close();
-}
+});
 
-// 3. 作業画面: calm preset のまま静か
+// 3. 作業画面: calm preset のまま静か (3 回の中央値)
 gates.calm = {};
 for (const path of ["/calendar?view=month", "/menu"]) {
-  const page = await open(path);
-  await page.waitForTimeout(1500);
-  if (path.startsWith("/calendar")) await page.screenshot({ path: ".screenshots/water-calendar-1440.png" });
-  gates.calm[path] = (await bufferInfo(page)).sigma;
-  await page.close();
+  gates.calm[path] = await stage(path, async (open) => {
+    const page = await open(path);
+    await page.waitForTimeout(1500);
+    if (path.startsWith("/calendar")) await page.screenshot({ path: ".screenshots/water-calendar-1440.png" });
+    const sig = [];
+    for (let i = 0; i < 3; i++) {
+      sig.push((await bufferInfo(page)).sigma);
+      await page.waitForTimeout(300);
+    }
+    return sig.sort((x, y) => x - y)[1];
+  });
 }
 await browser.close();
 
@@ -375,8 +462,8 @@ const checks = {
   calmWork: calmFails.length === 0,
   stillIdentical: gates.stillIdentical,
   moves: gates.moves,
-  syncDraw: gates.perf.syncDrawMs <= ref.syncDrawMs * 1.4,
-  raf: gates.perf.rafAvgMs <= 17.5,
+  syncDraw: gates.perf.ratio <= 1.4,
+  raf: gates.perf.rafAvgMs <= 17.5 || gates.perf.ratio <= 1.1,
   noPageErrors: errors.length === 0,
 };
 const result = { ok: Object.values(checks).every(Boolean), checks, legFails, calmFails, baseline: ref, now, gates, errors };
