@@ -168,18 +168,21 @@ vec3 renderB(vec2 frag, float t, float quiet, float frost, float bevel) {
   float patches = fbm(sp * 1.6 + 11.0);
   // pale vanilla cream sand (the app's vanilla, ≈ #FAF7EA in the light), never grey-beige
   vec3 sand = mix(vec3(0.975, 0.94, 0.83), vec3(1.0, 0.98, 0.91), mix(smoothstep(-0.3, 0.35, patches), 0.6, 0.6 * quiet));
-  sand *= 1.0 + 0.03 * calm * sin(dot(sp, vec2(0.45, 0.89)) * 70.0 + 4.0 * patches);
+  sand *= 1.0 + 0.02 * calm * (1.0 - bevel) * sin(dot(sp, vec2(0.45, 0.89)) * 70.0 + 4.0 * patches); // faint ripple marks (a glass rim would bend them into rings)
   // grain and specks follow the bottom only loosely: the ripple train's refraction would stretch
-  // anything this fine into hair-like streaks. The grain is a fine noise plus a per-grain hash
+  // anything this fine into hair-like streaks. The grain is smooth noise with its finest octave about
+  // 3 canvas px across (no square per-pixel blocks, which turn coarse when the canvas, drawn at
+  // DPR <= 1.25, is stretched onto a Retina screen). Where glass bends the view hard (its rim) the
+  // grain fades, so the lens never smears it into swirls
   vec2 gp0 = p + off * 0.25;
-  float grain = (gnoise(gp0 * 210.0) + 0.55 * (hash21(floor(gp0 * uRes.y * 0.75)) - 0.5)) * (1.0 - 0.7 * frost) * mix(1.0, 0.3, quiet);
-  sand += grain * 0.11;
+  float grain = (gnoise(gp0 * 210.0) + 0.6 * gnoise(gp0 * uRes.y * 0.33 + 7.7)) * (1.0 - 0.7 * frost) * (1.0 - 0.8 * bevel) * mix(1.0, 0.3, quiet);
+  sand += grain * 0.08;
   vec2 gp = gp0 * 150.0;
   vec2 gi = floor(gp);
   float hs = hash21(gi + 5.0);
   if (hs > 0.9) {
     float sd = length(fract(gp) - 0.5 - (hash22(gi) - 0.5) * 0.5);
-    float sk = (1.0 - smoothstep(0.1, 0.28, sd)) * mix(0.7, 0.3, quiet);
+    float sk = (1.0 - smoothstep(0.1, 0.28, sd)) * mix(0.7, 0.3, quiet) * (1.0 - 0.8 * bevel);
     sand = mix(sand, hs > 0.97 ? vec3(1.0, 0.985, 0.94) : sand * 0.84, sk);
   }
 
@@ -222,7 +225,7 @@ vec3 renderB(vec2 frag, float t, float quiet, float frost, float bevel) {
 
   // surface: the ripple strands catch the light as thin flowing bright lines
   float strand = exp(-abs(sn) * 16.0) * bundle;
-  col += strand * 0.26 * clear * vec3(1.0, 0.99, 0.94);
+  col += strand * 0.26 * clear * (1.0 - bevel) * vec3(1.0, 0.99, 0.94); // a glass rim would bend them into rings
   col += glint * 0.05;       // floater ripple crests catch the light
 
   // sparkles: a soft dot at bright crossings, and sparse twinkling four-point stars
