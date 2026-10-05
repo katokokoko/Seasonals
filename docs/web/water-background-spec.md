@@ -102,7 +102,7 @@ export type WaterParams = {
 
 export const waterDefaults: WaterParams = {
   speed: 1, scale: 4.5, caustic: 0.5, refraction: 0.012,
-  tint: 0.5, quiet: 0.85, glass: 1, maxDpr: 1.25,
+  tint: 0.5, quiet: 0.4, glass: 1, maxDpr: 1.25,
 };
 
 type Props = { params?: Partial<WaterParams>; paused?: boolean; className?: string };
@@ -114,6 +114,7 @@ Quiet zone contract:
 - `useQuietZones()` observes those elements with one `ResizeObserver` plus `scroll` and `resize` listeners (passive), and returns up to 4 rects in device pixels with a bottom-left origin: `x = rect.left * dpr`, `y = (viewportHeight - rect.bottom) * dpr`, `w = rect.width * dpr`, `h = rect.height * dpr`. (Superseded 2026-09: rects are measured relative to the canvas's own box via `canvasFrame()`; see "Tracking rules". Never use `innerHeight`: with always-visible scrollbars it includes the scrollbar and every rect lands one scrollbar height too high.) Elements appearing or disappearing (route change, modal) must re-run the query; a `MutationObserver` on the UI root or an explicit `registerQuietZone(el)` helper are both acceptable.
 - More than 4 candidates: keep the 4 largest by area. The shader unions the rects with a soft edge of 12% of the viewport height, so adjacent cards merge into one calm region.
 - The quiet mask does not darken the water. It lowers caustic contrast and refraction motion so text above stays readable without the background looking dirty.
+- (2026-10-06) Home uses `quiet` 0.4: at 0.85 the column-unioned quiet zones covered most of the lobby and read as a pale mint film. The calendar card is opaque and the portal cards carry a vanilla ellipse under their text, so they stay readable. Under regular / clear glass (the top bar) the shader keeps the old calm: `quiet = max(mask * uQuiet, mask * body * 0.85)`.
 
 Rect uniforms are uploaded once per frame only when the values changed since the last frame; compare the flattened `Float32Array` before calling `uniform4fv`.
 
@@ -164,7 +165,7 @@ Uniforms (set every frame unless noted):
 | `uCaustic` | float | `caustic` | 0.5 |
 | `uRefr` | float | `refraction` | 0.012 |
 | `uTint` | float | `tint` | 0.5 |
-| `uQuiet` | float | `quiet` | 0.85 |
+| `uQuiet` | float | `quiet` | 0.4 (Home; 0.85 until 2026-10-06, which made the column-unioned quiet zones read as a pale mint film over the whole Home. Work screens use the calm preset, quiet 1) |
 | `uGlassRects[0]` | vec4[6] | glass surfaces: centre x, y (device px, bottom-left origin), w, h | zeros |
 | `uGlassMeta[0]` | vec4[6] | corner radius (device px), rotation (rad, CSS clockwise), lens, frost | zeros |
 | `uGlassShape[0]` | vec4[6] | droplet outline wobble (device px), droplet 0/1, wobble seed, unused | zeros |
@@ -610,7 +611,10 @@ void main() {
     gl_FragColor = vec4(0.0);
     return;
   }
-  float quiet = quietMask(frag) * uQuiet;
+  // quiet zones calm the water under UI by uQuiet; under regular / clear glass (the top bar) the water
+  // stays as calm as 0.85, so its text keeps its contrast even when the lobby's uQuiet is low
+  float qm = quietMask(frag);
+  float quiet = max(qm * uQuiet, qm * body * 0.85);
   vec3 col = renderB(frag + goff, uTime, quiet, frost, bevel);
   if (drop > 0.0) {
     col = mix(col, dropletWindow(frag + goff, quiet, col, bevel), drop);

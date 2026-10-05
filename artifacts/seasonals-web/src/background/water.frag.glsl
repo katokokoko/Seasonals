@@ -420,7 +420,10 @@ void main() {
     gl_FragColor = vec4(0.0);
     return;
   }
-  float quiet = quietMask(frag) * uQuiet;
+  // quiet zones calm the water under UI by uQuiet; under regular / clear glass (the top bar) the water
+  // stays as calm as 0.85, so its text keeps its contrast even when the lobby's uQuiet is low
+  float qm = quietMask(frag);
+  float quiet = max(qm * uQuiet, qm * body * 0.85);
   vec3 col = renderB(frag + goff, uTime, quiet, frost, bevel);
   if (drop > 0.0) {
     col = mix(col, dropletWindow(frag + goff, quiet, col, bevel), drop);

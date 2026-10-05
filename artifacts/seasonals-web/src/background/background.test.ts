@@ -21,14 +21,14 @@ describe("water.frag.glsl", () => {
   it("is byte-identical to the shader spec (sha256 recorded at copy time)", () => {
     const buf = readFileSync(resolve(process.cwd(), "src/background/water.frag.glsl"));
     expect(createHash("sha256").update(buf).digest("hex")).toBe(
-      "0e3566fd7b18aa63e5f51c6e2e8a3eb1d705169ed231fb9621ed8cb5f84ff4b7"
+      "a4342456c089cd36f3147ffd2105e0b8e1e0d2dfc368267c593aa0f0cef90d6b"
     );
   });
 });
 
 describe("waterDefaults", () => {
   it("matches the spec defaults", () => {
-    expect(waterDefaults).toEqual({ speed: 1, scale: 4.5, caustic: 0.5, refraction: 0.012, tint: 0.5, quiet: 0.85, glass: 1, maxDpr: 1.25 });
+    expect(waterDefaults).toEqual({ speed: 1, scale: 4.5, caustic: 0.5, refraction: 0.012, tint: 0.5, quiet: 0.4, glass: 1, maxDpr: 1.25 });
   });
   it("calm preset is quieter than defaults", () => {
     expect(waterCalm.caustic).toBeLessThan(waterDefaults.caustic);
