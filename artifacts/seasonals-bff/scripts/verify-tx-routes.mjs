@@ -21,6 +21,13 @@
  *
  * 終了コード: 想定外の失敗が 1 件でもあれば 1 (CI 可能)。
  * 「残高が無い / ポジションが無い / 満期前」は **想定内** として扱う (EXPECTED 参照)。
+ *
+ * Helius 429 対策: mainnet RPC (simulate / reserve layout) は `rpc()` 経由で投げ、
+ * HTTP 429 / 5xx / 非 JSON 本文 (`Too Many Requests`) / network error を
+ * 最大 3 attempt まで backoff 再試行する (500ms → 1000ms、`Retry-After` 秒が長ければそちら)。
+ * route simulate の間は 250ms 空ける。それでも尽きた項目は 要調査 として
+ * `RPC rate limit (429) — 時間を置いて再実行` と出す — 経路の regression ではない
+ * ので、時間を置いて再実行すること。
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -52,7 +59,7 @@ const CASES = [
   ["swap-earn wdr jito", "/protocols/swap-earn/withdraw-tx", { shareMint: "J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn", amount: "10000000" }],
   ["swap-earn dep marinade", "/protocols/swap-earn/deposit-tx", { shareMint: "mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So", amount: "10000000" }],
   ["swap-earn dep sanctum", "/protocols/swap-earn/deposit-tx", { shareMint: "5oVNBeEEQvYi1cX3ir8Dx5n1P7pdxydbGF2X4TxVusJm", amount: "10000000" }],
-  ["swap-earn dep perena", "/protocols/swap-earn/deposit-tx", { shareMint: "BenJy1n3WTx9mTjEvy63e8Q1j4RqUc6E4VBMz3ir4Wo6", amount: "1000000" }],
+  ["swap-earn dep perena", "/protocols/swap-earn/deposit-tx", { shareMint: "star9agSpjiFe3M49B3RniVU4CMBBEK3Qnaqn3RGiFM", amount: "1000000" }],
   ["swap-earn dep solstice", "/protocols/swap-earn/deposit-tx", { shareMint: "3ThdFZQKM6kRyVGLG48kaPg5TRMhYMKY1iCRa9xop1WC", amount: "1000000" }],
   ["swap-earn dep hyloSOL", "/protocols/swap-earn/deposit-tx", { shareMint: "hy1oXYgrBW6PVcJ4s6s2FKavRdwgWTXdfE69AxT7kPT", amount: "10000000" }],
   ["swap-earn dep sHYUSD", "/protocols/swap-earn/deposit-tx", { shareMint: "HnnGv3HrSqjRpgdFmx7vQGjntNEoex1SU4e9Lxcxuihz", amount: "1000000" }],
@@ -118,6 +125,66 @@ const EXPECTED = [
   },
 ];
 
+// ── Helius 429 対策: mainnet RPC の backoff 再試行 ─────────────────────────
+const RPC_MAX_ATTEMPTS = 3;
+const RPC_BACKOFF_MS = [500, 1000, 2000];
+const RPC_RETRY_AFTER_CAP_MS = 10_000;
+const ROUTE_PAUSE_MS = 250;
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const redactKey = (s) => String(s).replace(/api-key=[^&\s"']+/g, "api-key=***");
+
+/**
+ * JSON-RPC を 1 本投げて parse 済み body を返す。HTTP 429 / 5xx / 非 JSON 本文 /
+ * JSON-RPC の rate-limit error / network error は再試行し、尽きたら throw。
+ * error message に URL (api-key) を含めない。
+ */
+async function rpc(method, params) {
+  let last = null; // { rateLimited: boolean, why: string }
+  for (let attempt = 0; attempt < RPC_MAX_ATTEMPTS; attempt++) {
+    let waitMs = RPC_BACKOFF_MS[attempt];
+    let res;
+    try {
+      res = await fetch(RPC, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ jsonrpc: "2.0", id: 1, method, params }),
+      });
+    } catch (e) {
+      last = { rateLimited: false, why: `network error: ${redactKey(e.message)}` };
+      if (attempt + 1 < RPC_MAX_ATTEMPTS) await sleep(waitMs);
+      continue;
+    }
+    const text = await res.text().catch(() => "");
+    let json = null;
+    try {
+      json = JSON.parse(text);
+    } catch {
+      json = null;
+    }
+    const rateLimitedBody = /too many requests|rate limit/i.test(text);
+    const rpcRateLimited = json?.error && (json.error.code === 429 || json.error.code === -32429);
+    if (res.status === 429 || res.status >= 500 || json === null || rpcRateLimited) {
+      const rateLimited = res.status === 429 || rateLimitedBody || rpcRateLimited;
+      last = {
+        rateLimited,
+        why: json === null && res.ok ? `HTTP ${res.status} 非 JSON 応答` : `HTTP ${res.status}`,
+      };
+      // 429 / 5xx 以外の 4xx で本文が JSON でも rate limit でもない → 再試行しても同じ
+      if (!rateLimited && res.status >= 400 && res.status < 500) break;
+      const ra = Number(res.headers.get("retry-after"));
+      if (Number.isFinite(ra) && ra > 0) waitMs = Math.max(waitMs, Math.min(ra * 1000, RPC_RETRY_AFTER_CAP_MS));
+      if (attempt + 1 < RPC_MAX_ATTEMPTS) await sleep(waitMs);
+      continue;
+    }
+    return json;
+  }
+  throw new Error(
+    last?.rateLimited
+      ? `RPC rate limit (429) — 時間を置いて再実行 (${method}, ${RPC_MAX_ATTEMPTS} 回試行)`
+      : `RPC 応答なし (${last?.why ?? "不明"}) — 時間を置いて再実行 (${method}, ${RPC_MAX_ATTEMPTS} 回試行)`
+  );
+}
+
 /**
  * 8.52: K-Lend Reserve 口座の **レイアウト drift 検知**。
  *
@@ -134,17 +201,7 @@ const DRIFT_RESERVES = [
 ];
 
 async function checkReserveLayout() {
-  const r = await fetch(RPC, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      jsonrpc: "2.0",
-      id: 1,
-      method: "getMultipleAccounts",
-      params: [DRIFT_RESERVES.map(([, addr]) => addr), { encoding: "base64" }],
-    }),
-  });
-  const j = await r.json();
+  const j = await rpc("getMultipleAccounts", [DRIFT_RESERVES.map(([, addr]) => addr), { encoding: "base64" }]);
   const values = j.result?.value;
   if (!Array.isArray(values)) return ["reserve layout: RPC 応答が不正"];
   const problems = [];
@@ -187,17 +244,15 @@ async function run(name, route, extra) {
   const txs = j.transactions ?? [j.transaction, j.swapTransaction].filter(Boolean);
   if (!txs.length) return { name, ok: false, detail: "tx が返らない" };
 
-  const r = await fetch(RPC, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      jsonrpc: "2.0",
-      id: 1,
-      method: "simulateTransaction",
-      params: [txs[0], { sigVerify: false, replaceRecentBlockhash: true, encoding: "base64", commitment: "confirmed" }],
-    }),
-  });
-  const sim = await r.json();
+  let sim;
+  try {
+    sim = await rpc("simulateTransaction", [
+      txs[0],
+      { sigVerify: false, replaceRecentBlockhash: true, encoding: "base64", commitment: "confirmed" },
+    ]);
+  } catch (e) {
+    return { name, ok: false, txCount: txs.length, detail: e.message };
+  }
   if (sim.error) return { name, ok: false, txCount: txs.length, detail: `RPC: ${JSON.stringify(sim.error).slice(0, 140)}` };
   const v = sim.result?.value ?? {};
   if (!v.err) return { name, ok: true, txCount: txs.length, units: v.unitsConsumed };
@@ -206,7 +261,10 @@ async function run(name, route, extra) {
 }
 
 const results = [];
-for (const c of CASES) results.push(await run(...c));
+for (const [i, c] of CASES.entries()) {
+  if (i > 0) await sleep(ROUTE_PAUSE_MS); // Helius の rate limit を踏まないよう間隔を空ける
+  results.push(await run(...c));
+}
 
 let unexpected = 0;
 for (const r of results) {
@@ -225,7 +283,7 @@ for (const r of results) {
 // 8.52: reserve レイアウトの drift 検知 (mainnet を実際に読む)
 console.log("\nKamino reserve layout (8.52 drift check)");
 const layoutProblems = await checkReserveLayout().catch((e) => [
-  `layout check 失敗: ${e.message}`,
+  `layout check 失敗: ${redactKey(e.message)}`,
 ]);
 for (const p of layoutProblems) console.log(`要調査   ${p}`);
 unexpected += layoutProblems.length;

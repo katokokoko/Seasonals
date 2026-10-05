@@ -27,13 +27,19 @@ import {
   fetchExponentSyRates,
   fetchLstApys,
   fetchPerenaUsdStarApy,
+  fetchPerenaUsdStarPrice,
+  fetchSanctumTvls,
   type ExponentFullMarket,
 } from "./clients/rates";
+import { fetchSaveReserveTotals } from "./clients/save-reserve";
+import { fetchJupiterUsdPrices } from "./clients/jupiter-price";
 import { fetchMeteoraPoolStats } from "./clients/meteora-tx";
 import { getTokenSupplyUi } from "./clients/helius-rpc";
+import { fetchPerenaTriStableTvlUsd } from "./clients/perena";
 import { getOracleResult } from "./clients/oracle";
 import { METEORA_MARKETS } from "@workspace/lib/config/meteora-markets";
 import { exponentPoolId } from "@workspace/lib/config/exponent-markets";
+import { SWAP_EARN_MARKETS } from "@workspace/lib/config/swap-earn-markets";
 
 jest.mock("./clients/jupiter-lend");
 jest.mock("./clients/kamino-tx");
@@ -48,8 +54,12 @@ jest.mock("./clients/meteora-tx", () => ({
   fetchMeteoraPoolStats: jest.fn(),
 }));
 jest.mock("./clients/helius-rpc");
+jest.mock("./clients/perena");
 // Phase 8.33: /menu-listings が SOL oracle 価格 (exponent TVL 換算) を引くため mock
 jest.mock("./clients/oracle");
+// 2026-10: menu TVL live 化 (Save reserve on-chain / Jupiter Price v3)
+jest.mock("./clients/save-reserve");
+jest.mock("./clients/jupiter-price");
 
 const mockJup = fetchEarnMarkets as jest.MockedFunction<typeof fetchEarnMarkets>;
 const mockKamino = fetchKaminoReserveMetrics as jest.MockedFunction<
@@ -114,6 +124,15 @@ const KAMINO_USDC = KAMINO_MARKETS.find((m) => m.pool_id === "kamino_usdc_main")
 const KAMINO_SOL = KAMINO_MARKETS.find((m) => m.pool_id === "kamino_sol_main")!;
 const KVAULT = KAMINO_VAULTS[0]!;
 const SAVE_USDC = SAVE_MARKETS.find((m) => m.pool_id === "savefi_usdc_main")!;
+const SAVE_SOL = SAVE_MARKETS.find((m) => m.pool_id === "savefi_sol_main")!;
+const SHYUSD = SWAP_EARN_MARKETS.find((m) => m.share_symbol === "sHYUSD")!;
+const mockSanctumTvl = fetchSanctumTvls as jest.MockedFunction<typeof fetchSanctumTvls>;
+const mockSaveTotals = fetchSaveReserveTotals as jest.MockedFunction<
+  typeof fetchSaveReserveTotals
+>;
+const mockJupPrice = fetchJupiterUsdPrices as jest.MockedFunction<
+  typeof fetchJupiterUsdPrices
+>;
 const ORCA_USDC_USDT = ORCA_MARKETS.find(
   (m) => m.pool_id === "orca_usdc_usdt_whirlpool"
 )!;
@@ -184,6 +203,8 @@ beforeEach(async () => {
     apy: "0.081",
     tokensPerShare: "1",
     tokenPrice: "1",
+    tokensInvestedUsd: "19000000.5",
+    tokensAvailableUsd: "80000.25",
   });
   mockSave.mockResolvedValue([
     { reserve: SAVE_USDC.reserve, supply_apy: 0.041, ctoken_exchange_rate: "1.3" },
@@ -217,6 +238,25 @@ beforeEach(async () => {
   mockMeteoraStats.mockResolvedValue(
     new Map([[METEORA_USDC_USDT.pool_address, { apy_bps: 134, tvl_usd: 275092 }]])
   );
+  // 2026-10: LST TVL (lamports)。SOL 価格は上の oracle mock ($80)
+  mockSanctumTvl.mockResolvedValue(
+    new Map([
+      ["INF", 2_000_000_000_000_000n], // 2M SOL
+      ["jitoSOL", 10_000_000_000_000_000n], // 10M SOL
+      ["bSOL", 1_000_000_000_000_000n], // 1M SOL
+      ["mSOL", 3_000_000_000_000_000n], // 3M SOL
+      ["hyloSOL", 200_000_000_000_000n], // 200k SOL
+    ])
+  );
+  // 2026-10: Save reserve 供給総量 (smallest unit)
+  mockSaveTotals.mockResolvedValue(
+    new Map([
+      [SAVE_USDC.reserve, { total: 22_500_000_000_000n, decimals: 6 }], // 22.5M USDC
+      [SAVE_SOL.reserve, { total: 185_000_000_000_000n, decimals: 9 }], // 185k SOL
+    ])
+  );
+  // 2026-10: sHYUSD 単価 (供給は getTokenSupplyUi mock の 40M)
+  mockJupPrice.mockResolvedValue(new Map([[SHYUSD.share_mint, 1.5]]));
   app = await buildServer({ logger: false });
 });
 afterEach(async () => {
@@ -284,7 +324,7 @@ describe("GET /menu-listings — live overlay", () => {
     expect(pool(menu, "orca", "orca_usdc_usdt_whirlpool").apy).toBeCloseTo(0.0549, 6);
   });
 
-  it("kamino reserve: apy/tvl/borrowed を overlay、kVault は apy のみ", async () => {
+  it("kamino reserve: apy/tvl/borrowed を overlay、kVault は apy + TVL (invested+available)", async () => {
     const menu = await getMenu();
     const usdc = pool(menu, "kamino", "kamino_usdc_main");
     expect(usdc.apy).toBeCloseTo(0.062, 6);
@@ -292,8 +332,21 @@ describe("GET /menu-listings — live overlay", () => {
     expect(usdc.borrowed_usd).toBeCloseTo(1000000, 1);
     const vault = pool(menu, "kamino", KVAULT.pool_id);
     expect(vault.apy).toBeCloseTo(0.081, 6);
-    const fxVault = pool(fixtureMenuListings, "kamino", KVAULT.pool_id);
-    expect(vault.tvl_usd).toBe(fxVault.tvl_usd); // TVL は fixture 維持
+    expect(vault.tvl_usd).toBeCloseTo(19_000_000.5 + 80_000.25, 2);
+  });
+
+  it("2026-10: kVault metrics に TVL field が無い / 不正なら fixture の TVL のまま", async () => {
+    mockKvault.mockResolvedValue({
+      apy: "0.081",
+      tokensPerShare: "1",
+      tokenPrice: "1",
+      tokensInvestedUsd: "not-a-number",
+      tokensAvailableUsd: "80000.25",
+    });
+    const menu = await getMenu();
+    const vault = pool(menu, "kamino", KVAULT.pool_id);
+    expect(vault.apy).toBeCloseTo(0.081, 6);
+    expect(vault.tvl_usd).toBe(pool(fixtureMenuListings, "kamino", KVAULT.pool_id).tvl_usd);
   });
 
   it("8.51: kamino pool に預入枠 (cap/used/open) が載る", async () => {
@@ -395,9 +448,38 @@ describe("GET /menu-listings — live overlay", () => {
     expect(orca.tvl_usd).toBe(1200000);
     const save = pool(menu, "savefi", "savefi_usdc_main");
     expect(save.apy).toBeCloseTo(0.041, 6);
-    expect(save.tvl_usd).toBe(
-      pool(fixtureMenuListings, "savefi", "savefi_usdc_main").tvl_usd
-    ); // TVL は fixture 維持
+    // 2026-10: TVL = reserve 供給総量 × 単価 (USDC は 1、SOL は oracle $80)
+    expect(save.tvl_usd).toBeCloseTo(22_500_000, 2);
+    expect(pool(menu, "savefi", "savefi_sol_main").tvl_usd).toBeCloseTo(185_000 * 80, 2);
+    // ソース無し pool は fixture
+    expect(pool(menu, "savefi", "savefi_turbo_sol").tvl_usd).toBe(
+      pool(fixtureMenuListings, "savefi", "savefi_turbo_sol").tvl_usd
+    );
+  });
+
+  it("2026-10: Save reserve 読み取り失敗 → savefi TVL は fixture、APY は live", async () => {
+    mockSaveTotals.mockRejectedValue(new Error("rpc down"));
+    const menu = await getMenu();
+    const save = pool(menu, "savefi", "savefi_usdc_main");
+    expect(save.apy).toBeCloseTo(0.041, 6);
+    expect(save.tvl_usd).toBe(pool(fixtureMenuListings, "savefi", "savefi_usdc_main").tvl_usd);
+    expect(pool(menu, "savefi", "savefi_sol_main").tvl_usd).toBe(
+      pool(fixtureMenuListings, "savefi", "savefi_sol_main").tvl_usd
+    );
+  });
+
+  it("2026-10: SOL 価格が取れなければ Save SOL / LST の TVL は fixture (USDC は live)", async () => {
+    (getOracleResult as jest.MockedFunction<typeof getOracleResult>).mockRejectedValue(
+      new Error("oracle down")
+    );
+    const menu = await getMenu();
+    expect(pool(menu, "savefi", "savefi_usdc_main").tvl_usd).toBeCloseTo(22_500_000, 2);
+    expect(pool(menu, "savefi", "savefi_sol_main").tvl_usd).toBe(
+      pool(fixtureMenuListings, "savefi", "savefi_sol_main").tvl_usd
+    );
+    expect(pool(menu, "sanctum", "sanctum_inf").tvl_usd).toBe(
+      pool(fixtureMenuListings, "sanctum", "sanctum_inf").tvl_usd
+    );
   });
 
   it("ソース失敗 → 該当 protocol は fixture 値のまま、他は live (degrade)", async () => {
@@ -421,9 +503,64 @@ describe("GET /menu-listings — live overlay", () => {
     expect(pool(menu, "jito", "jito_restaking_vault").apy).toBe(
       pool(fixtureMenuListings, "jito", "jito_restaking_vault").apy
     );
-    // TVL はソース無し → fixture 維持
-    expect(pool(menu, "jito", "jito_jitosol").tvl_usd).toBe(
-      pool(fixtureMenuListings, "jito", "jito_jitosol").tvl_usd
+    // restaking vault の TVL はソース無し → fixture 維持
+    expect(pool(menu, "jito", "jito_restaking_vault").tvl_usd).toBe(
+      pool(fixtureMenuListings, "jito", "jito_restaking_vault").tvl_usd
+    );
+  });
+
+  it("2026-10: LST TVL = Sanctum lamports × SOL 価格 ($80)", async () => {
+    const menu = await getMenu();
+    expect(pool(menu, "sanctum", "sanctum_inf").tvl_usd).toBeCloseTo(2_000_000 * 80, 2);
+    expect(pool(menu, "sanctum", "sanctum_jitosol").tvl_usd).toBeCloseTo(10_000_000 * 80, 2);
+    expect(pool(menu, "sanctum", "sanctum_bsol").tvl_usd).toBeCloseTo(1_000_000 * 80, 2);
+    expect(pool(menu, "marinade", "marinade_msol").tvl_usd).toBeCloseTo(3_000_000 * 80, 2);
+    expect(pool(menu, "jito", "jito_jitosol").tvl_usd).toBeCloseTo(10_000_000 * 80, 2);
+    expect(pool(menu, "hylo", "hylo_hylosol").tvl_usd).toBeCloseTo(200_000 * 80, 2);
+    // Sanctum に投げる symbol は SOL 建て LST のみ (eUSX / USD* を含まない)
+    const syms = mockSanctumTvl.mock.calls[0]![0];
+    expect([...syms].sort()).toEqual(["INF", "bSOL", "hyloSOL", "jitoSOL", "mSOL"]);
+  });
+
+  it("2026-10: Sanctum TVL 失敗 → LST pool の TVL は fixture、APY は live", async () => {
+    mockSanctumTvl.mockRejectedValue(new Error("sanctum down"));
+    const menu = await getMenu();
+    for (const [proto, id] of [
+      ["sanctum", "sanctum_inf"],
+      ["marinade", "marinade_msol"],
+      ["jito", "jito_jitosol"],
+      ["hylo", "hylo_hylosol"],
+    ] as const) {
+      expect(pool(menu, proto, id).tvl_usd).toBe(pool(fixtureMenuListings, proto, id).tvl_usd);
+    }
+    expect(pool(menu, "sanctum", "sanctum_inf").apy).toBeCloseTo(0.0773, 6);
+  });
+
+  it("2026-10: LST APY が落ちても TVL は live (ソースは独立)", async () => {
+    mockLst.mockRejectedValue(new Error("sanctum apy down"));
+    mockExponent.mockRejectedValue(new Error("exponent down"));
+    (fetchPerenaUsdStarApy as jest.MockedFunction<typeof fetchPerenaUsdStarApy>)
+      .mockRejectedValue(new Error("perena down"));
+    const menu = await getMenu();
+    expect(pool(menu, "jito", "jito_jitosol").tvl_usd).toBeCloseTo(10_000_000 * 80, 2);
+  });
+
+  it("2026-10: sHYUSD TVL = 供給 × Jupiter 単価", async () => {
+    const menu = await getMenu();
+    // getTokenSupplyUi の mock は全 mint で 40,000,000
+    expect(pool(menu, "hylo", "hylo_shyusd").tvl_usd).toBeCloseTo(40_000_000 * 1.5, 2);
+    expect(mockJupPrice).toHaveBeenCalledWith([SHYUSD.share_mint]);
+    // APY はソース無し → fixture
+    expect(pool(menu, "hylo", "hylo_shyusd").apy).toBe(
+      pool(fixtureMenuListings, "hylo", "hylo_shyusd").apy
+    );
+  });
+
+  it("2026-10: Jupiter 単価が取れなければ sHYUSD TVL は fixture", async () => {
+    mockJupPrice.mockRejectedValue(new Error("jup down"));
+    const menu = await getMenu();
+    expect(pool(menu, "hylo", "hylo_shyusd").tvl_usd).toBe(
+      pool(fixtureMenuListings, "hylo", "hylo_shyusd").tvl_usd
     );
   });
 
@@ -448,6 +585,28 @@ describe("GET /menu-listings — live overlay", () => {
     expect(sol.apy).toBeCloseTo(0.0376, 6);
     // perena (8.25): 非公開 endpoint の 7d APY
     expect(pool(menu, "perena", "perena_usd_star").apy).toBeCloseTo(0.093, 6);
+  });
+
+  it("2026-10: Perena の TVL — USD* は供給×単価、Tri-Stable は vault 残高。取れなければ fixture", async () => {
+    (fetchPerenaUsdStarPrice as jest.MockedFunction<typeof fetchPerenaUsdStarPrice>).mockResolvedValue(1.1008);
+    (fetchPerenaTriStableTvlUsd as jest.MockedFunction<typeof fetchPerenaTriStableTvlUsd>).mockResolvedValue(306770.57);
+    const menu = await getMenu();
+    // getTokenSupplyUi の mock は全 mint で 40,000,000
+    expect(pool(menu, "perena", "perena_usd_star").tvl_usd).toBeCloseTo(40_000_000 * 1.1008, 0);
+    const tri = pool(menu, "perena", "perena_tri_stable");
+    expect(tri.tvl_usd).toBeCloseTo(306770.57, 2);
+    // 旧 USD* の案内は fixture から素通し
+    expect(tri.note).toMatch(/legacy USD\*/);
+    expect(tri.external_url).toBe("https://app.perena.org/earn");
+    expect(tri.display_only).toBe(true);
+  });
+
+  it("2026-10: Perena の単価 / vault が取れなければ fixture の TVL のまま", async () => {
+    (fetchPerenaUsdStarPrice as jest.MockedFunction<typeof fetchPerenaUsdStarPrice>).mockRejectedValue(new Error("down"));
+    (fetchPerenaTriStableTvlUsd as jest.MockedFunction<typeof fetchPerenaTriStableTvlUsd>).mockRejectedValue(new Error("down"));
+    const menu = await getMenu();
+    expect(pool(menu, "perena", "perena_usd_star").tvl_usd).toBe(pool(fixtureMenuListings, "perena", "perena_usd_star").tvl_usd);
+    expect(pool(menu, "perena", "perena_tri_stable").tvl_usd).toBe(pool(fixtureMenuListings, "perena", "perena_tri_stable").tvl_usd);
   });
 
   it("8.26: jupsol は WSOL alias で overlay、solstice TVL = 供給×syRate", async () => {

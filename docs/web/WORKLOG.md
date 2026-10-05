@@ -330,6 +330,60 @@ Web 側 (`artifacts/seasonals-web`) は `BFF_URL` (Vite dev proxy 先、node 側
   - web e2e 113/113 (`SOL_E2E=1`)
 - 既知のリスク: RedStone の公式 SDK 1.0.0 は「authenticated gateway」を既定にしている。公開 gateway が key 化されたら gateway source は unavailable になり、tier B は Pyth 単独で動く (Pyth も stale なら block、fail-closed)
 
+### Perena USD* の mint 移行 (2026-10-05、未 commit)
+- 症状: `verify:tx` で「swap-earn dep perena」だけが Jupiter `NO_ROUTES_FOUND` (oracle は通過済み)
+- 原因 (調査): Perena が USD* を新しい mint と新 program に移していた。registry は旧 mint を指したまま
+  - 旧 `BenJy1n3…Wo6`: Jupiter 上は "USD Star (Perena StableSwap LP)" (Numéraire の LP)、流動性 $44、USDC↔USD* とも金額によらず route 無し。on-chain は RemoveLiquidity と小口 swap だけ
+  - 新 `star9agSpjiFe3M49B3RniVU4CMBBEK3Qnaqn3RGiFM`: Jupiter で verified "USD Star"、時価総額 $11.6M、program は Perena Star V2 (`save8RQ…`)。Jupiter label "Perena Star V2" で双方向に route あり (1 USDC → 0.908353 USD*、価格影響 ≈ 0)
+  - 一時障害ではなく恒久的な移行。Perena の APY API は生きている (7d 9.12%)
+- 修正: `lib/config/swap-earn-markets.ts` の perena の share mint を新 mint に、`verify-tx-routes.mjs` も同じ値に。旧 mint は swap-earn registry に入れず (入れると withdraw route を解決して Jupiter で必ず失敗する)、`lib/__fixtures__/known-mints.ts` に "USD* (legacy)" として表示だけ残す (Perena への預入として数える)。旧 token の移行は Perena app で行う前提
+- 検証: lib 293 / BFF 561 / mobile 427 / MCP 20 / web 135 tests green、`pnpm -r typecheck` green。**`verify:tx` が 23 経路中 成功 14 / 想定内 9 / 要調査 0 で exit 0** (この phase の連続作業で初めて)。実 BFF で新 mint 向け deposit tx が組める (0.1 USDC → 0.090835 USD*)。web e2e 113/113
+- 範囲外: 旧 USD* → 新 USD* の移行を Seasonals 上で行うこと、Menu の Perena TVL (fixture 5,000,000 のまま)
+
+### Perena: 旧 USD* の案内と TVL の live 化 (2026-10-06、未 commit)
+- 調査:
+  - 旧 USD* (`BenJy1…`) は Perena **Tri-Stable Pool** (`2w4A1eGy…`、`@perena/numeraire-sdk` の `PRODUCTION_POOLS.tripool`、USDC / USDT / PYUSD) の LP token。Menu に display_only で載っていた「Tri-Stable Pool」カードと同じもの
+  - 市場では実質売れない (Jupiter Ultra → DFlow → Raydium CLMM: 1 → 0.917 USDC、100 → 16.3、1,000 → 19.2)。正規の引き出しは Numeraire の `remove_liquidity` (USDC 単独で受け取れる) だが、公式 SDK はグローバル状態に署名者 Keypair を持つ作りで、CJS から ESM 専用の `node-fetch` 3 を require するため BFF ではそのまま使えない
+  - TVL の fixture はずれていた: USD* 5,000,000 → 実測 $11.58M、Tri-Stable 3,000,000 → 実測 $306.8K (約 10 倍)
+- 判断 (ユーザー決定): 旧 USD* は **表示と Perena app への案内だけ** (Seasonals で移行も withdraw も作らない)。TVL は **2 カードとも live**
+- 実装:
+  - `lib/config/perena.ts` (app URL、旧 USD* mint / decimals、Tri-Stable pool と vault 3 つを固定 — pool PDA は spam token も持つので owner 一覧では数えない)。`ProtocolPool` に任意の `note` / `external_url`。Tri-Stable の fixture に旧 USD* の案内と link
+  - BFF: `rates.ts` `fetchPerenaUsdStarPrice` (`api.perena.org/api/usdstar/price`、5 分 cache)、`clients/perena.ts` `fetchPerenaTriStableTvlUsd` (3 vault を 1 回の getMultipleAccounts で読み、mint / owner / program が違えば throw)。`/menu-listings` の overlay で USD* = 新 mint 供給 × 単価、Tri-Stable = vault 残高合計。取れなければ fixture (fixture も実測値に更新)
+  - web: Menu カードの詳細に `note` と「Open Perena ↗」。閲覧専用 pool には「wallet で署名して送る」の定型文を出さず「Seasonals では扱えない」と書く。Dashboard の Your positions に、閲覧中 address が旧 USD* を持っていれば Perena app への案内 (`/positions` の `raw_state.mint` で判定、deposit 残高と同じ query を共有)
+- 検証: lib 293 / BFF 569 / mobile 427 / MCP 20 / web 139 tests green、`pnpm -r typecheck` green。実 BFF `/menu-listings`: USD* $11,575,088 / Tri-Stable $306,770.57 + 案内。Menu を screenshot で確認 ($11.6M / $306.8K、詳細に案内と link)。`verify:tx` 23 経路中 成功 14 / 想定内 9 / 要調査 0 (Kamino layout 確認が 2 回 Helius の 429 に当たり、再実行で通過)。web e2e 113/113
+- 範囲外: 旧 USD* の withdraw / 移行 (必要になったら IDL から remove_liquidity を自前で組む。SDK は入れない)、Seeker への案内表示 (`note` / `external_url` は任意 field で mobile は無視する)
+
+### Menu fixture の総点検 + RPC 429 対策 (2026-10-06、未 commit、Opus 5.5 subagent 2 本で実装)
+- 背景: Perena の TVL が fixture と約 10 倍ずれていたので、`/menu-listings` の live 応答と fixture を全 pool で突き合わせた。TVL が fixture のままだったのは 13 pool (LST 6 / kVault 2 / Save 2 / sHYUSD / 出典なし 2)。同日 `verify:tx` が Helius の 429 に 3 回当たった
+- 実装 (A: Menu の live 化):
+  - LST (INF / jitoSOL / bSOL / mSOL / hyloSOL): Sanctum `/v1/tvl/current` (lamports) × SOL oracle 価格。display_only の sanctum_jitosol / sanctum_bsol も対象
+  - kVault (steakhouse / allez): Kamino metrics の `tokensInvestedUsd + tokensAvailableUsd` (以前は apy しか拾っていなかった)
+  - Save (USDC / SOL): reserve account を `@solendprotocol/solend-sdk` の `parseReserve` で decode し `available + borrowedWads/1e18` × 単価 (program id は SDK 定数、両 reserve の owner と一致を確認)
+  - sHYUSD: 供給 × Jupiter price v3 (`lite-api.jup.ag/price/v3`、key 不要)。APY は Exponent `/markets` に sHYUSD の underlying が無いため fixture のまま (fixture にその旨)
+  - overlay の挙動: LST / solstice の TVL と Save の TVL は APY source が失敗しても適用される (以前は APY と同じ分岐の中だった)。SOL 価格が無ければ SOL 建ての pool は fixture
+  - fixture は 2026-10-06 の実測値に更新 (live 失敗時の fallback)。savefi_turbo_sol / jito_restaking_vault は出典なしで fixture 維持 + コメント
+- 実装 (B: 429 対策):
+  - `helius-rpc.ts` に `rpcReadWithRetry` (429 / 5xx / network は 500ms → 1s の backoff で最大 3 回、`Retry-After` 優先・上限 10 秒、他の 4xx と JSON-RPC error は即 throw)。読み取り系 (`getMultipleAccountsBase64` / `getSignatureStatus` / `getTokenSupplyUi` / `getEpochInfo` / `fetchStakeAccounts` / `simulateUnsignedTx`) が使う。`sendTransactionViaHelius` は再試行しない
+  - `verify-tx-routes.mjs`: 同じ backoff の `rpc()` helper (非 JSON 応答も再試行対象)、simulate 間 250ms、再試行しても駄目なら「RPC rate limit (429) — 時間を置いて再実行」と出す。`verify-oracle-feeds.ts` は helius-rpc 経由なので自動で効く
+  - backoff の待ちは test が `_setSleepForTest` で差し替える (subagent は jest 判定を本体に入れていたが、test 側の注入に変更)
+- before → after (2026-10-06、SOL ≈ $119):
+
+| pool | fixture (before) | live (after) |
+|---|---|---|
+| sanctum_inf | 158M | $275.9M |
+| sanctum_jitosol / jito_jitosol | 780M | $1,242.9M |
+| sanctum_bsol | 69M | $124.1M |
+| marinade_msol | 187M | $382.2M |
+| hylo_hylosol | 20M | $24.3M |
+| kamino_steakhouse_usdc | 19.8M | $19.1M |
+| kamino_allez_sol_vault | 6.3M | $10.6M |
+| savefi_usdc_main | 21.9M | $22.5M |
+| savefi_sol_main | 16.1M | $22.1M |
+| hylo_shyusd | 11M | $22.9M |
+
+- 検証: lib 293 / BFF 600 / mobile 427 / MCP 20 / web 139 tests green、`pnpm -r typecheck` green。`verify:tx` 連続 2 回とも 要調査 0 / exit 0、`verify:oracle` 7 asset OK。web e2e 113/113。Menu の Staking tab を screenshot で確認 ($275.9M / $1.2B / $124.1M / $382.1M / $24.2M)
+- 未検証: 実際の 429 を再試行で吸収する経路は live で踏めなかった (今回の実行では 429 が出なかった)。単体 test では 429 → 200 / 3 回 429 / Retry-After を確認済み
+
 ## 最終状態 (2026-09-26 05:30 JST 時点)
 
 | 領域 | 状態 | 実際に確認したこと |

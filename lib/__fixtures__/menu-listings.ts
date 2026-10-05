@@ -17,6 +17,7 @@
 import { PositionCategory } from "../types/enums";
 import { COLOR } from "../design-system";
 import type { ProtocolMenuEntry } from "../types/protocol-pool";
+import { PERENA_APP_URL } from "../config/perena";
 
 // 外部 protocol icon の bg (DS palette 外、§6 規約 carve-out)。
 // ロゴ PNG は地色を焼き込んだ不透明画像で、iconBox は overflow:hidden の角丸。
@@ -101,7 +102,7 @@ export const fixtureMenuListings: ProtocolMenuEntry[] = [
         category: PositionCategory.Vault,
         asset: "USDC",
         apy: 0.0402,
-        tvl_usd: 19_800_000,
+        tvl_usd: 19_100_000, // 2026-10-06 実測 (live 失敗時の fallback)
       },
       {
         pool_id: "kamino_allez_sol_vault",
@@ -109,7 +110,7 @@ export const fixtureMenuListings: ProtocolMenuEntry[] = [
         category: PositionCategory.Vault,
         asset: "SOL",
         apy: 0.112,
-        tvl_usd: 6_300_000,
+        tvl_usd: 10_600_000, // 2026-10-06 実測 (live 失敗時の fallback)
       },
     ],
   },
@@ -152,7 +153,7 @@ export const fixtureMenuListings: ProtocolMenuEntry[] = [
         category: PositionCategory.Staking,
         asset: "SOL",
         apy: 0.0780,
-        tvl_usd: 158_000_000,
+        tvl_usd: 276_000_000, // 2026-10-06 実測 (live 失敗時の fallback)
       },
       {
         pool_id: "sanctum_jitosol",
@@ -160,7 +161,7 @@ export const fixtureMenuListings: ProtocolMenuEntry[] = [
         category: PositionCategory.Staking,
         asset: "SOL",
         apy: 0.0720,
-        tvl_usd: 780_000_000,
+        tvl_usd: 1_244_000_000, // 2026-10-06 実測 (live 失敗時の fallback)
         // Phase 8.37 (レビュー L-F1): swap-earn registry に sanctum/jitoSOL 実体なし (asset fallback だと INF に化ける) — 実装まで view-only
         display_only: true,
       },
@@ -170,7 +171,7 @@ export const fixtureMenuListings: ProtocolMenuEntry[] = [
         category: PositionCategory.Staking,
         asset: "SOL",
         apy: 0.0690,
-        tvl_usd: 69_000_000,
+        tvl_usd: 124_000_000, // 2026-10-06 実測 (live 失敗時の fallback)
         // Phase 8.37 (レビュー L-F1): swap-earn registry に sanctum/bSOL 実体なし (同上) — 実装まで view-only
         display_only: true,
       },
@@ -192,7 +193,8 @@ export const fixtureMenuListings: ProtocolMenuEntry[] = [
         category: PositionCategory.Stable,
         asset: "USDC",
         apy: 0.093, // 8.25: 実測近似 (live は api.perena.org 7d APY で overlay)
-        tvl_usd: 5_000_000,
+        // live = 新 USD* 供給 × api.perena.org/api/usdstar/price。下は 2026-10-05 実測 (live 失敗時の fallback)
+        tvl_usd: 11_575_000,
       },
       {
         pool_id: "perena_tri_stable",
@@ -200,10 +202,14 @@ export const fixtureMenuListings: ProtocolMenuEntry[] = [
         category: PositionCategory.LP,
         asset: "USDC-USDT-PYUSD",
         apy: 0.0630,
-        tvl_usd: 3_000_000,
+        // live = pool vault (USDC + USDT + PYUSD) の残高合計。下は 2026-10-05 実測 (live 失敗時の fallback)
+        tvl_usd: 306_770,
         deposit_asset: "USDC",
         // Phase 8.37 (レビュー L-F1): tri-pool の実 adapter 未実装 (fallback だと USD* 単独になる) — 実装まで view-only
         display_only: true,
+        // 2026-10: この pool の LP token が旧 USD* (Perena は USD* を新 token に移行)。Seasonals は案内だけ
+        note: "This pool's LP token is the legacy USD*. Perena moved USD* to a new token in 2026; withdraw or migrate legacy USD* in the Perena app.",
+        external_url: PERENA_APP_URL,
       },
     ],
   },
@@ -223,7 +229,7 @@ export const fixtureMenuListings: ProtocolMenuEntry[] = [
         category: PositionCategory.Lending,
         asset: "USDC",
         apy: 0.0490,
-        tvl_usd: 21_900_000,
+        tvl_usd: 22_500_000, // 2026-10-06 実測 (live 失敗時の fallback)
         borrowed_usd: 16_200_000,
       },
       {
@@ -232,7 +238,7 @@ export const fixtureMenuListings: ProtocolMenuEntry[] = [
         category: PositionCategory.Lending,
         asset: "SOL",
         apy: 0.0420,
-        tvl_usd: 16_100_000,
+        tvl_usd: 22_200_000, // 2026-10-06 実測 (live 失敗時の fallback)
         borrowed_usd: 10_500_000,
       },
       {
@@ -242,7 +248,7 @@ export const fixtureMenuListings: ProtocolMenuEntry[] = [
         category: PositionCategory.Lending,
         asset: "SOL",
         apy: 0.0680,
-        tvl_usd: 3_000_000,
+        tvl_usd: 3_000_000, // 出典なし、2026-10-06 時点の近似
         borrowed_usd: 2_000_000,
         // Phase 8.37 (レビュー L-F1): SAVE_MARKETS に未登録 (fallback だと sol_main に入金される) — 実装まで view-only
         display_only: true,
@@ -265,7 +271,7 @@ export const fixtureMenuListings: ProtocolMenuEntry[] = [
         category: PositionCategory.Staking,
         asset: "SOL",
         apy: 0.0680,
-        tvl_usd: 187_000_000,
+        tvl_usd: 383_000_000, // 2026-10-06 実測 (live 失敗時の fallback)
       },
     ],
   },
@@ -326,7 +332,7 @@ export const fixtureMenuListings: ProtocolMenuEntry[] = [
         category: PositionCategory.Staking,
         asset: "SOL",
         apy: 0.0740,
-        tvl_usd: 780_000_000,
+        tvl_usd: 1_244_000_000, // 2026-10-06 実測 (live 失敗時の fallback)
       },
       {
         pool_id: "jito_restaking_vault",
@@ -334,7 +340,7 @@ export const fixtureMenuListings: ProtocolMenuEntry[] = [
         category: PositionCategory.Restaking,
         asset: "JitoSOL",
         apy: 0.0890,
-        tvl_usd: 14_500_000,
+        tvl_usd: 14_500_000, // 出典なし、2026-10-06 時点の近似
         deposit_asset: "SOL",
         // Phase 8.37 (レビュー L-F1): restaking の実 adapter 未実装 (fallback だと jitoSOL swap になる) — 実装まで view-only
         display_only: true,
@@ -397,15 +403,17 @@ export const fixtureMenuListings: ProtocolMenuEntry[] = [
         category: PositionCategory.Staking,
         asset: "SOL",
         apy: 0.061, // live は Exponent underlyingApy で overlay
-        tvl_usd: 20_000_000,
+        tvl_usd: 24_300_000, // 2026-10-06 実測 (live 失敗時の fallback)
       },
       {
         pool_id: "hylo_shyusd",
         name: "sHYUSD Stability Pool",
         category: PositionCategory.Stable,
         asset: "USDC",
-        apy: 0.10, // 実値ソース未発見 (Exponent hyUSD implied 近似)
-        tvl_usd: 11_000_000,
+        // APY: live ソース無し。2026-10-06 に api.exponent.finance/markets を確認したが
+        // underlying に sHYUSD は無い (hyUSD / srEHYUSD のみ) — Exponent hyUSD implied 近似のまま
+        apy: 0.10,
+        tvl_usd: 22_900_000, // 2026-10-06 実測 (live 失敗時の fallback)
       },
     ],
   },

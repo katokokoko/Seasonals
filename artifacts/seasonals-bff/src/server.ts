@@ -164,8 +164,12 @@ import {
   fetchJupiterRateOut,
   fetchLstApys,
   fetchPerenaUsdStarApy,
+  fetchPerenaUsdStarPrice,
+  fetchSanctumTvls,
   type ExponentFullMarket,
 } from "./clients/rates";
+import { fetchSaveReserveTotals, type SaveReserveTotal } from "./clients/save-reserve";
+import { fetchJupiterUsdPrices } from "./clients/jupiter-price";
 import {
   EXPONENT_MARKETS,
   exponentMaturityIso,
@@ -256,6 +260,7 @@ import {
   updatePlan,
   validateAndConsumeToken,
 } from "./plan-store";
+import { fetchPerenaTriStableTvlUsd } from "./clients/perena";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Solana 接続 (Devnet) — approve endpoint で memo tx を構築するため
@@ -2881,6 +2886,16 @@ export interface MenuLiveSources {
   meteoraStats?: Map<string, MeteoraPoolStats>;
   /** Phase 8.26: eUSX 総供給 × syExchangeRate (表示専用 USD) */
   solsticeTvlUsd?: number;
+  /** 2026-10: Perena 新 USD* 総供給 × api.perena.org の単価 (表示専用 USD) */
+  perenaUsdStarTvlUsd?: number;
+  /** 2026-10: Perena Tri-Stable Pool の vault 残高合計 (旧 USD* の pool、表示専用 USD) */
+  perenaTriStableTvlUsd?: number;
+  /** 2026-10: LST symbol → TVL (lamports、Sanctum /v1/tvl/current)。USD 換算は solPriceUsd */
+  lstTvlLamports?: Map<string, bigint>;
+  /** 2026-10: Save reserve address → 供給総量 (smallest unit、on-chain reserve decode) */
+  saveReserveTotals?: Map<string, SaveReserveTotal>;
+  /** 2026-10: sHYUSD 総供給 × Jupiter Price v3 単価 (表示専用 USD) */
+  shyusdTvlUsd?: number;
   /**
    * Phase 8.33: Exponent PT markets (live)。undefined = fetch 失敗 → lib registry
    * snapshot へ degrade (どちらも buildExponentMenuPools が maturity filter する)。
@@ -2906,7 +2921,18 @@ export const LST_POOL_SYMBOLS: Record<string, string> = {
   solstice_eusx: "eUSX", // Exponent underlyingApy (8.24)
   perena_usd_star: "USD*", // Perena app の非公開 endpoint (8.25)
   hylo_hylosol: "hyloSOL", // Exponent underlyingApy (8.27)
+  // hylo_shyusd は対象外: Exponent markets に sHYUSD の underlying が無い (2026-10-06 確認)
 };
+
+/**
+ * 2026-10: Sanctum /v1/tvl/current で TVL を引く LST symbol (SOL 建て LST のみ)。
+ * eUSX / USD* は Sanctum LST ではないので除外 (それぞれ別ソースで TVL を出す)。
+ */
+export const LST_TVL_SYMBOLS: string[] = [
+  ...new Set(
+    Object.values(LST_POOL_SYMBOLS).filter((s) => s !== "eUSX" && s !== "USD*")
+  ),
+];
 
 /** 有限 number のみ採用 (不正値は fixture 維持)。 */
 function finite(n: number): number | null {
@@ -2917,8 +2943,9 @@ function finite(n: number): number | null {
  * fixture menu listing に live APY/TVL を pool 単位で overlay する純関数。
  * apy (0..1 fraction) / tvl_usd / borrowed_usd (USD number) は ProtocolPool の
  * documented display carve-out (§3) — smallest-unit string 規約の適用外。
- * 対応 protocol: jupiter / kamino (reserve + kVault) / savefi / orca。
- * それ以外 (LST / meteora / perena / solstice) は live ソースが無く fixture 値。
+ * 対応 protocol: jupiter / kamino (reserve + kVault) / savefi / orca / meteora /
+ * LST 系 (sanctum / marinade / jito / hylo) / perena / solstice。
+ * live ソースの無い pool (savefi_turbo_sol / jito_restaking_vault 等) は fixture 値。
  * Phase 8.33: exponent entry のみ patch でなく pools **置換** (market 世代交代対応)。
  */
 export function applyMenuLiveOverlays(
@@ -3008,15 +3035,43 @@ export function applyMenuLiveOverlays(
         const vm = vault ? s.kaminoVaults?.get(vault.vault) : undefined;
         if (vm) {
           const apy = finite(Number(vm.apy));
-          if (apy !== null) out.apy = apy; // TVL は metrics に無く fixture 維持
+          if (apy !== null) out.apy = apy;
+          // 2026-10: TVL = 投下済み + 未投下 (metrics の USD decimal string、§3 表示専用)。
+          // どちらか欠落 / 不正なら fixture 維持
+          if (vm.tokensInvestedUsd !== undefined && vm.tokensAvailableUsd !== undefined) {
+            const invested = finite(Number(vm.tokensInvestedUsd));
+            const available = finite(Number(vm.tokensAvailableUsd));
+            if (invested !== null && available !== null && invested + available > 0) {
+              out.tvl_usd = invested + available;
+            }
+          }
         }
-      } else if (entry.protocol_id === "savefi" && s.saveRates) {
+      } else if (entry.protocol_id === "savefi") {
         const mkt = SAVE_MARKETS.find((mk) => mk.pool_id === pool.pool_id);
-        const rate = mkt
-          ? s.saveRates.find((r) => r.reserve === mkt.reserve)
-          : undefined;
+        const rate =
+          mkt && s.saveRates
+            ? s.saveRates.find((r) => r.reserve === mkt.reserve)
+            : undefined;
         const apy = rate ? finite(rate.supply_apy) : null;
         if (apy !== null) out.apy = apy;
+        // 2026-10: TVL = on-chain reserve の供給総量 × 単価 (USDC は 1、SOL は oracle)。
+        // §3 display carve-out — bigint の総量を表示直前にだけ Number 化する
+        const totals = mkt ? s.saveReserveTotals?.get(mkt.reserve) : undefined;
+        const price =
+          mkt?.underlying_symbol === "USDC"
+            ? 1
+            : mkt?.underlying_symbol === "SOL"
+              ? s.solPriceUsd
+              : undefined;
+        if (
+          totals &&
+          price !== undefined &&
+          Number.isFinite(price) &&
+          price > 0
+        ) {
+          const tvl = finite((Number(totals.total) / 10 ** totals.decimals) * price);
+          if (tvl !== null && tvl > 0) out.tvl_usd = tvl;
+        }
       } else if (entry.protocol_id === "orca" && s.orcaStats) {
         const mkt = ORCA_MARKETS.find((mk) => mk.pool_id === pool.pool_id);
         const stats = mkt ? s.orcaStats.get(mkt.pool_address) : undefined;
@@ -3032,13 +3087,34 @@ export function applyMenuLiveOverlays(
           entry.protocol_id === "sanctum" ||
           entry.protocol_id === "solstice" ||
           entry.protocol_id === "perena" ||
-          entry.protocol_id === "hylo") &&
-        s.lstApys
+          entry.protocol_id === "hylo")
       ) {
-        // Phase 8.23/8.24: yield token APY (TVL は原則ソース無し、fixture 維持)
+        // Phase 8.23/8.24: yield token APY。TVL は 2026-10 から各ソースで live
+        // (APY ソースの成否と独立 — どれかが落ちても他は overlay される)
         const sym = LST_POOL_SYMBOLS[pool.pool_id];
-        const apy = sym !== undefined ? s.lstApys.get(sym) : undefined;
+        const apy = sym !== undefined ? s.lstApys?.get(sym) : undefined;
         if (apy !== undefined && finite(apy) !== null) out.apy = apy;
+        // 2026-10: SOL 建て LST の TVL = Sanctum TVL (lamports) × SOL oracle 価格
+        // (§3 display carve-out — bigint の lamports を表示直前にだけ Number 化)
+        const lamports = sym !== undefined ? s.lstTvlLamports?.get(sym) : undefined;
+        if (
+          lamports !== undefined &&
+          s.solPriceUsd !== undefined &&
+          Number.isFinite(s.solPriceUsd) &&
+          s.solPriceUsd > 0
+        ) {
+          const tvl = finite((Number(lamports) / 1e9) * s.solPriceUsd);
+          if (tvl !== null && tvl > 0) out.tvl_usd = tvl;
+        }
+        // 2026-10: sHYUSD = 総供給 × Jupiter 単価
+        if (
+          pool.pool_id === "hylo_shyusd" &&
+          s.shyusdTvlUsd !== undefined &&
+          finite(s.shyusdTvlUsd) !== null &&
+          s.shyusdTvlUsd > 0
+        ) {
+          out.tvl_usd = s.shyusdTvlUsd;
+        }
         // Phase 8.26: solstice のみ供給 × syRate で実 TVL
         if (
           pool.pool_id === "solstice_eusx" &&
@@ -3058,6 +3134,16 @@ export function applyMenuLiveOverlays(
           if (apy !== null) out.apy = apy;
           if (tvl !== null && tvl > 0) out.tvl_usd = tvl;
         }
+      }
+      // Perena の TVL は APY の有無と独立に live (取れなければ fixture のまま)
+      if (entry.protocol_id === "perena") {
+        const tvl =
+          pool.pool_id === "perena_usd_star"
+            ? s.perenaUsdStarTvlUsd
+            : pool.pool_id === "perena_tri_stable"
+              ? s.perenaTriStableTvlUsd
+              : undefined;
+        if (tvl !== undefined && finite(tvl) !== null && tvl > 0) out.tvl_usd = tvl;
       }
       return out;
     }),
@@ -3316,6 +3402,11 @@ export async function buildServer(
       solTvlR,
       expMktR,
       solPriceR,
+      perenaTvlR,
+      perenaTriTvlR,
+      lstTvlR,
+      saveTotalsR,
+      shyusdTvlR,
     ] = await Promise.allSettled([
         fetchEarnMarkets(),
         fetchKaminoReserveMetrics(KAMINO_MAIN_MARKET),
@@ -3347,6 +3438,31 @@ export async function buildServer(
         // Phase 8.33: Exponent PT markets + SOL 価格 (SOL quote market の TVL 換算用)
         fetchExponentFullMarkets(),
         getOracleResult("So11111111111111111111111111111111111111112"),
+        // 2026-10: Perena USD* TVL = 新 mint の総供給 × Perena API の単価 (eUSX と同じ型)
+        (async () => {
+          const usdStar = SWAP_EARN_MARKETS.find((m) => m.protocol_id === "perena");
+          if (!usdStar) throw new Error("perena market not registered");
+          const [supply, price] = await Promise.all([getTokenSupplyUi(usdStar.share_mint), fetchPerenaUsdStarPrice()]);
+          return supply * price;
+        })(),
+        // 2026-10: Perena Tri-Stable Pool (旧 USD* の pool) TVL = vault 残高の合計
+        fetchPerenaTriStableTvlUsd(),
+        // 2026-10: SOL 建て LST の TVL (lamports、Sanctum extra-api)
+        fetchSanctumTvls(LST_TVL_SYMBOLS),
+        // 2026-10: Save reserve の供給総量 (on-chain、getMultipleAccounts 1 回)
+        fetchSaveReserveTotals(SAVE_MARKETS.map((m) => m.reserve)),
+        // 2026-10: sHYUSD TVL = 総供給 × Jupiter Price v3 単価 (eUSX / USD* と同じ型)
+        (async () => {
+          const shy = SWAP_EARN_MARKETS.find((m) => m.share_symbol === "sHYUSD");
+          if (!shy) throw new Error("sHYUSD market not registered");
+          const [supply, prices] = await Promise.all([
+            getTokenSupplyUi(shy.share_mint),
+            fetchJupiterUsdPrices([shy.share_mint]),
+          ]);
+          const price = prices.get(shy.share_mint);
+          if (price === undefined) throw new Error("no sHYUSD usdPrice");
+          return supply * price;
+        })(),
       ]);
     for (const [r, label] of [
       [jupR, "jupiter lend markets"],
@@ -3358,6 +3474,11 @@ export async function buildServer(
       [metR, "meteora stats"],
       [perenaR, "perena apy"],
       [solTvlR, "solstice tvl"],
+      [perenaTvlR, "perena tvl"],
+      [perenaTriTvlR, "perena tri-stable tvl"],
+      [lstTvlR, "sanctum lst tvl"],
+      [saveTotalsR, "save reserve totals"],
+      [shyusdTvlR, "shyusd tvl"],
       [expMktR, "exponent pt markets"],
       [solPriceR, "sol oracle price"],
     ] as const) {
@@ -3406,6 +3527,16 @@ export async function buildServer(
       lstApys: yieldApys.size > 0 ? yieldApys : undefined,
       meteoraStats: metR.status === "fulfilled" ? metR.value : undefined,
       solsticeTvlUsd: solTvlR.status === "fulfilled" ? solTvlR.value : undefined,
+      perenaUsdStarTvlUsd: perenaTvlR.status === "fulfilled" ? perenaTvlR.value : undefined,
+      perenaTriStableTvlUsd: perenaTriTvlR.status === "fulfilled" ? perenaTriTvlR.value : undefined,
+      // 2026-10: instanceof guard は不正 resolve (mock 未設定等) 対策 — yieldApys と同じ
+      lstTvlLamports:
+        lstTvlR.status === "fulfilled" && lstTvlR.value instanceof Map ? lstTvlR.value : undefined,
+      saveReserveTotals:
+        saveTotalsR.status === "fulfilled" && saveTotalsR.value instanceof Map
+          ? saveTotalsR.value
+          : undefined,
+      shyusdTvlUsd: shyusdTvlR.status === "fulfilled" ? shyusdTvlR.value : undefined,
       // Phase 8.33: Exponent (失敗時は undefined → registry snapshot へ degrade)
       exponentMarkets: expMktR.status === "fulfilled" ? expMktR.value : undefined,
       solPriceUsd:

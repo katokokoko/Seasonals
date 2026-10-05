@@ -11,6 +11,7 @@
  *     ※ いずれも Jupiter routability を実地検証済 (lite-api quote)
  *
  * 注: LST/share mint・Jupiter routability は実装時に検証済の値のみ収録する。
+ *     share mint は上流で移行されることがある (2026-10 の Perena USD*)。`verify:tx` が検知点。
  *     Hylo hyUSD 等 mint 未確証のものは確認後に追加 (silent に壊れた market を載せない)。
  */
 
@@ -56,11 +57,15 @@ export const SWAP_EARN_MARKETS: SwapEarnMarket[] = [
   { protocol_id: "marinade", underlying_symbol: "SOL", underlying_mint: SOL, underlying_decimals: 9, share_symbol: "mSOL", share_mint: "mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So", share_decimals: 9 },
   // Sanctum: SOL → INF (Infinity multi-LST pool token)
   { protocol_id: "sanctum", underlying_symbol: "SOL", underlying_mint: SOL, underlying_decimals: 9, share_symbol: "INF", share_mint: "5oVNBeEEQvYi1cX3ir8Dx5n1P7pdxydbGF2X4TxVusJm", share_decimals: 9 },
-  // Perena: USDC → USD* (Numéraire Seed Pool LP、auto-compounding stablecoin)
+  // Perena: USDC → USD* (auto-compounding stablecoin、NAV は利回りの累積で 1 USD を超えて伸びる)
+  // 2026-10-05: Perena が USD* を Star V2 program (save8RQVPMWNTzU18t3GBvBkN9hT7jsGjiCQ28FpD9H) の新 mint に移行。
+  // 旧 mint BenJy1n3WTx9mTjEvy63e8Q1j4RqUc6E4VBMz3ir4Wo6 (Numéraire Seed Pool LP) は Jupiter で route が消え
+  // (NO_ROUTES_FOUND、流動性 $44)、verify:tx で検知した。新 mint は Jupiter label "Perena Star V2" で双方向に route あり
+  // (1 USDC → 0.908353 USD*、価格影響 ≈ 0)。旧 token は known-mints に "USD* (legacy)" として表示のみ残す。
   // APY (Phase 8.25): app.perena.org の bundle 解析で非公開 endpoint を特定 —
   // GET api.perena.org/api/usdstar/apy?period=7d (% 単位)。rates.ts の
   // fetchPerenaUsdStarApy が取得し menu / positions に live 反映。
-  { protocol_id: "perena", underlying_symbol: "USDC", underlying_mint: USDC, underlying_decimals: 6, share_symbol: "USD*", share_mint: "BenJy1n3WTx9mTjEvy63e8Q1j4RqUc6E4VBMz3ir4Wo6", share_decimals: 6 },
+  { protocol_id: "perena", underlying_symbol: "USDC", underlying_mint: USDC, underlying_decimals: 6, share_symbol: "USD*", share_mint: "star9agSpjiFe3M49B3RniVU4CMBBEK3Qnaqn3RGiFM", share_decimals: 6 },
   // Solstice: USDC → eUSX (staked USX、delta-neutral yield。Phase 8.24)
   // Jupiter routability 実地検証済 (100 USDC → 96.45 eUSX、impact ~0、rate 1.0365)。
   // APY は Exponent API (api.exponent.finance/markets) の underlyingApy が実測ソース。
