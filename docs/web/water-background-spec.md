@@ -290,7 +290,7 @@ vec4 causticsRGB(vec2 cp, vec2 dir, float t, float sharp, float spread) {
   vec3 e = vec3(eg.x);
   if (spread > 0.002) e = vec3(cellWalls(cp - dir * spread, t * 0.35).x, eg.x, cellWalls(cp + dir * spread, t * 0.35).x);
   vec3 c = exp(-e * sharp) + 0.07 * exp(-e * sharp * 0.3);
-  c += 0.5 * exp(-eg.y * max(sharp, 10.0) * 1.2);
+  c += 0.9 * exp(-eg.y * max(sharp, 10.0) * 1.6); // the knots where walls meet are the brightest
   float band = exp(-eg.x * 3.0) * (1.0 - exp(-eg.x * sharp * 0.5));
   return vec4(c, band);
 }
@@ -375,9 +375,9 @@ vec3 renderB(vec2 frag, float t, float quiet, float frost, float bevel) {
   // stretch the cells along the swell and let them wave across it
   float along = dot(cp, FLOW);
   float across = dot(cp, nf);
-  cp = FLOW * along * 0.75 + nf * across * 1.2;
+  cp = FLOW * along * 0.6 + nf * (across * 1.35 + 0.25 * sin(along * 0.8 + t * 0.05)); // lobes stretched and bent along the flow
   vec2 dir = normalize(grad + vec2(1e-4));
-  float width = mix(0.55, 1.4, gnoise(cp * 0.35 + 2.3) + 0.5); // line width varies along the network
+  float width = mix(0.55, 1.4, gnoise(cp * 0.35 + 2.3) + 0.5) * mix(0.55, 1.9, gnoise(cp * 1.3 + 6.1) + 0.5); // line width swells and pinches along each wall
   float sharp = mix(16.0, 6.0, frost) * width * mix(1.0, 0.4, quiet);
   vec4 cb = causticsRGB(cp, dir, t, sharp, 0.05 * bevel);
   vec3 c = cb.rgb;
@@ -393,7 +393,7 @@ vec3 renderB(vec2 frag, float t, float quiet, float frost, float bevel) {
   // (not greyer) and the focused lines run to warm cream white (they saturate like the photo's,
   // added after the water's glow so they are never tinted mint)
   bottom *= mix(vec3(1.0), vec3(0.88, 0.97, 0.98), cb.a * uCaustic * 2.0 * calm);
-  vec3 col = bottom * 0.9;
+  vec3 col = bottom * mix(0.86, 0.92, quiet); // open water sits a little deeper than the calm behind UI
   col *= 1.0 - 0.13 * shade; // the floater casts a soft shadow on the sand
   col += vec3(0.32, 0.74, 0.74) * (1.0 - exp(-dv * 0.9)) * 0.17; // the water body glows turquoise where deep
   col += c * 1.05 * mix(bottom, vec3(1.0, 0.97, 0.88), 0.95);
