@@ -246,9 +246,9 @@ float fbm3(vec2 p) {
 
 // =====================================================
 // Soda shallows: looking straight down through shallow clear water at a sand bottom.
-// The bottom (sand grain, specks, ripple marks) is lit by the sunlight the swell focuses:
-// the light is conserved, so the fold lines are bright and the defocused patches between
-// them dimmer. The water absorbs red most with depth (mint to teal).
+// The bottom (sand grain, specks, ripple marks) is lit by a network of rounded caustic cells:
+// the light is conserved, so the walls are bright and the band just beside them a little
+// deeper. The water absorbs red most with depth (mint to teal).
 // The surface wobbles the view of the bottom, its ripple crests catch the light as thin
 // strands, and small star sparkles twinkle. Rectangular quiet zones calm it under UI.
 // =====================================================
@@ -266,39 +266,35 @@ float heightB(vec2 p, float t) {
   q += 0.35 * vec2(fbm3(q + vec2(0.0, t * 0.05)), fbm3(q + vec2(5.2, 1.3) - t * 0.04));
   return fbm3(q * 1.3 + t * 0.03);
 }
-// Caustics as focused sunlight. The swell is a sum of travelling waves h(x); rays through it are
-// bent by its slope, so a patch of bottom is lit by 1 / |det(I - s * Hessian(h))|. Where neighbouring
-// rays cross, det passes through 0: those fold lines are the caustic network (curved, swelling and
-// thinning along their length, brightest where folds meet), and the defocused patches between them
-// are dimmer (the light is conserved). blur widens the lines (glass frost, quiet zones).
-// x: intensity, y: |det| (> 1 = defocused)
-vec2 focus(vec2 x, float t, float blur) {
-  float hxx = 0.0, hyy = 0.0, hxy = 0.0;
-  for (int i = 0; i < 6; i++) {
-    float fi = float(i);
-    float ang = 0.6 + fi * 1.047 + 0.35 * sin(fi * 2.3); // directions spread all round
-    vec2 dir = vec2(cos(ang), sin(ang));
-    float k = 6.5 + 3.0 * fract(fi * 0.618);             // wave numbers (one cell ~ one wavelength)
-    float w = sin(dot(x, dir) * k - t * (0.25 + 0.05 * fi) + fi * 1.7) * k * k / (1.0 + 0.15 * fi);
-    hxx += w * dir.x * dir.x;
-    hyy += w * dir.y * dir.y;
-    hxy += w * dir.x * dir.y;
+// Caustics: a network of rounded cells. The cells are an additively weighted Voronoi diagram (each
+// site's distance is offset by its own weight), so the walls are curved arcs and the cells pebble-like
+// and of varied size, not straight-edged tiles. The walls are where the swell focuses the sunlight:
+// a crisp core with a tight glow, brightest at the knots where walls meet. x: distance to the nearest
+// wall, y: to the nearest knot
+vec2 cellWalls(vec2 x, float t) {
+  vec2 n = floor(x);
+  vec2 f = fract(x);
+  float F1 = 8.0, F2 = 8.0, F3 = 8.0;
+  for (int j = -1; j <= 1; j++)
+  for (int i = -1; i <= 1; i++) {
+    vec2 g = vec2(float(i), float(j));
+    vec2 h = hash22(n + g);
+    vec2 o = 0.5 + 0.42 * sin(t + 6.2831 * h);
+    float d = length(g + o - f) - 0.28 * h.x; // weighted: curved walls, varied cell sizes
+    if (d < F1) { F3 = F2; F2 = F1; F1 = d; } else if (d < F2) { F3 = F2; F2 = d; } else if (d < F3) { F3 = d; }
   }
-  float s = 0.014;
-  float det = abs((1.0 - s * hxx) * (1.0 - s * hyy) - s * s * hxy * hxy);
-  return vec2(1.0 / (det + blur), det);
+  return vec2(F2 - F1, F3 - F1);
 }
-// rgb: the caustic light above the even level (split slightly by colour), a: how defocused the bottom is.
-// sharp = 16 is the tuned line; glass frost and quiet zones lower it so the lines read as blurred
+// rgb: the caustic light, a: the band just beside the walls (the light there was pulled into the wall,
+// so it sits a little deeper and more aqua). sharp = 16 is the tuned line; glass frost and quiet zones
+// lower it so the lines read as blurred. Colour split only on a glass bevel (open water stays cream)
 vec4 causticsRGB(vec2 cp, vec2 dir, float t, float sharp, float spread) {
-  float blur = 1.0 / sharp;
-  vec2 fg = focus(cp, t * 0.35, blur);
-  vec3 I = vec3(fg.x);
-  // colour split only on a glass bevel (open water keeps clean cream lines)
-  if (spread > 0.002) I = vec3(focus(cp - dir * spread, t * 0.35, blur).x, fg.x, focus(cp + dir * spread, t * 0.35, blur).x);
-  vec3 c = max(I - 1.8, 0.0) * 0.22; // the broad tail of 1/det stays dark: thin lines, tight glow
-  c = 2.0 * (1.0 - exp(-c / 2.0)); // soft cap: the focus peaks stay points, not blown-out blobs
-  float band = smoothstep(1.0, 2.6, fg.y);
+  vec2 eg = cellWalls(cp, t * 0.35);
+  vec3 e = vec3(eg.x);
+  if (spread > 0.002) e = vec3(cellWalls(cp - dir * spread, t * 0.35).x, eg.x, cellWalls(cp + dir * spread, t * 0.35).x);
+  vec3 c = exp(-e * sharp) + 0.04 * exp(-e * sharp * 0.3);
+  c += 0.9 * exp(-eg.y * max(sharp, 10.0) * 1.6); // the knots where walls meet are the brightest
+  float band = exp(-eg.x * 3.0) * (1.0 - exp(-eg.x * sharp * 0.5));
   return vec4(c, band);
 }
 // frost: 0 outside glass, uGlass inside. bevel: 1 at a glass edge, 0 in its flat middle
@@ -376,7 +372,7 @@ vec3 renderB(vec2 frag, float t, float quiet, float frost, float bevel) {
   }
 
   // caustics
-  vec2 cp = p * uScale * 1.15;
+  vec2 cp = p * uScale * 1.35;
   cp += 0.85 * vec2(fbm3(p * 0.9 + t * 0.03), fbm3(p * 0.9 + 7.3 - t * 0.03)); // cells grow and shrink across the view
   cp += grad * 0.012 * uScale;
   cp += rip * 3.0 * uScale; // ripple rings bend the caustic network
@@ -384,9 +380,9 @@ vec3 renderB(vec2 frag, float t, float quiet, float frost, float bevel) {
   // stretch the cells along the swell and let them wave across it
   float along = dot(cp, FLOW);
   float across = dot(cp, nf);
-  cp = FLOW * along * 0.75 + nf * across * 1.2;
+  cp = FLOW * along * 0.6 + nf * (across * 1.35 + 0.25 * sin(along * 0.8 + t * 0.05)); // lobes stretched and bent along the flow
   vec2 dir = normalize(grad + vec2(1e-4));
-  float width = mix(0.55, 1.4, gnoise(cp * 0.35 + 2.3) + 0.5); // line width varies along the network
+  float width = mix(0.55, 1.4, gnoise(cp * 0.35 + 2.3) + 0.5) * mix(0.55, 1.9, gnoise(cp * 1.3 + 6.1) + 0.5); // line width swells and pinches along each wall
   float sharp = mix(16.0, 6.0, frost) * width * mix(1.0, 0.4, quiet);
   vec4 cb = causticsRGB(cp, dir, t, sharp, 0.05 * bevel);
   vec3 c = cb.rgb;
@@ -398,14 +394,14 @@ vec3 renderB(vec2 frag, float t, float quiet, float frost, float bevel) {
   // water: absorbs red most, then blue (soda) or green less (melon), with depth; a thin aqua in-scatter
   vec3 k = mix(vec3(0.62, 0.13, 0.07), vec3(0.56, 0.09, 0.14), uTint); // red goes first: turquoise, never grey
   vec3 bottom = sand * exp(-k * dv * 1.45);
-  // light on the bottom: conserved, so cell interiors sit below the lines and the band beside them
-  // lower still. The focused lines run toward cream white (they saturate like the photo's)
-  // defocused patches sit a little deeper and more aqua (not greyer)
+  // light on the bottom: conserved, so the band beside the walls sits a little deeper and more aqua
+  // (not greyer) and the focused lines run to warm cream white (they saturate like the photo's,
+  // added after the water's glow so they are never tinted cyan)
   bottom *= mix(vec3(1.0), vec3(0.88, 0.97, 0.98), cb.a * uCaustic * 2.0 * calm);
-  float base = 0.95;
-  vec3 col = bottom * base + c * 0.8 * mix(bottom, vec3(1.0, 0.97, 0.88), 0.75); // warm cream light
+  vec3 col = bottom * 0.92;
   col *= 1.0 - 0.13 * shade; // the floater casts a soft shadow on the sand
   col += vec3(0.32, 0.74, 0.74) * (1.0 - exp(-dv * 0.9)) * 0.17; // the water body glows turquoise where deep
+  col += c * 0.8 * mix(bottom, vec3(1.0, 0.97, 0.88), 0.95);
   col = mix(col, col * 1.04 + 0.025, quiet); // quiet zones sit a little lighter behind the UI
   // soft shoulder: wide bright patches keep their sand instead of blowing out (thin line cores still clip)
   float hiL = dot(col, vec3(0.299, 0.587, 0.114));
