@@ -56,3 +56,6 @@ yarn-error.log*
 pnpm-debug.log*
 
 .DS_Store
+
+# web 背景の参照画像 — local-only (docs/web/WORKLOG.md の参照 PNG と同じ扱い)
+docs/web/reference/*.png
