@@ -32,6 +32,10 @@ Plan: `~/.claude/plans/lexical-crunching-shell.md`。参照写真 (`water-ref.pn
 10 回で未達のあと、ユーザーの指示でループを続ける。iter 7 の shader から再開し、iter 11–15 の最大 5 回。浅い所の砂は
 `water-vanilla-ref.png` (別の UI mock) の上端の vanilla cream (≈ #FAF7EA) に寄せる (採点の depth 軸も改訂)。
 
+## 2 回目の延長 (2026-10-06)
+
+iter 15 の後に粒の修正 (`2985f0d`) を入れ、そこからユーザーの指示でループを続ける。iter 16–20 の最大 5 回。採点の文面は iter 11 の改訂のまま。
+
 ## 完了条件
 
 - 採点で全軸 4 以上を 2 回連続 (2 回目は同じ commit で撮り直し)

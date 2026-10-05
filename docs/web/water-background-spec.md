@@ -296,6 +296,7 @@ vec4 causticsRGB(vec2 cp, vec2 dir, float t, float sharp, float spread) {
   vec3 c = 0.75 * exp(-e * sharp * taper) + 0.03 * exp(-e * sharp * 0.3);
   c += 0.7 * exp(-e * sharp * taper * 3.5); // a crisp near-white core inside each line
   c += 1.3 * exp(-eg.y * max(sharp, 10.0) * 1.8); // the knots where walls meet are the brightest
+  c += 1.6 * exp(-eg.y * 40.0 * min(sharp / 16.0, 1.0)); // with a small hot spot right at the knot
   float band = smoothstep(0.08, 0.45, eg.x); // the cell interior: the light was pulled out of it into the walls
   return vec4(c, band);
 }
@@ -388,7 +389,7 @@ vec3 renderB(vec2 frag, float t, float quiet, float frost, float bevel) {
   cp = FLOW * along * 0.6 + nf * (across * 1.35 + 0.25 * sin(along * 0.8 + t * 0.05)); // lobes stretched and bent along the flow
   cp += 0.2 * vec2(gnoise(cp * 1.15 + 3.7 + t * 0.04), gnoise(cp * 1.15 + 8.2 - t * 0.04)); // every wall bends into a smooth curve
   vec2 dir = normalize(grad + vec2(1e-4));
-  float width = mix(0.55, 1.4, gnoise(cp * 0.35 + 2.3) + 0.5) * mix(0.55, 1.9, gnoise(cp * 1.3 + 6.1) + 0.5); // line width swells and pinches along each wall
+  float width = mix(0.55, 1.4, gnoise(cp * 0.35 + 2.3) + 0.5) * mix(0.35, 2.4, gnoise(cp * 1.3 + 6.1) + 0.5); // line width swells and pinches along each wall (hairline to thick band)
   float sharp = mix(16.0, 6.0, frost) * width * mix(1.0, 0.4, quiet);
   vec4 cb = causticsRGB(cp, dir, t, sharp, 0.05 * bevel);
   vec3 c = cb.rgb;
@@ -422,12 +423,13 @@ vec3 renderB(vec2 frag, float t, float quiet, float frost, float bevel) {
   float cg = c.g;
   float tw = gnoise(p * 95.0 + vec2(t * 0.9, -t * 0.7)) * 0.5 + 0.5;
   col += pow(max(cg, 0.0), 3.0) * smoothstep(0.62, 0.9, tw) * 0.8 * clear;
-  vec2 si = floor(frag / 96.0);
+  // small glints on the bright lines only (a tiny core with short arms, twinkling; not stamped stars)
+  vec2 si = floor(frag / 44.0);
   float sh = hash21(si + 71.0);
-  if (sh > 0.88) {
-    vec2 sc = (si + 0.2 + 0.6 * hash22(si + 3.0)) * 96.0;
-    float on = max(sin(t * (0.5 + sh) + sh * 40.0), 0.0);
-    col += starGlint(frag - sc, 6.0 + 4.0 * hash21(si + 9.0)) * on * on * on * 0.85 * clear;
+  if (sh > 0.72) {
+    vec2 sc = (si + 0.2 + 0.6 * hash22(si + 3.0)) * 44.0;
+    float on = max(sin(t * (0.6 + sh) + sh * 40.0), 0.0);
+    col += starGlint(frag - sc, 2.2 + 1.8 * hash21(si + 9.0)) * on * on * smoothstep(0.35, 0.9, cg) * 0.9 * clear;
   }
 
   // tiny bubbles (sparse, drifting slowly)
