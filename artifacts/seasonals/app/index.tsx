@@ -59,6 +59,8 @@ import { ActionModal } from "../components/action/ActionModal";
 import { PortfolioSummary } from "../components/portfolio/PortfolioSummary";
 import { isCooldownCalendarEvent } from "../components/portfolio/cooldown-display";
 import { useSkrStakingView } from "../services/useSkrStakingView";
+import { useCooldownReminderSync } from "../services/useCooldownReminderSync";
+import { useCooldownBoundaryRetry } from "../services/useCooldownBoundaryRetry";
 import { SettingsDrawer } from "../components/drawer/SettingsDrawer";
 import { MenuDrawer } from "../components/drawer/MenuDrawer";
 import { ViewModeTogglePill } from "../components/header/ViewModeTogglePill";
@@ -140,6 +142,8 @@ export default function HomeScreen() {
   // SKR staking cooldown (docs/skr-r0-implementation.md): Calendar event / Staking row /
   // 確認通知 / 境界 retry を 1 つの query で賄う。positions には入れない
   const skr = useSkrStakingView(onchainAddress);
+  useCooldownReminderSync(skr);
+  useCooldownBoundaryRetry(skr);
   const { data: protocols = [] } = useProtocols();
 
   // Phase 8.3 Part A: earn positions を Position に変換して portfolio donut に計上

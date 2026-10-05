@@ -26,6 +26,8 @@ import {
   fixtureApprovalTokenActive,
 } from "@workspace/lib/__fixtures__";
 
+import { shouldPresentNotificationData } from "./cooldown-reminder";
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Public types
 // ─────────────────────────────────────────────────────────────────────────────
@@ -97,14 +99,19 @@ export function setupNotificationHandler(): void {
   handlerInstalled = true;
 
   Notifications.setNotificationHandler({
-    handleNotification: async () => ({
-      // SDK 54 (expo-notifications 0.32): shouldShowAlert が banner/list に分割された
-      shouldShowAlert: true,
-      shouldShowBanner: true,
-      shouldShowList: true,
-      shouldPlaySound: true,
-      shouldSetBadge: false,
-    }),
+    handleNotification: async (notification) => {
+      // SKR 確認通知: 形の不正なもの・別 wallet / source / cluster のものは foreground で出さない
+      // (docs/skr-r0-implementation.md §5)。それ以外は従来どおり
+      const show = shouldPresentNotificationData(notification?.request?.content?.data);
+      return {
+        // SDK 54 (expo-notifications 0.32): shouldShowAlert が banner/list に分割された
+        shouldShowAlert: show,
+        shouldShowBanner: show,
+        shouldShowList: show,
+        shouldPlaySound: show,
+        shouldSetBadge: false,
+      };
+    },
   });
 }
 
