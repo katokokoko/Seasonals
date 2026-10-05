@@ -101,3 +101,11 @@ curl --silent --show-error --max-time 20 --output /tmp/skr-crossbar.body --write
 ```
 
 Pythの公式資料はfixed_rate@200msをProの配信channelと説明し、access tokenにasset/channel/feedごとの権限があることを示す。[配信channel](https://docs.pyth.network/price-feeds/pro/subscribe-to-prices)、[認証・権限FAQ](https://docs.pyth.network/price-feeds/pro/faq)。このため契約/endpoint/認証条件の確認をORA-01へ含める。ただし、SKRに特定の有償契約が必須か、今回のHermes 401の直接原因かは未確定。SOL対照も401であり、SKR固有問題と断定しない。
+
+### 2026-10-05 追記: Oracle 前提の更新 (R0 には影響なし)
+
+上の調査 (Hermes REST / Switchboard Crossbar) は前提が変わった。Seasonals の oracle gate は 2026-10 から Solana 上の push feed account を Helius RPC で読む構成に移った (CLAUDE.md §4、`lib/config/oracle-feeds.ts`)。Pyth Hermes REST は 2026-08-26 に API key 必須となり、上の 401 はこれと整合する (SOL 対照も 401)。Switchboard は 2026-09-25 にサポート終了。
+
+- R0 は価格を使わない (元本 / 収益 / USD は null) ので、Oracle の状態は R0 の合否に関係しない
+- R2b 以降で SKR の価格が必要になったら、Pyth sponsored push feed (shard 0) と RedStone push feed に SKR/USD があるかを調べ、`oracle-feeds.ts` の tier (A〜D) で宣言する。ORA-01 はこの調査に置き換える
+- SKR は Menu registry に載せていないので、現時点で tier 宣言は不要 (oracle-feeds.test.ts は registry の mint だけを検査する)

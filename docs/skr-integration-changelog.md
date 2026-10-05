@@ -2,6 +2,12 @@
 
 履歴資料。実装規範は [R0指示書](skr-r0-implementation.md)、後続判断は [ロードマップ](skr-integration-roadmap.md)。
 
+## 0.4.1 — 2026-10-05 (実装)
+
+- R0 を実装 (lib 共有型 / BFF read 口 / MCP 投影 / mobile row・Calendar 詳細・確認通知・境界 retry)。結果表は [R0指示書 §7](skr-r0-implementation.md)
+- 指示書の規範は変えていない。実装で確定した解釈 (pending は token 量、unknown の意味、非 active pool は unsupported、MCP 補足は contents[1]、Staking section の置き場) を §7 に記録
+- roadmap §6 に Oracle 前提の更新を追記 (Hermes / Switchboard → Solana push feed。R0 には影響なし)
+
 ## 0.4 — 2026-09-20
 
 - R0のsnapshot_revisionとevent revision、position.state_hashを削除。共有vault/pool等のraw dataが他人の操作で変わる問題と、R0にconsumerがない計算を除いた。

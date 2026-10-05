@@ -169,3 +169,61 @@ MUSTテストは次の10件にまとめる。入力パターンは同じfixture�
 各結果はpass / fail / not_run、実行commit・端末version・証拠パスを記録する。現時点では機能テストは未実施。live pending確保はP0として追跡し、録画前に解消する。追加解除のlive録画を優先し、fixture代替ならその場面を明記する。
 
 共有型変更時は`pnpm -r test`と`pnpm -r typecheck`、Seeker実機確認を行う。既存失敗と新規失敗を分けて記録する。R1基盤やOracle、RFCの未完了をR0の不合格理由にしない。
+
+## 7. 実装状況と結果 (2026-10-05)
+
+branch `worktree-skr-r0` (base: main `9a964eb`)。起動と実機確認の手順は [demo runbook](skr-r0-demo-runbook.md)。
+
+### 完了ゲート
+
+`pnpm -r test` と `pnpm -r typecheck` が全 workspace で green。baseline (main) の既存失敗は 0 件。
+
+| workspace | baseline | 実装後 |
+|---|---|---|
+| lib | 199 | 286 |
+| BFF | 509 | 569 |
+| MCP | 20 | 32 |
+| mobile | 475 | 536 |
+| web | 81 | 81 |
+
+### 受け入れ結果
+
+| ID | 結果 | 証拠 |
+|---|---|---|
+| R0-01 | pass | `artifacts/seasonals-bff/src/clients/skr-staking.test.ts` (R0-01)、`src/routes/skr-staking.test.ts` |
+| R0-02 | pass | 同 (R0-02)。途中変更の競合再現 fixture (SHOULD) は not_run |
+| R0-03 | pass | `lib/derive/cooldown-position.test.ts`、BFF test の byte 入力版 |
+| R0-04 | pass | 同上 |
+| R0-05 | pass | `lib/types/cooldown-position.test.ts`、`artifacts/seasonals/components/portfolio/{cooldown-display,StakingRow}.test.*` |
+| R0-06 | pass | `lib/derive/cooldown-client.test.ts`、`artifacts/seasonals/services/skr-staking.test.tsx` |
+| R0-07 | pass | `artifacts/seasonals-mcp-server/src/skr-events.test.ts` |
+| R0-08 | pass | `artifacts/seasonals/services/{cooldown-reminder,useCooldownReminderSync}.test.*` |
+| R0-09 | pass | `artifacts/seasonals/services/cooldown-boundary-retry.test.ts` |
+| R0-10 | not_run | Seeker 実機確認は未実施 (runbook §3) |
+| LIVE-01 | not_run | 利用者の pending 未確保。共通 account (config / pool / vault / mint / Clock) は 2026-10-05 mainnet slot 453616074 で live read の検証を通過 (手動 curl) |
+| LIVE-02 | not_run | 実機未実施 |
+
+判定: R0-DEMO は R0-10 の実機確認待ち。R0-LIVE は LIVE-01 / 02 待ち。
+
+### 実装で確定した解釈
+
+- **pending は token 量**: IDL の UserStake は `unstaking_amount` (u64、token) と `unstake_timestamp` (i64) を持ち、状態 flag は無い。pending = `unstaking_amount > 0`
+- **pending_status=unknown**: pending > 0 だが unlock_at を計算できない時 (timestamp ≤ 0 / 範囲外) だけ。event 0 件。必須 account の検証失敗は unsupported + position null、UserStake 不在は fresh + position null
+- **非 active pool は unsupported**: deregistered pool は share price の扱いが変わるため R0 では読まない
+- **urgency**: ready は Watch。待機中は既存 lockup_end と同じ距離の閾値 (残り 1 日以内は Critical)
+- **既存 rate limit / MCP wallet 検証は存在しない**: SKR 口は base58 検査と `Cache-Control: no-store` を自前で持つ。rate limit は新設していない
+- **MCP の失敗補足**: `seasonals://events/{wallet}` の `contents[0]` (event 配列) は形を変えず、SKR の取得失敗・unavailable・unsupported は `contents[1]` (text/plain) に書く。既存 events の失敗は従来どおり error
+- **Your Positions の置き場**: 既存の Your Positions は Menu registry 駆動 (SKR は載せない) なので、下部シートに「Staking」section を新設した
+- **source の既定は live**: demo は BFF `SKR_DEMO_FIXTURE=true` と Metro `SKR_SOURCE=demo` の両方を明示した時だけ
+- **UI 文言**: app 全体が英語のため row / 詳細は英語 ("Staked (est.)" / "Unstaking" / "Not in totals")。通知本文は §5 の文言のまま
+- **端末時刻**: chain が cooling_down のまま端末時刻が終了予定を過ぎた場合は "waiting for on-chain confirmation" と表示し、ready と言わない
+
+### SHOULD の扱い
+
+| 項目 | 状態 |
+|---|---|
+| retry 予算の永続化 | 未実施 (R1 で再評価) |
+| 端末時計変更への追加耐性 | 部分的 (ready 判定は常に chain Clock。表示期限は端末時刻) |
+| 通知 response の二重処理抑止 | 未実施 (再取得が 2 回走り得るが副作用なし) |
+| batch 中変更の競合再現 fixture | 未実施 |
+| 2 つ目の cooldown protocol | 未実施 |

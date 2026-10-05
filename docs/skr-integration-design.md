@@ -2,7 +2,8 @@
 
 バージョン0.4 / 2026-09-20。ハッカソンではR0を実装する。
 
-- **実装者は [R0実装指示書](skr-r0-implementation.md) を読む。** 読取・Calendar・fresh eventのMCP公開・端末確認通知が対象。
+- **実装者は [R0実装指示書](skr-r0-implementation.md) を読む。** 読取・Calendar・fresh eventのMCP公開・端末確認通知が対象。2026-10-05 実装済み、結果は同書 §7。
+- [demo / 実機確認 runbook](skr-r0-demo-runbook.md)：live / demo source の起動、R0-10 の確認項目、追加解除の録画手順。
 - [ロードマップと調査記録](skr-integration-roadmap.md)：R1以降、FND案件、Oracle調査。R0の完了条件には含めない。
 - [RFC-001](rfc-oracle-exit-operations.md)：ハッカソン期間中は凍結、未採用。
 - [変更履歴](skr-integration-changelog.md)：過去レビューと変更理由。実装規範ではない。
