@@ -293,7 +293,7 @@ vec4 causticsRGB(vec2 cp, vec2 dir, float t, float sharp, float spread) {
   vec3 I = vec3(fg.x);
   // colour split only on a glass bevel (open water keeps clean cream lines)
   if (spread > 0.002) I = vec3(focus(cp - dir * spread, t * 0.35, blur).x, fg.x, focus(cp + dir * spread, t * 0.35, blur).x);
-  vec3 c = max(I - 1.0, 0.0) * 0.2;
+  vec3 c = max(I - 1.8, 0.0) * 0.22; // the broad tail of 1/det stays dark: thin lines, tight glow
   c = 2.0 * (1.0 - exp(-c / 2.0)); // soft cap: the focus peaks stay points, not blown-out blobs
   float band = smoothstep(1.0, 2.6, fg.y);
   return vec4(c, band);
@@ -395,10 +395,12 @@ vec3 renderB(vec2 frag, float t, float quiet, float frost, float bevel) {
   vec3 bottom = sand * exp(-k * dv * 1.25);
   // light on the bottom: conserved, so cell interiors sit below the lines and the band beside them
   // lower still. The focused lines run toward cream white (they saturate like the photo's)
-  float base = 0.95 - 0.08 * cb.a * uCaustic * 2.0 * calm;
+  // defocused patches sit a little deeper and more aqua (not greyer)
+  bottom *= mix(vec3(1.0), vec3(0.88, 0.97, 0.98), cb.a * uCaustic * 2.0 * calm);
+  float base = 0.95;
   vec3 col = bottom * base + c * 1.05 * mix(bottom, vec3(1.0, 0.97, 0.88), 0.75); // warm cream light
   col *= 1.0 - 0.13 * shade; // the floater casts a soft shadow on the sand
-  col += vec3(0.3, 0.78, 0.78) * (1.0 - exp(-dv * 0.9)) * 0.2; // the water body glows turquoise where deep
+  col += vec3(0.32, 0.74, 0.74) * (1.0 - exp(-dv * 0.9)) * 0.17; // the water body glows turquoise where deep
   col = mix(col, col * 1.04 + 0.025, quiet); // quiet zones sit a little lighter behind the UI
   // soft shoulder: wide bright patches keep their sand instead of blowing out (thin line cores still clip)
   float hiL = dot(col, vec3(0.299, 0.587, 0.114));
