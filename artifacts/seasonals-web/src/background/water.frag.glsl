@@ -101,10 +101,13 @@ vec2 focus(vec2 x, float t, float blur) {
 // rgb: the caustic light above the even level (split slightly by colour), a: how defocused the bottom is.
 // sharp = 16 is the tuned line; glass frost and quiet zones lower it so the lines read as blurred
 vec4 causticsRGB(vec2 cp, vec2 dir, float t, float sharp, float spread) {
-  float blur = 1.4 / sharp;
+  float blur = 1.0 / sharp;
   vec2 fg = focus(cp, t * 0.35, blur);
-  vec3 I = vec3(focus(cp - dir * spread, t * 0.35, blur).x, fg.x, focus(cp + dir * spread, t * 0.35, blur).x);
+  vec3 I = vec3(fg.x);
+  // colour split only on a glass bevel (open water keeps clean cream lines)
+  if (spread > 0.002) I = vec3(focus(cp - dir * spread, t * 0.35, blur).x, fg.x, focus(cp + dir * spread, t * 0.35, blur).x);
   vec3 c = max(I - 1.0, 0.0) * 0.2;
+  c = 2.0 * (1.0 - exp(-c / 2.0)); // soft cap: the focus peaks stay points, not blown-out blobs
   float band = smoothstep(1.0, 2.6, fg.y);
   return vec4(c, band);
 }
@@ -165,7 +168,7 @@ vec3 renderB(vec2 frag, float t, float quiet, float frost, float bevel) {
   // sand bottom, sampled through the refraction: patches, ripple marks, grain, specks
   vec2 sp = p + off;
   float patches = fbm(sp * 1.6 + 11.0);
-  vec3 sand = mix(vec3(0.86, 0.83, 0.71), vec3(0.975, 0.95, 0.86), mix(smoothstep(-0.3, 0.35, patches), 0.6, 0.6 * quiet));
+  vec3 sand = mix(vec3(0.91, 0.86, 0.73), vec3(0.99, 0.955, 0.86), mix(smoothstep(-0.3, 0.35, patches), 0.6, 0.6 * quiet));
   sand *= 1.0 + 0.03 * calm * sin(dot(sp, vec2(0.45, 0.89)) * 70.0 + 4.0 * patches);
   // grain and specks follow the bottom only loosely: the ripple train's refraction would stretch
   // anything this fine into hair-like streaks. The grain is a fine noise plus a per-grain hash
@@ -186,16 +189,14 @@ vec3 renderB(vec2 frag, float t, float quiet, float frost, float bevel) {
   cp += 0.85 * vec2(fbm3(p * 0.9 + t * 0.03), fbm3(p * 0.9 + 7.3 - t * 0.03)); // cells grow and shrink across the view
   cp += grad * 0.012 * uScale;
   cp += rip * 3.0 * uScale; // ripple rings bend the caustic network
-  cp += 0.32 * vec2(gnoise(cp * 0.9 + t * 0.08), gnoise(cp * 0.9 + 5.1 - t * 0.08)); // bends the cell walls round
-  cp += 0.16 * vec2(gnoise(cp * 1.9 + 2.7 - t * 0.06), gnoise(cp * 1.9 + 9.4 + t * 0.06));
   // stretch the cells along the swell and let them wave across it
   float along = dot(cp, FLOW);
   float across = dot(cp, nf);
-  cp = FLOW * along * 0.7 + nf * (across * 1.3 + 0.3 * sin(along * 0.9 + t * 0.05));
+  cp = FLOW * along * 0.75 + nf * across * 1.2;
   vec2 dir = normalize(grad + vec2(1e-4));
   float width = mix(0.55, 1.4, gnoise(cp * 0.35 + 2.3) + 0.5); // line width varies along the network
   float sharp = mix(16.0, 6.0, frost) * width * mix(1.0, 0.4, quiet);
-  vec4 cb = causticsRGB(cp, dir, t, sharp, 0.005 + 0.05 * bevel);
+  vec4 cb = causticsRGB(cp, dir, t, sharp, 0.05 * bevel);
   vec3 c = cb.rgb;
   float shallow = mix(1.0, 0.55, clamp(d / 1.2, 0.0, 1.0));
   c *= shallow * uCaustic * mix(1.0, 1.25, gnoise(cp * 0.21 + 8.1) + 0.5);
@@ -203,14 +204,14 @@ vec3 renderB(vec2 frag, float t, float quiet, float frost, float bevel) {
   c *= 1.0 - 0.7 * shade;   // the floater blocks the light that makes caustics
 
   // water: absorbs red most, then blue (soda) or green less (melon), with depth; a thin aqua in-scatter
-  vec3 k = mix(vec3(0.58, 0.08, 0.06), vec3(0.5, 0.04, 0.17), uTint);
+  vec3 k = mix(vec3(0.62, 0.07, 0.03), vec3(0.56, 0.04, 0.1), uTint); // red goes first: turquoise, never grey
   vec3 bottom = sand * exp(-k * dv * 1.25);
   // light on the bottom: conserved, so cell interiors sit below the lines and the band beside them
   // lower still. The focused lines run toward cream white (they saturate like the photo's)
-  float base = 0.94 - 0.14 * cb.a * uCaustic * 2.0 * calm;
+  float base = 0.95 - 0.08 * cb.a * uCaustic * 2.0 * calm;
   vec3 col = bottom * base + c * 1.05 * mix(bottom, vec3(1.0, 0.97, 0.88), 0.75); // warm cream light
   col *= 1.0 - 0.13 * shade; // the floater casts a soft shadow on the sand
-  col += vec3(0.25, 0.65, 0.7) * (1.0 - exp(-dv * 0.9)) * 0.16;
+  col += vec3(0.3, 0.78, 0.78) * (1.0 - exp(-dv * 0.9)) * 0.2; // the water body glows turquoise where deep
   col = mix(col, col * 1.04 + 0.025, quiet); // quiet zones sit a little lighter behind the UI
   // soft shoulder: wide bright patches keep their sand instead of blowing out (thin line cores still clip)
   float hiL = dot(col, vec3(0.299, 0.587, 0.114));
