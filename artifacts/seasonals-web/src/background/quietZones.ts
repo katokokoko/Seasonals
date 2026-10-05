@@ -235,24 +235,6 @@ export interface Floater {
   radius: number;
   /** 波紋と影の強さ (0..1、`data-water-floater` の値。空なら 1) */
   strength: number;
-  /**
-   * glass の中で描く sprite (カードの下に入った時、glass layer が屈折させて描く)。
-   * 表示上の半幅・半高 (CSS の scale 込み、device px)、CSS の回転 (rad、時計回り正)、要素の順番 (texture 番号)、画像の URL
-   */
-  hw: number;
-  hh: number;
-  angle: number;
-  sprite: number;
-  src: string;
-}
-
-/** computed transform の scale (matrix の 1 列目の長さ) */
-function transformScale(transform: string | null | undefined): number {
-  const m = /^matrix(3d)?\(([^)]+)\)$/.exec((transform ?? "").trim());
-  if (!m) return 1;
-  const v = m[2]!.split(",").map((x) => Number.parseFloat(x));
-  const sc = Math.hypot(v[0] ?? 1, v[1] ?? 0);
-  return Number.isFinite(sc) && sc > 0 ? sc : 1;
 }
 
 /**
@@ -263,28 +245,19 @@ function transformScale(transform: string | null | undefined): number {
 export function collectFloaters(src: ParentNode | Iterable<HTMLElement>, frame: CanvasFrame): Floater[] {
   const out: Floater[] = [];
   const k = frame.scale;
-  let index = 0;
   for (const el of elementsOf(src, "[data-water-floater]")) {
-    const sprite = index++;
     const r = el.getBoundingClientRect();
     if (r.width <= 0 || r.height <= 0) continue;
     const w = el.offsetWidth || r.width;
     const h = el.offsetHeight || r.height;
-    const cs = getComputedStyle(el);
-    const opacity = Number.parseFloat(cs.opacity || "1");
+    const opacity = Number.parseFloat(getComputedStyle(el).opacity || "1");
     if (!(opacity > 0)) continue;
     const v = Number.parseFloat(el.dataset.waterFloater ?? "");
-    const scale = transformScale(cs.transform);
     out.push({
       cx: (r.left + r.width / 2 - frame.left) * k,
       cy: (frame.bottom - (r.top + r.height / 2)) * k,
       radius: (Math.min(w, h) / 2) * k,
       strength: (Number.isFinite(v) ? Math.min(Math.max(v, 0), 1) : 1) * Math.min(opacity, 1),
-      hw: (w / 2) * scale * k,
-      hh: (h / 2) * scale * k,
-      angle: transformAngle(cs.transform),
-      sprite,
-      src: (el as HTMLImageElement).currentSrc || (el as HTMLImageElement).src || "",
     });
     if (out.length === MAX_FLOATERS) break;
   }
@@ -295,12 +268,5 @@ export function collectFloaters(src: ParentNode | Iterable<HTMLElement>, frame: 
 export function packFloaters(floaters: readonly Floater[], out = new Float32Array(MAX_FLOATERS * 4)): Float32Array {
   out.fill(0);
   floaters.slice(0, MAX_FLOATERS).forEach((f, i) => out.set([f.cx, f.cy, f.radius, f.strength], i * 4));
-  return out;
-}
-
-/** uFloaterSprite (vec4 × 2: 半幅, 半高, 回転, texture 番号) 用に詰める (uFloaters と同じ並び) */
-export function packFloaterSprites(floaters: readonly Floater[], out = new Float32Array(MAX_FLOATERS * 4)): Float32Array {
-  out.fill(0);
-  floaters.slice(0, MAX_FLOATERS).forEach((f, i) => out.set([f.hw, f.hh, f.angle, f.sprite], i * 4));
   return out;
 }

@@ -1,6 +1,5 @@
 // Seasonals web background: soda shallows (option B)
-// GLSL ES 1.00 (WebGL 1). Keep this file portable: no derivatives, and no textures except the two
-// floater sprites (the Home characters, drawn only inside glass; an SkSL port takes them as child shaders).
+// GLSL ES 1.00 (WebGL 1). Keep this file portable: no textures, no derivatives.
 precision highp float;
 
 uniform vec2  uRes;
@@ -22,10 +21,6 @@ uniform vec2  uLight;         // specular light direction (screen space, y up)
 uniform float uGlassOnly;     // 1 = glass layer: transparent outside glass (drawn over the water layer)
 uniform vec4  uFloaters[2];   // things floating on the surface: centre x, y (device px, bottom-left), radius (device px), strength
 uniform int   uFloaterCount;  // how many of uFloaters are in use (0..2)
-uniform vec4  uFloaterSprite[2]; // floater sprites: half width, half height (device px, CSS scale included), rotation (rad, CSS clockwise), texture 0/1
-uniform sampler2D uSprite0;   // floater images (glass layer only; straight alpha, row 0 = top)
-uniform sampler2D uSprite1;
-uniform vec2  uSpriteReady;   // 1 when the texture for sprite 0 / 1 is uploaded
 
 // ---------- noise ----------
 float hash21(vec2 p) {
@@ -340,33 +335,6 @@ vec3 dropletWindow(vec2 p, float quiet, vec3 plain, float bevel) {
   return b * mix(vec3(1.0), vec3(0.88, 0.97, 0.96), 0.7 * bevel);
 }
 
-// The Home characters float on the water as DOM images below the glass layer, so under a glass
-// surface they would be hidden. The glass layer draws them itself, at the refracted coordinate
-// (the same one the water is sampled at), so a character under a card is seen through it and bends
-// at its rim like the water does.
-void floaterSprites(vec2 p, inout vec3 col) {
-  for (int i = 0; i < 2; i++) {
-    if (i >= uFloaterCount) break;
-    vec4 f = uFloaters[i];
-    vec4 sp = uFloaterSprite[i];
-    if (f.w <= 0.0 || sp.x <= 0.0 || sp.y <= 0.0) continue;
-    float cs = cos(sp.z);
-    float sn = sin(sp.z);
-    vec2 lp = mat2(cs, sn, -sn, cs) * (p - f.xy); // screen -> sprite space (undo the CSS rotation)
-    vec2 uv = vec2(lp.x / (2.0 * sp.x) + 0.5, 0.5 - lp.y / (2.0 * sp.y));
-    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) continue;
-    vec4 tex = vec4(0.0);
-    if (sp.w < 0.5) {
-      if (uSpriteReady.x < 0.5) continue;
-      tex = texture2D(uSprite0, uv);
-    } else {
-      if (uSpriteReady.y < 0.5) continue;
-      tex = texture2D(uSprite1, uv);
-    }
-    col = mix(col, tex.rgb, tex.a * clamp(f.w, 0.0, 1.0));
-  }
-}
-
 void main() {
   vec2 frag = gl_FragCoord.xy;
   vec2 goff;
@@ -386,8 +354,6 @@ void main() {
     col.r = renderB(frag + goff * 0.92, uTime, quiet, frost, bevel).r;
     col.b = renderB(frag + goff * 1.08, uTime, quiet, frost, bevel).b;
   }
-  // characters under the glass, seen through it (below the glass's own light: rim, sparkle)
-  if (uGlassOnly > 0.5 && uFloaterCount > 0) floaterSprites(frag + goff, col);
   float lum = dot(col, vec3(0.299, 0.587, 0.114));
   col = mix(vec3(lum), col, 1.0 + 0.25 * body); // glass lifts saturation
   col = mix(col, col * 1.03 + 0.035, frost * 0.6); // milky body (regular glass)

@@ -121,7 +121,7 @@ Rubber band (added 2026-09): macOS elastic overscroll at the top / bottom edge t
 - The quiet zones are uploaded to both layers, each measured against its own canvas box. If the glass context cannot be created, the water layer draws the glass as before.
 - `#root` is `display: flow-root` so the top bar's margin does not collapse through it and shift the track. The skip link is hidden with `clip-path` until focused (a top bounce would otherwise expose it above the page).
 
-Floaters (added 2026-09): Home shows two characters drifting on the water (`src/home/FloatingFriends.tsx`, decorative, `aria-hidden`). They live in a `position: fixed; z-index: 0` layer after the water canvas (above the water, below the glass layer and the UI) and live a slow cycle (`src/home/friendsMotion.ts`): surface in the open water of the left / right columns between the portal cards (measured every frame, avoiding the zone the other one is in), drift with a slow curving current (5–11 px/s, a ~5 s bob, ±5° roll) for 20–40 s (they may float under a card or off screen), sink and fade, then reappear elsewhere after 5–12 s. The pointer does not scare them: moving it nearby stirs the water and pushes them slowly with inertia, which fades over a few seconds. Under reduced motion they rest still in the middle of the open water. Each carries `data-water-floater`; the tracker packs up to 2 of them (`collectFloaters`, relative to the canvas box, skipped at opacity 0) into `uFloaters`. The shader adds outward ripple rings around each (they bend the caustics and their crests catch the light, so they read even over quiet zones) and a soft shadow on the sand shifted down-right by the depth, which also blocks the caustics. With no floaters the output is unchanged. Under a glass surface the DOM image is hidden by the glass layer, so the glass layer draws the characters itself (added 2026-10): `collectFloaters` also reports each one's displayed half size (CSS scale included), CSS rotation, element order and image URL, packed into `uFloaterSprite[i] = (half width, half height, angle, texture 0/1)`; `WaterBackground` uploads the two `<img>` elements as textures to the glass layer only (`uSprite0` / `uSprite1`, straight alpha, NPOT with clamp and no mipmaps, re-uploaded only when the URL changes or the context is restored; `uSpriteReady` is 0 until then). Inside glass cover the shader composites them at the refracted coordinate `frag + goff`, after the water body and before the glass's own light, so a character under a card is seen through it and bends at its rim. These two sprites are the only textures in the shader (an SkSL port takes them as child shaders). The images are 360 px WebP made once with `scripts/optimize-characters.mjs` (headless Chrome: trim transparent margins, resize, encode).
+Floaters (added 2026-09): Home shows two characters drifting on the water (`src/home/FloatingFriends.tsx`, decorative, `aria-hidden`). They live in a `position: fixed; z-index: 0` layer after the water canvas (above the water, below the glass layer and the UI) and live a slow cycle (`src/home/friendsMotion.ts`): surface in the open water of the left / right columns between the portal cards (measured every frame, avoiding the zone the other one is in), drift with a slow curving current (5–11 px/s, a ~5 s bob, ±5° roll) for 20–40 s (they may float under a card or off screen), sink and fade, then reappear elsewhere after 5–12 s. The pointer does not scare them: moving it nearby stirs the water and pushes them slowly with inertia, which fades over a few seconds. Under reduced motion they rest still in the middle of the open water. Each carries `data-water-floater`; the tracker packs up to 2 of them (`collectFloaters`, relative to the canvas box, skipped at opacity 0) into `uFloaters`. The shader adds outward ripple rings around each (they bend the caustics and their crests catch the light, so they read even over quiet zones) and a soft shadow on the sand shifted down-right by the depth, which also blocks the caustics. With no floaters the output is unchanged. The images are 360 px WebP made once with `scripts/optimize-characters.mjs` (headless Chrome: trim transparent margins, resize, encode).
 
 Tracking rules (revised 2026-09 after glass surfaces drifted off their DOM frames):
 
@@ -171,10 +171,7 @@ Uniforms (set every frame unless noted):
 | `uLight` | vec2 | specular light direction, screen space y up (pointer-driven) | (-0.6, 0.8) |
 | `uGlassOnly` | float | 1 on the glass layer (transparent outside glass), 0 on the water layer | 0 |
 | `uFloaters[0]` | vec4[2] | floaters: centre x, y (device px, bottom-left origin), body radius (device px), strength | zeros |
-| `uFloaterSprite[0]` | vec4[2] | floater sprites: half width, half height (device px, CSS scale included), rotation (rad, CSS clockwise), texture 0/1 | zeros |
 | `uFloaterCount` | int | number of floaters in use, 0 to 2 | 0 |
-| `uSprite0`, `uSprite1` | sampler2D | the floater images (glass layer only, texture units 0 / 1) | units 0 / 1 |
-| `uSpriteReady` | vec2 | 1 when sprite 0 / 1 is uploaded | (0, 0) |
 
 Get the array location with `gl.getUniformLocation(prog, 'uQuietRects[0]')` and upload with `gl.uniform4fv(loc, new Float32Array(16))`. The bare name `uQuietRects` returns null on some implementations.
 
@@ -189,8 +186,7 @@ Fragment shader, `water.frag.glsl`:
 
 ```glsl
 // Seasonals web background: soda shallows (option B)
-// GLSL ES 1.00 (WebGL 1). Keep this file portable: no derivatives, and no textures except the two
-// floater sprites (the Home characters, drawn only inside glass; an SkSL port takes them as child shaders).
+// GLSL ES 1.00 (WebGL 1). Keep this file portable: no textures, no derivatives.
 precision highp float;
 
 uniform vec2  uRes;
@@ -212,10 +208,6 @@ uniform vec2  uLight;         // specular light direction (screen space, y up)
 uniform float uGlassOnly;     // 1 = glass layer: transparent outside glass (drawn over the water layer)
 uniform vec4  uFloaters[2];   // things floating on the surface: centre x, y (device px, bottom-left), radius (device px), strength
 uniform int   uFloaterCount;  // how many of uFloaters are in use (0..2)
-uniform vec4  uFloaterSprite[2]; // floater sprites: half width, half height (device px, CSS scale included), rotation (rad, CSS clockwise), texture 0/1
-uniform sampler2D uSprite0;   // floater images (glass layer only; straight alpha, row 0 = top)
-uniform sampler2D uSprite1;
-uniform vec2  uSpriteReady;   // 1 when the texture for sprite 0 / 1 is uploaded
 
 // ---------- noise ----------
 float hash21(vec2 p) {
@@ -530,33 +522,6 @@ vec3 dropletWindow(vec2 p, float quiet, vec3 plain, float bevel) {
   return b * mix(vec3(1.0), vec3(0.88, 0.97, 0.96), 0.7 * bevel);
 }
 
-// The Home characters float on the water as DOM images below the glass layer, so under a glass
-// surface they would be hidden. The glass layer draws them itself, at the refracted coordinate
-// (the same one the water is sampled at), so a character under a card is seen through it and bends
-// at its rim like the water does.
-void floaterSprites(vec2 p, inout vec3 col) {
-  for (int i = 0; i < 2; i++) {
-    if (i >= uFloaterCount) break;
-    vec4 f = uFloaters[i];
-    vec4 sp = uFloaterSprite[i];
-    if (f.w <= 0.0 || sp.x <= 0.0 || sp.y <= 0.0) continue;
-    float cs = cos(sp.z);
-    float sn = sin(sp.z);
-    vec2 lp = mat2(cs, sn, -sn, cs) * (p - f.xy); // screen -> sprite space (undo the CSS rotation)
-    vec2 uv = vec2(lp.x / (2.0 * sp.x) + 0.5, 0.5 - lp.y / (2.0 * sp.y));
-    if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) continue;
-    vec4 tex = vec4(0.0);
-    if (sp.w < 0.5) {
-      if (uSpriteReady.x < 0.5) continue;
-      tex = texture2D(uSprite0, uv);
-    } else {
-      if (uSpriteReady.y < 0.5) continue;
-      tex = texture2D(uSprite1, uv);
-    }
-    col = mix(col, tex.rgb, tex.a * clamp(f.w, 0.0, 1.0));
-  }
-}
-
 void main() {
   vec2 frag = gl_FragCoord.xy;
   vec2 goff;
@@ -576,8 +541,6 @@ void main() {
     col.r = renderB(frag + goff * 0.92, uTime, quiet, frost, bevel).r;
     col.b = renderB(frag + goff * 1.08, uTime, quiet, frost, bevel).b;
   }
-  // characters under the glass, seen through it (below the glass's own light: rim, sparkle)
-  if (uGlassOnly > 0.5 && uFloaterCount > 0) floaterSprites(frag + goff, col);
   float lum = dot(col, vec3(0.299, 0.587, 0.114));
   col = mix(vec3(lum), col, 1.0 + 0.25 * body); // glass lifts saturation
   col = mix(col, col * 1.03 + 0.035, frost * 0.6); // milky body (regular glass)

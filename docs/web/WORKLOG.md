@@ -264,10 +264,8 @@ Web 側 (`artifacts/seasonals-web`) は `BFF_URL` (Vite dev proxy 先、node 側
 - `data-water-glass="droplet"` (`GLASS_VARIANTS.droplet`、lens 1.2 / frost 0) + `uGlassShape` (輪郭の揺らぎ 4 CSS px、seed)。shader は透明な「水への窓」(quiet × 0.6 で線の間を沈める、縁だけ薄い水色)、光の側の細い光の線、光に向いた角の 4 点星、水面 layer (`uGlassLens = 0`) にカードの外の集光。CSS は WebGL 中だけ tint / rim / 影を外し、文字の後ろに薄い vanilla の楕円と白い縁取り。WebGL 不可 / reduced transparency は従来の glass
 - 計測: drawArrays + readPixels で水面 layer 7.60 → 7.97 ms、glass layer 4.58 → 4.29 ms (droplet は bevel の色分散を省く)。`e2e/run.mjs` 全 pass (droplet の 2 check 追加)
 
-### カードの下のキャラクターを glass で描く (2026-10-05)
-- キャラ (DOM の `<img>`) は glass canvas の下にあるため、droplet カードの下に入ると消えていた。glass layer にキャラ 2 匹の画像を texture として渡し (`uSprite0/1`、`uFloaterSprite` に表示上の大きさ・回転)、glass の中では屈折後の座標で描く。カード越しに見え、縁では水と一緒に曲がる。shader の texture はこの 2 枚だけ (spec の規則を改訂)
-- きらめきは角の円弧の内側に置く。top bar の droplet 版 (`?nav=droplet`) も試したが、top bar は clear glass のままにすると決めて外した
-- 計測: キャラあり / なしで水面 layer 7.92 → 7.99 ms、glass layer 3.83 → 3.85 ms。`e2e/run.mjs` 全 pass (sprite の画素 check を追加)
+### droplet カードのきらめきの位置 (2026-10-05)
+- きらめきを角の円弧の内側に置く (角丸の外に出ない)。カードの下のキャラを glass layer で描く案 (texture) と top bar の droplet 版 (`?nav=droplet`) は試したが、どちらも不要と決めて外した
 
 ## 最終状態 (2026-09-26 05:30 JST 時点)
 

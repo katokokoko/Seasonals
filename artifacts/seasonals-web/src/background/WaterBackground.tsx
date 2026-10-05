@@ -52,11 +52,7 @@ const UNIFORMS = [
   "uLight",
   "uGlassOnly",
   "uFloaters[0]",
-  "uFloaterSprite[0]",
   "uFloaterCount",
-  "uSprite0",
-  "uSprite1",
-  "uSpriteReady",
 ] as const;
 type UniformName = (typeof UNIFORMS)[number];
 
@@ -100,9 +96,6 @@ function buildProgram(gl: WebGLRenderingContext): GlBundle | null {
   const loc = {} as Record<UniformName, WebGLUniformLocation | null>;
   // 配列 uniform は bare name では null になる実装があるため "uQuietRects[0]" で取る (spec)
   for (const n of UNIFORMS) loc[n] = gl.getUniformLocation(prog, n);
-  // floater の sprite は texture unit 0 / 1 (glass layer だけが upload する)
-  gl.uniform1i(loc.uSprite0, 0);
-  gl.uniform1i(loc.uSprite1, 1);
   return { gl, loc };
 }
 
@@ -115,50 +108,6 @@ interface Layer {
   glassOnly: boolean;
   sizeKey: string;
   uploadedVersion: number;
-  /** glass layer の floater sprite の texture (unit 0 / 1)。src が変わった時・context 復帰時だけ upload */
-  sprites: { tex: WebGLTexture | null; src: string }[];
-}
-
-const emptySprites = () => [
-  { tex: null, src: "" },
-  { tex: null, src: "" },
-];
-
-/**
- * glass layer に floater (Home のキャラクター) の画像を texture として渡す。DOM の <img> を
- * そのまま texImage2D に使う (同一 origin の asset)。カードの下に入ったキャラは glass layer が
- * 屈折させて描く (DOM のキャラは glass canvas の下で隠れるため)
- */
-function syncSprites(l: Layer, images: readonly HTMLElement[]): [number, number] {
-  const ready: [number, number] = [0, 0];
-  if (!l.bundle) return ready;
-  const g = l.gl;
-  for (let i = 0; i < 2; i++) {
-    const el = images[i] as HTMLImageElement | undefined;
-    const slot = l.sprites[i]!;
-    if (!el || !el.complete || !el.naturalWidth) continue;
-    const src = el.currentSrc || el.src;
-    if (!slot.tex || slot.src !== src) {
-      slot.tex ??= g.createTexture();
-      g.activeTexture(g.TEXTURE0 + i);
-      g.bindTexture(g.TEXTURE_2D, slot.tex);
-      g.pixelStorei(g.UNPACK_FLIP_Y_WEBGL, false);
-      g.pixelStorei(g.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
-      try {
-        g.texImage2D(g.TEXTURE_2D, 0, g.RGBA, g.RGBA, g.UNSIGNED_BYTE, el);
-      } catch {
-        continue;
-      }
-      // NPOT: mipmap なし、端は clamp
-      g.texParameteri(g.TEXTURE_2D, g.TEXTURE_MIN_FILTER, g.LINEAR);
-      g.texParameteri(g.TEXTURE_2D, g.TEXTURE_MAG_FILTER, g.LINEAR);
-      g.texParameteri(g.TEXTURE_2D, g.TEXTURE_WRAP_S, g.CLAMP_TO_EDGE);
-      g.texParameteri(g.TEXTURE_2D, g.TEXTURE_WRAP_T, g.CLAMP_TO_EDGE);
-      slot.src = src;
-    }
-    ready[i] = 1;
-  }
-  return ready;
 }
 
 function createLayer(host: HTMLElement, glassOnly: boolean): Layer | null {
@@ -177,7 +126,7 @@ function createLayer(host: HTMLElement, glassOnly: boolean): Layer | null {
     canvas.remove();
     return null;
   }
-  return { canvas, host, gl, bundle, glassOnly, sizeKey: "", uploadedVersion: -1, sprites: emptySprites() };
+  return { canvas, host, gl, bundle, glassOnly, sizeKey: "", uploadedVersion: -1 };
 }
 
 export function WaterBackground({ params, paused = false, className, glassClassName }: Props) {
@@ -291,7 +240,6 @@ export function WaterBackground({ params, paused = false, className, glassClassN
         g.uniform4fv(loc["uGlassShape[0]"], q.glassShape);
         g.uniform1i(loc.uGlassCount, q.glassCount);
         g.uniform4fv(loc["uFloaters[0]"], q.floaters);
-        g.uniform4fv(loc["uFloaterSprite[0]"], q.floaterSprites);
         g.uniform1i(loc.uFloaterCount, q.floaterCount);
         l.uploadedVersion = q.version;
       }
@@ -303,10 +251,6 @@ export function WaterBackground({ params, paused = false, className, glassClassN
       g.uniform1f(loc.uGlass, cur.glass);
       g.uniform2f(loc.uLight, light.x, light.y);
       g.uniform1f(loc.uGlassOnly, l.glassOnly ? 1 : 0);
-      if (l.glassOnly) {
-        const [r0, r1] = syncSprites(l, quiet.current.floaterImages());
-        g.uniform2f(loc.uSpriteReady, r0, r1);
-      } else g.uniform2f(loc.uSpriteReady, 0, 0);
       // lens は glass layer (無ければ水面 layer) だけ。水面 layer の droplet rect は集光用
       g.uniform1f(loc.uGlassLens, l.glassOnly || !glassLayer ? 1 : 0);
       g.drawArrays(g.TRIANGLES, 0, 3);
@@ -401,7 +345,6 @@ export function WaterBackground({ params, paused = false, className, glassClassN
         l.bundle = buildProgram(l.gl);
         l.sizeKey = "";
         l.uploadedVersion = -1;
-        l.sprites = emptySprites();
       }
       if (layers.some((l) => l.gl.isContextLost())) return;
       lost = false;

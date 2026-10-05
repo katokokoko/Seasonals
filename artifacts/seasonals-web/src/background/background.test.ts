@@ -8,7 +8,6 @@ import {
   collectQuietRects,
   DROPLET_WOBBLE_PX,
   glassVariant,
-  packFloaterSprites,
   packFloaters,
   GLASS_VARIANTS,
   packGlassRects,
@@ -22,7 +21,7 @@ describe("water.frag.glsl", () => {
   it("is byte-identical to the shader spec (sha256 recorded at copy time)", () => {
     const buf = readFileSync(resolve(process.cwd(), "src/background/water.frag.glsl"));
     expect(createHash("sha256").update(buf).digest("hex")).toBe(
-      "85b23f8000af593bc07d8de8808dfc84facc0ee15cc33169a3a3871a3d6dd6a9"
+      "a3d3f22a5b15525f57b1ffcf33ef3f11f60f60523084eae78cd4bc17445102f1"
     );
   });
 });
@@ -172,7 +171,7 @@ describe("floaters", () => {
   it("returns centre and body radius relative to the canvas box", () => {
     floater({ left: 100, top: 200, width: 160, height: 150 });
     const [f] = collectFloaters(document, { left: 0, bottom: 800, scale: 1.25 });
-    expect(f).toEqual({ cx: 180 * 1.25, cy: (800 - 275) * 1.25, radius: 75 * 1.25, strength: 1, hw: 80 * 1.25, hh: 75 * 1.25, angle: 0, sprite: 0, src: "" });
+    expect(f).toEqual({ cx: 180 * 1.25, cy: (800 - 275) * 1.25, radius: 75 * 1.25, strength: 1 });
   });
   it("skips invisible floaters, caps at 2 and reads the strength", () => {
     floater({ left: 0, top: 0, width: 100, height: 100 }, "", { opacity: "0" });
@@ -187,21 +186,5 @@ describe("floaters", () => {
     const packed = packFloaters(fs);
     expect(packed).toHaveLength(8);
     expect(Array.from(packed.slice(0, 4))).toEqual([50, 750, 50, 0.5]);
-    // sprite 番号は要素の順番 (opacity 0 で飛ばした 0 番は texture 0 のまま)
-    expect(fs.map((f) => f.sprite)).toEqual([1, 2]);
-  });
-  it("sprite size follows the CSS scale and rotation of the floater (glass layer draws it under cards)", () => {
-    const a = (10 * Math.PI) / 180;
-    const sc = 0.8;
-    floater({ left: 0, top: 0, width: 100, height: 90 }, "", {
-      transform: `matrix(${sc * Math.cos(a)}, ${sc * Math.sin(a)}, ${-sc * Math.sin(a)}, ${sc * Math.cos(a)}, 0, 0)`,
-    });
-    const [f] = collectFloaters(document, { left: 0, bottom: 800, scale: 1.25 });
-    expect(f!.hw).toBeCloseTo(50 * sc * 1.25, 4);
-    expect(f!.hh).toBeCloseTo(45 * sc * 1.25, 4);
-    expect(f!.angle).toBeCloseTo(a, 5);
-    const sp = packFloaterSprites([f!]);
-    expect(sp).toHaveLength(8);
-    expect(Array.from(sp.slice(0, 4)).map((v) => +v.toFixed(3))).toEqual([+(50 * sc * 1.25).toFixed(3), +(45 * sc * 1.25).toFixed(3), +Math.fround(a).toFixed(3), 0]);
   });
 });
