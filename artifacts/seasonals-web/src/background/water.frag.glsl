@@ -76,31 +76,36 @@ float heightB(vec2 p, float t) {
   q += 0.35 * vec2(fbm3(q + vec2(0.0, t * 0.05)), fbm3(q + vec2(5.2, 1.3) - t * 0.04));
   return fbm3(q * 1.3 + t * 0.03);
 }
-float voroEdge(vec2 x, float t) {
+// x: distance to the nearest cell wall (F2 - F1), y: to the nearest crossing (F3 - F1)
+vec2 voroEdge3(vec2 x, float t) {
   vec2 n = floor(x);
   vec2 f = fract(x);
-  float F1 = 8.0, F2 = 8.0;
+  float F1 = 8.0, F2 = 8.0, F3 = 8.0;
   for (int j = -1; j <= 1; j++)
   for (int i = -1; i <= 1; i++) {
     vec2 g = vec2(float(i), float(j));
     vec2 o = hash22(n + g);
-    o = 0.5 + 0.38 * sin(t + 6.2831 * o);
+    o = 0.5 + 0.45 * sin(t + 6.2831 * o);
     vec2 r = g + o - f;
     float d = dot(r, r);
-    if (d < F1) { F2 = F1; F1 = d; } else if (d < F2) { F2 = d; }
+    if (d < F1) { F3 = F2; F2 = F1; F1 = d; } else if (d < F2) { F3 = F2; F2 = d; } else if (d < F3) { F3 = d; }
   }
-  return sqrt(F2) - sqrt(F1);
+  float s1 = sqrt(F1);
+  return vec2(sqrt(F2) - s1, sqrt(F3) - s1);
 }
+float voroEdge(vec2 x, float t) { return voroEdge3(x, t).x; }
 // rgb: the caustic light (crisp core + soft glow, split slightly by colour), a: the shade band
 // just beside the lines (the light there was pulled into the line). sharp = 16 is the tuned line;
 // glass frost and quiet zones lower it so the lines read as blurred
 vec4 causticsRGB(vec2 cp, vec2 dir, float t, float sharp, float spread) {
-  vec3 e = vec3(voroEdge(cp - dir * spread, t * 0.35), voroEdge(cp, t * 0.35), voroEdge(cp + dir * spread, t * 0.35));
-  vec3 c = exp(-e * sharp) + 0.14 * exp(-e * sharp * 0.22);
+  vec2 eg = voroEdge3(cp, t * 0.35);
+  vec3 e = vec3(voroEdge(cp - dir * spread, t * 0.35), eg.x, voroEdge(cp + dir * spread, t * 0.35));
+  vec3 c = exp(-e * sharp) + 0.1 * exp(-e * sharp * 0.22);
+  c += 0.45 * exp(-eg.y * sharp * 0.7); // where walls meet, the focused light is brightest
   // a second, wider network only as a faint glow (the photo's doubled lines, never a crisp tile pattern)
   vec2 cp2 = mat2(0.8, -0.6, 0.6, 0.8) * cp * 0.62 + 13.7;
   c += 0.1 * exp(-voroEdge(cp2, t * 0.27) * 5.0);
-  float band = exp(-e.g * 2.4) * (1.0 - exp(-e.g * sharp * 0.5));
+  float band = exp(-eg.x * 2.4) * (1.0 - exp(-eg.x * sharp * 0.5));
   return vec4(c, band);
 }
 // frost: 0 outside glass, uGlass inside. bevel: 1 at a glass edge, 0 in its flat middle
@@ -149,7 +154,8 @@ vec3 renderB(vec2 frag, float t, float quiet, float frost, float bevel) {
   off += rip;
 
   // depth (low frequency, drifts very slowly; a little deeper toward the top)
-  float d = clamp(0.48 + 1.5 * fbm3(p * 0.8 + vec2(3.1, 1.7) + t * 0.006) + 0.3 * dot(p, vec2(-0.35, 0.95)), 0.05, 1.25);
+  // shallow sand patches and deeper aqua patches, like the photo (not one even tint)
+  float d = 0.08 + 1.05 * smoothstep(-0.28, 0.32, fbm3(p * 0.7 + vec2(3.1, 1.7) + t * 0.006) + 0.22 * dot(p, vec2(-0.35, 0.95)));
   float dv = mix(0.62, d, mix(1.0, 0.3, quiet)); // calmer depth changes under UI
 
   // sand bottom, sampled through the refraction: patches, ripple marks, grain, specks
@@ -173,15 +179,16 @@ vec3 renderB(vec2 frag, float t, float quiet, float frost, float bevel) {
 
   // caustics
   vec2 cp = p * uScale * 1.15;
-  cp += 0.55 * vec2(fbm3(p * 0.9 + t * 0.03), fbm3(p * 0.9 + 7.3 - t * 0.03));
+  cp += 0.85 * vec2(fbm3(p * 0.9 + t * 0.03), fbm3(p * 0.9 + 7.3 - t * 0.03)); // cells grow and shrink across the view
   cp += grad * 0.012 * uScale;
   cp += rip * 3.0 * uScale; // ripple rings bend the caustic network
   cp += 0.32 * vec2(gnoise(cp * 0.9 + t * 0.08), gnoise(cp * 0.9 + 5.1 - t * 0.08)); // bends the cell walls round
+  cp += 0.16 * vec2(gnoise(cp * 1.9 + 2.7 - t * 0.06), gnoise(cp * 1.9 + 9.4 + t * 0.06));
   // stretch the cells along the swell and let them wave across it
   vec2 nf = vec2(-FLOW.y, FLOW.x);
   float along = dot(cp, FLOW);
   float across = dot(cp, nf);
-  cp = FLOW * along * 0.78 + nf * (across * 1.18 + 0.28 * sin(along * 0.9 + t * 0.05));
+  cp = FLOW * along * 0.7 + nf * (across * 1.3 + 0.3 * sin(along * 0.9 + t * 0.05));
   vec2 dir = normalize(grad + vec2(1e-4));
   float width = mix(0.55, 1.4, gnoise(cp * 0.35 + 2.3) + 0.5); // line width varies along the network
   float sharp = mix(16.0, 6.0, frost) * width * mix(1.0, 0.4, quiet);
@@ -193,14 +200,14 @@ vec3 renderB(vec2 frag, float t, float quiet, float frost, float bevel) {
   c *= 1.0 - 0.7 * shade;   // the floater blocks the light that makes caustics
 
   // water: absorbs red most, then blue (soda) or green less (melon), with depth; a thin aqua in-scatter
-  vec3 k = mix(vec3(0.42, 0.07, 0.1), vec3(0.4, 0.04, 0.26), uTint);
+  vec3 k = mix(vec3(0.58, 0.08, 0.06), vec3(0.5, 0.04, 0.17), uTint);
   vec3 bottom = sand * exp(-k * dv * 1.3);
   // light on the bottom: conserved, so cell interiors sit below the lines and the band beside them
   // lower still. The focused lines run toward cream white (they saturate like the photo's)
   float base = 0.92 - 0.14 * cb.a * uCaustic * 2.0 * calm;
-  vec3 col = bottom * base + c * 1.05 * mix(bottom, vec3(1.0, 0.99, 0.93), 0.5);
+  vec3 col = bottom * base + c * 1.05 * mix(bottom, vec3(1.0, 0.99, 0.93), 0.7);
   col *= 1.0 - 0.13 * shade; // the floater casts a soft shadow on the sand
-  col += vec3(0.3, 0.66, 0.66) * (1.0 - exp(-dv * 0.9)) * 0.16;
+  col += vec3(0.25, 0.65, 0.7) * (1.0 - exp(-dv * 0.9)) * 0.16;
   col = mix(col, col * 1.04 + 0.025, quiet); // quiet zones sit a little lighter behind the UI
 
   // surface: ripple crests that face the light show as thin flowing strands
