@@ -101,12 +101,12 @@ vec2 focus(vec2 x, float t, float blur) {
 // rgb: the caustic light above the even level (split slightly by colour), a: how defocused the bottom is.
 // sharp = 16 is the tuned line; glass frost and quiet zones lower it so the lines read as blurred
 vec4 causticsRGB(vec2 cp, vec2 dir, float t, float sharp, float spread) {
-  float blur = 1.0 / sharp;
+  float blur = 0.8 / sharp;
   vec2 fg = focus(cp, t * 0.35, blur);
   vec3 I = vec3(fg.x);
   // colour split only on a glass bevel (open water keeps clean cream lines)
   if (spread > 0.002) I = vec3(focus(cp - dir * spread, t * 0.35, blur).x, fg.x, focus(cp + dir * spread, t * 0.35, blur).x);
-  vec3 c = max(I - 1.8, 0.0) * 0.22; // the broad tail of 1/det stays dark: thin lines, tight glow
+  vec3 c = pow(max(I - 1.8, vec3(0.0)) * 0.16, vec3(1.7)); // steep: the broad tail of 1/det stays dark, thin core, tight glow
   c = 2.0 * (1.0 - exp(-c / 2.0)); // soft cap: the focus peaks stay points, not blown-out blobs
   float band = smoothstep(1.0, 2.6, fg.y);
   return vec4(c, band);
@@ -153,7 +153,7 @@ vec3 renderB(vec2 frag, float t, float quiet, float frost, float bevel) {
   float bend = fbm3(p * 0.8 + vec2(t * 0.02, -t * 0.015)) + 0.35 * gnoise(p * 3.2 + vec2(-t * 0.03, t * 0.02));
   vec2 sq = vec2(dot(p, nf) * 16.0 + bend * 13.0, dot(p, FLOW) * 2.6 - t * 0.05);
   float sn = gnoise(sq) + 0.4 * gnoise(sq * vec2(1.9, 1.1) + 3.3);
-  float bundle = smoothstep(-0.05, 0.3, fbm3(p * 1.4 + 4.0 + vec2(-t * 0.012, t * 0.01)));
+  float bundle = smoothstep(-0.1, 0.3, fbm3(p * 1.4 + 4.0 + vec2(-t * 0.012, t * 0.01)));
   vec2 off = -grad * uRefr * motion + nf * (sn * 0.004 * bundle * motion);
   vec2 rip;
   float shade, glint;
@@ -206,14 +206,14 @@ vec3 renderB(vec2 frag, float t, float quiet, float frost, float bevel) {
   // water: absorbs red most, then blue (soda) or green less (melon), with depth; a thin aqua in-scatter
   vec3 k = mix(vec3(0.62, 0.07, 0.03), vec3(0.56, 0.04, 0.1), uTint); // red goes first: turquoise, never grey
   vec3 bottom = sand * exp(-k * dv * 1.25);
-  // light on the bottom: conserved, so cell interiors sit below the lines and the band beside them
-  // lower still. The focused lines run toward cream white (they saturate like the photo's)
-  // defocused patches sit a little deeper and more aqua (not greyer)
+  // light on the bottom: conserved, so the defocused patches sit a little deeper and more aqua
+  // (not greyer) and the focused lines run to warm cream white (they saturate like the photo's,
+  // added after the water's glow so they are never tinted mint)
   bottom *= mix(vec3(1.0), vec3(0.88, 0.97, 0.98), cb.a * uCaustic * 2.0 * calm);
-  float base = 0.95;
-  vec3 col = bottom * base + c * 1.05 * mix(bottom, vec3(1.0, 0.97, 0.88), 0.75); // warm cream light
+  vec3 col = bottom * 0.95;
   col *= 1.0 - 0.13 * shade; // the floater casts a soft shadow on the sand
   col += vec3(0.32, 0.74, 0.74) * (1.0 - exp(-dv * 0.9)) * 0.17; // the water body glows turquoise where deep
+  col += c * 1.05 * mix(bottom, vec3(1.0, 0.97, 0.88), 0.95);
   col = mix(col, col * 1.04 + 0.025, quiet); // quiet zones sit a little lighter behind the UI
   // soft shoulder: wide bright patches keep their sand instead of blowing out (thin line cores still clip)
   float hiL = dot(col, vec3(0.299, 0.587, 0.114));
@@ -221,7 +221,7 @@ vec3 renderB(vec2 frag, float t, float quiet, float frost, float bevel) {
 
   // surface: the ripple strands catch the light as thin flowing bright lines
   float strand = exp(-abs(sn) * 11.0) * bundle;
-  col += strand * 0.26 * clear * vec3(1.0, 0.99, 0.94);
+  col += strand * 0.34 * clear * vec3(1.0, 0.99, 0.94);
   col += glint * 0.05;       // floater ripple crests catch the light
 
   // sparkles: a soft dot at bright crossings, and sparse twinkling four-point stars
