@@ -265,7 +265,8 @@ Web 側 (`artifacts/seasonals-web`) は `BFF_URL` (Vite dev proxy 先、node 側
 - 計測: drawArrays + readPixels で水面 layer 7.60 → 7.97 ms、glass layer 4.58 → 4.29 ms (droplet は bevel の色分散を省く)。`e2e/run.mjs` 全 pass (droplet の 2 check 追加)
 
 ### droplet カードのきらめきの位置 (2026-10-05)
-- きらめきを角の円弧の内側に置く (角丸の外に出ない)。カードの下のキャラを glass layer で描く案 (texture) と top bar の droplet 版 (`?nav=droplet`) は試したが、どちらも不要と決めて外した
+- きらめきは光の向きの符号で 4 隅のどれかに置いていたため、ポインターが画面の中心線をまたぐと隅から隅へ飛んでいた。中心から光の方向 (カードの縦横比で引き伸ばす) へ伸ばした線が角丸の輪郭と交わる点の少し内側に置き、`uLight` の追従に合わせて縁に沿ってなめらかに動くようにした。既定の左上の光では左上の隅の近くに止まる
+- カードの下のキャラを glass layer で描く案 (texture) と top bar の droplet 版 (`?nav=droplet`) は試したが、どちらも不要と決めて外した
 
 ## 最終状態 (2026-09-26 05:30 JST 時点)
 

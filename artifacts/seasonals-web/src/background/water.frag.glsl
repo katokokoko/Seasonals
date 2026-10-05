@@ -273,14 +273,18 @@ void glassLens(vec2 frag, out vec2 off, out float rim, out float frost, out floa
       float line = exp(-pow((e - 1.6) / 1.1, 2.0));
       float facing = smoothstep(-0.1, 0.85, nl) + 0.22 * smoothstep(0.3, 1.0, -nl);
       dropRim = max(dropRim, inside * line * facing * uGlass);
-      // the sparkle sits on the curved rim at the corner that faces the light (where a real drop
-      // shows its highlight), clear of the text in the middle
-      // (on the corner arc, inset from the edge, so it stays inside rounded cards and pill bars alike)
+      // the sparkle sits just inside the rim on the side that faces the light (where a real drop
+      // shows its highlight), clear of the text in the middle. It is the point where a ray from the
+      // centre toward the light meets the rounded outline, pulled in by an inset, so it glides along
+      // the rim as uLight eases after the pointer (never jumping between corners). The light
+      // direction is stretched by the half size first, so a diagonal light reaches the corner of a
+      // wide card (the default top-left light rests near the top-left corner)
       float m = min(hb.x, hb.y);
       float rr = clamp(meta.x, 1.0, m);
-      vec2 Ll = mat2(cs, sn, -sn, cs) * L;
-      vec2 corner = sign(Ll) * (hb - rr + vec2(0.7071) * max(rr - 0.24 * m, 0.0));
-      vec2 at = g.xy + mat2(cs, -sn, sn, cs) * corner;
+      vec2 dir = normalize((mat2(cs, sn, -sn, cs) * L) * hb + vec2(1e-5));
+      vec2 spot = dir * min(hb.x / max(abs(dir.x), 1e-4), hb.y / max(abs(dir.y), 1e-4)); // on the plain box
+      for (int k = 0; k < 4; k++) spot -= dir * (sdRoundBox(spot, hb, rr) + 0.22 * m);   // onto the inset rounded outline
+      vec2 at = g.xy + mat2(cs, -sn, sn, cs) * spot;
       glint = max(glint, inside * starGlint(frag - at, 0.16 * m) * uGlass);
       drop = max(drop, inside);
       continue;
