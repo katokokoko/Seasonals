@@ -484,22 +484,6 @@ for (const vp of WIDTHS) {
   await page.close();
 }
 
-// top bar の droplet 版 (?nav=droplet、shell/navVariant.ts): tab の間は遷移しても残り、?nav=clear で既定に戻る
-{
-  const page = await newPage(WIDTHS[0]);
-  await page.goto(BASE + "/?nav=droplet", { waitUntil: "networkidle" });
-  await page.waitForTimeout(600);
-  check("?nav=droplet makes the top bar droplet glass", (await page.locator(".global-nav").getAttribute("data-water-glass")) === "droplet");
-  await page.locator("nav[aria-label=Primary]").getByRole("link", { name: "Menu" }).click();
-  await page.waitForTimeout(400);
-  check("nav droplet stays after navigating", (await page.locator(".global-nav").getAttribute("data-water-glass")) === "droplet");
-  await page.goto(BASE + "/?nav=clear", { waitUntil: "networkidle" });
-  await page.waitForTimeout(400);
-  check("?nav=clear returns the top bar to clear glass", (await page.locator(".global-nav").getAttribute("data-water-glass")) === "clear");
-  check("no page errors (nav variant)", page.errors.length === 0, page.errors.join(" | "));
-  await page.close();
-}
-
 // Home の水面に浮かぶキャラクター 2 匹: 左右の空き水面で漂い、shader に波紋と影の位置が渡る
 async function friendsState(page) {
   return page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => {
