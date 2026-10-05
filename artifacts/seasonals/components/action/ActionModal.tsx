@@ -63,9 +63,9 @@ import {
   validateDepositAgainstBalance,
   type AmountUnit,
   type AmountValidation,
-} from "./amount-utils";
+} from "@workspace/lib/derive/amount-utils";
 import { WarningArea } from "./WarningArea";
-import { oracleBlockLabel, resolveOracleMint } from "./oracle-gate";
+import { oracleBlockLabel, resolveOracleMint } from "@workspace/lib/derive/oracle-gate";
 import {
   findMarketByProtocolAsset,
   findMarketByShareMint,
@@ -952,7 +952,7 @@ function ReviewBody({
     candidate?.estimated_apy != null
       ? formatPercentage(candidate.estimated_apy)
       : "—";
-  // Phase 8.14 §4.6: 実 oracle 判定 (Pyth→Switchboard)。mock simulation_result.oracle は使わない。
+  // §4.6: 実 oracle 判定 (Pyth push → RedStone push)。mock simulation_result.oracle は使わない。
   const oracleMint = resolveOracleMint(action);
   const { data: oracle, isLoading: oracleLoading } = useOracleStatus(oracleMint);
   const oracleChecking = Boolean(oracleMint) && oracleLoading;

@@ -12,6 +12,17 @@ import type {
   ForkExecution,
   MenuHoldingsResponse,
   MenuProduct,
+  OracleResult,
+  ExponentRedeemTxResponse,
+  KaminoTxResponse,
+  KaminoVaultTxResponse,
+  MeteoraTxResponse,
+  OrcaTxResponse,
+  Position,
+  SaveTxResponse,
+  SwapEarnTxResponse,
+  TxStatusResponse,
+  TxSubmitResponse,
   PortfolioHistoryResponse,
   PortfolioHoldingsResponse,
   ProtocolMenuEntry,
@@ -27,7 +38,11 @@ export class ApiError extends Error {
   constructor(
     public readonly status: number,
     public readonly path: string,
-    message: string
+    message: string,
+    /** BFF の `{ error }` (oracle_blocked / insufficient_balance …)。無ければ undefined */
+    public readonly code?: string,
+    /** error 応答の body (oracle_blocked の block_reason など) */
+    public readonly details?: Record<string, unknown>
   ) {
     super(message);
     this.name = "ApiError";
@@ -48,19 +63,23 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
   if (!res.ok) {
     let msg = `${res.status} ${res.statusText}`;
+    let code: string | undefined;
+    let details: Record<string, unknown> | undefined;
     try {
-      const body = (await res.json()) as { error?: string; message?: string };
+      const body = (await res.json()) as { error?: string; message?: string } & Record<string, unknown>;
       msg = body.message ?? body.error ?? msg;
+      code = typeof body.error === "string" ? body.error : undefined;
+      details = body;
     } catch {
       /* non-JSON */
     }
-    throw new ApiError(res.status, path, msg);
+    throw new ApiError(res.status, path, msg, code, details);
   }
   return (await res.json()) as T;
 }
 
 export const api = {
-  health: () => request<{ status: string }>("/health"),
+  health: () => request<HealthResponse>("/health"),
   solanaWalletEvents: (wallet: string) =>
     request<UnifiedTimeEventDTO[]>(`/time-events/wallet?wallet=${encodeURIComponent(wallet)}`),
   menuListings: () => request<ProtocolMenuEntry[]>("/menu-listings"),
@@ -127,7 +146,42 @@ export const api = {
       body: JSON.stringify({ approvedBy: "user", via: "web", bundleHash }),
     }),
   ethRejectAgentProposal: (id: string) => request<EthAgentProposal>(`/eth/agent-proposals/${encodeURIComponent(id)}/reject`, { method: "POST" }),
+
+  // ── Solana: Seeker (services/api.ts) と同じ BFF endpoint / 同じ body。amount は smallest unit の整数 string ──
+  /** wallet の SPL / SOL 保有 (deposit の残高検査用、`wallet_*` 行) */
+  solanaPositions: (wallet: string) => request<Position[]>(`/positions?wallet=${encodeURIComponent(wallet)}`),
+  /** §4.6 oracle gate (Pyth push → RedStone push、on-chain feed、fail-closed) */
+  oracleStatus: (mint: string) => request<OracleResult>(`/oracle/status?mint=${encodeURIComponent(mint)}`),
+  solanaSwapEarnDepositTx: (b: { user: string; shareMint: string; amount: string; slippageBps?: number }) =>
+    post<SwapEarnTxResponse>("/protocols/swap-earn/deposit-tx", { slippageBps: 50, ...b }),
+  solanaSwapEarnWithdrawTx: (b: { user: string; shareMint: string; amount: string; slippageBps?: number }) =>
+    post<SwapEarnTxResponse>("/protocols/swap-earn/withdraw-tx", { slippageBps: 50, ...b }),
+  solanaKaminoDepositTx: (b: { user: string; reserve: string; amount: string }) => post<KaminoTxResponse>("/protocols/kamino/deposit-tx", b),
+  solanaKaminoWithdrawTx: (b: { user: string; reserve: string; amount: string }) => post<KaminoTxResponse>("/protocols/kamino/withdraw-tx", b),
+  solanaKaminoVaultDepositTx: (b: { user: string; vault: string; amount: string }) => post<KaminoVaultTxResponse>("/protocols/kamino/vault-deposit-tx", b),
+  solanaKaminoVaultWithdrawTx: (b: { user: string; vault: string; amount: string }) => post<KaminoVaultTxResponse>("/protocols/kamino/vault-withdraw-tx", b),
+  solanaSaveDepositTxns: (b: { user: string; reserve: string; amount: string }) => post<SaveTxResponse>("/protocols/save/deposit-tx", b),
+  solanaSaveWithdrawTxns: (b: { user: string; ctokenMint: string; amount: string }) => post<SaveTxResponse>("/protocols/save/withdraw-tx", b),
+  solanaExponentRedeemTx: (b: { user: string; ptMint: string; amount: string }) => post<ExponentRedeemTxResponse>("/protocols/exponent/redeem-tx", b),
+  solanaMeteoraDepositTxns: (b: { user: string; poolKey: string; amount: string }) => post<MeteoraTxResponse>("/protocols/meteora/deposit-tx", b),
+  solanaMeteoraWithdrawTxns: (b: { user: string; position: string; amount: string }) => post<MeteoraTxResponse>("/protocols/meteora/withdraw-tx", b),
+  solanaOrcaDepositTxns: (b: { user: string; poolKey: string; amount: string }) => post<OrcaTxResponse>("/protocols/orca/deposit-tx", b),
+  solanaOrcaWithdrawTxns: (b: { user: string; position: string; amount: string }) => post<OrcaTxResponse>("/protocols/orca/withdraw-tx", b),
+  /** 署名済 tx を BFF が Helius mainnet で broadcast (2 本目以降は skipPreflight、Seeker と同じ) */
+  submitSignedTx: (signedTx: string, skipPreflight: boolean) => post<TxSubmitResponse>("/tx/submit", { signedTx, skipPreflight }),
+  txStatus: (signature: string) => request<TxStatusResponse>(`/tx/status?signature=${encodeURIComponent(signature)}`),
 };
+
+function post<T>(path: string, body: unknown): Promise<T> {
+  return request<T>(path, { method: "POST", body: JSON.stringify(body) });
+}
+
+export interface HealthResponse {
+  status: string;
+  timestamp?: string;
+  /** 旧 BFF には無い */
+  solana?: { heliusConfigured: boolean };
+}
 
 /** BFF src/ethereum/menu-actions.ts MenuPlanInput と同形 (amount は人が入力した decimal string) */
 export interface MenuPlanRequest {

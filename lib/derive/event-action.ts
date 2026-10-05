@@ -8,12 +8,12 @@
  *
  * metadata が揃っていなければ null (呼び手は fixture plan lookup に fallback)。
  */
-import { AgentPlanStatus } from "@workspace/lib/types";
+import { AgentPlanStatus } from "../types";
 import type {
   ActionDescriptor,
   AgentPlan,
   UnifiedTimeEvent,
-} from "@workspace/lib/types";
+} from "../types";
 
 function str(v: unknown): string | null {
   return typeof v === "string" && v.length > 0 ? v : null;

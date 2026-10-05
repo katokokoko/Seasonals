@@ -1,0 +1,235 @@
+{
+  "_source": "https://oracle-gateway-1.a.redstone.finance/data-packages/latest/redstone-primary-prod",
+  "_fetchedAt": "2026-10-05T14:30:46.481659Z",
+  "USDT": [
+    {
+      "timestampMilliseconds": 1791210630000,
+      "signature": "XDhuFdp45lozQa32r7X1fmkzpI7HfIY0PSE9+p/MFdND3475ku8pMYduk/ST890b/GeD36iSdoPuuE+BNSD2xxs=",
+      "isSignatureValid": true,
+      "dataPoints": [
+        {
+          "dataFeedId": "USDT",
+          "value": 0.99965
+        }
+      ],
+      "dataServiceId": "redstone-primary-prod",
+      "dataPackageId": "USDT",
+      "signerAddress": "0xDD682daEC5A90dD295d14DA4b0bec9281017b5bE",
+      "dataFeedId": "USDT"
+    },
+    {
+      "timestampMilliseconds": 1791210630000,
+      "signature": "6rE6HJpvItvmb9g78jel85uYfRoYkPS7u0gdy8K3xVg/WYr3LR1umAQhgf2H2w/96IiM6jSa6IuRJPfbGqBXfhs=",
+      "isSignatureValid": true,
+      "dataPoints": [
+        {
+          "dataFeedId": "USDT",
+          "value": 0.99965
+        }
+      ],
+      "dataServiceId": "redstone-primary-prod",
+      "dataPackageId": "USDT",
+      "signerAddress": "0x9c5AE89C4Af6aA32cE58588DBaF90d18a855B6de",
+      "dataFeedId": "USDT"
+    },
+    {
+      "timestampMilliseconds": 1791210630000,
+      "signature": "LYV/A8VXS/N9LBsM2yIoJLtQMumh43wUpQ0AQ2PJqTRjMJn2ePHng/q71ZfhAVki+9c5l1puGL48Pa03TC8Y3Rs=",
+      "isSignatureValid": true,
+      "dataPoints": [
+        {
+          "dataFeedId": "USDT",
+          "value": 0.99965
+        }
+      ],
+      "dataServiceId": "redstone-primary-prod",
+      "dataPackageId": "USDT",
+      "signerAddress": "0x8BB8F32Df04c8b654987DAaeD53D6B6091e3B774",
+      "dataFeedId": "USDT"
+    },
+    {
+      "timestampMilliseconds": 1791210630000,
+      "signature": "HyNSHML0TaAmLb9z0k/VUlz/GN+vAc6B5gx5iWxiV1gjXLqD/WG8USOFHdTYLeg2Oxpvtrw2MBUioiwyyQ+LLxw=",
+      "isSignatureValid": true,
+      "dataPoints": [
+        {
+          "dataFeedId": "USDT",
+          "value": 0.99965
+        }
+      ],
+      "dataServiceId": "redstone-primary-prod",
+      "dataPackageId": "USDT",
+      "signerAddress": "0xdEB22f54738d54976C4c0fe5ce6d408E40d88499",
+      "dataFeedId": "USDT"
+    },
+    {
+      "timestampMilliseconds": 1791210630000,
+      "signature": "KdusHgGqys1RsrzegHvg1m6bvMiLKy8lfJNTJErd9dsabEPJhJI8RBgWWeqzULM4IZAQ3mz6/gFUsRIF/1lq3xs=",
+      "isSignatureValid": true,
+      "dataPoints": [
+        {
+          "dataFeedId": "USDT",
+          "value": 0.99965
+        }
+      ],
+      "dataServiceId": "redstone-primary-prod",
+      "dataPackageId": "USDT",
+      "signerAddress": "0x51Ce04Be4b3E32572C4Ec9135221d0691Ba7d202",
+      "dataFeedId": "USDT"
+    }
+  ],
+  "JLP": [
+    {
+      "timestampMilliseconds": 1791210630000,
+      "signature": "qGsz6e2kWwCdZjIcDlwh7LqE38w2QfUmHVtLR9HrNSN4cAKDy7oggzvhYVbBpiGE7lf6dLUKImDr3aIlFk+q8Rs=",
+      "isSignatureValid": true,
+      "dataPoints": [
+        {
+          "dataFeedId": "JLP",
+          "value": 4.8950871
+        }
+      ],
+      "dataServiceId": "redstone-primary-prod",
+      "dataPackageId": "JLP",
+      "signerAddress": "0x51Ce04Be4b3E32572C4Ec9135221d0691Ba7d202",
+      "dataFeedId": "JLP"
+    },
+    {
+      "timestampMilliseconds": 1791210630000,
+      "signature": "MqHSJMdA0hP5Vj7w9OlWH9zEAQu21PPYxbdemXVIUhsYplPttYUNZCVHK4gyFW1D8zUpb1VBHd1+Lf55pky/dBw=",
+      "isSignatureValid": true,
+      "dataPoints": [
+        {
+          "dataFeedId": "JLP",
+          "value": 4.8948601
+        }
+      ],
+      "dataServiceId": "redstone-primary-prod",
+      "dataPackageId": "JLP",
+      "signerAddress": "0x8BB8F32Df04c8b654987DAaeD53D6B6091e3B774",
+      "dataFeedId": "JLP"
+    },
+    {
+      "timestampMilliseconds": 1791210630000,
+      "signature": "TfEc4Y0rGpt3LlSX+hbSJMWObJaTchUX763hrgeIFZ9taqkwiX3zCWSCe9ze4T1pZmrkJ3eJ3RImEU0Mm97xTxs=",
+      "isSignatureValid": true,
+      "dataPoints": [
+        {
+          "dataFeedId": "JLP",
+          "value": 4.89472214
+        }
+      ],
+      "dataServiceId": "redstone-primary-prod",
+      "dataPackageId": "JLP",
+      "signerAddress": "0xdEB22f54738d54976C4c0fe5ce6d408E40d88499",
+      "dataFeedId": "JLP"
+    },
+    {
+      "timestampMilliseconds": 1791210630000,
+      "signature": "Dautqvrc5gqUNUNVfPEzdV/MhQeZuJw89ssBAkeDDDd4QrbmDu1KzKEMdXohUuIbyviz4dI02y75FGOquWfK3xw=",
+      "isSignatureValid": true,
+      "dataPoints": [
+        {
+          "dataFeedId": "JLP",
+          "value": 4.89478671
+        }
+      ],
+      "dataServiceId": "redstone-primary-prod",
+      "dataPackageId": "JLP",
+      "signerAddress": "0x9c5AE89C4Af6aA32cE58588DBaF90d18a855B6de",
+      "dataFeedId": "JLP"
+    },
+    {
+      "timestampMilliseconds": 1791210630000,
+      "signature": "fCQnQb9PWbpbaNe1mdiN9KJYGelKPdqLuqVtqOeHC7ELWU7Hz0H0qao2R4BQFwqckJpMDrKp7qm6jTNeGhHNZhs=",
+      "isSignatureValid": true,
+      "dataPoints": [
+        {
+          "dataFeedId": "JLP",
+          "value": 4.89472231
+        }
+      ],
+      "dataServiceId": "redstone-primary-prod",
+      "dataPackageId": "JLP",
+      "signerAddress": "0xDD682daEC5A90dD295d14DA4b0bec9281017b5bE",
+      "dataFeedId": "JLP"
+    }
+  ],
+  "USDG": [
+    {
+      "timestampMilliseconds": 1791210630000,
+      "signature": "6FVZdYf+8mBO0jQ7kF4vkLdxplSz4rzHlTB3o6GXy6MYxNnH2RstWe5MkPjnVML+X7++QkL5Q1dScTFmv5+xURs=",
+      "isSignatureValid": true,
+      "dataPoints": [
+        {
+          "dataFeedId": "USDG",
+          "value": 0.99992831
+        }
+      ],
+      "dataServiceId": "redstone-primary-prod",
+      "dataPackageId": "USDG",
+      "signerAddress": "0x51Ce04Be4b3E32572C4Ec9135221d0691Ba7d202",
+      "dataFeedId": "USDG"
+    },
+    {
+      "timestampMilliseconds": 1791210630000,
+      "signature": "wa8df8cJL9mdX2DPWVRz5Nfc5P/HeUrR9wDTD4oegAAsUK7IGKeqgK1YmmNseicoU6FWff4104hwTrDWfUgv2hw=",
+      "isSignatureValid": true,
+      "dataPoints": [
+        {
+          "dataFeedId": "USDG",
+          "value": 0.99994332
+        }
+      ],
+      "dataServiceId": "redstone-primary-prod",
+      "dataPackageId": "USDG",
+      "signerAddress": "0x8BB8F32Df04c8b654987DAaeD53D6B6091e3B774",
+      "dataFeedId": "USDG"
+    },
+    {
+      "timestampMilliseconds": 1791210630000,
+      "signature": "tO33H8Gjk4VwoQvz4+hWi1s5k6iwasvhJ70aQw6b3M11kgkF3s1YqYM9JvkzywQWC89jPOxGfFFPUTPOpcnCnRs=",
+      "isSignatureValid": true,
+      "dataPoints": [
+        {
+          "dataFeedId": "USDG",
+          "value": 0.99992831
+        }
+      ],
+      "dataServiceId": "redstone-primary-prod",
+      "dataPackageId": "USDG",
+      "signerAddress": "0xdEB22f54738d54976C4c0fe5ce6d408E40d88499",
+      "dataFeedId": "USDG"
+    },
+    {
+      "timestampMilliseconds": 1791210630000,
+      "signature": "zy1wIUmfaGb2VL+7TqeKfDrer2m1X9S8xGsBfKn4nF0VIZ4j/v3A3DWEB42Oz4959btntNRFmJqUOpDdhp6/GBs=",
+      "isSignatureValid": true,
+      "dataPoints": [
+        {
+          "dataFeedId": "USDG",
+          "value": 0.99992831
+        }
+      ],
+      "dataServiceId": "redstone-primary-prod",
+      "dataPackageId": "USDG",
+      "signerAddress": "0x9c5AE89C4Af6aA32cE58588DBaF90d18a855B6de",
+      "dataFeedId": "USDG"
+    },
+    {
+      "timestampMilliseconds": 1791210630000,
+      "signature": "GwFay+cW1HD8mgQLqddtX5Bcrpgz+sEe51rigKIGStxwnjjsLySY2QL/JMAzBfkkrtmt46+RrxDK+iKw3R1q+hs=",
+      "isSignatureValid": true,
+      "dataPoints": [
+        {
+          "dataFeedId": "USDG",
+          "value": 0.99992831
+        }
+      ],
+      "dataServiceId": "redstone-primary-prod",
+      "dataPackageId": "USDG",
+      "signerAddress": "0xDD682daEC5A90dD295d14DA4b0bec9281017b5bE",
+      "dataFeedId": "USDG"
+    }
+  ]
+}

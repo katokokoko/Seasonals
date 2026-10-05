@@ -5,7 +5,7 @@
 import { useEffect, useState } from "react";
 import { SUPPORTED_CHAINS } from "@workspace/lib/config/chains";
 import { useActiveAddresses } from "../state/session";
-import { useEthStatus } from "../services/queries";
+import { useEthStatus, useHealth } from "../services/queries";
 import { WorkspaceShell, Notice } from "../shell/WorkspaceShell";
 import { requestOpenWallet } from "../timeline/detailStore";
 import { ChainIcon } from "../ui/ChainIcon";
@@ -15,6 +15,7 @@ import "../agent/agent.css";
 export default function SettingsScreen() {
   const active = useActiveAddresses();
   const status = useEthStatus();
+  const health = useHealth();
   const reduced = useReducedMotion();
 
   return (
@@ -50,7 +51,10 @@ export default function SettingsScreen() {
               </li>
             ))}
           </ul>
-          <p className="muted small">Ethereum reads mainnet. Transaction demos run only on a local mainnet fork.</p>
+          <ul className="muted small">
+            <li>Solana: reads mainnet. Transactions are signed in your wallet and sent to mainnet through the Seasonals server.</li>
+            <li>Ethereum: reads mainnet. Transaction demos run only on a local mainnet fork.</li>
+          </ul>
         </section>
         <section className="panel-block">
           <h2>Motion</h2>
@@ -62,6 +66,10 @@ export default function SettingsScreen() {
         </section>
         <section className="panel-block">
           <h2>Server integrations</h2>
+          <p className="muted small">
+            Solana RPC (Helius):{" "}
+            {health.isPending ? "checking…" : health.data?.solana ? (health.data.solana.heliusConfigured ? "configured" : "not configured") : "unknown on this server"}
+          </p>
           {status.isError ? (
             <Notice tone="warning" title="Ethereum integration is not available on this server yet." />
           ) : status.isPending ? (

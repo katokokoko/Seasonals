@@ -55,6 +55,26 @@ import {
 } from "./config";
 import { useDevFallbackLog } from "../stores/devFallbackLog";
 
+// Solana tx builder の応答型は lib が canonical (CLAUDE.md §1)。旧名のまま再 export する
+export type {
+  SwapEarnTxResponse as JupiterDepositTxResponse,
+  KaminoTxResponse,
+  KaminoVaultTxResponse,
+  ExponentRedeemTxResponse,
+  MeteoraTxResponse,
+  OrcaTxResponse,
+  SaveTxResponse,
+} from "@workspace/lib/types";
+import type {
+  SwapEarnTxResponse as JupiterDepositTxResponse,
+  KaminoTxResponse,
+  KaminoVaultTxResponse,
+  ExponentRedeemTxResponse,
+  MeteoraTxResponse,
+  OrcaTxResponse,
+  SaveTxResponse,
+} from "@workspace/lib/types";
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Internal helpers
 // ─────────────────────────────────────────────────────────────────────────────
@@ -446,13 +466,6 @@ export async function submitSignedTx(
   return (await res.json()) as { signature: string };
 }
 
-export interface JupiterDepositTxResponse {
-  swapTransaction: string;
-  lastValidBlockHeight: number;
-  outAmount: string;
-  outputMint: string;
-  quote: unknown;
-}
 
 export async function getJupiterDepositTx(input: {
   user: string;
@@ -563,12 +576,6 @@ export async function getSwapEarnWithdrawTx(input: {
 }
 
 /** Phase 8.15b: Kamino Lend の unsigned tx (base64)。swap でなく obligation deposit/withdraw。 */
-export interface KaminoTxResponse {
-  transaction: string;
-  reserve: string;
-  market: string;
-  underlyingMint: string;
-}
 
 async function postKaminoTx<T>(
   path: string,
@@ -610,11 +617,6 @@ export function getKaminoWithdrawTx(input: {
 }
 
 /** Phase 8.15d: Kamino Earn vault (kVault) の unsigned tx。 */
-export interface KaminoVaultTxResponse {
-  transaction: string;
-  vault: string;
-  underlyingMint: string;
-}
 
 /** kVault deposit tx (underlying → vault share、amount = underlying smallest-unit)。 */
 export function getKaminoVaultDepositTx(input: {
@@ -641,11 +643,6 @@ export function getKaminoVaultWithdrawTx(input: {
 }
 
 /** Phase 8.34: Exponent PT 満期 redeem (wrapper_merge) の unsigned v0 tx。 */
-export interface ExponentRedeemTxResponse {
-  transaction: string;
-  ptMint: string;
-  underlyingMint: string;
-}
 
 /** Exponent PT redeem tx (amount = PT smallest-unit string、満期後のみ 200)。 */
 export function getExponentRedeemTx(input: {
@@ -663,12 +660,6 @@ export function getExponentRedeemTx(input: {
  * Phase 8.17: Meteora DLMM LP。deposit の tx は position ephemeral の部分署名済み
  * (user 署名スロットのみ空 — MWA sign-only で保持される)。
  */
-export interface MeteoraTxResponse {
-  transactions: string[];
-  position?: string;
-  bps?: number;
-  poolAddress: string;
-}
 
 /** Meteora single-sided deposit txns (amount = deposit token smallest-unit)。 */
 export function getMeteoraDepositTxns(input: {
@@ -693,13 +684,6 @@ export function getMeteoraWithdrawTxns(input: {
  * [swap (user 単独), open+increase (position mint ephemeral の部分署名済み —
  * user 署名スロットのみ空、MWA sign-only で保持される)]。
  */
-export interface OrcaTxResponse {
-  transactions: string[];
-  /** deposit 時のみ: position mint (NFT) pubkey */
-  position?: string;
-  bps?: number;
-  poolAddress: string;
-}
 
 /** Orca zap-in deposit txns (amount = deposit token smallest-unit、半分 swap)。 */
 export function getOrcaDepositTxns(input: {
@@ -723,12 +707,6 @@ export function getOrcaWithdrawTxns(input: {
  * Phase 8.15c: Save (旧 Solend) の unsigned v0 tx 群 (base64[])。
  * 複数 tx は MWA 一括署名 → 順次 submit する (ATA 準備 + 本体等)。
  */
-export interface SaveTxResponse {
-  transactions: string[];
-  reserve: string;
-  ctokenMint: string;
-  underlyingMint: string;
-}
 
 async function postSaveTx(
   path: string,
@@ -770,7 +748,7 @@ export function getSaveWithdrawTxns(input: {
 }
 
 /**
- * Phase 8.14 §4.6: underlying mint の実 oracle 判定 (Pyth→Switchboard)。
+ * §4.6: underlying mint の実 oracle 判定 (Pyth push → RedStone push、on-chain feed)。
  * ActionModal が deposit/withdraw review 時に引いて WarningArea 表示 / CTA gate に使う。
  * test 環境では network を呼ばず安全側の ok を返す (fixture path)。
  */
@@ -782,7 +760,8 @@ export async function getOracleStatus(mint: string): Promise<OracleResult> {
       primary: "pyth",
       price_usd: null,
       pyth: { available: true, price_usd: null, age_seconds: 0 },
-      switchboard: { available: false, price_usd: null, age_seconds: null },
+      secondary: { source: null, available: false, price_usd: null, age_seconds: null },
+      tier: "C",
       divergence_pct: null,
       warnings: [],
       block_reason: null,

@@ -7,6 +7,7 @@
 
 import type { CustomEvent } from "../types/custom-event";
 import type { UnifiedTimeEventDTO } from "../types/unified-time-event";
+import { resolveSolanaRoute, withdrawActionFromParams, WITHDRAW_PARAM_KEYS } from "./solana-action";
 import type {
   TimelineAction,
   TimelineDisplayStatus,
@@ -201,21 +202,28 @@ function protocolDisplayName(protocol: string): string {
  * Solana UnifiedTimeEventDTO → TimelineEvent。
  * - metadata.source === "helius_tx" (wallet tx 履歴) は executed class
  * - それ以外は protocol class
- * - Seeker と同じく action は event.actions から取る。Web には MWA 署名経路が無いので
- *   availability は "unsupported" (実行済みのように見せない)
+ * - Seeker と同じく action は event.actions から取る。withdraw 系 (claim の "Withdraw & claim" /
+ *   満期 PT の "Redeem") は event.metadata の synthetic plan 用フィールドを params (string) に写し、
+ *   BFF の tx builder に解決できる時だけ available (Web は Wallet Standard で署名、Seeker と同じ BFF 経路)。
+ *   欠けていれば unsupported (fail-closed、Seeker syntheticPlanFromEventAction と同じ判定)
  */
 export function fromUnifiedTimeEventDTO(dto: UnifiedTimeEventDTO, observedAt: string): TimelineEvent {
   const meta = dto.metadata ?? {};
   const isTx = meta.source === "helius_tx";
   const headline = typeof meta.headline === "string" ? meta.headline : null;
-  const actions: TimelineAction[] = dto.actions.map((a) => ({
-    actionType: a.actionType,
-    label: a.label,
-    requiresWallet: true,
-    availability: "unsupported",
-    reason: "Solana signing runs on the Seeker app (MWA). Web shows it read-only.",
-    params: {},
-  }));
+  const params = solanaWithdrawParams(meta);
+  const actions: TimelineAction[] = dto.actions.map((a) => {
+    const input = a.actionType === "withdraw" ? withdrawActionFromParams(params) : null;
+    const routable = input !== null && resolveSolanaRoute(input) !== null;
+    return {
+      actionType: a.actionType,
+      label: a.label,
+      requiresWallet: true,
+      availability: routable ? "available" : "unsupported",
+      ...(routable ? {} : { reason: "Seasonals cannot build a transaction for this action yet." }),
+      params: routable ? params : {},
+    };
+  });
   const signature = typeof meta.signature === "string" ? meta.signature : null;
   return {
     id: `solana:${dto.protocol}:${dto.category}:${dto.id}`,
@@ -237,6 +245,17 @@ export function fromUnifiedTimeEventDTO(dto: UnifiedTimeEventDTO, observedAt: st
     source: typeof meta.source === "string" ? meta.source : "seasonals-bff",
     observedAt,
   };
+}
+
+/** event.metadata の withdraw 用フィールドを string の params に写す (number は 10 進 string) */
+function solanaWithdrawParams(meta: Record<string, unknown>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const k of WITHDRAW_PARAM_KEYS) {
+    const v = meta[k];
+    if (typeof v === "string" && v.length > 0) out[k] = v;
+    else if (typeof v === "number" && Number.isInteger(v) && v >= 0) out[k] = String(v);
+  }
+  return out;
 }
 
 export const CUSTOM_EVENT_SOURCE = "local:custom";

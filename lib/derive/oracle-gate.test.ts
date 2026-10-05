@@ -1,13 +1,15 @@
 /**
  * Phase 8.14: oracle-gate 純粋ヘルパーの検証 (RN render 不要)。
  */
-import type { AgentPlan } from "@workspace/lib/types";
-import { findKaminoMarketByAsset } from "@workspace/lib/config/kamino-markets";
-import { findSaveMarketByAsset } from "@workspace/lib/config/save-markets";
-import { EXPONENT_MARKETS } from "@workspace/lib/config/exponent-markets";
+import type { AgentPlan } from "../types";
+import { findKaminoMarketByAsset } from "../config/kamino-markets";
+import { findSaveMarketByAsset } from "../config/save-markets";
+import { EXPONENT_MARKETS } from "../config/exponent-markets";
 import {
   JUPITER_UNDERLYING_MINTS,
   oracleBlockLabel,
+  ORACLE_WARNING_HEADLINE,
+  oracleWarningBody,
   oracleRefetchInterval,
   resolveOracleMint,
 } from "./oracle-gate";
@@ -257,7 +259,7 @@ describe("resolveOracleMint", () => {
 describe("oracleBlockLabel", () => {
   it("各 block reason に専用ラベル", () => {
     expect(oracleBlockLabel("oracle_both_stale")).toMatch(/stale/i);
-    expect(oracleBlockLabel("oracle_divergence_too_large")).toMatch(/>5%/);
+    expect(oracleBlockLabel("oracle_divergence_too_large")).toMatch(/more than 5%/);
     expect(oracleBlockLabel("oracle_unavailable")).toMatch(/unavailable/i);
   });
 
@@ -275,5 +277,15 @@ describe("8.78: oracleRefetchInterval", () => {
     expect(oracleRefetchInterval({ status: "ok" })).toBe(false);
     expect(oracleRefetchInterval({ status: "warning" })).toBe(false);
     expect(oracleRefetchInterval(undefined)).toBe(false);
+  });
+});
+
+describe("oracle warning copy (Seeker / Web 共有)", () => {
+  it("source 名に依存しない見出しと本文", () => {
+    expect(ORACLE_WARNING_HEADLINE.oracle_secondary_stale).toBe("Secondary price source is stale");
+    expect(oracleWarningBody({ kind: "oracle_divergence_warning", divergencePct: 3.4 })).toBe("Pyth and the secondary price source differ by 3.4%");
+    expect(oracleWarningBody({ kind: "oracle_pyth_stale", pythAgeSeconds: 92.7 })).toBe("Pyth last updated 92s ago · using the secondary source");
+    expect(oracleWarningBody({ kind: "oracle_secondary_stale", secondaryAgeSeconds: 121 })).toMatch(/121s ago · using Pyth/);
+    expect(oracleWarningBody({ kind: "oracle_secondary_stale" })).toMatch(/not cross-checked/);
   });
 });

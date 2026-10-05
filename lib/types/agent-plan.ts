@@ -16,6 +16,7 @@ import type {
   Objective,
   PositionCategory,
 } from "./enums";
+import type { OracleSourceId } from "./oracle";
 
 /**
  * compare_opportunities が呼ばれた際の制約条件 (§24.9 inputSchema)
@@ -90,7 +91,7 @@ export interface SimulationResult {
   bundle_hash: string;
   /** simulation 時点の oracle 価格情報 (§4.6) */
   oracle?: {
-    primary: "pyth" | "switchboard";
+    primary: OracleSourceId;
     primary_age_seconds: number;
     divergence_pct?: number;
     warnings: string[]; // oracle_divergence_warning 等

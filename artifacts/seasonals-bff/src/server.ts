@@ -46,6 +46,7 @@ import {
   type AgentPlan,
   type EarnPosition,
   type EarnPositionsResponse,
+  type OracleSourceId,
   type Position,
   type PortfolioHistoryResponse,
   type PortfolioHoldingsResponse,
@@ -88,6 +89,7 @@ import {
   getTokenSupplyUi,
   getWalletBalanceSmallest,
   sendTransactionViaHelius,
+  getSignatureStatus,
   type StakeAccountInfo,
 } from "./clients/helius-rpc";
 import {
@@ -554,7 +556,7 @@ async function loadSolanaHistoryInputs(
  * 上がる token の過去が全部「現在価格」になり、Deposited のグラフが横一直線になる。
  * 価格マップは **mint キー** で合流させる (8.64)。
  */
-async function solanaPriceSeries(
+export async function solanaPriceSeries(
   historyAssets: HistoryAsset[],
   priceFrom: number,
   priceTo: number,
@@ -583,13 +585,27 @@ async function solanaPriceSeries(
     fetchLlamaPriceSeries(feedlessMints, priceFrom, priceTo, step),
   ]);
 
+  // 2026-10: Pyth Benchmarks が 404 を返すようになった。feed のある asset でも series が
+  // 取れなければ DefiLlama に落とす (取れない asset を「現在価格の横一直線」にしない)
+  // fetchPriceSeries は失敗を空 series で返すので、点が無いものを欠けとして扱う
+  const hasPythSeries = (a: HistoryAsset) => (seriesBySymbol.get(a.symbol === "WSOL" ? "SOL" : a.symbol)?.t.length ?? 0) > 0;
+  const pythMissing = historyAssets.filter((a) => a.feedId && !hasPythSeries(a)).map((a) => a.mint);
+  if (pythMissing.length > 0) {
+    const fallback = await fetchLlamaPriceSeries(pythMissing, priceFrom, priceTo, step).catch(
+      () => new Map<string, PriceSeries>()
+    );
+    for (const [mint, series] of fallback) llamaByMint.set(mint, series);
+  }
+
   const seriesByMint = new Map<string, PriceSeries>();
   for (const asset of historyAssets) {
     if (asset.feedId) {
       const symbol = asset.symbol === "WSOL" ? "SOL" : asset.symbol;
       const series = seriesBySymbol.get(symbol);
-      if (series) seriesByMint.set(asset.mint, series);
-      continue;
+      if (series && series.t.length > 0) {
+        seriesByMint.set(asset.mint, series);
+        continue;
+      }
     }
     const llama = llamaByMint.get(asset.mint);
     // 見出しの現在値 (DAS 価格) と chart の右端を揃える。形は観測値のまま
@@ -860,9 +876,9 @@ const COST_BASIS_SHARE_TO_UNDERLYING: Record<string, string> = {
 function oracleBlockMessage(reason: string | null | undefined): string {
   switch (reason) {
     case "oracle_both_stale":
-      return "Both Pyth and Switchboard are stale (>60s), so the price can't be trusted. Stopped before signing.";
+      return "The price sources are stale, so the price can't be trusted. Stopped before signing.";
     case "oracle_divergence_too_large":
-      return "Pyth and Switchboard disagree by more than 5%. Stopped before signing.";
+      return "The price sources disagree by more than 5%. Stopped before signing.";
     case "oracle_unavailable":
       return "Price oracle unavailable, so this action can't be checked. Stopped before signing.";
     default:
@@ -3072,9 +3088,11 @@ export async function buildServer(
   await registerEthRoutes(app);
 
   // ── health ────────────────────────────────────────────────────────────
+  // solana.heliusConfigured: Web Settings が Solana 実行可否を出すための boolean のみ (key / URL は返さない)
   app.get("/health", async () => ({
     status: "ok",
     timestamp: new Date().toISOString(),
+    solana: { heliusConfigured: Boolean(process.env.HELIUS_API_KEY) },
   }));
 
   // ── time events / positions / wallets / protocols / user policy ──────
@@ -4213,7 +4231,7 @@ export async function buildServer(
   });
 
   /**
-   * Phase 8.14 §4.6: underlying mint の実 oracle 判定 (Pyth→Switchboard fail-closed)。
+   * §4.6: underlying mint の実 oracle 判定 (Pyth push → RedStone push、fail-closed。2026-10 に on-chain feed へ移行)。
    * Mobile ActionModal が review 時に引いて WarningArea 表示 / CTA gate に使う。
    * deposit/withdraw-tx の server 強制 gate と同じ getOracleResult を共有。
    */
@@ -4391,6 +4409,26 @@ export async function buildServer(
       }
     }
   );
+
+  /**
+   * Web: /tx/submit で送った tx の着地確認。Wallet Standard の sign-only wallet は送信後の状態を
+   * 出さないので、web はこれを数秒おきに引いて confirmed / failed を表示する (read-only)。
+   */
+  app.get<{ Querystring: { signature?: string } }>("/tx/status", async (req, reply) => {
+    const signature = req.query.signature ?? "";
+    // base58 の ed25519 signature (64 byte) は 86〜88 文字
+    if (!/^[1-9A-HJ-NP-Za-km-z]{86,88}$/.test(signature)) {
+      reply.code(400);
+      return { error: "invalid_signature", message: "signature must be a base58 transaction signature" };
+    }
+    try {
+      return await getSignatureStatus(signature);
+    } catch (err) {
+      req.log.error({ err: (err as Error).message.replace(/api-key=[^&\s]+/g, "api-key=***") }, "tx status failed");
+      reply.code(502);
+      return { error: "status_failed", message: "Could not read the transaction status from the Solana RPC." };
+    }
+  });
 
   /**
    * Phase 8.9: One-tap withdraw — jlToken → underlying mint の Jupiter Swap tx。
@@ -5191,7 +5229,7 @@ export async function buildServer(
       // (偽の健全表示をしない — optional field の正直な不在)
       let simOracle:
         | {
-            primary: "pyth" | "switchboard";
+            primary: OracleSourceId;
             primary_age_seconds: number;
             divergence_pct?: number;
             warnings: string[];
@@ -5223,7 +5261,7 @@ export async function buildServer(
         if (oracle.primary) {
           simOracle = {
             primary: oracle.primary,
-            primary_age_seconds: oracle[oracle.primary].age_seconds ?? 0,
+            primary_age_seconds: (oracle.primary === "pyth" ? oracle.pyth : oracle.secondary).age_seconds ?? 0,
             divergence_pct: oracle.divergence_pct ?? undefined,
             warnings,
           };

@@ -6,13 +6,16 @@
 import { useMemo, useState } from "react";
 import { Link } from "react-router";
 import { LEARN } from "../learn/content";
-import type { ChainId } from "@workspace/lib/config/chains";
+import { SUPPORTED_CHAINS, chainInfo, type ChainId } from "@workspace/lib/config/chains";
+import { heldPoolKeys } from "@workspace/lib/derive/earn-positions";
+import { canWithdrawEarnPosition, depositAction, resolveSolanaRoute } from "@workspace/lib/derive/solana-action";
 import type { EarnPosition, MenuHolding, MenuProduct, PositionCategory, ProtocolMenuEntry, ProtocolPool } from "@workspace/lib/types";
 import { useEthMenu, useMenuHoldings, useMenuListings, type MenuHoldingsData } from "../services/queries";
 import { requestOpenWallet } from "../timeline/detailStore";
 import { ethHoldingText, solHoldingText } from "./holdingText";
 import { MenuActionPanel, actionLabel, menuActionable, type MenuAction } from "./MenuActionPanel";
-import { useActiveAddresses } from "../state/session";
+import { useActiveAddresses, useConnectedAddress } from "../state/session";
+import { SolanaActionPanel } from "./SolanaActionPanel";
 import { fmtDate, fmtMetric } from "../ui/format";
 import { ChainIcon } from "../ui/ChainIcon";
 import { fmtCompactUsd, fmtRatio } from "../ui/format";
@@ -48,12 +51,19 @@ export default function ExploreMenu() {
   const q = useMenuListings();
   const eth = useEthMenu();
   const [tab, setTab] = useState("All");
-  const [chain, setChain] = useState<"all" | "solana" | "ethereum">("all");
+  const [chain, setChain] = useState<"all" | ChainId>("all");
   const [query, setQuery] = useState("");
   const [depositedOnly, setDepositedOnly] = useState(false);
   const holdings = useMenuHoldings(q.data);
   const active = useActiveAddresses();
   const ethCtx: EthActionContext = { addresses: active.filter((a) => a.chain === "ethereum").map((a) => a.address), byAddress: holdings.ethByAddress };
+  // Solana の withdraw は接続 wallet の position からだけ組む (watch 中の address は読み取りのみ)
+  const solConnected = useConnectedAddress("solana");
+  const solConnectedEarn = solConnected ? holdings.solByAddress.get(solConnected) : undefined;
+  const solMine = useMemo(
+    () => (q.data && solConnectedEarn ? heldPoolKeys(q.data, [solConnectedEarn]) : new Map<string, EarnPosition[]>()),
+    [q.data, solConnectedEarn]
+  );
   const extra = depositedOnly ? holdings.extraProducts : [];
 
   const rows = useMemo<Row[]>(
@@ -75,7 +85,7 @@ export default function ExploreMenu() {
     [q.data, eth.data, extra]
   );
   const held = (r: Row) => (r.kind === "eth" ? holdings.eth.has(r.key) : holdings.sol.has(r.key));
-  const chainRows = rows.filter((r) => (chain === "all" || (chain === "ethereum") === (r.kind === "eth")) && (!depositedOnly || held(r)));
+  const chainRows = rows.filter((r) => (chain === "all" || chain === rowChain(r)) && (!depositedOnly || held(r)));
   const tabs = ["All", ...Array.from(new Set(chainRows.map((i) => i.section)))];
   const activeTab = tabs.includes(tab) ? tab : "All";
   const filtered = chainRows.filter(
@@ -97,9 +107,10 @@ export default function ExploreMenu() {
         </label>
       </header>
       <div className="menu-chain" role="group" aria-label="Chain">
-        {(["all", "ethereum", "solana"] as const).map((c) => (
+        {/* chain は config から描く (UI v2 §1: 対応 chain を hard-code しない) */}
+        {(["all", ...SUPPORTED_CHAINS.map((c) => c.id)] as const).map((c) => (
           <button key={c} type="button" className="filter-chip" aria-pressed={chain === c} onClick={() => setChain(c)}>
-            {c === "all" ? "All chains" : c === "ethereum" ? "Ethereum" : "Solana"}
+            {c === "all" ? "All chains" : chainInfo(c).name}
           </button>
         ))}
         <DepositedToggle on={depositedOnly} onChange={setDepositedOnly} holdings={holdings} />
@@ -137,7 +148,7 @@ export default function ExploreMenu() {
                 r.kind === "eth" ? (
                   <EthMenuCard key={r.key} product={r.product} holding={holdings.eth.get(r.key)} ctx={ethCtx} />
                 ) : (
-                  <MenuCard key={r.key} item={r.item} held={holdings.sol.get(r.key)} />
+                  <MenuCard key={r.key} item={r.item} held={holdings.sol.get(r.key)} owner={solConnected} mine={solMine.get(r.key) ?? []} />
                 )
               )}
           </ul>
@@ -148,6 +159,10 @@ export default function ExploreMenu() {
       </p>
     </div>
   );
+}
+
+function rowChain(r: Row): ChainId {
+  return r.kind === "eth" ? "ethereum" : "solana";
 }
 
 function availability(pool: ProtocolPool): { label: string; tone: "ok" | "warn" } | null {
@@ -188,10 +203,24 @@ export function noBreakHyphen(name: string): string {
   return name.replace(/-/g, "\u2011");
 }
 
-function MenuCard({ item, held }: { item: MenuItem; held?: EarnPosition[] }) {
+/**
+ * Solana の pool カード。Deposit / Withdraw は Seeker MenuDrawer と同じ gate:
+ * - display_only / deposit_open === false は Deposit を押させない (BFF も 409 で拒否する、fail-closed)
+ * - BFF の tx builder に解決できない pool も押させない (Seeker は押した後に止める。web は先に見せる)
+ * - Withdraw は接続 wallet がこの pool に withdraw できる position を持つ時だけ
+ */
+export function MenuCard({ item, held, owner, mine }: { item: MenuItem; held?: EarnPosition[]; owner: string | null; mine: EarnPosition[] }) {
   const { protocol, pool } = item;
   const [open, setOpen] = useState(false);
+  const [panel, setPanel] = useState<MenuAction | null>(null);
   const avail = availability(pool);
+  const routable = useMemo(
+    () => resolveSolanaRoute(depositAction(protocol.protocol_id, pool.deposit_asset ?? pool.asset, pool.pool_id)) !== null,
+    [protocol.protocol_id, pool.deposit_asset, pool.asset, pool.pool_id]
+  );
+  const depositReason = pool.display_only || pool.deposit_open === false ? avail?.label : !routable ? "Seasonals cannot build deposits for this pool yet" : null;
+  const withdrawable = mine.some((p) => canWithdrawEarnPosition(p));
+  const withdrawReason = withdrawable ? null : owner ? "Nothing withdrawable at the connected wallet" : "Connect a Solana wallet to withdraw";
   return (
     <li className="menu-item" style={brandStyle(protocol.icon_id)}>
       <div className="menu-item-top">
@@ -232,13 +261,49 @@ function MenuCard({ item, held }: { item: MenuItem; held?: EarnPosition[] }) {
       </div>
       {open && (
         <div className="menu-details small">
-          <p>
-            {protocol.display_name} {pool.name} accepts {pool.deposit_asset ?? pool.asset}. Depositing and withdrawing run on the Seeker app today; the web
-            version shows this listing read-only.
-          </p>
+          {pool.display_only ? (
+            <p>
+              {protocol.display_name} {pool.name} is listed for reference only; Seasonals cannot deposit into or withdraw from it.
+            </p>
+          ) : (
+            <p>
+              {protocol.display_name} {pool.name} accepts {pool.deposit_asset ?? pool.asset}. Deposits and withdrawals are signed in your Solana wallet and
+              sent to mainnet through the Seasonals server.
+            </p>
+          )}
           {pool.borrowed_usd !== undefined && <p>Borrowed: {fmtCompactUsd(pool.borrowed_usd)}</p>}
+          {/* Seasonals で扱えない操作 (旧 token の引き出し等) は protocol の公式 app へ案内する */}
+          {pool.note && <p>{pool.note}</p>}
+          {pool.external_url && (
+            <p>
+              <a className="menu-open-link" href={pool.external_url} target="_blank" rel="noreferrer">
+                Open {protocol.display_name} ↗
+              </a>
+            </p>
+          )}
         </div>
       )}
+      {panel && (
+        <SolanaActionPanel key={panel} protocol={protocol} pool={pool} action={panel} owner={owner} positions={mine} onClose={() => setPanel(null)} />
+      )}
+      <div className="menu-item-bottom">
+        {!panel && (
+          <span className="menu-item-cta">
+            <button
+              type="button"
+              className="btn btn-primary"
+              onClick={() => setPanel("deposit")}
+              disabled={Boolean(depositReason)}
+              title={depositReason ?? undefined}
+            >
+              {actionLabel("deposit")}
+            </button>
+            <button type="button" className="btn" onClick={() => setPanel("withdraw")} disabled={!withdrawable} title={withdrawReason ?? undefined}>
+              {actionLabel("withdraw")}
+            </button>
+          </span>
+        )}
+      </div>
     </li>
   );
 }

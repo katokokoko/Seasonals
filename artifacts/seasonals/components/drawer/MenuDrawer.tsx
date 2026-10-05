@@ -58,20 +58,10 @@ import {
   type ProtocolPool,
 } from "@workspace/lib/types";
 import { TOKEN_DECIMALS, formatUsd } from "@workspace/lib/utils/numeric";
-import {
-  findMarketByShareMint,
-  heldSwapEarnPositions,
-} from "@workspace/lib/config/swap-earn-markets";
-import {
-  KAMINO_MARKETS,
-  findKaminoMarketByReserve,
-  findKaminoVaultByAddress,
-} from "@workspace/lib/config/kamino-markets";
-import {
-  findSaveMarketByCToken,
-  heldSavePositions,
-} from "@workspace/lib/config/save-markets";
-import { findExponentMarketByPtMint } from "@workspace/lib/config/exponent-markets";
+import { heldSwapEarnPositions } from "@workspace/lib/config/swap-earn-markets";
+import { KAMINO_MARKETS } from "@workspace/lib/config/kamino-markets";
+import { heldSavePositions } from "@workspace/lib/config/save-markets";
+import { canWithdrawEarnPosition } from "@workspace/lib/derive/solana-action";
 
 import type { JupiterLendMarketDTO } from "../../services/api";
 import {
@@ -795,19 +785,8 @@ function formatApyBps(bps: number | null): string {
  * 8.54: カード行の CTA (Manage / Redeem) と "Your Positions" 行で共用する。
  */
 function canWithdrawPosition(position: EarnPosition): boolean {
-  return (
-    findMarketByShareMint(position.share_mint) !== undefined ||
-    findKaminoMarketByReserve(position.share_mint) !== undefined ||
-    findSaveMarketByCToken(position.share_mint) !== undefined ||
-    findKaminoVaultByAddress(position.share_mint) !== undefined ||
-    // Exponent PT (8.34): 満期済のみ redeem 可 (満期前は server も 400 で拒否)
-    (findExponentMarketByPtMint(position.share_mint) !== undefined &&
-      position.maturity_at != null &&
-      new Date(position.maturity_at).getTime() <= Date.now()) ||
-    // Meteora (8.17) / Orca (8.18): share_mint = position 実 pubkey — protocol で判定
-    position.protocol_id === "meteora" ||
-    position.protocol_id === "orca"
-  );
+  // 判定は lib に移設 (Web の Menu / Dashboard と共有、same source of truth)
+  return canWithdrawEarnPosition(position);
 }
 
 interface YourPositionRowProps {

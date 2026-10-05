@@ -37,7 +37,7 @@ import type { ProtocolMenuEntry } from "@workspace/lib/types";
 import * as api from "./api";
 import type { JupiterLendMarketDTO } from "./api";
 // 8.78: oracle blocked 中の自動再チェック間隔 (純関数、oracle-gate.test で担保)
-import { oracleRefetchInterval } from "../components/action/oracle-gate";
+import { oracleRefetchInterval } from "@workspace/lib/derive/oracle-gate";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Query keys (cache invalidation 用、文字列直書きを避ける)

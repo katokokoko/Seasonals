@@ -1,329 +1,227 @@
 /**
- * oracle client — Pyth (primary) → Switchboard (fallback) fail-closed 判定 (Phase 8.14、§4.6)
+ * oracle client — §4.6 fail-closed oracle gate (CLAUDE.md §4)。
  *
- * 実 oracle:
- *   - Pyth Hermes REST: GET hermes.pyth.network/v2/updates/price/latest?ids[]=<feedId>
- *       → parsed[0].price.{price, expo, publish_time}。staleness = now − publish_time。
- *   - Switchboard Crossbar REST: GET crossbar.switchboard.xyz/simulate/<feedHash>
- *       → [{ results: ["71.85000000"] }]。simulate は job をライブ実行するため fetch=fresh
- *         (age≈0)。fallback / divergence の独立第2 source として使う。
+ * 2026-10 から primary / secondary とも **Solana 上の push feed account** を Helius RPC で読む:
+ *   - primary: Pyth sponsored push feed (PriceUpdateV2、shard 0)
+ *   - secondary: RedStone push feed (PriceData、tier A) か、push feed が無い asset は RedStone gateway の
+ *     署名付き package (tier B、oracle-redstone-gateway.ts)。どちらも無い asset は Pyth のみ (tier C)
+ * Pyth Hermes REST は 2026-08-26 に API key 必須 (無料 plan では使えない)、Switchboard は 2026-09-25 に
+ * サポート終了したため、どちらも呼ばない。asset ごとの構成 (tier A–D) は `lib/config/oracle-feeds.ts`。
+ *
+ * staleness 閾値は source ごとに heartbeat + 猶予 (Pyth 75 秒 / RedStone 90 秒、ユーザー決定 2026-10-05)。
+ * push feed は価格が乖離幅 (Pyth 0.5% / RedStone 0.1%) を超えれば heartbeat を待たず更新されるので、
+ * 「閾値以内の age」は「価格はその乖離幅以内」を意味する。
  *
  * 数値規約 (§4.5):
- *   - price_usd は 8 decimals string で出力 (transport / 表示用)。oracle 価格は元来
- *     float 由来なので chosen 価格を toFixed(8) で文字列化する境界とする (台帳 amount
- *     ではない)。token amount 演算は別途 bigint。
- *   - divergence_pct / age_seconds は percentage / 計数なので Number (§4.5 carve-out)。
+ *   - price_usd は on-chain の整数を bigint で 8 decimals string にする (oracle-onchain.ts)
+ *   - divergence_pct / age_seconds は percentage / 計数なので Number (§4.5 carve-out)
  *
  * fail-closed (§4.6):
- *   - 両 unavailable → oracle_unavailable
- *   - Pyth stale かつ Switchboard fallback 不可 → oracle_both_stale
- *   - Pyth ↔ Switchboard 乖離 >5% (両 fresh 時) → oracle_divergence_too_large
- *   - 2-5% → oracle_divergence_warning / Pyth stale→SB → oracle_pyth_stale
- *   - feed 未設定 asset は gate せず通す (not_configured、silent fail にしない)
+ *   - どの source も取得できない → oracle_unavailable
+ *   - Pyth stale かつ secondary が無い / stale → oracle_both_stale
+ *   - Pyth ↔ secondary 乖離 >5% (両 fresh 時) → oracle_divergence_too_large
+ *   - 2-5% → oracle_divergence_warning / Pyth stale → oracle_pyth_stale / secondary stale → oracle_secondary_stale
+ *   - tier D (feed なし / 停止中) は gate せず通す (not_configured + reason、silent fail にしない)
  */
-
 import type {
   OracleResult,
+  OracleSecondaryStatus,
+  OracleSourceId,
   OracleSourceStatus,
+  OracleTier,
   OracleWarning,
 } from "@workspace/lib/types";
+import {
+  ORACLE_FEEDS,
+  PYTH_PUSH_MAX_AGE_S,
+  REDSTONE_GATEWAY_MAX_AGE_S,
+  REDSTONE_PUSH_MAX_AGE_S,
+  type OracleFeedConfig,
+} from "@workspace/lib/config/oracle-feeds";
+import { getMultipleAccountsBase64 } from "./helius-rpc";
+import {
+  decodePythPriceUpdate,
+  decodeRedstonePriceData,
+  pythPushAccount,
+  redstonePriceAccount,
+  type DecodedPrice,
+} from "./oracle-onchain";
+import { _clearGatewayCacheForTest, aggregateGatewayFeed, fetchGatewaySnapshot } from "./oracle-redstone-gateway";
 
-const HERMES_URL = "https://hermes.pyth.network/v2/updates/price/latest";
-const CROSSBAR_URL = "https://crossbar.switchboard.xyz/simulate";
+// server.ts と softfail.test が使う symbol 逆引きは lib が canonical
+export { oracleMintForSymbol, pythFeedIdForSymbol } from "@workspace/lib/config/oracle-feeds";
 
-/** §4.6 staleness 閾値 (秒) */
-export const STALENESS_THRESHOLD_S = 60;
 /** §4.6 divergence warning 閾値 (%) */
 export const DIVERGENCE_WARN_PCT = 2;
 /** §4.6 divergence block 閾値 (%、execute 拒否) */
 export const DIVERGENCE_BLOCK_PCT = 5;
 
+/** source ごとの staleness 閾値 (秒) */
+export const MAX_AGE_S: Record<OracleSourceId, number> = {
+  pyth: PYTH_PUSH_MAX_AGE_S,
+  redstone: REDSTONE_PUSH_MAX_AGE_S,
+  redstone_gateway: REDSTONE_GATEWAY_MAX_AGE_S,
+};
+
 /**
- * 8.78: cache TTL を ok / blocked で分離。
- * blocked を ok と同じ 12 秒キャッシュすると、Hermes の数秒の瞬断が
- * 「最低 12 秒の execution block」に増幅される (実際にユーザーが踏んだ)。
- * blocked は 3 秒で切って早く再判定に行く。ok 側は従来どおり。
+ * 8.78: cache TTL を ok / blocked で分離。blocked を長く cache すると RPC の瞬断が
+ * 「最低 TTL 秒の execution block」に増幅されるので、blocked は 3 秒で切って早く再判定に行く。
  */
 const CACHE_TTL_OK_MS = 12_000;
 const CACHE_TTL_BLOCKED_MS = 3_000;
-const FETCH_TIMEOUT_MS = 8_000;
+
+const UNAVAILABLE: OracleSourceStatus = { available: false, price_usd: null, age_seconds: null };
+const NO_SECONDARY: OracleSecondaryStatus = { ...UNAVAILABLE, source: null };
 
 /**
- * 8.78: 直近に成功した取得値を feed 単位で保持し、live fetch が失敗した時だけ
- * **§4.6 の staleness 予算 (60 秒) 以内なら** age を実時間で再計算して使う。
- *
- * 背景: USDC / USDT / JLP は Pyth のみ設定 (Switchboard は SOL だけ) なので、
- * Hermes への 1 fetch 失敗 = 即 `oracle_unavailable` → fail-closed block だった。
- * dual-oracle の冗長性が stablecoin には無い。
- *
- * これは fail-closed の緩和ではない: 60 秒は evaluateOracle の staleness 閾値と
- * 同じ予算で、「60 秒以内の実測値」は仕様上まだ信頼してよい鮮度。60 秒を超えた
- * last-good は使わず、従来どおり unavailable → block になる。
+ * 8.78: 直近に decode できた値を account 単位で保持し、RPC が失敗した時だけ
+ * **source の staleness 閾値以内なら** age を実時間で再計算して使う。
+ * 閾値は evaluateOracle と同じなので fail-closed の緩和ではない (閾値超の last-good は使わない)。
  */
-interface LastGoodSource {
+interface LastGood {
   price_usd: string;
-  /** Pyth は publish_time、Crossbar は取得時刻 (age 概念が無いため) */
   publishTimeSec: number;
 }
-const lastGoodPyth = new Map<string, LastGoodSource>();
-const lastGoodSwitchboard = new Map<string, LastGoodSource>();
+const lastGood = new Map<string, LastGood>();
 
-/** last-good が予算内なら age を再計算して返す。予算超過 / 無しは UNAVAILABLE */
-function lastGoodFallback(
-  map: Map<string, LastGoodSource>,
-  feedKey: string
-): OracleSourceStatus {
-  const good = map.get(feedKey);
+function nowSec(): number {
+  return Math.floor(Date.now() / 1000);
+}
+
+function toStatus(decoded: DecodedPrice, account: string): OracleSourceStatus {
+  if (!decoded.ok) return UNAVAILABLE;
+  lastGood.set(account, { price_usd: decoded.price_usd, publishTimeSec: decoded.publishTimeSec });
+  return { available: true, price_usd: decoded.price_usd, age_seconds: Math.max(0, nowSec() - decoded.publishTimeSec) };
+}
+
+function lastGoodStatus(account: string, maxAgeS: number): OracleSourceStatus {
+  const good = lastGood.get(account);
   if (!good) return UNAVAILABLE;
-  const age = Math.floor(Date.now() / 1000) - good.publishTimeSec;
-  if (age < 0 || age > STALENESS_THRESHOLD_S) return UNAVAILABLE;
+  const age = nowSec() - good.publishTimeSec;
+  if (age < 0 || age > maxAgeS) return UNAVAILABLE;
   return { available: true, price_usd: good.price_usd, age_seconds: age };
 }
 
-interface FeedConfig {
-  symbol: string;
-  /** Pyth Hermes price feed id (0x...)。無ければ Pyth 未設定 */
-  pythFeedId?: string;
-  /** Switchboard Crossbar feed hash (0x...)。無ければ Switchboard 未設定 */
-  switchboardFeedHash?: string;
-}
-
 /**
- * underlying mint → oracle feed 設定。実地検証済 (2026-06、Hermes / Crossbar)。
- *   - SOL: Pyth + Switchboard 両方 (実 divergence の showcase)
- *   - USDC / USDT: Pyth のみ (staleness 保護)。stablecoin は乖離が出にくい
- *   - EURC / USDG / USDS / JupUSD: 未設定 = 非 gate (feed 確証が取れるまで)
+ * asset の source を読む。Pyth / RedStone push は 1 回の getMultipleAccounts、tier B の gateway は並列で取得。
+ * RPC / gateway 自体の失敗は source ごとに last-good (閾値以内) → 無ければ unavailable。
+ * データはあるが検証を通らない (owner / feed id 不一致、未検証、価格 0、signer quorum 不足) は unavailable
+ * (last-good も使わない)
  */
-const ASSET_ORACLE_FEEDS: Record<string, FeedConfig> = {
-  So11111111111111111111111111111111111111112: {
-    symbol: "SOL",
-    pythFeedId:
-      "0xef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d",
-    switchboardFeedHash:
-      "0x822512ee9add93518eca1c105a38422841a76c590db079eebb283deb2c14caa9",
-  },
-  EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v: {
-    symbol: "USDC",
-    pythFeedId:
-      "0xeaa020c61cc479712813461ce153894a96a6c00b21ed0cfc2798d1f9a9e9c94a",
-  },
-  Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB: {
-    symbol: "USDT",
-    pythFeedId:
-      "0x2b89b9dc8fdf9f34709a5b106b472f0f39bb6ca9ce04b0fd7f2e971688e2e53b",
-  },
-  // JLP (Phase 8.27 — Kamino JLP reserve 用。Hermes query で実在確認 2026-07-11)
-  "27G8MtK7VtTcCHkpASjSDdkWWYfoqT6ggEuKidVJidD4": {
-    symbol: "JLP",
-    pythFeedId:
-      "0xc811abc82b4bad1f9bd711a2773ccaa935b03ecef974236942cec5e0eb845a3a",
-  },
-};
+export async function fetchSources(
+  config: OracleFeedConfig
+): Promise<{ pyth: OracleSourceStatus; secondary: OracleSecondaryStatus }> {
+  const pythAcct = config.pythFeedId ? pythPushAccount(config.pythFeedId) : null;
+  const rsAcct = config.redstoneFeedId ? redstonePriceAccount(config.redstoneFeedId) : null;
+  const keys = [pythAcct, rsAcct].filter((k): k is string => k !== null);
+  const pythMaxAge = config.pythMaxAgeS ?? MAX_AGE_S.pyth;
 
-/**
- * Phase 8.57: symbol → underlying mint (registry の逆引き)。
- * `/prices` が symbol 指定で oracle 価格を引くために使う。
- * WSOL は SOL の別名として扱う (mobile 側は SOL に正規化して持つ)。
- */
-export function oracleMintForSymbol(symbol: string): string | undefined {
-  const wanted = symbol === "WSOL" ? "SOL" : symbol;
-  for (const [mint, feed] of Object.entries(ASSET_ORACLE_FEEDS)) {
-    if (feed.symbol === wanted) return mint;
-  }
-  return undefined;
-}
+  const [raw, gateway] = await Promise.all([
+    keys.length > 0 ? getMultipleAccountsBase64(keys).catch(() => null) : Promise.resolve(null),
+    config.redstoneGatewayFeedId ? readGateway(config.redstoneGatewayFeedId) : Promise.resolve(null),
+  ]);
+  const at = (k: string | null) => (k && raw ? (raw[keys.indexOf(k)] ?? null) : null);
 
-/**
- * Phase 8.58: symbol → Pyth feed id。過去価格 (Benchmarks) を引くのに使う。
- * latest (Hermes) と同じ feed を使うことで現在と過去の出所を揃える。
- */
-export function pythFeedIdForSymbol(symbol: string): string | undefined {
-  const mint = oracleMintForSymbol(symbol);
-  if (!mint) return undefined;
-  return ASSET_ORACLE_FEEDS[mint]?.pythFeedId;
-}
-
-const UNAVAILABLE: OracleSourceStatus = {
-  available: false,
-  price_usd: null,
-  age_seconds: null,
-};
-
-/** Number 価格 → 8 decimals string (transport 用、§4.5 注記参照) */
-function toPriceString(price: number): string {
-  return price.toFixed(8);
-}
-
-async function fetchJson(url: string): Promise<unknown> {
-  const ctrl = new AbortController();
-  const timer = setTimeout(() => ctrl.abort(), FETCH_TIMEOUT_MS);
-  try {
-    const res = await fetch(url, { signal: ctrl.signal });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return await res.json();
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-/** Pyth Hermes から price + age を取得。失敗/未設定なら available:false。 */
-export async function fetchPyth(
-  feedId: string | undefined
-): Promise<OracleSourceStatus> {
-  if (!feedId) return UNAVAILABLE;
-  try {
-    const json = (await fetchJson(
-      `${HERMES_URL}?ids[]=${encodeURIComponent(feedId)}`
-    )) as {
-      parsed?: Array<{
-        price?: { price: string; expo: number; publish_time: number };
-      }>;
+  const pyth: OracleSourceStatus = !pythAcct
+    ? UNAVAILABLE
+    : raw
+      ? toStatus(decodePythPriceUpdate(at(pythAcct), config.pythFeedId!), pythAcct)
+      : lastGoodStatus(pythAcct, pythMaxAge);
+  let secondary: OracleSecondaryStatus = NO_SECONDARY;
+  if (rsAcct) {
+    secondary = {
+      source: "redstone",
+      ...(raw
+        ? toStatus(decodeRedstonePriceData(at(rsAcct), config.redstoneFeedId!), rsAcct)
+        : lastGoodStatus(rsAcct, MAX_AGE_S.redstone)),
     };
-    const p = json.parsed?.[0]?.price;
-    if (!p || !/^[0-9]+$/.test(p.price)) return lastGoodFallback(lastGoodPyth, feedId);
-    const price = Number(p.price) * Math.pow(10, p.expo);
-    if (!Number.isFinite(price) || price <= 0) {
-      return lastGoodFallback(lastGoodPyth, feedId);
-    }
-    const age = Math.floor(Date.now() / 1000) - p.publish_time;
-    // 8.78: 成功値を保持 (次の瞬断で 60 秒予算内なら使う)
-    lastGoodPyth.set(feedId, {
-      price_usd: toPriceString(price),
-      publishTimeSec: p.publish_time,
-    });
-    return {
-      available: true,
-      price_usd: toPriceString(price),
-      age_seconds: age >= 0 ? age : 0,
-    };
-  } catch {
-    // 8.78: 瞬断 (timeout / 429 / ネットワーク) は last-good で吸収。
-    // 60 秒を超えていれば UNAVAILABLE のまま = 従来どおり fail-closed
-    return lastGoodFallback(lastGoodPyth, feedId);
+  } else if (config.redstoneGatewayFeedId) {
+    secondary = { source: "redstone_gateway", ...(gateway ?? UNAVAILABLE) };
   }
+  return { pyth, secondary };
 }
 
-/** Switchboard Crossbar simulate から price を取得 (live = fresh, age 0)。失敗/未設定なら available:false。 */
-export async function fetchSwitchboard(
-  feedHash: string | undefined
-): Promise<OracleSourceStatus> {
-  if (!feedHash) return UNAVAILABLE;
+/** gateway の 1 feed。取得失敗は last-good (60 秒以内)、検証失敗は unavailable */
+async function readGateway(feedId: string): Promise<OracleSourceStatus> {
+  const key = `gateway:${feedId}`;
+  let snap;
   try {
-    const json = (await fetchJson(
-      `${CROSSBAR_URL}/${encodeURIComponent(feedHash)}`
-    )) as Array<{ results?: string[] }>;
-    const results = json?.[0]?.results ?? [];
-    const valid = results
-      .map((r) => Number(r))
-      .filter((n) => Number.isFinite(n) && n > 0);
-    if (valid.length === 0) {
-      return lastGoodFallback(lastGoodSwitchboard, feedHash);
-    }
-    // 複数 job の場合は中央値
-    valid.sort((a, b) => a - b);
-    const mid = Math.floor(valid.length / 2);
-    const price =
-      valid.length % 2 === 0 ? (valid[mid - 1]! + valid[mid]!) / 2 : valid[mid]!;
-    // 8.78: crossbar は age 概念が無いので取得時刻を publish 扱いで保持
-    lastGoodSwitchboard.set(feedHash, {
-      price_usd: toPriceString(price),
-      publishTimeSec: Math.floor(Date.now() / 1000),
-    });
-    return { available: true, price_usd: toPriceString(price), age_seconds: 0 };
+    snap = await fetchGatewaySnapshot();
   } catch {
-    return lastGoodFallback(lastGoodSwitchboard, feedHash);
+    return lastGoodStatus(key, MAX_AGE_S.redstone_gateway);
   }
+  const { status } = await aggregateGatewayFeed(snap[feedId], feedId);
+  if (status.available && status.price_usd && status.age_seconds !== null) {
+    lastGood.set(key, { price_usd: status.price_usd, publishTimeSec: nowSec() - status.age_seconds });
+  }
+  return status;
+}
+
+function isFresh(s: OracleSourceStatus, maxAgeS: number): boolean {
+  return s.available && s.age_seconds !== null && s.age_seconds <= maxAgeS;
 }
 
 /**
  * §4.6 decision table を実装する pure 関数。fetch 結果から最終判定を生成。
  * これが fail-closed の核 (jest 全分岐対象)。
  */
-export function evaluateOracle(
-  symbol: string,
-  pyth: OracleSourceStatus,
-  switchboard: OracleSourceStatus
-): OracleResult {
-  const base = {
-    asset_symbol: symbol,
-    pyth,
-    switchboard,
-  };
+export function evaluateOracle(input: {
+  symbol: string;
+  tier: OracleTier;
+  pyth: OracleSourceStatus;
+  secondary: OracleSecondaryStatus;
+  /** feed 別の Pyth 閾値 (sponsored feed の heartbeat が長い asset)。省略時は source 既定 */
+  pythMaxAgeS?: number;
+  /** feed 別の secondary 閾値。省略時は source 既定 */
+  secondaryMaxAgeS?: number;
+}): OracleResult {
+  const { symbol, tier, pyth, secondary } = input;
+  const base = { asset_symbol: symbol, pyth, secondary, tier };
+  const blocked = (block_reason: OracleResult["block_reason"], divergence_pct: number | null = null): OracleResult => ({
+    ...base,
+    status: "blocked",
+    primary: null,
+    price_usd: null,
+    divergence_pct,
+    warnings: [],
+    block_reason,
+  });
 
-  // 両 unavailable → fail-closed
-  if (!pyth.available && !switchboard.available) {
-    return {
-      ...base,
-      status: "blocked",
-      primary: null,
-      price_usd: null,
-      divergence_pct: null,
-      warnings: [],
-      block_reason: "oracle_unavailable",
-    };
-  }
+  const secondaryMaxAge = input.secondaryMaxAgeS ?? (secondary.source ? MAX_AGE_S[secondary.source] : 0);
+  const pythFresh = isFresh(pyth, input.pythMaxAgeS ?? MAX_AGE_S.pyth);
+  const secFresh = secondary.source !== null && isFresh(secondary, secondaryMaxAge);
 
-  const pythFresh =
-    pyth.available &&
-    pyth.age_seconds !== null &&
-    pyth.age_seconds <= STALENESS_THRESHOLD_S;
-  const pythStale = pyth.available && !pythFresh;
-  const sbFresh = switchboard.available; // Crossbar simulate = fresh by construction
+  if (!pyth.available && !(secondary.source && secondary.available)) return blocked("oracle_unavailable");
 
   const warnings: OracleWarning[] = [];
-  let primary: OracleResult["primary"];
+  let primary: OracleSourceId;
   let price_usd: string | null;
-
   if (pythFresh) {
     primary = "pyth";
     price_usd = pyth.price_usd;
-  } else if (sbFresh) {
-    // Pyth stale / 未取得 だが Switchboard fresh → fallback + warning
-    primary = "switchboard";
-    price_usd = switchboard.price_usd;
-    warnings.push({
-      kind: "oracle_pyth_stale",
-      pythAgeSeconds: pyth.age_seconds ?? undefined,
-    });
+    // secondary はあるが stale: 乖離は評価できないので、その旨を強警告で見せる
+    if (secondary.source && secondary.available && !secFresh) {
+      warnings.push({ kind: "oracle_secondary_stale", secondaryAgeSeconds: secondary.age_seconds ?? undefined });
+    }
+  } else if (secFresh) {
+    // Pyth stale / 未取得 だが secondary fresh → fallback + warning
+    primary = secondary.source!;
+    price_usd = secondary.price_usd;
+    warnings.push({ kind: "oracle_pyth_stale", pythAgeSeconds: pyth.age_seconds ?? undefined });
   } else {
-    // Pyth stale かつ Switchboard fallback 不可 → fail-closed
-    return {
-      ...base,
-      status: "blocked",
-      primary: null,
-      price_usd: null,
-      divergence_pct: null,
-      warnings: [],
-      block_reason: "oracle_both_stale",
-    };
+    // Pyth stale かつ secondary が無い / stale → fail-closed
+    return blocked("oracle_both_stale");
   }
 
   // divergence は両 fresh の時のみ評価 (stale price 比較は無意味)
   let divergence_pct: number | null = null;
-  if (
-    pythFresh &&
-    switchboard.available &&
-    pyth.price_usd &&
-    switchboard.price_usd
-  ) {
+  if (pythFresh && secFresh && pyth.price_usd && secondary.price_usd) {
     const a = Number(pyth.price_usd);
-    const b = Number(switchboard.price_usd);
+    const b = Number(secondary.price_usd);
     if (a > 0 && b > 0) {
       divergence_pct = (Math.abs(a - b) / ((a + b) / 2)) * 100;
-      if (divergence_pct > DIVERGENCE_BLOCK_PCT) {
-        return {
-          ...base,
-          status: "blocked",
-          primary: null,
-          price_usd: null,
-          divergence_pct,
-          warnings: [],
-          block_reason: "oracle_divergence_too_large",
-        };
-      }
-      if (divergence_pct >= DIVERGENCE_WARN_PCT) {
-        warnings.push({ kind: "oracle_divergence_warning", divergencePct: divergence_pct });
-      }
+      if (divergence_pct > DIVERGENCE_BLOCK_PCT) return blocked("oracle_divergence_too_large", divergence_pct);
+      if (divergence_pct >= DIVERGENCE_WARN_PCT) warnings.push({ kind: "oracle_divergence_warning", divergencePct: divergence_pct });
     }
   }
 
@@ -347,46 +245,43 @@ const cache = new Map<string, CacheEntry>();
 export function _clearOracleCacheForTest(): void {
   cache.clear();
   // 8.78: last-good もテスト間で持ち越さない
-  lastGoodPyth.clear();
-  lastGoodSwitchboard.clear();
+  lastGood.clear();
+  _clearGatewayCacheForTest();
 }
 
 /**
- * underlying mint の oracle 判定を返す。feed 未設定 asset は not_configured で通す
- * (oracle gate 対象外)。設定済 asset は Pyth/Switchboard を並列 fetch して評価。
+ * underlying mint の oracle 判定を返す。tier D / registry 外の asset は not_configured で通す
+ * (oracle gate 対象外、理由付き)。tier A / C は on-chain の source を読んで評価する。
  */
 export async function getOracleResult(mint: string): Promise<OracleResult> {
-  const config = ASSET_ORACLE_FEEDS[mint];
+  const config = ORACLE_FEEDS[mint];
 
-  // feed 未設定 → 非 gate (正当な asset を silent fail させない)
-  if (!config || (!config.pythFeedId && !config.switchboardFeedHash)) {
+  if (!config || config.tier === "D") {
     return {
       asset_symbol: config?.symbol ?? "UNKNOWN",
       status: "ok",
       primary: null,
       price_usd: null,
       pyth: UNAVAILABLE,
-      switchboard: UNAVAILABLE,
+      secondary: NO_SECONDARY,
+      tier: "D",
       divergence_pct: null,
       warnings: [],
       block_reason: null,
       not_configured: true,
+      reason: config?.reason ?? "Not in the oracle registry.",
     };
   }
 
   // 8.78: blocked は短い TTL で早く再判定に行く (瞬断を増幅しない)
   const cached = cache.get(mint);
   if (cached) {
-    const ttl =
-      cached.data.status === "blocked" ? CACHE_TTL_BLOCKED_MS : CACHE_TTL_OK_MS;
+    const ttl = cached.data.status === "blocked" ? CACHE_TTL_BLOCKED_MS : CACHE_TTL_OK_MS;
     if (Date.now() - cached.ts < ttl) return cached.data;
   }
 
-  const [pyth, switchboard] = await Promise.all([
-    fetchPyth(config.pythFeedId),
-    fetchSwitchboard(config.switchboardFeedHash),
-  ]);
-  const result = evaluateOracle(config.symbol, pyth, switchboard);
+  const { pyth, secondary } = await fetchSources(config);
+  const result = evaluateOracle({ symbol: config.symbol, tier: config.tier, pyth, secondary, pythMaxAgeS: config.pythMaxAgeS });
   cache.set(mint, { data: result, ts: Date.now() });
   return result;
 }

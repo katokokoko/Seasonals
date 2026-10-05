@@ -10,6 +10,7 @@
  *   https://mainnet.helius-rpc.com/?api-key=<key>
  */
 
+import type { TxStatusResponse } from "@workspace/lib/types";
 import { fetchWithTimeout } from "./http"; // Phase 8.38 (B9): 共通 timeout
 const HELIUS_MAINNET_URL = "https://mainnet.helius-rpc.com";
 
@@ -23,6 +24,129 @@ export function buildUrl(): string {
     throw new Error("HELIUS_API_KEY is not set");
   }
   return `${HELIUS_MAINNET_URL}/?api-key=${apiKey}`;
+}
+
+// ── read-only RPC の retry (Helius 429 対策) ────────────────────────────────
+//
+// Helius は混雑時に `429 Too Many Requests` (本文は plain text) を返す。読み取り
+// 専用の RPC は冪等なので、429 / 5xx / network・timeout を指数 backoff で
+// 再試行する (最大 3 attempt。attempt 間の待ちは 500ms → 1000ms、表の 2000ms は
+// attempt を増やした時の次段。`Retry-After` (秒、上限 10s) が backoff より長ければ
+// そちらを使う)。
+// - 429 以外の 4xx と JSON-RPC `error` は即 throw (再試行しても結果は同じ)
+// - **sendTransactionViaHelius には使わない** — broadcast の自動再送は二重送信の
+//   余地を作る (再送は Helius 側の maxRetries に任せる)
+// - error message に URL / api-key を含めない
+
+const RPC_MAX_ATTEMPTS = 3;
+const RPC_BACKOFF_MS = [500, 1000, 2000] as const;
+/** Retry-After が異常に長い時に handler を長く塞がない上限 */
+const RPC_RETRY_AFTER_CAP_MS = 10_000;
+
+type SleepFn = (ms: number) => Promise<void>;
+/** backoff の待ち。RPC 失敗を流す test は _setSleepForTest で差し替える (fake timer と組み合わせると解決しないため) */
+const defaultSleep: SleepFn = (ms) => new Promise((r) => setTimeout(r, ms));
+let sleep: SleepFn = defaultSleep;
+
+/** test 専用: backoff の待ちを差し替える (null で既定に戻す) */
+export function _setSleepForTest(fn: SleepFn | null): void {
+  sleep = fn ?? defaultSleep;
+}
+
+type RpcErrorKind = "http" | "rpc" | "network" | "parse";
+
+/** rpcReadWithRetry の失敗。message に URL / api-key を含めない */
+export class HeliusRpcError extends Error {
+  constructor(
+    message: string,
+    readonly kind: RpcErrorKind,
+    readonly status?: number
+  ) {
+    super(message);
+    this.name = "HeliusRpcError";
+  }
+}
+
+const redactKey = (s: string): string => s.replace(/api-key=[^&\s"']+/g, "api-key=***");
+
+function parseRetryAfterMs(res: Response): number | null {
+  const raw = res.headers.get("retry-after");
+  if (!raw) return null;
+  const sec = Number(raw.trim()); // 秒数 (小整数、§4.5 適用外)
+  if (!Number.isFinite(sec) || sec < 0) return null;
+  return Math.min(sec * 1000, RPC_RETRY_AFTER_CAP_MS);
+}
+
+interface RpcReadOptions {
+  /** JSON-RPC id (ログ・テストでの識別用) */
+  id?: string;
+  /** error message 上の名前 (既定: method) */
+  label?: string;
+  /** network / timeout を再試行するか (既定 true)。false なら 429 / 5xx のみ */
+  retryNetworkErrors?: boolean;
+}
+
+/**
+ * read-only JSON-RPC を 1 本投げ、`result` を返す (無ければ undefined)。
+ * 429 / 5xx / network は backoff 再試行、それ以外は即 throw (HeliusRpcError)。
+ */
+async function rpcReadWithRetry<T>(
+  method: string,
+  params: unknown[],
+  opts: RpcReadOptions = {}
+): Promise<T | undefined> {
+  const label = opts.label ?? method;
+  const retryNetwork = opts.retryNetworkErrors ?? true;
+  const url = buildUrl();
+  const body = JSON.stringify({ jsonrpc: "2.0", id: opts.id ?? `seasonals-${method}`, method, params });
+  let lastErr: HeliusRpcError | null = null;
+
+  for (let attempt = 0; attempt < RPC_MAX_ATTEMPTS; attempt++) {
+    let waitFloorMs: number | null = null;
+    let res: Response;
+    try {
+      res = await fetchWithTimeout(url, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body,
+      });
+    } catch (e) {
+      const msg = redactKey(e instanceof Error ? `${e.name}: ${e.message}` : String(e));
+      lastErr = new HeliusRpcError(`Helius ${label} network error: ${msg}`, "network");
+      if (!retryNetwork) throw lastErr;
+      if (attempt + 1 < RPC_MAX_ATTEMPTS) await sleep(RPC_BACKOFF_MS[attempt]!);
+      continue;
+    }
+
+    if (!res.ok) {
+      const retryable = res.status === 429 || res.status >= 500;
+      const hint = res.status === 429 ? " (rate limited)" : "";
+      lastErr = new HeliusRpcError(`Helius ${label} HTTP ${res.status}${hint}`, "http", res.status);
+      if (!retryable) throw lastErr;
+      waitFloorMs = parseRetryAfterMs(res);
+      // body は読まずに捨てる (接続を解放)
+      await res.body?.cancel().catch(() => undefined);
+      if (attempt + 1 < RPC_MAX_ATTEMPTS) {
+        await sleep(Math.max(RPC_BACKOFF_MS[attempt]!, waitFloorMs ?? 0));
+      }
+      continue;
+    }
+
+    let json: { result?: T; error?: { code?: number; message?: string } };
+    try {
+      json = (await res.json()) as typeof json;
+    } catch {
+      throw new HeliusRpcError(`Helius ${label}: response is not JSON`, "parse", res.status);
+    }
+    if (json.error) {
+      throw new HeliusRpcError(
+        `Helius ${label} RPC error ${json.error.code ?? "?"}: ${redactKey(String(json.error.message ?? ""))}`,
+        "rpc"
+      );
+    }
+    return json.result;
+  }
+  throw lastErr ?? new HeliusRpcError(`Helius ${label}: retries exhausted`, "network");
 }
 
 /**
@@ -75,6 +199,53 @@ export async function sendTransactionViaHelius(
   return json.result;
 }
 
+// ── oracle: Solana 上の price feed account を 1 回の RPC でまとめて読む (clients/oracle.ts) ──
+
+export interface RawAccount {
+  /** owner program (base58) */
+  owner: string;
+  data: Buffer;
+}
+
+/**
+ * getMultipleAccounts (base64)。存在しない account は null。順序は入力どおり。
+ * 失敗は throw (呼び手が last-good / fail-closed を判断する)。error に key を含めない
+ */
+export async function getMultipleAccountsBase64(pubkeys: string[]): Promise<Array<RawAccount | null>> {
+  if (pubkeys.length === 0) return [];
+  const result = await rpcReadWithRetry<{ value?: Array<{ owner?: string; data?: [string, string] } | null> }>(
+    "getMultipleAccounts",
+    [pubkeys, { encoding: "base64", commitment: "confirmed" }],
+    { id: "seasonals-oracle" }
+  );
+  const value = result?.value;
+  if (!Array.isArray(value) || value.length !== pubkeys.length) {
+    throw new Error("Helius getMultipleAccounts: unexpected result shape");
+  }
+  return value.map((v) =>
+    v && typeof v.owner === "string" && Array.isArray(v.data) ? { owner: v.owner, data: Buffer.from(v.data[0], "base64") } : null
+  );
+}
+
+// ── Web: 署名済 tx の着地確認 (sign-only の browser wallet は送信後の状態を出さないため) ──
+
+/**
+ * getSignatureStatuses を 1 件だけ引いて要約する。
+ * null (未着地 / 期限切れ) は pending — 呼び手が時間で打ち切る
+ */
+export async function getSignatureStatus(signature: string): Promise<TxStatusResponse> {
+  const result = await rpcReadWithRetry<{
+    value?: Array<{ slot?: number; err?: unknown; confirmationStatus?: string | null } | null>;
+  }>("getSignatureStatuses", [[signature], { searchTransactionHistory: true }], { id: "seasonals-status" });
+  const v = result?.value?.[0] ?? null;
+  if (!v) return { signature, status: "pending", slot: null, err: null };
+  const slot = typeof v.slot === "number" ? v.slot : null;
+  if (v.err != null) return { signature, status: "failed", slot, err: JSON.stringify(v.err) };
+  const c = v.confirmationStatus;
+  const status = c === "finalized" || c === "confirmed" || c === "processed" ? c : "processed";
+  return { signature, status, slot, err: null };
+}
+
 // ── Phase 8.16: epoch info (LST 保有者向けの実 epoch 境界イベント用) ──────────
 
 export interface EpochInfo {
@@ -92,30 +263,12 @@ export async function getEpochInfo(): Promise<EpochInfo> {
   if (epochCache && Date.now() - epochCache.at < EPOCH_CACHE_TTL_MS) {
     return epochCache.info;
   }
-  const res = await fetchWithTimeout(buildUrl(), {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      jsonrpc: "2.0",
-      id: "seasonals-epoch",
-      method: "getEpochInfo",
-      params: [],
-    }),
-  });
-  if (!res.ok) {
-    throw new Error(`Helius getEpochInfo HTTP ${res.status}`);
+  const result = await rpcReadWithRetry<EpochInfo>("getEpochInfo", [], { id: "seasonals-epoch" });
+  if (!result) {
+    throw new Error("Helius getEpochInfo RPC error: no result");
   }
-  const json = (await res.json()) as {
-    result?: EpochInfo;
-    error?: { code: number; message: string };
-  };
-  if (json.error || !json.result) {
-    throw new Error(
-      `Helius getEpochInfo RPC error: ${json.error?.message ?? "no result"}`
-    );
-  }
-  epochCache = { at: Date.now(), info: json.result };
-  return json.result;
+  epochCache = { at: Date.now(), info: result };
+  return result;
 }
 
 // ── Phase 8.80: wallet の input 残高 (署名前 gate 用) ─────────────────────────
@@ -210,28 +363,12 @@ const SUPPLY_TTL_MS = 10 * 60_000;
 export async function getTokenSupplyUi(mint: string): Promise<number> {
   const hit = supplyCache.get(mint);
   if (hit && Date.now() - hit.at < SUPPLY_TTL_MS) return hit.ui;
-  const res = await fetchWithTimeout(buildUrl(), {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      jsonrpc: "2.0",
-      id: "seasonals-supply",
-      method: "getTokenSupply",
-      params: [mint],
-    }),
+  const result = await rpcReadWithRetry<{ value?: { uiAmount?: number } }>("getTokenSupply", [mint], {
+    id: "seasonals-supply",
   });
-  if (!res.ok) {
-    throw new Error(`Helius getTokenSupply HTTP ${res.status}`);
-  }
-  const json = (await res.json()) as {
-    result?: { value?: { uiAmount?: number } };
-    error?: { code: number; message: string };
-  };
-  const ui = json.result?.value?.uiAmount;
-  if (json.error || typeof ui !== "number" || !Number.isFinite(ui)) {
-    throw new Error(
-      `Helius getTokenSupply error: ${json.error?.message ?? "invalid uiAmount"}`
-    );
+  const ui = result?.value?.uiAmount;
+  if (typeof ui !== "number" || !Number.isFinite(ui)) {
+    throw new Error("Helius getTokenSupply error: invalid uiAmount");
   }
   supplyCache.set(mint, { at: Date.now(), ui });
   return ui;
@@ -260,31 +397,8 @@ export interface StakeAccountInfo {
 export async function fetchStakeAccounts(
   wallet: string
 ): Promise<StakeAccountInfo[]> {
-  const res = await fetchWithTimeout(buildUrl(), {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      jsonrpc: "2.0",
-      id: "seasonals-stake",
-      method: "getProgramAccounts",
-      params: [
-        "Stake11111111111111111111111111111111111111",
-        {
-          encoding: "jsonParsed",
-          commitment: "confirmed",
-          filters: [
-            { dataSize: 200 },
-            { memcmp: { offset: 44, bytes: wallet } },
-          ],
-        },
-      ],
-    }),
-  });
-  if (!res.ok) {
-    throw new Error(`Helius getProgramAccounts(stake) HTTP ${res.status}`);
-  }
-  const json = (await res.json()) as {
-    result?: {
+  const result = await rpcReadWithRetry<
+    {
       pubkey: string;
       account: {
         data: {
@@ -297,16 +411,24 @@ export async function fetchStakeAccounts(
           };
         };
       };
-    }[];
-    error?: { code: number; message: string };
-  };
-  if (json.error || !Array.isArray(json.result)) {
-    throw new Error(
-      `Helius getProgramAccounts(stake) RPC error: ${json.error?.message ?? "no result"}`
-    );
+    }[]
+  >(
+    "getProgramAccounts",
+    [
+      "Stake11111111111111111111111111111111111111",
+      {
+        encoding: "jsonParsed",
+        commitment: "confirmed",
+        filters: [{ dataSize: 200 }, { memcmp: { offset: 44, bytes: wallet } }],
+      },
+    ],
+    { id: "seasonals-stake", label: "getProgramAccounts(stake)" }
+  );
+  if (!Array.isArray(result)) {
+    throw new Error("Helius getProgramAccounts(stake) RPC error: no result");
   }
   const out: StakeAccountInfo[] = [];
-  for (const acc of json.result) {
+  for (const acc of result) {
     const delegation = acc.account?.data?.parsed?.info?.stake?.delegation;
     if (!delegation?.stake || !delegation.deactivationEpoch) continue;
     out.push({
@@ -342,14 +464,14 @@ export interface SimulationOutcome {
 export async function simulateUnsignedTx(
   base64Tx: string
 ): Promise<SimulationOutcome> {
-  const res = await fetchWithTimeout(buildUrl(), {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      jsonrpc: "2.0",
-      id: "seasonals-simulate",
-      method: "simulateTransaction",
-      params: [
+  // simulate は状態を変えない (read-only) ので 429 / 5xx のみ再試行する。
+  // simulation 自体の失敗 (value.err) は 200 応答なので再試行対象にならない。
+  // network / timeout は従来どおり呼び手へ throw (retryNetworkErrors: false)
+  let result: { value?: { err?: unknown; logs?: string[] } } | undefined;
+  try {
+    result = await rpcReadWithRetry<{ value?: { err?: unknown; logs?: string[] } }>(
+      "simulateTransaction",
+      [
         base64Tx,
         {
           sigVerify: false,
@@ -358,18 +480,17 @@ export async function simulateUnsignedTx(
           commitment: "confirmed",
         },
       ],
-    }),
-  });
-  if (!res.ok) {
+      { id: "seasonals-simulate", retryNetworkErrors: false }
+    );
+  } catch (e) {
     // 検証できない時は通す (fail-open)。ここで止めると RPC 障害で全機能が死ぬ
-    return { ok: true };
+    if (e instanceof HeliusRpcError && (e.kind === "http" || e.kind === "rpc")) {
+      return { ok: true };
+    }
+    throw e;
   }
-  const json = (await res.json()) as {
-    result?: { value?: { err?: unknown; logs?: string[] } };
-    error?: { message?: string };
-  };
-  if (json.error || !json.result?.value) return { ok: true };
-  const value = json.result.value;
+  if (!result?.value) return { ok: true };
+  const value = result.value;
   if (!value.err) return { ok: true };
   const logs = value.logs ?? [];
   // 人間が読める失敗理由 (program の説明ログ or Anchor のエラー行)。

@@ -1,6 +1,6 @@
 import { KAMINO_MARKETS } from "../config/kamino-markets";
 import { PositionCategory, type EarnPosition, type EarnPositionsResponse, type ProtocolMenuEntry, type ProtocolPool } from "../types";
-import { earnPositionsForProtocol, heldPoolKeys, partitionPositions } from "./earn-positions";
+import { allEarnPositions, earnPositionsForProtocol, heldPoolKeys, partitionPositions } from "./earn-positions";
 
 const KAMINO_USDC = KAMINO_MARKETS.find((m) => m.pool_id === "kamino_usdc_main")!;
 
@@ -58,4 +58,19 @@ test("holdings from several wallets are collected per pool", () => {
   const e2: EarnPositionsResponse = { jupiterLend: [], kaminoBestEffort: [position({ share_mint: KAMINO_USDC.reserve, shares: "5" })] };
   const held = heldPoolKeys([entry("kamino", [pool({ pool_id: KAMINO_USDC.pool_id })])], [e1, e2]);
   expect(held.get(`kamino:${KAMINO_USDC.pool_id}`)).toHaveLength(2);
+});
+
+describe("allEarnPositions", () => {
+  it("全 protocol 配列を Seeker mergeEarnPositions と同じ並びで 1 列にする (欠けた配列は無視)", () => {
+    const p = (id: string) => ({ protocol_id: id }) as EarnPosition;
+    const out = allEarnPositions({
+      jupiterLend: [p("jupiter_lend")],
+      kaminoBestEffort: [p("kamino")],
+      swapEarn: [p("jito")],
+      exponent: [p("exponent")],
+      orca: [p("orca")],
+    } as EarnPositionsResponse);
+    expect(out.map((x) => x.protocol_id)).toEqual(["jupiter_lend", "kamino", "jito", "exponent", "orca"]);
+    expect(allEarnPositions(undefined)).toEqual([]);
+  });
 });

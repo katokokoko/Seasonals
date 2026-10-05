@@ -71,8 +71,8 @@ function deriveOracleWarnings(plan: AgentPlan): OracleWarning[] {
       divergencePct: oracle.divergence_pct,
     });
   }
-  // primary が switchboard なら pyth が stale で fallback されている
-  if (oracle.primary === "switchboard") {
+  // primary が pyth 以外 (secondary) なら pyth が stale で fallback されている
+  if (oracle.primary !== "pyth") {
     out.push({
       kind: "oracle_pyth_stale",
       pythAgeSeconds: oracle.primary_age_seconds,
