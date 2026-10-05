@@ -114,7 +114,9 @@ for (const vp of WIDTHS) {
 
   // date click → dialog (URL 不変) → Esc で閉じて focus 復帰
   const cell = page.locator(".home-card .month-cell-hit").nth(12);
-  await cell.click();
+  // 日付の帯 (上端 26px) を押す。中央は実データの event chip が重なり、chip がクリックを取る
+  const dateStrip = { position: { x: 10, y: 12 } };
+  await cell.click(dateStrip);
   const dialog = page.getByRole("dialog");
   await dialog.waitFor();
   check(`${vp.name} date click opens dialog`, await dialog.isVisible());
@@ -130,7 +132,7 @@ for (const vp of WIDTHS) {
   check(`${vp.name} Esc closes dialog`, (await page.getByRole("dialog").count()) === 0);
   check(`${vp.name} focus returns to date cell`, await page.evaluate(() => document.activeElement?.classList.contains("month-cell-hit")));
   // outside click
-  await cell.click();
+  await cell.click(dateStrip);
   await page.mouse.click(5, vp.height - 5);
   check(`${vp.name} outside click closes dialog`, (await page.getByRole("dialog").count()) === 0);
 
@@ -197,6 +199,8 @@ for (const vp of WIDTHS) {
   const shown = await page.locator(".menu-item").count();
   const heldShown = await page.locator(".menu-item .menu-holding").count();
   check("Deposited only narrows the menu to held products", shown > 0 && shown < all && heldShown === shown, `all=${all} shown=${shown} held=${heldShown}`);
+  // 絞り込みを外してから sUSDe を選ぶ (watch している address の保有は mainnet 次第で変わる)
+  await page.getByRole("button", { name: "Deposited only" }).click();
   const card = page.locator(".menu-item", { hasText: "sUSDe" }).first();
   await card.getByRole("button", { name: "Deposit" }).click();
   await card.getByLabel("Amount").fill("1");
