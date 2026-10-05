@@ -82,13 +82,18 @@ export function useSkrStakingView(address: string | null): SkrStakingView {
       })
     : "loading";
 
-  return {
-    address,
-    scope,
-    state,
-    freshness,
-    observedAt: state?.observed_at ?? null,
-    isFetching: q.isFetching,
-    refetch,
-  };
+  // PortfolioSummary (React.memo) の月送り再レンダー抑止 (8.84) を壊さないよう identity を保つ
+  const isFetching = q.isFetching;
+  return useMemo(
+    () => ({
+      address,
+      scope,
+      state,
+      freshness,
+      observedAt: state?.observed_at ?? null,
+      isFetching,
+      refetch,
+    }),
+    [address, scope, state, freshness, isFetching, refetch]
+  );
 }

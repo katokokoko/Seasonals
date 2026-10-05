@@ -34,6 +34,19 @@ export function eventDirectionLabel(event: EventLike): string | null {
   return null;
 }
 
+/**
+ * protocol id の表示名。SKR staking cooldown (docs/skr-r0-implementation.md) は metadata に
+ * headline を持たない (量・表示文言を event に入れない) ので、id から表示名を引く。
+ * それ以外は従来どおり protocol id をそのまま返す。
+ */
+const PROTOCOL_LABELS: Record<string, string> = {
+  skr_staking: "SKR staking",
+};
+
+export function eventProtocolLabel(event: { protocol: string }): string {
+  return PROTOCOL_LABELS[event.protocol] ?? event.protocol;
+}
+
 /** metadata.headline (string のときのみ)。tx 履歴・epoch・health イベントが持つ。 */
 export function eventHeadline(event: EventLike): string | null {
   const h = event.metadata?.headline;
