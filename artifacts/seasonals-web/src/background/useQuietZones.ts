@@ -16,7 +16,18 @@
  * 値が変わった時だけ version を増やし、WaterBackground はその時だけ uniform を upload する。
  */
 import { useEffect, useRef, type RefObject } from "react";
-import { canvasFrame, collectFloaters, collectGlassRects, collectQuietRects, GLASS_TRACKING_EVENT, packFloaters, packGlassRects, packQuietRects, sameRects } from "./quietZones";
+import {
+  canvasFrame,
+  collectFloaters,
+  collectGlassRects,
+  collectQuietRects,
+  GLASS_TRACKING_EVENT,
+  packFloaterSprites,
+  packFloaters,
+  packGlassRects,
+  packQuietRects,
+  sameRects,
+} from "./quietZones";
 
 export interface QuietZoneState {
   rects: Float32Array;
@@ -28,6 +39,8 @@ export interface QuietZoneState {
   glassCount: number;
   /** 水面に浮かぶもの (vec4 × 2) と数 */
   floaters: Float32Array;
+  /** glass の中で描く floater の sprite (vec4 × 2: 半幅, 半高, 回転, texture 番号) */
+  floaterSprites: Float32Array;
   floaterCount: number;
   /** 値が変わるたびに増える (uniform upload / still mode の再描画トリガ) */
   version: number;
@@ -47,6 +60,8 @@ export interface QuietZoneTracker {
   stateFor: (canvas: HTMLCanvasElement) => QuietZoneState;
   /** 今の DOM から rect を取り直す。どれかの layer が変わっていれば true */
   measure: () => boolean;
+  /** `[data-water-floater]` の要素 (glass layer が sprite の texture に使う。順番 = texture 番号) */
+  floaterImages: () => readonly HTMLElement[];
 }
 
 const EMPTY: QuietZoneState = {
@@ -57,6 +72,7 @@ const EMPTY: QuietZoneState = {
   glassShape: new Float32Array(24),
   glassCount: 0,
   floaters: new Float32Array(8),
+  floaterSprites: new Float32Array(8),
   floaterCount: 0,
   version: 0,
 };
@@ -77,6 +93,7 @@ export function useQuietZones(
   const tracker = useRef<QuietZoneTracker>({
     stateFor: (canvas) => states.current.get(canvas) ?? EMPTY,
     measure: () => false,
+    floaterImages: () => floaterEls.current,
   });
 
   tracker.current.measure = () => {
@@ -89,6 +106,7 @@ export function useQuietZones(
       const nextGlass = packGlassRects(glass);
       const floaters = collectFloaters(floaterEls.current, frame);
       const nextFloaters = packFloaters(floaters);
+      const nextSprites = packFloaterSprites(floaters);
       const cur = states.current.get(layer.canvas) ?? EMPTY;
       const changed =
         cur === EMPTY ||
@@ -99,7 +117,8 @@ export function useQuietZones(
         !sameRects(cur.glassMeta, nextGlass.meta) ||
         !sameRects(cur.glassShape, nextGlass.shape) ||
         cur.floaterCount !== floaters.length ||
-        !sameRects(cur.floaters, nextFloaters);
+        !sameRects(cur.floaters, nextFloaters) ||
+        !sameRects(cur.floaterSprites, nextSprites);
       if (changed) {
         states.current.set(layer.canvas, {
           rects: next,
@@ -109,6 +128,7 @@ export function useQuietZones(
           glassShape: nextGlass.shape,
           glassCount: glass.length,
           floaters: nextFloaters,
+          floaterSprites: nextSprites,
           floaterCount: floaters.length,
           version: cur.version + 1,
         });

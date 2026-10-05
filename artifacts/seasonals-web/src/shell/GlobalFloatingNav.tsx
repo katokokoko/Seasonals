@@ -2,8 +2,9 @@
  * GlobalFloatingNav — 全画面共通の浮遊 top bar (UI v2 §1)。
  * wordmark / Overview / Menu / Calendar / Agent / Dashboard / Learn / 対応 chain icons /
  * Settings (gear) / Wallet。1100–1439px では Agent / Dashboard / Learn を More に畳む。
- * 面は clear な liquid glass (中央が透け、縁で水面が曲がる)。選択中の項目は塗りではなく
- * ガラスの "しずく" (useGlassDroplet) がばねで移動して示す。
+ * 面は clear な liquid glass (中央が透け、縁で水面が曲がる)。`?nav=droplet` の時は Home の portal card と
+ * 同じ水の blob (droplet glass、navVariant.ts)。選択中の項目は塗りではなく
+ * ガラスの "しずく" (useGlassDroplet、こちらは常に clear glass) がばねで移動して示す。
  */
 import { useEffect, useRef, useState } from "react";
 import { Link, NavLink, useLocation } from "react-router";
@@ -14,6 +15,7 @@ import { WalletControl } from "./WalletControl";
 import { useEthStatus } from "../services/queries";
 import { useGlassPointer } from "../ui/useGlassPointer";
 import { useGlassDroplet } from "../ui/useGlassDroplet";
+import { currentNavVariant } from "./navVariant";
 
 const PRIMARY = [
   { to: "/", label: "Overview", end: true },
@@ -33,8 +35,15 @@ export function GlobalFloatingNav() {
   const secondaryActive = SECONDARY.some((s) => pathname.startsWith(s.to));
   const glassRef = useGlassPointer<HTMLElement>();
   const { containerRef, dropletRef } = useGlassDroplet<HTMLElement, HTMLSpanElement>(pathname);
+  // 起動時の URL / sessionStorage で決まる (tab の間は固定)
+  const [variant] = useState(currentNavVariant);
   return (
-    <header ref={glassRef} className="global-nav glass glass-clear" data-water-quiet="nav" data-water-glass="clear">
+    <header
+      ref={glassRef}
+      className={`global-nav glass ${variant === "droplet" ? "glass-droplet" : "glass-clear"}`}
+      data-water-quiet="nav"
+      data-water-glass={variant}
+    >
       <Link to="/" className="wordmark" aria-label="Seasonals — Overview">
         Seasonals
       </Link>

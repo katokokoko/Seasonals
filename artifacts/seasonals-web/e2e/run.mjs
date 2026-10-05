@@ -304,6 +304,44 @@ for (const vp of WIDTHS) {
     dropletLayers.glass?.lens === 1 && dropletLayers.glass?.drops === 4 && dropletLayers.water?.lens === 0 && dropletLayers.water?.n === 4 && dropletLayers.water?.drops === 4,
     JSON.stringify(dropletLayers)
   );
+  // カードの下に入ったキャラクターは glass layer が texture で屈折させて描く:
+  // texture が上がっていて、floater を uniform で Setting カードの中心に置くとその画素が変わる
+  const spriteCheck = await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => {
+    const c = document.querySelector(".glass-canvas canvas");
+    const gl = c.getContext("webgl");
+    const p = gl.getParameter(gl.CURRENT_PROGRAM);
+    const u = (n) => gl.getUniformLocation(p, n);
+    const ready = Array.from(gl.getUniform(p, u("uSpriteReady")));
+    const b = c.getBoundingClientRect();
+    const k = c.height / b.height;
+    const r = document.querySelector(".portal-card.slot-setting").getBoundingClientRect();
+    const x = (r.left + r.width / 2 - b.left) * k;
+    const y = (b.bottom - (r.top + r.height / 2)) * k;
+    const saveF = gl.getUniform(p, u("uFloaters[0]"));
+    const saveS = gl.getUniform(p, u("uFloaterSprite[0]"));
+    const saveN = gl.getUniform(p, u("uFloaterCount"));
+    const px = new Uint8Array(4);
+    const at = () => {
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+      gl.readPixels(Math.round(x), Math.round(y), 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
+      return Array.from(px);
+    };
+    gl.uniform1i(u("uFloaterCount"), 0);
+    const without = at();
+    gl.uniform1i(u("uFloaterCount"), 1);
+    gl.uniform4f(u("uFloaters[0]"), x, y, 40 * k, 1);
+    gl.uniform4f(u("uFloaterSprite[0]"), 50 * k, 50 * k, 0, 0);
+    const withSprite = at();
+    gl.uniform4fv(u("uFloaters[0]"), saveF);
+    gl.uniform4fv(u("uFloaterSprite[0]"), saveS);
+    gl.uniform1i(u("uFloaterCount"), saveN);
+    resolve({ ready, without, withSprite });
+  })));
+  check(
+    "characters under a glass card are drawn by the glass layer (sprite textures)",
+    spriteCheck.ready[0] === 1 && spriteCheck.ready[1] === 1 && spriteCheck.without.some((v, i) => Math.abs(v - spriteCheck.withSprite[i]) > 8),
+    JSON.stringify(spriteCheck)
+  );
   // pointer tilt が portal card に乗る
   const menuCard = page.locator(".portal-card.slot-menu");
   const box = await menuCard.boundingBox();
@@ -443,6 +481,22 @@ for (const vp of WIDTHS) {
   check("glass-debug overlay renders", (await page.locator(".glass-debug-info").innerText()).includes("shader − DOM"));
   await page.screenshot({ path: ".screenshots/glass-debug-1512.png" });
   check("no page errors (glass alignment)", page.errors.length === 0, page.errors.join(" | "));
+  await page.close();
+}
+
+// top bar の droplet 版 (?nav=droplet、shell/navVariant.ts): tab の間は遷移しても残り、?nav=clear で既定に戻る
+{
+  const page = await newPage(WIDTHS[0]);
+  await page.goto(BASE + "/?nav=droplet", { waitUntil: "networkidle" });
+  await page.waitForTimeout(600);
+  check("?nav=droplet makes the top bar droplet glass", (await page.locator(".global-nav").getAttribute("data-water-glass")) === "droplet");
+  await page.locator("nav[aria-label=Primary]").getByRole("link", { name: "Menu" }).click();
+  await page.waitForTimeout(400);
+  check("nav droplet stays after navigating", (await page.locator(".global-nav").getAttribute("data-water-glass")) === "droplet");
+  await page.goto(BASE + "/?nav=clear", { waitUntil: "networkidle" });
+  await page.waitForTimeout(400);
+  check("?nav=clear returns the top bar to clear glass", (await page.locator(".global-nav").getAttribute("data-water-glass")) === "clear");
+  check("no page errors (nav variant)", page.errors.length === 0, page.errors.join(" | "));
   await page.close();
 }
 

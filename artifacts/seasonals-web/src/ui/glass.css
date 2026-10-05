@@ -95,8 +95,14 @@
 :root[data-water="webgl"] .glass-droplet:focus-visible {
   box-shadow: var(--focus-ring);
 }
+/* top bar の droplet 版 (`?nav=droplet`、shell/navVariant.ts): 横長で文字が端まで並ぶので、楕円ではなく
+ * clear glass と同じ上下の薄い vanilla で可読性を補う */
+:root[data-water="webgl"] .global-nav.glass-droplet {
+  background: linear-gradient(180deg, var(--s-glassLegibility), transparent 38%, transparent 62%, var(--s-glassLegibility));
+}
 @media (prefers-reduced-transparency: reduce) {
-  :root[data-water="webgl"] .glass-droplet {
+  :root[data-water="webgl"] .glass-droplet,
+  :root[data-water="webgl"] .global-nav.glass-droplet {
     background: var(--s-lobby);
   }
 }
