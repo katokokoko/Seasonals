@@ -342,7 +342,7 @@ vec3 renderB(vec2 frag, float t, float quiet, float frost, float bevel) {
   float bend = fbm3(p * 0.8 + vec2(t * 0.02, -t * 0.015)) + 0.35 * gnoise(p * 3.2 + vec2(-t * 0.03, t * 0.02));
   vec2 sq = vec2(dot(p, nf) * 16.0 + bend * 13.0, dot(p, FLOW) * 2.6 - t * 0.05);
   float sn = gnoise(sq) + 0.4 * gnoise(sq * vec2(1.9, 1.1) + 3.3);
-  float bundle = smoothstep(-0.2, 0.26, fbm3(p * 1.4 + 4.0 + vec2(-t * 0.012, t * 0.01)));
+  float bundle = smoothstep(-0.28, 0.24, fbm3(p * 1.4 + 4.0 + vec2(-t * 0.012, t * 0.01)));
   vec2 off = -grad * uRefr * motion + nf * (sn * 0.004 * bundle * motion);
   vec2 rip;
   float shade, glint;
@@ -368,6 +368,8 @@ vec3 renderB(vec2 frag, float t, float quiet, float frost, float bevel) {
   vec2 gp0 = p + off * 0.25;
   float grain = (gnoise(gp0 * 210.0) + 0.6 * gnoise(gp0 * uRes.y * 0.33 + 7.7)) * (1.0 - 0.7 * frost) * (1.0 - 0.8 * bevel) * mix(1.0, 0.3, quiet);
   sand += grain * 0.08;
+  // mottled sand: lighter and darker grain patches at two sizes (pebbly, not smooth plaster)
+  sand *= 1.0 + (0.075 * gnoise(gp0 * 38.0 + 3.3) + 0.05 * gnoise(gp0 * 95.0 + 9.1)) * (1.0 - 0.8 * bevel) * mix(1.0, 0.3, quiet);
   vec2 gp = gp0 * 150.0;
   vec2 gi = floor(gp);
   float hs = hash21(gi + 5.0);
@@ -416,7 +418,7 @@ vec3 renderB(vec2 frag, float t, float quiet, float frost, float bevel) {
 
   // surface: the ripple strands catch the light as thin flowing bright lines
   float strand = exp(-abs(sn) * 16.0) * bundle;
-  col += strand * 0.26 * clear * (1.0 - bevel) * vec3(1.0, 0.99, 0.94); // a glass rim would bend them into rings
+  col += strand * 0.3 * clear * (1.0 - bevel) * vec3(1.0, 0.99, 0.94); // a glass rim would bend them into rings
   col += glint * 0.05;       // floater ripple crests catch the light
 
   // sparkles: a soft dot at bright crossings, and sparse twinkling four-point stars
@@ -426,10 +428,11 @@ vec3 renderB(vec2 frag, float t, float quiet, float frost, float bevel) {
   // small glints on the bright lines only (a tiny core with short arms, twinkling; not stamped stars)
   vec2 si = floor(frag / 44.0);
   float sh = hash21(si + 71.0);
-  if (sh > 0.72) {
+  if (sh > 0.8) {
     vec2 sc = (si + 0.2 + 0.6 * hash22(si + 3.0)) * 44.0;
     float on = max(sin(t * (0.6 + sh) + sh * 40.0), 0.0);
-    col += starGlint(frag - sc, 2.2 + 1.8 * hash21(si + 9.0)) * on * on * smoothstep(0.35, 0.9, cg) * 0.9 * clear;
+    float onLight = 0.45 + 0.55 * max(smoothstep(0.2, 0.6, cg), smoothstep(0.3, 0.8, strand)); // surface glints anywhere, strongest over the lines and strands
+    col += starGlint(frag - sc, 3.5 + 2.5 * hash21(si + 9.0)) * on * on * onLight * 1.4 * clear;
   }
 
   // tiny bubbles (sparse, drifting slowly)
