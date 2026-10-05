@@ -268,6 +268,12 @@ Web 側 (`artifacts/seasonals-web`) は `BFF_URL` (Vite dev proxy 先、node 側
 - きらめきは光の向きの符号で 4 隅のどれかに置いていたため、ポインターが画面の中心線をまたぐと隅から隅へ飛んでいた。中心から光の方向 (カードの縦横比で引き伸ばす) へ伸ばした線が角丸の輪郭と交わる点の少し内側に置き、`uLight` の追従に合わせて縁に沿ってなめらかに動くようにした。既定の左上の光では左上の隅の近くに止まる
 - カードの下のキャラを glass layer で描く案 (texture) と top bar の droplet 版 (`?nav=droplet`) は試したが、どちらも不要と決めて外した
 
+### 水面を浅い海の写真に寄せる (/goal、2026-10-05)
+- 参照は浅い海を真上から撮った写真 (local-only、`docs/web/reference/water-ref.png`)。膨らみや blob ではなく、水面の shader (`renderB`) そのものを寄せた。手順・採点文面・記録は `docs/web/reference/water-{goal,judge,tuning-log}.md`、撮影と gate は `e2e/water-shots.mjs`
+- 採用は iter 7 の形: 集光は「6 波の和の曲面が光を集める」(1 / |det(I − s∇²h)|) の折れ線、焦点外は少し深いアクア、水は赤から吸収するターコイズで浅い砂と深い斑、砂は粒 + 小石 + 砂紋、流れに沿う水面の筋と星、Home の静かな所はぼかした線を残す。描画コストは元の shader の 0.87 倍
+- 採点 (fresh な Opus、全軸 4 以上 2 回連続が完了条件) は上限 10 回で未達。元の shader の 2/3/2/2/3 から 3/3/3/3/4 (iter 5 と 7) まで。iter 2 以降は全軸 3 前後で頭打ちで、網目の形 (Voronoi はタイル的、焦点の折れ線は稲妻的、重み付き Voronoi の iter 9 / 10 も多角形と言われた) と水面の筋の弱さが毎回残った。規則どおり最低軸が最も高い commit のうち後の iter 7 に戻した。iter 9 / 10 の丸い網目は `0ccdeec` / `a10006f` に残してある
+- gate は全 iteration で通過: 文字のコントラスト (iter 0 の値以上)、作業画面の静かさ、reduced motion で静止、描画コストの比 ≤ 1.4。作業マシンは別セッションの test / build で負荷が高く、perf は iter 0 の shader と同じ page で交互に測る比にした。撮影中の vite reload は撮り直す
+
 ## 最終状態 (2026-09-26 05:30 JST 時点)
 
 | 領域 | 状態 | 実際に確認したこと |
