@@ -76,9 +76,9 @@ float heightB(vec2 p, float t) {
   q += 0.35 * vec2(fbm3(q + vec2(0.0, t * 0.05)), fbm3(q + vec2(5.2, 1.3) - t * 0.04));
   return fbm3(q * 1.3 + t * 0.03);
 }
-// Caustics: a network of rounded cells. The cells are an additively weighted Voronoi diagram (each
-// site's distance is offset by its own weight), so the walls are curved arcs and the cells pebble-like
-// and of varied size, not straight-edged tiles. The walls are where the swell focuses the sunlight:
+// Caustics: a network of rounded cells. The cells are a multiplicatively weighted Voronoi diagram (each
+// site's distance is scaled by its own weight), so every wall is a circular arc and the cells bow like
+// pebbles of varied size, not straight-edged tiles. The walls are where the swell focuses the sunlight:
 // a crisp core with a tight glow, brightest at the knots where walls meet. x: distance to the nearest
 // wall, y: to the nearest knot
 vec2 cellWalls(vec2 x, float t) {
@@ -90,7 +90,7 @@ vec2 cellWalls(vec2 x, float t) {
     vec2 g = vec2(float(i), float(j));
     vec2 h = hash22(n + g);
     vec2 o = 0.5 + 0.42 * sin(t + 6.2831 * h);
-    float d = length(g + o - f) - 0.28 * h.x; // weighted: curved walls, varied cell sizes
+    float d = length(g + o - f) * (0.75 + 0.5 * h.x); // multiplicatively weighted: every wall is a circular arc, cells bow like pebbles
     if (d < F1) { F3 = F2; F2 = F1; F1 = d; } else if (d < F2) { F3 = F2; F2 = d; } else if (d < F3) { F3 = d; }
   }
   return vec2(F2 - F1, F3 - F1);
@@ -172,7 +172,7 @@ vec3 renderB(vec2 frag, float t, float quiet, float frost, float bevel) {
   // anything this fine into hair-like streaks. The grain is a fine noise plus a per-grain hash
   vec2 gp0 = p + off * 0.25;
   float grain = (gnoise(gp0 * 210.0) + 0.55 * (hash21(floor(gp0 * uRes.y * 0.75)) - 0.5)) * (1.0 - 0.7 * frost) * mix(1.0, 0.3, quiet);
-  sand += grain * 0.085;
+  sand += grain * 0.11;
   vec2 gp = gp0 * 150.0;
   vec2 gi = floor(gp);
   float hs = hash21(gi + 5.0);
@@ -198,7 +198,7 @@ vec3 renderB(vec2 frag, float t, float quiet, float frost, float bevel) {
   float sharp = mix(16.0, 6.0, frost) * width * mix(1.0, 0.4, quiet);
   vec4 cb = causticsRGB(cp, dir, t, sharp, 0.05 * bevel);
   vec3 c = cb.rgb;
-  float shallow = mix(1.0, 0.55, clamp(d / 1.2, 0.0, 1.0));
+  float shallow = mix(0.78, 0.55, clamp(d / 1.2, 0.0, 1.0));
   c *= shallow * uCaustic * mix(1.0, 1.25, gnoise(cp * 0.21 + 8.1) + 0.5);
   c = mix(c, vec3(0.2 * uCaustic), quiet * 0.8); // the calm still shows soft blurred lines
   c *= 1.0 - 0.7 * shade;   // the floater blocks the light that makes caustics
