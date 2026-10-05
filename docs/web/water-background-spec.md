@@ -242,9 +242,22 @@ float fbm3(vec2 p) {
 }
 
 // =====================================================
-// Soda shallows: fbm height field, depth absorption, Voronoi edge caustics,
-// chromatic split, sparkles, bubbles, rectangular quiet zones under UI
+// Soda shallows: looking straight down through shallow clear water at a sand bottom.
+// The bottom (sand grain, specks, ripple marks) is lit by a Voronoi caustic network:
+// the light is conserved, so the lines are bright, the cell interiors dimmer and a band
+// just beside each line dimmer still. The water absorbs red most with depth (mint to teal).
+// The surface wobbles the view of the bottom, its ripple crests catch the light as thin
+// strands, and small star sparkles twinkle. Rectangular quiet zones calm it under UI.
 // =====================================================
+const vec2 FLOW = vec2(0.8, 0.6); // the swell runs along this: cells stretch, strands cross it
+
+// a small four-point sparkle; d = offset from its centre (device px), len = arm length
+float starGlint(vec2 d, float len) {
+  float core = exp(-dot(d, d) / 3.0);
+  float arms = exp(-abs(d.x) / 0.8) * exp(-abs(d.y) / len) + exp(-abs(d.y) / 0.8) * exp(-abs(d.x) / len);
+  return core * 0.9 + arms * 0.55;
+}
+
 float heightB(vec2 p, float t) {
   vec2 q = p * 2.2;
   q += 0.35 * vec2(fbm3(q + vec2(0.0, t * 0.05)), fbm3(q + vec2(5.2, 1.3) - t * 0.04));
@@ -265,18 +278,17 @@ float voroEdge(vec2 x, float t) {
   }
   return sqrt(F2) - sqrt(F1);
 }
-// sharp = 16 is the tuned caustic line; glass frost lowers it so the lines read as blurred
-float causticLine(vec2 x, float t, float sharp) {
-  float e = voroEdge(x, t);
-  return exp(-e * sharp) + exp(-e * 4.5) * 0.07;
-}
-vec3 causticsRGB(vec2 cp, vec2 dir, float t, float sharp, float spread) {
-  vec2 cp2 = mat2(0.8, -0.6, 0.6, 0.8) * cp * 1.7 + 13.7;
-  vec3 c;
-  c.r = causticLine(cp - dir * spread, t * 0.35, sharp) + 0.3 * causticLine(cp2 - dir * spread, t * 0.27, sharp);
-  c.g = causticLine(cp,                t * 0.35, sharp) + 0.3 * causticLine(cp2,                t * 0.27, sharp);
-  c.b = causticLine(cp + dir * spread, t * 0.35, sharp) + 0.3 * causticLine(cp2 + dir * spread, t * 0.27, sharp);
-  return c;
+// rgb: the caustic light (crisp core + soft glow, split slightly by colour), a: the shade band
+// just beside the lines (the light there was pulled into the line). sharp = 16 is the tuned line;
+// glass frost and quiet zones lower it so the lines read as blurred
+vec4 causticsRGB(vec2 cp, vec2 dir, float t, float sharp, float spread) {
+  vec3 e = vec3(voroEdge(cp - dir * spread, t * 0.35), voroEdge(cp, t * 0.35), voroEdge(cp + dir * spread, t * 0.35));
+  vec3 c = exp(-e * sharp) + 0.14 * exp(-e * sharp * 0.22);
+  // a second, wider network only as a faint glow (the photo's doubled lines, never a crisp tile pattern)
+  vec2 cp2 = mat2(0.8, -0.6, 0.6, 0.8) * cp * 0.62 + 13.7;
+  c += 0.1 * exp(-voroEdge(cp2, t * 0.27) * 5.0);
+  float band = exp(-e.g * 2.4) * (1.0 - exp(-e.g * sharp * 0.5));
+  return vec4(c, band);
 }
 // frost: 0 outside glass, uGlass inside. bevel: 1 at a glass edge, 0 in its flat middle
 // Floaters (Home characters): outward ripple rings on the surface around each one (they bend
@@ -304,70 +316,107 @@ void floaterField(vec2 frag, float t, out vec2 rip, out float shade, out float g
 
 vec3 renderB(vec2 frag, float t, float quiet, float frost, float bevel) {
   vec2 p = (frag - 0.5 * uRes) / uRes.y;
+  float calm = 1.0 - quiet;
+  float clear = calm * (1.0 - frost);
 
-  // surface
+  // surface: the fbm swell, plus a train of small ripples running along FLOW in bundles
   float eps = 0.004;
   float h  = heightB(p, t);
   float hx = heightB(p + vec2(eps, 0.0), t);
   float hy = heightB(p + vec2(0.0, eps), t);
   vec2 grad = vec2(hx - h, hy - h) / eps;
   float motion = mix(1.0, 0.4, quiet);
-  vec2 off = -grad * uRefr * motion;
+  float bend = fbm3(p * 1.1 + vec2(t * 0.02, -t * 0.015));
+  float phase = dot(p, FLOW) * 34.0 + bend * 14.0 - t * 0.35;
+  float bundle = smoothstep(0.0, 0.3, fbm3(p * 1.6 + 4.0 + vec2(-t * 0.012, t * 0.01)));
+  vec2 off = -grad * uRefr * motion + FLOW * (sin(phase) * 0.0016 * bundle * motion);
   vec2 rip;
   float shade, glint;
   floaterField(frag, t, rip, shade, glint);
   off += rip;
 
-  // depth (low frequency, drifts very slowly)
-  float d = clamp(0.52 + 1.2 * fbm3(p * 0.9 + vec2(3.1, 1.7) + t * 0.006), 0.15, 1.3);
+  // depth (low frequency, drifts very slowly; a little deeper toward the top)
+  float d = clamp(0.48 + 1.5 * fbm3(p * 0.8 + vec2(3.1, 1.7) + t * 0.006) + 0.3 * dot(p, vec2(-0.35, 0.95)), 0.05, 1.25);
+  float dv = mix(0.62, d, mix(1.0, 0.3, quiet)); // calmer depth changes under UI
 
-  // sand / vanilla bottom, sampled through the refraction
+  // sand bottom, sampled through the refraction: patches, ripple marks, grain, specks
   vec2 sp = p + off;
   float patches = fbm(sp * 1.6 + 11.0);
-  float grain = (gnoise(sp * 190.0) + 0.5 * gnoise(sp * 420.0)) * (1.0 - 0.7 * frost);
-  vec3 sand = mix(vec3(0.90, 0.86, 0.74), vec3(0.985, 0.955, 0.88), smoothstep(-0.3, 0.35, patches));
-  sand += grain * 0.022;
-
-  // liquid: soda blue <-> melon, absorbed with depth
-  vec3 soda = mix(vec3(0.56, 0.88, 0.91), vec3(0.62, 0.90, 0.72), uTint);
-  float a = 1.0 - exp(-d * 1.8);
-  vec3 col = mix(sand, soda * mix(0.97, 1.03, patches + 0.5), a);
+  vec3 sand = mix(vec3(0.86, 0.83, 0.71), vec3(0.975, 0.95, 0.86), mix(smoothstep(-0.3, 0.35, patches), 0.6, 0.6 * quiet));
+  sand *= 1.0 + 0.03 * calm * sin(dot(sp, vec2(0.45, 0.89)) * 70.0 + 4.0 * patches);
+  // grain and specks follow the bottom only loosely: the ripple train's refraction would stretch
+  // anything this fine into hair-like streaks. The grain is a fine noise plus a per-grain hash
+  vec2 gp0 = p + off * 0.25;
+  float grain = (gnoise(gp0 * 210.0) + 0.55 * (hash21(floor(gp0 * uRes.y * 0.75)) - 0.5)) * (1.0 - 0.7 * frost) * mix(1.0, 0.3, quiet);
+  sand += grain * 0.085;
+  vec2 gp = gp0 * 150.0;
+  vec2 gi = floor(gp);
+  float hs = hash21(gi + 5.0);
+  if (hs > 0.9) {
+    float sd = length(fract(gp) - 0.5 - (hash22(gi) - 0.5) * 0.5);
+    float sk = (1.0 - smoothstep(0.1, 0.28, sd)) * mix(0.7, 0.3, quiet);
+    sand = mix(sand, hs > 0.97 ? vec3(1.0, 0.985, 0.94) : sand * 0.84, sk);
+  }
 
   // caustics
-  vec2 cp = p * uScale;
+  vec2 cp = p * uScale * 1.15;
   cp += 0.55 * vec2(fbm3(p * 0.9 + t * 0.03), fbm3(p * 0.9 + 7.3 - t * 0.03));
   cp += grad * 0.012 * uScale;
   cp += rip * 3.0 * uScale; // ripple rings bend the caustic network
-  cp += 0.2 * vec2(gnoise(cp * 0.9 + t * 0.08), gnoise(cp * 0.9 + 5.1 - t * 0.08));
+  cp += 0.32 * vec2(gnoise(cp * 0.9 + t * 0.08), gnoise(cp * 0.9 + 5.1 - t * 0.08)); // bends the cell walls round
+  // stretch the cells along the swell and let them wave across it
+  vec2 nf = vec2(-FLOW.y, FLOW.x);
+  float along = dot(cp, FLOW);
+  float across = dot(cp, nf);
+  cp = FLOW * along * 0.78 + nf * (across * 1.18 + 0.28 * sin(along * 0.9 + t * 0.05));
   vec2 dir = normalize(grad + vec2(1e-4));
-  vec3 c = causticsRGB(cp, dir, t, mix(16.0, 6.0, frost), 0.014 + 0.05 * bevel);
-  float shallow = mix(1.0, 0.55, clamp(d / 1.3, 0.0, 1.0));
-  c *= shallow * uCaustic;
-  c = mix(c, vec3(0.06 * uCaustic), quiet);
+  float width = mix(0.55, 1.4, gnoise(cp * 0.35 + 2.3) + 0.5); // line width varies along the network
+  float sharp = mix(16.0, 6.0, frost) * width * mix(1.0, 0.4, quiet);
+  vec4 cb = causticsRGB(cp, dir, t, sharp, 0.014 + 0.05 * bevel);
+  vec3 c = cb.rgb;
+  float shallow = mix(1.0, 0.55, clamp(d / 1.2, 0.0, 1.0));
+  c *= shallow * uCaustic * mix(1.0, 1.25, gnoise(cp * 0.21 + 8.1) + 0.5);
+  c = mix(c, vec3(0.2 * uCaustic), quiet * 0.92);
   c *= 1.0 - 0.7 * shade;   // the floater blocks the light that makes caustics
-  col *= 1.0 - 0.13 * shade; // and casts a soft shadow on the sand
-  col += c * vec3(1.0, 0.99, 0.93);
-  col += glint * 0.09;       // ripple crests catch the light
 
-  // sparkles at bright crossings
+  // water: absorbs red most, then blue (soda) or green less (melon), with depth; a thin aqua in-scatter
+  vec3 k = mix(vec3(0.42, 0.07, 0.1), vec3(0.4, 0.04, 0.26), uTint);
+  vec3 bottom = sand * exp(-k * dv * 1.3);
+  // light on the bottom: conserved, so cell interiors sit below the lines and the band beside them
+  // lower still. The focused lines run toward cream white (they saturate like the photo's)
+  float base = 0.92 - 0.14 * cb.a * uCaustic * 2.0 * calm;
+  vec3 col = bottom * base + c * 1.05 * mix(bottom, vec3(1.0, 0.99, 0.93), 0.5);
+  col *= 1.0 - 0.13 * shade; // the floater casts a soft shadow on the sand
+  col += vec3(0.3, 0.66, 0.66) * (1.0 - exp(-dv * 0.9)) * 0.16;
+  col = mix(col, col * 1.04 + 0.025, quiet); // quiet zones sit a little lighter behind the UI
+
+  // surface: ripple crests that face the light show as thin flowing strands
+  float strand = pow(max(sin(phase + 0.9), 0.0), 30.0) * bundle;
+  col += strand * 0.4 * clear * vec3(1.0, 1.0, 0.97);
+  col += glint * 0.09;       // floater ripple crests catch the light
+
+  // sparkles: a soft dot at bright crossings, and sparse twinkling four-point stars
   float cg = c.g;
   float tw = gnoise(p * 95.0 + vec2(t * 0.9, -t * 0.7)) * 0.5 + 0.5;
-  float sparkle = pow(max(cg, 0.0), 3.0) * smoothstep(0.62, 0.9, tw);
-  col += sparkle * 1.1 * (1.0 - quiet) * (1.0 - frost);
+  col += pow(max(cg, 0.0), 3.0) * smoothstep(0.62, 0.9, tw) * 0.8 * clear;
+  vec2 si = floor(frag / 96.0);
+  float sh = hash21(si + 71.0);
+  if (sh > 0.88) {
+    vec2 sc = (si + 0.2 + 0.6 * hash22(si + 3.0)) * 96.0;
+    float on = max(sin(t * (0.5 + sh) + sh * 40.0), 0.0);
+    col += starGlint(frag - sc, 6.0 + 4.0 * hash21(si + 9.0)) * on * on * on * 0.85 * clear;
+  }
 
-  // bubbles (sparse, drifting slowly)
-  vec2 bp = p * 6.0 + vec2(t * 0.02, t * 0.012) + off * 3.0;
+  // tiny bubbles (sparse, drifting slowly)
+  vec2 bp = frag / 48.0 + vec2(t * 0.12, t * 0.07) + off * 3.0;
   vec2 bi = floor(bp);
-  vec2 bf = fract(bp) - 0.5;
-  if (hash21(bi + 31.0) > 0.82) {
-    vec2 bc = (hash22(bi + 7.0) - 0.5) * 0.5;
-    float r = 0.035 + 0.08 * hash21(bi + 3.0);
-    float bd = length(bf - bc);
-    float inside = 1.0 - smoothstep(r - 0.012, r, bd);
-    float rim = inside * smoothstep(r - 0.045, r - 0.012, bd);
-    float hl = 1.0 - smoothstep(0.0, r * 0.35, length(bf - bc - vec2(-0.35, 0.35) * r));
-    col = mix(col, col * 1.03 + 0.02, inside);
-    col += rim * 0.2 + hl * 0.45;
+  if (hash21(bi + 31.0) > 0.93) {
+    vec2 bf = fract(bp) - 0.5 - (hash22(bi + 7.0) - 0.5) * 0.6;
+    float r = (1.1 + 1.2 * hash21(bi + 3.0)) / 48.0;
+    float bd = length(bf);
+    float inside = 1.0 - smoothstep(r * 0.6, r, bd);
+    float ring = inside * smoothstep(r * 0.2, r * 0.8, bd);
+    col = mix(col, col * 0.93, ring * 0.6) + (inside - ring) * 0.12 * calm;
   }
 
   return col;
@@ -409,12 +458,6 @@ float dropletWobble(vec2 lp, vec2 hb, vec4 shape) {
   if (shape.y < 0.5) return 0.0;
   float th = atan(lp.y / max(hb.y, 1.0), lp.x / max(hb.x, 1.0));
   return shape.x * (0.6 * sin(3.0 * th + uTime * 0.22 + shape.z) + 0.4 * sin(5.0 * th - uTime * 0.15 + 1.7 * shape.z));
-}
-// a small four-point sparkle; d = offset from its centre (device px), len = arm length
-float starGlint(vec2 d, float len) {
-  float core = exp(-dot(d, d) / 3.0);
-  float arms = exp(-abs(d.x) / 0.8) * exp(-abs(d.y) / len) + exp(-abs(d.y) / 0.8) * exp(-abs(d.x) / len);
-  return core * 0.9 + arms * 0.55;
 }
 // drop: coverage of droplet surfaces; dropRim: their crisp light line; glint: their sparkle
 void glassLens(vec2 frag, out vec2 off, out float rim, out float frost, out float bevel, out float body, out float cover,
