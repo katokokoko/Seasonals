@@ -2,11 +2,17 @@
  * MCPApprovalPushCard — 仕様書 §8.7 (push tap → 専用 approval screen)
  *
  * push notification の deep link を踏んで開かれる full-screen approval。
- * WarningArea を必ず内蔵し、ApprovalToken の expires_at まで count-down を出す。
+ * WarningArea を必ず内蔵し、ApprovalToken があれば expires_at まで count-down を出す。
+ *
+ * agent-plan 契約 (2026-10): push は `{ type, plan_id }` だけで、approval token は
+ * approve の応答 (`{ ...plan, approval_token }`) で初めて発行される。Seeker は承認まで、
+ * 人が承認した plan の署名・送信は Seasonals web が行う (承認後にその案内を 1 行出す)。
  *
  * 設計原則:
  * - oracle warning は CTA 直上に強警告として表示 (WarningArea に委譲)
- * - approval_token TTL を 1 秒刻みで count-down、0 で CTA disabled
+ * - token (旧 deep link の ?token= / approve 応答) があれば TTL を 1 秒刻みで count-down。
+ *   承認前に渡された token が 0 / 不正なら CTA disabled (fail-closed)
+ * - token が無い (push から開いた) 場合は count-down を出さず、CTA は有効
  * - approve / reject 両方を内蔵 (services/queries の mutation 経由)
  * - bundle_hash 検証は BFF 側責務、本層では行わない
  *
@@ -14,7 +20,7 @@
  * @see ./WarningArea.tsx (oracle warning + CTA grayout)
  */
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 
 import {
@@ -94,7 +100,8 @@ function resolveDecimals(asset?: string): number {
 
 export interface MCPApprovalPushCardProps {
   plan: AgentPlan;
-  token: ApprovalToken;
+  /** 旧 deep link (?token=) 由来の token。無ければ approve 応答の token で TTL を出す */
+  token?: ApprovalToken;
   /** 現在時刻 (ms)。テスト用 override。default は () => Date.now() */
   now?: () => number;
   onApproveSuccess?: (updated: AgentPlan) => void;
@@ -129,18 +136,34 @@ export function MCPApprovalPushCard({
 
   const [currentMs, setCurrentMs] = useState<number>(() => now());
 
+  // 承認後は応答の approval_token (BFF 発行、TTL 300 秒) を優先して TTL を出す
+  const approved = approve.isSuccess;
+  const activeToken: ApprovalToken | null =
+    approve.data?.approval_token ?? token ?? null;
+
   // Phase 8.37 (M3): expires_at が不正/欠落だと getTime() が NaN になり
   // 「NaN <= 0 === false」で TTL が無効化されていた — 不正は expired 扱い
-  // (fail-closed。TTL は §29.3 のセキュリティ制御)
-  const expiresMs = new Date(token.expires_at).getTime();
+  // (fail-closed。TTL は §29.3 のセキュリティ制御)。token が無ければ TTL 判定なし
+  const expiresMs = activeToken
+    ? new Date(activeToken.expires_at).getTime()
+    : Number.NaN;
   const remainingMs = Number.isFinite(expiresMs) ? expiresMs - currentMs : 0;
-  const isExpired = remainingMs <= 0;
+  const isExpired = activeToken !== null && remainingMs <= 0;
+
+  // `now` は呼び手が inline arrow で渡し得るので ref 経由で読む (deps に入れると
+  // 毎 render で effect が回り、即時 setState と合わせて render loop になる)
+  const nowRef = useRef(now);
+  nowRef.current = now;
+  const activeTokenId = activeToken?.token_id ?? null;
+  const hasActiveToken = activeToken !== null;
 
   useEffect(() => {
-    if (isExpired) return;
-    const id = setInterval(() => setCurrentMs(now()), 1000);
+    if (!hasActiveToken || isExpired) return;
+    // token が差し替わった (approve 応答) 直後に現在時刻を取り直す
+    setCurrentMs(nowRef.current());
+    const id = setInterval(() => setCurrentMs(nowRef.current()), 1000);
     return () => clearInterval(id);
-  }, [isExpired, now]);
+  }, [activeTokenId, hasActiveToken, isExpired]);
 
   const action = plan.selected_action;
   const sim = plan.simulation_result;
@@ -164,7 +187,7 @@ export function MCPApprovalPushCard({
   const isBusy = approve.isPending || reject.isPending;
 
   const handleApprove = () => {
-    if (isExpired || isBusy) return;
+    if (isExpired || isBusy || approved) return;
     approve.mutate(
       { plan_id: plan.plan_id },
       { onSuccess: onApproveSuccess, onError: onApproveError }
@@ -231,7 +254,7 @@ export function MCPApprovalPushCard({
         hapticsEnabled={hapticsEnabled}
         grayoutMs={warningGrayoutMs}
         renderCta={({ disabled }) => {
-          const ctaDisabled = disabled || isExpired || isBusy;
+          const ctaDisabled = disabled || isExpired || isBusy || approved;
           return (
             <Pressable
               accessibilityRole="button"
@@ -242,10 +265,12 @@ export function MCPApprovalPushCard({
             >
               <Text style={styles.ctaApproveText}>
                 {approve.isPending
-                  ? "Executing…"
+                  ? "Approving…"
+                  : approved
+                  ? "Approved"
                   : isExpired
                   ? "Expired"
-                  : "Sign & execute"}
+                  : "Approve"}
               </Text>
             </Pressable>
           );
@@ -253,24 +278,35 @@ export function MCPApprovalPushCard({
         testID={testID ? `${testID}-warning` : undefined}
       />
 
+      {approved && (
+        <Text
+          style={styles.webHint}
+          testID={testID ? `${testID}-web-hint` : undefined}
+        >
+          Sign & send from the Seasonals web app.
+        </Text>
+      )}
+
       <View style={styles.footer}>
         <Pressable
           accessibilityRole="button"
-          disabled={isBusy}
+          disabled={isBusy || approved}
           onPress={handleReject}
-          style={[styles.ctaReject, isBusy && styles.ctaDisabled]}
+          style={[styles.ctaReject, (isBusy || approved) && styles.ctaDisabled]}
           testID={testID ? `${testID}-reject` : undefined}
         >
           <Text style={styles.ctaRejectText}>
             {reject.isPending ? "Rejecting…" : "Reject"}
           </Text>
         </Pressable>
-        <Text
-          style={[styles.expiresText, isExpired && styles.expiresExpired]}
-          testID={testID ? `${testID}-expires` : undefined}
-        >
-          {isExpired ? "Expired" : `Expires in ${formatRemaining(remainingMs)}`}
-        </Text>
+        {activeToken && (
+          <Text
+            style={[styles.expiresText, isExpired && styles.expiresExpired]}
+            testID={testID ? `${testID}-expires` : undefined}
+          >
+            {isExpired ? "Expired" : `Expires in ${formatRemaining(remainingMs)}`}
+          </Text>
+        )}
       </View>
     </ScrollView>
   );
@@ -389,6 +425,12 @@ const styles = StyleSheet.create({
     color: COLOR.textMuted,
     textAlign: "right",
     flex: 1,
+  },
+  webHint: {
+    fontSize: FONT_SIZE.bodySM,
+    fontFamily: FONT.body,
+    color: COLOR.textSubtitle,
+    textAlign: "center",
   },
   expiresExpired: {
     color: COLOR.cherryDark,

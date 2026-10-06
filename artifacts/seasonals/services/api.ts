@@ -111,7 +111,9 @@ async function httpGetJson<T>(path: string): Promise<T> {
 async function httpPostJson<T>(path: string, body?: unknown): Promise<T> {
   const res = await fetch(`${BFF_BASE_URL}${path}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    // body 無しの POST (/agent-plans/:id/approve 等) に content-type を付けると Fastify は
+    // FST_ERR_CTP_EMPTY_JSON_BODY (400) を返すので、body がある時だけ付ける
+    headers: body !== undefined ? { "Content-Type": "application/json" } : {},
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
   if (!res.ok) throw await bffError(res, path);
@@ -121,7 +123,7 @@ async function httpPostJson<T>(path: string, body?: unknown): Promise<T> {
 async function httpPatchJson<T>(path: string, body?: unknown): Promise<T> {
   const res = await fetch(`${BFF_BASE_URL}${path}`, {
     method: "PATCH",
-    headers: { "Content-Type": "application/json" },
+    headers: body !== undefined ? { "Content-Type": "application/json" } : {},
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
   if (!res.ok) throw await bffError(res, path);
@@ -252,7 +254,12 @@ async function fxPatchUserPolicy(
   return { ...cloned(fixtureUserPolicyDefault), ...patch };
 }
 
-async function fxApproveAgentPlan(planId: string): Promise<AgentPlan> {
+/** fixture の approve token TTL (BFF と同じ 300 秒) */
+const FX_APPROVAL_TTL_MS = 300_000;
+
+async function fxApproveAgentPlan(
+  planId: string
+): Promise<AgentPlan & { approval_token: ApprovalToken }> {
   await nextTick();
   const found = fixtureAgentPlans.find((p) => p.plan_id === planId);
   if (!found) throw new Error(`agent_plan_not_found: ${planId}`);
@@ -264,10 +271,22 @@ async function fxApproveAgentPlan(planId: string): Promise<AgentPlan> {
       `invalid_status_transition: cannot approve from ${found.status}`
     );
   }
+  const nowMs = Date.now();
+  // BFF 契約と同形: { ...plan, approval_token } (token は TTL 300 秒)
   return cloned({
     ...found,
     status: AgentPlanStatus.Approved,
-    updated_at: new Date().toISOString(),
+    updated_at: new Date(nowMs).toISOString(),
+    approval_token: {
+      token_id: `tok_fx_${planId}`,
+      user_id: found.user_id,
+      plan_id: planId,
+      mcp_client_id: found.mcp_client_id,
+      bundle_hash: found.simulation_result?.bundle_hash ?? "",
+      issued_at: new Date(nowMs).toISOString(),
+      expires_at: new Date(nowMs + FX_APPROVAL_TTL_MS).toISOString(),
+      consumed_at: null,
+    },
   });
 }
 
@@ -983,18 +1002,16 @@ export async function getMenuListings(): Promise<ProtocolMenuEntry[]> {
 
 export interface ApproveAgentPlanInput {
   plan_id: string;
-  /**
-   * 任意。指定があれば BFF 側で Solana Devnet の memo tx (feePayer = この address)
-   * を構築し、戻り値の `tx` field に base64 で返す。Mobile はそれを MWA で署名 +
-   * broadcast する。
-   */
-  fee_payer?: string;
 }
 
-/** approve mutation の戻り値: AgentPlan + 署名対象 tx (任意) */
+/**
+ * approve mutation の戻り値 (agent-plan 契約 2026-10): `{ ...plan, approval_token }`。
+ * 人が承認した plan の署名・送信は Seasonals web が行う (Seeker は承認まで)。
+ * 旧 memo stub (`fee_payer` → devnet memo tx) は廃止。
+ */
 export type ApproveAgentPlanResult = AgentPlan & {
-  /** base64 serialized Solana transaction (signer 未付加) */
-  tx?: string;
+  /** BFF が発行した単発・短命の approval token (TTL は expires_at) */
+  approval_token?: ApprovalToken;
 };
 
 export interface RejectAgentPlanInput {
@@ -1017,11 +1034,10 @@ export async function postApproveAgentPlan(
   input: ApproveAgentPlanInput
 ): Promise<ApproveAgentPlanResult> {
   return tryHttpThenFixture(
+    // 契約: body なし (承認の主体は BFF が approved_by: "user" として記録する)
     () =>
       httpPostJson<ApproveAgentPlanResult>(
-        `/agent-plans/${encodeURIComponent(input.plan_id)}/approve`,
-        // body に fee_payer を載せる (BFF が memo tx を返す trigger)
-        input.fee_payer ? { fee_payer: input.fee_payer } : undefined
+        `/agent-plans/${encodeURIComponent(input.plan_id)}/approve`
       ),
     () => fxApproveAgentPlan(input.plan_id),
     `/agent-plans/${input.plan_id}/approve`

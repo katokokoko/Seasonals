@@ -6,6 +6,9 @@
 import type { ChainId } from "@workspace/lib/config/chains";
 import type {
   ActionPlan,
+  AgentPlan,
+  AgentPlanApproveResponse,
+  AgentPlanExecuteResponse,
   EarnPositionsResponse,
   EthAgentProposal,
   EthProposalListResponse,
@@ -170,6 +173,23 @@ export const api = {
   /** 署名済 tx を BFF が Helius mainnet で broadcast (2 本目以降は skipPreflight、Seeker と同じ) */
   submitSignedTx: (signedTx: string, skipPreflight: boolean) => post<TxSubmitResponse>("/tx/submit", { signedTx, skipPreflight }),
   txStatus: (signature: string) => request<TxStatusResponse>(`/tx/status?signature=${encodeURIComponent(signature)}`),
+
+  // ── Solana agent plan (MCP の Agent が作り、人が web で承認 → 署名 → 送信。承認 = 実行、ETH の agent-proposals と同じ運用) ──
+  /** wallet (= selected_action.wallet_id) の plan */
+  agentPlans: (wallet: string) => request<AgentPlan[]>(`/agent-plans?wallet=${encodeURIComponent(wallet)}`),
+  agentPlan: (id: string) => request<AgentPlan>(`/agent-plans/${encodeURIComponent(id)}`),
+  /** 人の承認 (simulated | pending_user → approved)。body なし。応答に単発の approval_token (TTL 300 秒) */
+  approveAgentPlan: (id: string) => request<AgentPlanApproveResponse>(`/agent-plans/${encodeURIComponent(id)}/approve`, { method: "POST" }),
+  rejectAgentPlan: (id: string) => request<AgentPlan>(`/agent-plans/${encodeURIComponent(id)}/reject`, { method: "POST" }),
+  /** token を消費して unsigned tx を組ませる (oracle gate / fair value は BFF が token 消費の前に判定、拒否は 409) */
+  executeAgentPlan: (id: string, approvalTokenId: string) =>
+    post<AgentPlanExecuteResponse>(`/agent-plans/${encodeURIComponent(id)}/execute`, { approval_token: approvalTokenId, via: "web" }),
+  /** 送信した tx の signature を報告 (executing → broadcasted) */
+  reportAgentPlanSignatures: (id: string, executionId: string, signatures: string[]) =>
+    post<AgentPlan>(`/agent-plans/${encodeURIComponent(id)}/signatures`, { execution_id: executionId, signatures }),
+  /** wallet で拒否 / 送信失敗を報告 (executing → failed) */
+  reportAgentPlanFailed: (id: string, executionId: string, reason: string) =>
+    post<AgentPlan>(`/agent-plans/${encodeURIComponent(id)}/failed`, { execution_id: executionId, reason }),
 };
 
 function post<T>(path: string, body: unknown): Promise<T> {

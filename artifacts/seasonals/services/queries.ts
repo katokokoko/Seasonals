@@ -363,9 +363,9 @@ export function useApproveAgentPlan(): UseMutationResult<
   return useMutation({
     mutationFn: api.postApproveAgentPlan,
     onSuccess: (result) => {
-      // result は AgentPlan + 任意 tx。cache には tx を含めず plan の核のみ書き込む
-      // (再 fetch 時に tx は再生成されるため、stale tx を保持しない)
-      const { tx: _tx, ...plan } = result;
+      // result は AgentPlan + approval_token。cache には token を含めず plan の核のみ
+      // 書き込む (短命の token を plan cache に残さない。表示は mutation の data から)
+      const { approval_token: _token, ...plan } = result;
       qc.setQueryData(queryKeys.agentPlan(plan.plan_id), plan);
     },
   });

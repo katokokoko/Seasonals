@@ -22,12 +22,6 @@ import Fastify, {
 } from "fastify";
 import cors from "@fastify/cors";
 import { registerEthRoutes } from "./routes/eth";
-import {
-  Connection,
-  PublicKey,
-  Transaction,
-  TransactionInstruction,
-} from "@solana/web3.js";
 
 import {
   fixtureUnifiedTimeEvents,
@@ -242,6 +236,9 @@ import {
 } from "./autonomous";
 import type {
   ActionSpec,
+  AgentPlanApprovalStatus,
+  AgentPlanExecuteResponse,
+  AgentPlanExecutionVia,
   CandidateAction,
   ProtocolMenuEntry,
   ProtocolPool,
@@ -251,64 +248,22 @@ import {
   computeBundleHash,
   createPlan,
   getLatestTokenForPlan,
+  getPendingExecution,
   getStoredPlan,
   getStoredToken,
+  isTerminalPlanStatus,
   issueApprovalToken,
   listPushTokens,
   listStoredPlans,
+  peekApprovalToken,
   registerPushToken,
+  startPlanExecution,
   updatePlan,
   validateAndConsumeToken,
 } from "./plan-store";
+import { buildPlanTransactions } from "./agent-plan-executor";
+import { resolveSolanaRoute } from "@workspace/lib/derive/solana-action";
 import { fetchPerenaTriStableTvlUsd } from "./clients/perena";
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Solana 接続 (Devnet) — approve endpoint で memo tx を構築するため
-// ─────────────────────────────────────────────────────────────────────────────
-
-const SOLANA_RPC_URL =
-  process.env.SOLANA_RPC_URL ?? "https://api.devnet.solana.com";
-const MEMO_PROGRAM_ID = new PublicKey(
-  "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr"
-);
-
-let cachedConnection: Connection | null = null;
-function getConnection(): Connection {
-  if (!cachedConnection) {
-    cachedConnection = new Connection(SOLANA_RPC_URL, "confirmed");
-  }
-  return cachedConnection;
-}
-
-/**
- * 指定 wallet (feePayer) を signer とする Memo Program transaction を構築。
- * memo に "Seasonals approve <plan_id> @<timestamp>" を書き込む。
- * 成功すると base64 serialized tx を返す。
- *
- * NOTE: 実 production では §11.7 simulate_action で構築した bundle (lending /
- * staking / etc. の実 instruction) をここに置換する。本実装は MWA round-trip
- * を end-to-end で検証するための stub。
- */
-async function buildMemoTransaction(
-  feePayer: string,
-  planId: string
-): Promise<string> {
-  const conn = getConnection();
-  const { blockhash } = await conn.getLatestBlockhash();
-  const memoText = `Seasonals approve ${planId} @${new Date().toISOString()}`;
-  const ix = new TransactionInstruction({
-    programId: MEMO_PROGRAM_ID,
-    keys: [],
-    data: Buffer.from(memoText, "utf-8"),
-  });
-  const tx = new Transaction({
-    feePayer: new PublicKey(feePayer),
-    recentBlockhash: blockhash,
-  }).add(ix);
-  // signer なしで serialize (mobile 側で MWA 経由で sign される)
-  const serialized = tx.serialize({ requireAllSignatures: false });
-  return Buffer.from(serialized).toString("base64");
-}
 
 /**
  * Phase 8.1: Helius DAS asset 配列を Position[] に正規化する。
@@ -3893,20 +3848,44 @@ export async function buildServer(
     }
   );
 
-  // ── agent plans (list + read + approve/reject) ───────────────────────
-  // Phase 8.28: MCP 由来の store plan と fixture を merge (store 優先)
-  app.get("/agent-plans", async () => [
-    ...listStoredPlans(),
-    ...fixtureAgentPlans,
-  ]);
+  // ── agent plans (list + read + approve → execute → signatures) ───────
+  // 2026-10-06: 人が承認する plan は web が approve → execute (unsigned tx) → 署名 →
+  // 送信 → /signatures まで一気に行う (承認 = 実行、ETH agent proposal と同じ)。
+  // plan は .data/agent-plans.json に永続、24h で expired (plan-store.ts)。
+  // fixture plan は test 環境でのみ混ぜる (dev / prod の inbox に偽 plan を出さない)
+  const fixturePlansEnabled = (): boolean => process.env.NODE_ENV === "test";
+  const findFixturePlan = (planId: string): AgentPlan | undefined =>
+    fixturePlansEnabled()
+      ? fixtureAgentPlans.find((p) => p.plan_id === planId)
+      : undefined;
+  /** /failed や /reject の reason は表示用の短い文字列に限る (ログ / UI に生で出るため) */
+  const sanitizeReason = (v: unknown): string | undefined =>
+    typeof v === "string" && v.trim().length > 0
+      ? v.trim().slice(0, 200)
+      : undefined;
+  /** base58 の tx signature (ed25519 64 byte = 87〜88 文字、短い表現も許容) */
+  const SIGNATURE_RE = /^[1-9A-HJ-NP-Za-km-z]{64,88}$/;
+
+  app.get<{ Querystring: { wallet?: string } }>("/agent-plans", async (req) => {
+    const wallet = req.query?.wallet;
+    const stored = listStoredPlans();
+    const filtered =
+      typeof wallet === "string" && wallet.length > 0
+        ? stored.filter((p) => p.selected_action?.wallet_id === wallet)
+        : stored;
+    if (!fixturePlansEnabled()) return filtered;
+    const fixtures =
+      typeof wallet === "string" && wallet.length > 0
+        ? fixtureAgentPlans.filter((p) => p.selected_action?.wallet_id === wallet)
+        : fixtureAgentPlans;
+    return [...filtered, ...fixtures];
+  });
 
   app.get<{ Params: { planId: string } }>(
     "/agent-plans/:planId",
     async (req, reply) => {
       const { planId } = req.params;
-      const found =
-        getStoredPlan(planId) ??
-        fixtureAgentPlans.find((p) => p.plan_id === planId);
+      const found = getStoredPlan(planId) ?? findFixturePlan(planId);
       if (!found) {
         reply.code(404);
         return { error: "agent_plan_not_found", plan_id: planId };
@@ -3917,7 +3896,7 @@ export async function buildServer(
 
   /**
    * Phase 8.28: MCP compare_opportunities が draft plan を作成する (§11.7)。
-   * store 保存 (in-memory — §17/§25 の永続化前段)。
+   * expires_at = 作成 + 24h (plan-store)。
    */
   app.post<{
     Body: {
@@ -3946,8 +3925,8 @@ export async function buildServer(
 
   /**
    * Phase 8.28: MCP request_user_approval — status を pending_user にし、
-   * 登録済み push token へ Expo push を best-effort 送信 (ApprovalPushPayload
-   * 契約 = mobile services/push.ts)。push 失敗/token 無しでも 200 (poll で成立)。
+   * 登録済み push token へ Expo push を best-effort 送信 (payload は
+   * `{ type: "approval", plan_id }`)。push 失敗/token 無しでも 200 (web inbox / poll で成立)。
    */
   app.post<{ Params: { planId: string }; Body: { timeout_seconds?: number } }>(
     "/agent-plans/:planId/request-approval",
@@ -4005,7 +3984,10 @@ export async function buildServer(
           bundle_hash: plan.simulation_result.bundle_hash,
         });
         incrementDaily(); // auto 承認も日次枠を消費 (自律実行と合算の保守側運用)
-        return updatePlan(planId, { status: AgentPlanStatus.Approved })!;
+        return updatePlan(planId, {
+          status: AgentPlanStatus.Approved,
+          approved_by: "auto",
+        })!;
       }
       // idempotent (§10.3): pending_user なら push を再送しない
       const alreadyPending = plan.status === AgentPlanStatus.PendingUser;
@@ -4041,9 +4023,10 @@ export async function buildServer(
   );
 
   /**
-   * Phase 8.28: MCP request_user_approval の poll 先 — 承認状態と、承認済み
-   * なら発行済み approval_token を返す (§24.9)。v1 は client 認証の無い dev
-   * 前提 (plan_id を知る者が token を取得できる — README に明記、v2 で auth)。
+   * MCP request_user_approval の poll 先 (§24.9)。承認状態・署名結果・失敗理由を返す。
+   * approval_token は **policy の自動承認 (approved_by === "auto") で approved の時だけ** 含める —
+   * 人が承認した plan の token は web が approve 応答で直接受け取り、ここからは出さない
+   * (plan_id を知る者が人の承認を横取りして execute できないように)。
    */
   app.get<{ Params: { planId: string } }>(
     "/agent-plans/:planId/approval",
@@ -4055,34 +4038,61 @@ export async function buildServer(
         return { error: "agent_plan_not_found", plan_id: planId };
       }
       const token =
-        plan.status === AgentPlanStatus.Approved
+        plan.status === AgentPlanStatus.Approved && plan.approved_by === "auto"
           ? getLatestTokenForPlan(planId)
           : undefined;
-      return {
+      const res: AgentPlanApprovalStatus = {
         plan_id: planId,
         status: plan.status,
-        approval_token: token ?? null,
+        approved_by: plan.approved_by ?? null,
+        ...(token ? { approval_token: token } : {}),
+        ...(plan.execution ? { execution: plan.execution } : {}),
+        ...(plan.failure_reason ? { failure_reason: plan.failure_reason } : {}),
       };
+      return res;
     }
   );
 
-  app.post<{
-    Params: { planId: string };
-    Body: { fee_payer?: string };
-  }>("/agent-plans/:planId/approve", async (req, reply) => {
-    const { planId } = req.params;
-    // Phase 8.28: store plan は永続遷移 + ApprovalToken 発行
-    const stored = getStoredPlan(planId);
-    if (stored) {
+  /**
+   * 人の承認 (web / Seeker)。body 不要。simulated | pending_user → approved +
+   * approved_by "user" + ApprovalToken 発行。応答 `{ ...plan, approval_token }`。
+   *
+   * 既に人が承認した plan (approved + approved_by "user") も受け付け、token を再発行する:
+   * Seeker で承認 → web で署名、や、gate 拒否 (token 未消費のまま approved) 後の再試行のため。
+   * token は plan 側の status guard (execute は approved からのみ、消費で executing) で 1 回しか使えない。
+   * auto 承認 (autonomous) の plan は Agent が /execute を呼ぶので人は触れない (409)。
+   */
+  app.post<{ Params: { planId: string } }>(
+    "/agent-plans/:planId/approve",
+    async (req, reply) => {
+      const { planId } = req.params;
+      const stored = getStoredPlan(planId);
+      const target = stored ?? findFixturePlan(planId);
+      if (!target) {
+        reply.code(404);
+        return { error: "agent_plan_not_found", plan_id: planId };
+      }
+      const reissue =
+        target.status === AgentPlanStatus.Approved && target.approved_by === "user";
       if (
-        stored.status !== AgentPlanStatus.Simulated &&
-        stored.status !== AgentPlanStatus.PendingUser
+        target.status !== AgentPlanStatus.Simulated &&
+        target.status !== AgentPlanStatus.PendingUser &&
+        !reissue
       ) {
         reply.code(409);
         return {
           error: "invalid_status_transition",
-          current: stored.status,
+          current: target.status,
           target: AgentPlanStatus.Approved,
+        };
+      }
+      if (!stored) {
+        // fixture plan (test のみ) は非永続の遷移だけ返す (回帰用)
+        return {
+          ...target,
+          status: AgentPlanStatus.Approved,
+          approved_by: "user",
+          updated_at: new Date().toISOString(),
         };
       }
       if (!stored.selected_action || !stored.simulation_result) {
@@ -4095,86 +4105,73 @@ export async function buildServer(
         mcp_client_id: stored.mcp_client_id,
         bundle_hash: stored.simulation_result.bundle_hash,
       });
-      const next = updatePlan(planId, { status: AgentPlanStatus.Approved })!;
+      const next = updatePlan(planId, {
+        status: AgentPlanStatus.Approved,
+        approved_by: "user",
+      })!;
       return { ...next, approval_token: token };
     }
+  );
 
-    const found = fixtureAgentPlans.find((p) => p.plan_id === planId);
-    if (!found) {
-      reply.code(404);
-      return { error: "agent_plan_not_found", plan_id: planId };
-    }
-    if (
-      found.status !== AgentPlanStatus.Simulated &&
-      found.status !== AgentPlanStatus.PendingUser
-    ) {
-      reply.code(409);
-      return {
-        error: "invalid_status_transition",
-        current: found.status,
-        target: AgentPlanStatus.Approved,
-      };
-    }
-    const next: AgentPlan & { tx?: string } = {
-      ...found,
-      status: AgentPlanStatus.Approved,
-      updated_at: new Date().toISOString(),
-    };
-    // fee_payer が渡された場合、Devnet RPC から blockhash 取得 + memo tx を構築。
-    // fee_payer 不在 / Devnet RPC 失敗時は plan のみ返す (mobile 側で sign skip)。
-    const feePayer = req.body?.fee_payer;
-    if (feePayer && typeof feePayer === "string" && feePayer.length > 0) {
-      try {
-        next.tx = await buildMemoTransaction(feePayer, planId);
-      } catch (err) {
-        // Devnet RPC が落ちている等。tx field を欠落させるだけで approve 自体は成功扱い
-        req.log.warn(
-          { err: (err as Error).message },
-          "memo tx build failed"
-        );
-      }
-    }
-    return next;
-  });
-
+  /** simulated | pending_user | approved からのみ rejected (executing 以降は 409) */
   app.post<{ Params: { planId: string }; Body: { reason?: string } }>(
     "/agent-plans/:planId/reject",
     async (req, reply) => {
       const { planId } = req.params;
-      // Phase 8.28: store plan は永続遷移
       const stored = getStoredPlan(planId);
-      if (stored) {
-        return updatePlan(planId, { status: AgentPlanStatus.Rejected })!;
-      }
-      const found = fixtureAgentPlans.find((p) => p.plan_id === planId);
-      if (!found) {
+      const target = stored ?? findFixturePlan(planId);
+      if (!target) {
         reply.code(404);
         return { error: "agent_plan_not_found", plan_id: planId };
       }
-      const next: AgentPlan = {
-        ...found,
+      if (
+        target.status !== AgentPlanStatus.Simulated &&
+        target.status !== AgentPlanStatus.PendingUser &&
+        target.status !== AgentPlanStatus.Approved
+      ) {
+        reply.code(409);
+        return {
+          error: "invalid_status",
+          current: target.status,
+          target: AgentPlanStatus.Rejected,
+        };
+      }
+      const reason = sanitizeReason(req.body?.reason);
+      const patch: Partial<AgentPlan> = {
         status: AgentPlanStatus.Rejected,
-        updated_at: new Date().toISOString(),
+        ...(reason ? { failure_reason: reason } : {}),
       };
-      return next;
+      if (!stored) {
+        return { ...target, ...patch, updated_at: new Date().toISOString() };
+      }
+      return updatePlan(planId, patch)!;
     }
   );
 
   /**
-   * Phase 8.28: MCP execute_approved_action (§24.9 / §29.3)。
-   * approval_token を単一操作で検証+消費 (single-use / TTL / bundle_hash /
-   * plan 一致)。v1 は swap-earn の deposit / withdraw のみ unsigned tx を構築。
-   * Agent は unsigned tx を受け取るだけで署名しない (§6.5)。
+   * execute (§24.9 / §29.3)。approved のみ。selected_action を lib の
+   * resolveSolanaRoute で 13 route のどれかに解決し、人と同じ /protocols/* の tx builder
+   * (agent-plan-executor.ts) で unsigned tx を組む。署名は呼び手 (web の接続 wallet) が
+   * 行い、結果を /signatures (成功) か /failed (拒否・送信失敗) で報告する。
+   *
+   * 順序 (8.37 B1 / 8.75): token の早期検証 (非消費) → tx build (oracle gate / 償還価値
+   * ガード / 残高 gate は builder 内) → **最後に** token を消費。gate で止まった時に
+   * 単発 token を失わない。plan は approved のまま残るので回復後に同じ token で再実行できる。
    */
   app.post<{
     Params: { planId: string };
-    Body: { approval_token?: string };
+    Body: { approval_token?: string; via?: string };
   }>("/agent-plans/:planId/execute", async (req, reply) => {
     const { planId } = req.params;
     const tokenId = req.body?.approval_token;
     if (!tokenId || typeof tokenId !== "string") {
       reply.code(400);
       return { error: "missing_required_field", required: ["approval_token"] };
+    }
+    const viaRaw = req.body?.via;
+    if (viaRaw !== undefined && viaRaw !== "web" && viaRaw !== "autonomous") {
+      reply.code(400);
+      return { error: "invalid_via", via: viaRaw, allowed: ["web", "autonomous"] };
     }
     const plan = getStoredPlan(planId);
     if (!plan) {
@@ -4194,114 +4191,144 @@ export async function buildServer(
       reply.code(409);
       return { error: "selected_action_required", plan_id: planId };
     }
-
-    // v1: swap-earn (Jupiter routable) の deposit / withdraw のみ。
-    // Phase 8.37: 実行可否と oracle gate を **token 消費より前** に判定する —
-    // 単発 token を oracle block / 非対応 action で無駄に消費させない (§29.3)。
-    // Phase 8.75: 償還価値ガードも同じ理由で token 消費より前に置いた
-    const market = action.asset
-      ? findMarketByProtocolAsset(action.protocol, action.asset)
-      : undefined;
-    if (
-      !market ||
-      (action.action_type !== "deposit" && action.action_type !== "withdraw") ||
-      !action.amount ||
-      !isValidTokenAmount(action.amount)
-    ) {
+    const route = resolveSolanaRoute(action);
+    if (route === null) {
       reply.code(422);
       return {
-        error: "unsupported_action_v1",
-        message:
-          "v1 executes swap-earn deposit/withdraw only (valid amount required)",
+        error: "unsupported_market",
+        message: "Unsupported market — no onchain route resolved for this plan",
       };
     }
+    const amount = action.amount;
+    if (amount === undefined || !isValidTokenAmount(amount)) {
+      reply.code(422);
+      return { error: "invalid_amount", amount: amount ?? null };
+    }
 
-    // Phase 8.37 (B1): execute にも §4.6 fail-closed gate — 直接 tx-build endpoint
-    // (buildSwapEarnTx 等) と同一の判定。agent 経路だけ oracle 無検査で署名可能
-    // tx を返していた drift の修正
-    const oracle = await getOracleResult(market.underlying_mint);
-    if (oracle.status === "blocked") {
+    const expect = { plan_id: planId, bundle_hash: computeBundleHash(action) };
+    const peek = peekApprovalToken(tokenId, expect);
+    if (!peek.valid) {
+      reply.code(403);
+      return { error: "approval_token_invalid", reason: peek.reason };
+    }
+
+    const built = await buildPlanTransactions(app, route, { ...action, amount });
+    if (!built.ok) {
       req.log.warn(
-        { planId, block_reason: oracle.block_reason },
-        "execute blocked by oracle gate"
+        { planId, route: route.kind, status: built.statusCode, error: built.body.error },
+        "agent plan execute: tx build refused"
       );
+      reply.code(built.statusCode);
+      return built.body;
+    }
+
+    const validation = validateAndConsumeToken(tokenId, expect);
+    if (!validation.valid) {
+      reply.code(403);
+      return { error: "approval_token_invalid", reason: validation.reason };
+    }
+    // max_daily_executions: 人が承認した plan も実行試行として数える。
+    // auto 承認は request-approval の短絡時に数え済みなので二重に数えない
+    if (plan.approved_by !== "auto") incrementDaily();
+
+    const via: AgentPlanExecutionVia =
+      viaRaw ?? (plan.approved_by === "auto" ? "autonomous" : "web");
+    const executionId = `exec_${planId}_${Date.now().toString(36)}`;
+    const next = startPlanExecution(planId, {
+      execution_id: executionId,
+      tx_count: built.transactions.length,
+      via,
+    })!;
+    const res: AgentPlanExecuteResponse = {
+      execution_id: executionId,
+      status: "awaiting_signature",
+      plan: next,
+      unsigned_transactions: built.transactions,
+    };
+    return res;
+  });
+
+  /**
+   * web が署名・送信に成功したら報告する。executing のみ、execution_id 一致、
+   * 本数が unsigned tx と一致、各 signature は base58。→ broadcasted + execution 保存。
+   */
+  app.post<{
+    Params: { planId: string };
+    Body: { execution_id?: string; signatures?: unknown };
+  }>("/agent-plans/:planId/signatures", async (req, reply) => {
+    const { planId } = req.params;
+    const executionId = req.body?.execution_id;
+    const signatures = req.body?.signatures;
+    if (typeof executionId !== "string" || !Array.isArray(signatures)) {
+      reply.code(400);
+      return { error: "missing_required_field", required: ["execution_id", "signatures"] };
+    }
+    const plan = getStoredPlan(planId);
+    if (!plan) {
+      reply.code(404);
+      return { error: "agent_plan_not_found", plan_id: planId };
+    }
+    const pending = getPendingExecution(planId);
+    if (plan.status !== AgentPlanStatus.Executing || !pending) {
       reply.code(409);
-      return { error: "oracle_blocked", block_reason: oracle.block_reason, oracle };
+      return { error: "invalid_status", current: plan.status, target: AgentPlanStatus.Broadcasted };
     }
-
-    const isDeposit = action.action_type === "deposit";
-    try {
-      // Phase 8.75: quote は **token 消費より前** に取る。8.72 の償還価値ガードで
-      // 止まる時に単発 token を無駄にしないため — 8.37 (B1) が oracle gate で
-      // 確立した順序をそのまま踏襲する (§29.3)
-      const quote = await fetchSwapQuote({
-        inputMint: isDeposit ? market.underlying_mint : market.share_mint,
-        outputMint: isDeposit ? market.share_mint : market.underlying_mint,
-        amount: action.amount,
-        slippageBps: 50,
-      });
-
-      // Phase 8.75: 8.72 の償還価値ガードは buildSwapEarnTx 経由の human 経路にしか
-      // 掛かっておらず、**agent 経路だけ素通り**していた。oracle で 8.37 (B1) が直した
-      // drift の再発で、しかもこちらは画面を見ている人間がいない分だけ悪い。
-      // 上で取った quote をそのまま判定に使うので Jupiter への追加呼び出しは無い
-      const fv = await evaluateSwapFairValue(req, quote, {
-        direction: isDeposit ? "deposit" : "withdraw",
-        shareSymbol: market.share_symbol,
-      });
-      if (fv.status === "blocked") {
-        // plan は Approved のまま残す (Failed にしない) — 乖離が戻れば同じ token で
-        // 再実行できる。oracle block と同じ扱い
-        reply.code(409);
-        return {
-          error: "fair_value_blocked",
-          reason: fv.reason,
-          deviation_bps: fv.deviation_bps,
-          guard_bps: fairValueGuardBps(),
-          message: fairValueBlockMessage(
-            fv.reason,
-            market.share_symbol,
-            fv.deviation_bps,
-            fairValueGuardBps()
-          ),
-        };
-      }
-
-      const validation = validateAndConsumeToken(tokenId, {
-        plan_id: planId,
-        bundle_hash: computeBundleHash(action),
-      });
-      if (!validation.valid) {
-        reply.code(403);
-        return { error: "approval_token_invalid", reason: validation.reason };
-      }
-
-      const tx = await fetchSwapTransaction({
-        quoteResponse: quote,
-        userPublicKey: action.wallet_id,
-      });
-      const next = updatePlan(planId, { status: AgentPlanStatus.Executing })!;
+    if (pending.execution_id !== executionId) {
+      reply.code(409);
+      return { error: "execution_id_mismatch" };
+    }
+    if (signatures.length !== pending.tx_count) {
+      reply.code(409);
       return {
-        execution_id: `exec_${planId}`,
-        status: "pushed_to_mobile",
-        plan: next,
-        unsigned_transactions: [
-          {
-            index: 0,
-            label: `${action.action_type} ${action.asset} on ${action.protocol}`,
-            tx_base64: tx.swapTransaction,
-          },
-        ],
+        error: "signature_count_mismatch",
+        expected: pending.tx_count,
+        got: signatures.length,
       };
-    } catch (err) {
-      req.log.error(
-        { err: (err as Error).message, planId },
-        "execute tx build failed"
-      );
-      updatePlan(planId, { status: AgentPlanStatus.Failed });
-      reply.code(502);
-      return { error: "execute_tx_build_failed", message: readableUpstreamError(err, "Jupiter API") };
     }
+    if (!signatures.every((s) => typeof s === "string" && SIGNATURE_RE.test(s))) {
+      reply.code(409);
+      return { error: "invalid_signature_format" };
+    }
+    return updatePlan(planId, {
+      status: AgentPlanStatus.Broadcasted,
+      execution: {
+        execution_id: executionId,
+        signatures: signatures as string[],
+        submitted_at: new Date().toISOString(),
+        via: pending.via,
+      },
+    })!;
+  });
+
+  /** web が wallet 拒否 / 送信失敗を報告する。executing → failed + failure_reason */
+  app.post<{
+    Params: { planId: string };
+    Body: { execution_id?: string; reason?: string };
+  }>("/agent-plans/:planId/failed", async (req, reply) => {
+    const { planId } = req.params;
+    const executionId = req.body?.execution_id;
+    if (typeof executionId !== "string") {
+      reply.code(400);
+      return { error: "missing_required_field", required: ["execution_id", "reason"] };
+    }
+    const plan = getStoredPlan(planId);
+    if (!plan) {
+      reply.code(404);
+      return { error: "agent_plan_not_found", plan_id: planId };
+    }
+    const pending = getPendingExecution(planId);
+    if (plan.status !== AgentPlanStatus.Executing || !pending) {
+      reply.code(409);
+      return { error: "invalid_status", current: plan.status, target: AgentPlanStatus.Failed };
+    }
+    if (pending.execution_id !== executionId) {
+      reply.code(409);
+      return { error: "execution_id_mismatch" };
+    }
+    return updatePlan(planId, {
+      status: AgentPlanStatus.Failed,
+      failure_reason: sanitizeReason(req.body?.reason) ?? "unknown",
+    })!;
   });
 
   // ── adapter-driven endpoints (CLAUDE.md §13 / §26) ───────────────────
@@ -5303,11 +5330,23 @@ export async function buildServer(
       // Phase 8.28: store plan は body.action_spec を selected_action に採用し、
       // simulation_result を永続 (status→simulated)。bundle_hash は決定的 sha256。
       const stored = getStoredPlan(planId);
-      const found =
-        stored ?? fixtureAgentPlans.find((p) => p.plan_id === planId);
+      const found = stored ?? findFixturePlan(planId);
       if (!found) {
         reply.code(404);
         return { error: "agent_plan_not_found", plan_id: planId };
+      }
+      // 実行中 / 終端の plan を simulated に巻き戻さない (署名待ちの execution を壊さない)
+      if (
+        stored &&
+        (stored.status === AgentPlanStatus.Executing ||
+          isTerminalPlanStatus(stored.status))
+      ) {
+        reply.code(409);
+        return {
+          error: "invalid_status_transition",
+          current: stored.status,
+          target: AgentPlanStatus.Simulated,
+        };
       }
       const action = stored
         ? (req.body?.action_spec ?? stored.selected_action)
@@ -5412,11 +5451,13 @@ export async function buildServer(
         metadata: meta,
       };
       // store plan は selected_action + simulation_result を永続 (§11.7)
+      // 再 simulate は承認をやり直させる (approved_by を外す。旧 token は bundle_hash で弾かれる)
       if (stored) {
         updatePlan(planId, {
           selected_action: action,
           simulation_result: sim,
           status: AgentPlanStatus.Simulated,
+          approved_by: undefined,
         });
       }
       return { plan_id: planId, simulation: sim };

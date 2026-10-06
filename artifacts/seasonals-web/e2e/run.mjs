@@ -397,6 +397,95 @@ if (process.env.SOL_E2E === "1") {
   await page.close();
 }
 
+// Solana agent plan inbox (/agent、SOL_E2E=1): Agent が作った pending_user の plan を web で Approve & sign →
+// BFF (route で差し替え) が token と unsigned tx 1 本を返す → 偽 wallet が拒否 (4001) → web が /failed を報告し card が Failed になる。
+// network はすべて page.route で差し替える (BFF の plan store にも mainnet にも触れない)
+if (process.env.SOL_E2E === "1") {
+  const page = await newPage(WIDTHS[0]);
+  await page.addInitScript(SOLANA_FAKE_WALLET);
+  const owner = "7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU";
+  const json = (body, status = 200) => ({ status, contentType: "application/json", body: JSON.stringify(body) });
+  let plan = {
+    plan_id: "plan_e2e",
+    user_id: "user_e2e",
+    mcp_client_id: "claude",
+    objective: "max_yield",
+    constraints: {},
+    candidate_actions: [],
+    selected_action: { wallet_id: owner, action_type: "deposit", protocol: "jupiter", asset: "USDC", amount: "1500000", metadata: { pool_id: "jupiter_usdc" } },
+    simulation_result: {
+      simulation_id: "sim_e2e",
+      estimated_out: "1480000",
+      estimated_fee: "5000",
+      bundle_hash: "0x" + "cd".repeat(32),
+      oracle: { primary: "pyth", primary_age_seconds: 4, divergence_pct: 0.1, warnings: [] },
+    },
+    status: "pending_user",
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+    expires_at: new Date(Date.now() + 86_400_000).toISOString(),
+  };
+  const posts = [];
+  const submits = [];
+  await page.route(/\/api\/agent-plans(\?|\/|$)/, (r) => {
+    const req = r.request();
+    const u = new URL(req.url());
+    if (req.method() === "GET" && u.pathname === "/api/agent-plans") return r.fulfill(json(u.searchParams.get("wallet") === owner ? [plan] : []));
+    const m = u.pathname.match(/^\/api\/agent-plans\/([^/]+)\/(approve|execute|signatures|failed|reject)$/);
+    if (req.method() !== "POST" || !m || m[1] !== plan.plan_id) return r.fulfill(json({ error: "not_found" }, 404));
+    const body = req.postData() ? JSON.parse(req.postData()) : undefined;
+    posts.push({ action: m[2], body });
+    if (m[2] === "approve") {
+      plan = { ...plan, status: "approved", approved_by: "user" };
+      const now = new Date().toISOString();
+      const token = { token_id: "tok_e2e", user_id: "user_e2e", plan_id: plan.plan_id, mcp_client_id: "claude", bundle_hash: plan.simulation_result.bundle_hash, issued_at: now, expires_at: new Date(Date.now() + 300_000).toISOString(), consumed_at: null };
+      return r.fulfill(json({ ...plan, approval_token: token }));
+    }
+    if (m[2] === "execute") {
+      plan = { ...plan, status: "executing" };
+      return r.fulfill(
+        json({ execution_id: "exec_e2e", status: "awaiting_signature", plan, unsigned_transactions: [{ index: 0, label: "deposit", tx_base64: Buffer.from([1, 2, 3, 250]).toString("base64") }] })
+      );
+    }
+    if (m[2] === "failed") plan = { ...plan, status: "failed", failure_reason: body?.reason };
+    if (m[2] === "signatures") plan = { ...plan, status: "broadcasted" };
+    if (m[2] === "reject") plan = { ...plan, status: "rejected" };
+    return r.fulfill(json(plan));
+  });
+  await page.route("**/api/tx/submit", (r) => {
+    submits.push(r.request().postData());
+    return r.fulfill(json({ error: "unexpected" }, 500));
+  });
+  await page.goto(BASE + "/agent", { waitUntil: "networkidle" });
+  await page.locator(".wallet-button").click();
+  await page.getByRole("button", { name: /Fake Phantom/ }).click();
+  await page.locator(".wallet-button.is-active").waitFor({ timeout: 10_000 }).catch(() => {});
+  await page.keyboard.press("Escape");
+  const card = page.locator("section.proposal-card", { hasText: "Agent plan · Solana mainnet" }).first();
+  await card.waitFor({ timeout: 20_000 }).catch(() => {});
+  const head = await card.innerText().catch((e) => String(e));
+  check("Solana agent plan card shows the pending plan", /Needs your approval/.test(head) && /Deposit 1\.5 USDC/.test(head), head.replace(/\s+/g, " ").slice(0, 200));
+  await card.getByRole("button", { name: "Approve & sign" }).click().catch(() => {});
+  const failedShown = await card.locator(".tag", { hasText: /^Failed$/ }).waitFor({ timeout: 20_000 }).then(() => true).catch(() => false);
+  const calls = await page.evaluate(() => window.__solCalls);
+  const failed = posts.find((p) => p.action === "failed");
+  check(
+    "Solana agent plan: approve → execute → wallet declines → /failed reported, card shows Failed, nothing sent",
+    failedShown &&
+      posts.map((p) => p.action).join(",") === "approve,execute,failed" &&
+      posts[1].body?.approval_token === "tok_e2e" &&
+      posts[1].body?.via === "web" &&
+      failed?.body?.execution_id === "exec_e2e" &&
+      failed?.body?.reason === "user_cancelled" &&
+      calls.includes("sign:1") &&
+      submits.length === 0,
+    `${failedShown} | ${JSON.stringify(posts)} | ${calls.join(",")} | submits=${submits.length}`
+  );
+  await page.screenshot({ path: ".screenshots/agent-solana-plan-failed-1440.png" });
+  check("Solana agent plan inbox has no page errors", page.errors.length === 0, page.errors.join(" | "));
+  await page.close();
+}
+
 // Learn: 横 3 枚のカード、/learn#pendle で詳細 dialog が開き見出しに focus、Esc で閉じる
 for (const vp of WIDTHS) {
   const page = await newPage(vp);

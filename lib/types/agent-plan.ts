@@ -17,6 +17,7 @@ import type {
   PositionCategory,
 } from "./enums";
 import type { OracleSourceId } from "./oracle";
+import type { ApprovalToken } from "./approval-token";
 
 /**
  * compare_opportunities が呼ばれた際の制約条件 (§24.9 inputSchema)
@@ -106,10 +107,13 @@ export interface SimulationResult {
  * AgentPlan — MCP execution flow の中核エンティティ
  *
  * status 遷移:
- *   draft → simulated → pending_user → approved → executing → signed → broadcasted
- *                                    ↘ rejected
- *                                    ↘ expired (approval_token TTL)
- *                                                ↘ failed (どこかで失敗)
+ *   draft → simulated → pending_user → approved → executing → broadcasted
+ *                     ↘ (policy auto)  ↗           ↘ failed (wallet 拒否 / 送信失敗を web が報告)
+ *   simulated | pending_user | approved → rejected
+ *   終端 (broadcasted | failed | rejected | expired) 以外は expires_at (作成 + 24h) 超過で expired
+ *
+ * 人が承認する plan は web が approve → execute (unsigned tx) → 署名 → 送信 →
+ * /signatures まで一気に行う (承認 = 実行)。Agent は署名済み tx を受け取らない (§6.5)。
  *
  * plan_id と simulation_id の関係:
  * - plan_id は AgentPlan への参照 (主キー)
@@ -157,4 +161,68 @@ export interface AgentPlan {
   created_at: string;
   /** ISO 8601 */
   updated_at: string;
+
+  /** 24h 期限 (ISO)。超えたら expired (BFF が読み出し時に判定) */
+  expires_at?: string;
+
+  /** approve の主体。auto = policy の自動承認 (autonomous)、user = 人 (web / Seeker) */
+  approved_by?: AgentPlanApprover;
+
+  /** 署名・送信の結果 (web が POST /agent-plans/:id/signatures で報告) */
+  execution?: AgentPlanExecution;
+
+  /** 失敗 / 取り消しの理由 (user_cancelled / submit_failed / …) */
+  failure_reason?: string;
 }
+
+/** approve の主体 (AgentPlan.approved_by) */
+export type AgentPlanApprover = "user" | "auto";
+
+/** 署名・送信を行った経路 */
+export type AgentPlanExecutionVia = "web" | "autonomous";
+
+/** 署名・送信の結果 (AgentPlan.execution) */
+export interface AgentPlanExecution {
+  execution_id: string;
+  /** base58 の tx signature (unsigned_transactions の index 順) */
+  signatures: string[];
+  /** ISO 8601 */
+  submitted_at: string;
+  via: AgentPlanExecutionVia;
+}
+
+/** POST /agent-plans/:id/execute の unsigned tx 1 本 */
+export interface AgentPlanUnsignedTransaction {
+  index: number;
+  label: string;
+  /** base64 serialized (未署名、または ephemeral keypair の部分署名済み) */
+  tx_base64: string;
+}
+
+/**
+ * POST /agent-plans/:id/execute の成功応答。
+ * 署名は呼び手 (web の接続 wallet) が行い、結果を /signatures か /failed で報告する。
+ */
+export interface AgentPlanExecuteResponse {
+  execution_id: string;
+  status: "awaiting_signature";
+  plan: AgentPlan;
+  unsigned_transactions: AgentPlanUnsignedTransaction[];
+}
+
+/**
+ * GET /agent-plans/:id/approval の応答 (MCP request_user_approval の poll 先)。
+ * approval_token は approved_by === "auto" かつ status === "approved" の時だけ含まれる
+ * (人が承認した plan の token は web が approve 応答で直接受け取り、外には出さない)。
+ */
+export interface AgentPlanApprovalStatus {
+  plan_id: string;
+  status: AgentPlanStatus;
+  approved_by: AgentPlanApprover | null;
+  approval_token?: ApprovalToken;
+  execution?: AgentPlanExecution;
+  failure_reason?: string;
+}
+
+/** POST /agent-plans/:id/approve の応答 */
+export type AgentPlanApproveResponse = AgentPlan & { approval_token: ApprovalToken };

@@ -66,9 +66,15 @@ SplashScreen.preventAutoHideAsync().catch(() => {
   /* noop: race condition で既に hidden の場合は無視 */
 });
 
-/** payload を /approval/[planId]?token=<tokenId> URL に変換 */
+/**
+ * payload を /approval/[planId] URL に変換。BFF の push は `{ type, plan_id }` だけ
+ * (token は approve 後に発行される)。旧 payload の token_id があれば ?token= で渡す
+ */
 function approvalDeepLink(payload: ApprovalPushPayload): string {
-  return `/approval/${encodeURIComponent(payload.plan_id)}?token=${encodeURIComponent(payload.token_id)}`;
+  const base = `/approval/${encodeURIComponent(payload.plan_id)}`;
+  return payload.token_id
+    ? `${base}?token=${encodeURIComponent(payload.token_id)}`
+    : base;
 }
 
 export default function RootLayout() {

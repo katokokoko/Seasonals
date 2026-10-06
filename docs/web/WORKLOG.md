@@ -394,6 +394,20 @@ Web 側 (`artifacts/seasonals-web`) は `BFF_URL` (Vite dev proxy 先、node 側
 - 検証: mobile 427 → 456 tests green (suites 38 → 40)、`tsc` 新規エラーなし。`verify:tx` 23 経路 要調査 0
 - 未検証 (Seeker 実機、ユーザー): deposit / withdraw 1 往復 (route 無しの pool で Unsupported market が出ること)、tier C 注記、Menu → Perena → Tri-Stable の link
 
+### Solana agent plan の承認 inbox を web に (2026-10-06、未 commit、Opus 5.5 subagent 3 本で実装)
+- 背景 (調査 2026-10-06): BFF の `/agent-plans` は approve で token を出し、`/execute` は swap-earn だけ unsigned tx を **Agent に返す** (`pushed_to_mobile` という label だけ) 作りで、誰も署名しない。plan はメモリのみ、wallet で絞れず、fixture と autonomous dry-run が混ざる。mobile の承認画面は `?token=` 必須 (token は approve 後にしか無いので実 plan は開けない)、push payload は `token_id` を要求して捨てる。memo stub (`buildMemoTransaction`、devnet) は fixture plan 専用
+- 判断 (ユーザー決定): **web が approve → 組む → 署名 → 送信まで一気に** (ETH の ProposalInbox と同じ「承認 = 実行」)。MCP の `request_user_approval` は終端まで待って signature を返す。`execute_approved_action` は policy auto 承認 (autonomous) 専用。永続化と絞り込みは ETH に揃える (`.data/agent-plans.json`、24h で `expired`、`GET /agent-plans?wallet=`、fixture は test のみ)
+- 契約 (`lib/types/agent-plan.ts` に `expires_at` / `approved_by: "user" | "auto"` / `execution { execution_id, signatures, submitted_at, via }` / `failure_reason`、応答型 `AgentPlanExecuteResponse` 等):
+  - `POST /approve` (body なし) → approved + `approved_by: "user"` + token。**人が承認済みの approved plan にも token を再発行** (Seeker で承認 → web で署名、gate 拒否後の再試行のため。auto 承認の plan は 409)
+  - `POST /execute {approval_token, via}` → `resolveSolanaRoute` で 13 route すべてを既存 `/protocols/*` route に in-process (`app.inject`) で流して組む。oracle / fair-value / 残高 / 預入停止の gate は builder 側のものがそのまま効く。応答 `{execution_id, status: "awaiting_signature", unsigned_transactions[{index,label,tx_base64}]}`、plan は executing。builder が止めたら status と body を透過し plan は approved のまま token 未消費 (再試行可)
+  - `POST /signatures {execution_id, signatures[]}` → broadcasted (本数一致、base58 形式)。`POST /failed {execution_id, reason}` → failed。`/reject` は simulated | pending_user | approved からのみ。`GET /approval` は auto 承認の時だけ token を出す。`GET /agent-plans?wallet=` で絞る。期限超過は読み出し時に expired
+  - MCP: `request_user_approval` は broadcasted (signatures) / failed (failure_reason) / rejected / expired / auto 承認 (token) / timeout を返す。`execute_approved_action` は人が承認した plan には `awaiting_user_signature` を返し `/execute` を呼ばない
+  - mobile: push payload の `token_id` を任意に、承認画面は token 無しで開く、approve は body なし、承認後は「Sign & send from the Seasonals web app.」(Seeker で署名するのは後続)。`httpPostJson` は body 無しの時 content-type を付けない (Fastify の `FST_ERR_CTP_EMPTY_JSON_BODY` 400 を実 BFF で踏んだ)
+- web (`src/agent/SolanaPlanInbox.tsx`): /agent の「Proposals from your Agent」の下に「Solana plans from your Agent」。card は status tag / action と金額 (`toHumanReadable` は表示直前) / protocol / estimated out / oracle 要約 (`ORACLE_WARNING_HEADLINE`) / bundle_hash / 期限 / Solscan link。**Approve & sign** (pending_user | simulated) と **Sign & send** (approved) は approve → `useSignAndSubmit(wallet_id).run(execute → unsigned tx)` → `/signatures`、wallet 拒否 / 送信失敗は `/failed`。`/execute` の 409 は「Declined by safety gate」(plan は approved のまま、`/failed` は呼ばない)。plan の wallet が接続 wallet と違えば署名ボタンを出さない。polling は live な plan がある間 5 秒、無ければ 15 秒 (ETH と同じ)
+- 検証: lib 293 / BFF 634 / mobile 456 / MCP 24 / web 152 tests green、`pnpm -r typecheck` green。`verify:tx` 23 経路 要調査 0。web e2e 116/116 (agent inbox の 3 check 含む)。**MCP e2e** (新コードの MCP server を stdio で spawn、dev BFF 相手): compare → simulate (jupiter_lend USDC 1.0) → request_user_approval を待たせつつ web 相当の approve → execute (mainnet の実 tx 構築、署名なし) → /failed で Agent に `{status:"failed", failure_reason:"user_cancelled"}` が返る、wallet filter、token の秘匿、user 承認 plan への `execute_approved_action` が `awaiting_user_signature`、再 approve の token 再発行 — 19/19
+- 未検証: 実 wallet で web から署名して送る (mainnet 少額、ユーザー)、Seeker 実機で承認画面が token 無しで開くこと
+- 範囲外: Seeker 上での agent plan 署名、`/agent-plans` の認証 (従来どおり無し)
+
 ## 最終状態 (2026-09-26 05:30 JST 時点)
 
 | 領域 | 状態 | 実際に確認したこと |

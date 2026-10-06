@@ -28,6 +28,7 @@ import type {
 } from "@workspace/lib/types";
 import { useActiveAddresses, type ActiveAddress } from "../state/session";
 import { useCustomEvents } from "../state/customEvents";
+import { AgentPlanStatus, type AgentPlan } from "@workspace/lib/types";
 import { api, ApiError } from "./api";
 import { shortAddress } from "../ui/format";
 
@@ -398,4 +399,53 @@ export function useSolanaEarnPositions(): {
     for (const position of allEarnPositions(r.data)) rows.push({ address: a.address, connected: a.connected, position });
   });
   return { rows, failed, isLoading: results.some((r) => r.isPending), hasAddress: sol.length > 0 };
+}
+
+// ── Solana agent plan (MCP の Agent が作った plan の承認 inbox、/agent) ──
+
+/** 承認待ち / 承認済み / 署名中の plan がある間は速く取り直す */
+const LIVE_PLAN_STATUSES: ReadonlySet<string> = new Set([AgentPlanStatus.PendingUser, AgentPlanStatus.Approved, AgentPlanStatus.Executing]);
+
+export const solanaAgentPlansKey = (wallet: string) => ["sol", "agent-plans", wallet] as const;
+
+export interface SolanaAgentPlansData {
+  /** 新しい順。plan_id で重複を除いたもの */
+  plans: AgentPlan[];
+  isLoading: boolean;
+  /** 接続中 (watch ではない) の Solana wallet。署名できるのはこれだけ */
+  wallets: string[];
+  error?: string;
+}
+
+/**
+ * 接続中の Solana wallet ごとの agent plan (GET /agent-plans?wallet=)。watch 中の address は署名できないので対象外。
+ * 承認待ち / 実行中がある間は 5 秒、それ以外は 15 秒ごとに再取得 (useAgentProposals と同じ。MCP 側の新しい plan や
+ * Seeker での承認が、ページを触らなくても反映されるように)
+ */
+export function useSolanaAgentPlans(): SolanaAgentPlansData {
+  const wallets = useActiveAddresses()
+    .filter((a) => a.chain === "solana" && a.connected)
+    .map((a) => a.address);
+  const results = useQueries({
+    queries: wallets.map((w) => ({
+      queryKey: solanaAgentPlansKey(w),
+      queryFn: () => api.agentPlans(w),
+      staleTime: 5_000,
+      retry: 1,
+      refetchInterval: (q: { state: { data?: AgentPlan[] } }) =>
+        q.state.data?.some((p) => LIVE_PLAN_STATUSES.has(p.status)) ? 5_000 : 15_000,
+    })),
+  });
+  const seen = new Set<string>();
+  const plans = results
+    .flatMap((r) => r.data ?? [])
+    .filter((p) => (seen.has(p.plan_id) ? false : (seen.add(p.plan_id), true)))
+    .sort((a, b) => b.created_at.localeCompare(a.created_at));
+  const failed = results.find((r) => r.isError);
+  return {
+    plans,
+    isLoading: results.some((r) => r.isLoading),
+    wallets,
+    ...(failed ? { error: errorText(failed.error) } : {}),
+  };
 }
