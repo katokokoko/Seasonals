@@ -4,6 +4,12 @@
  * - raw WebGL 1、全画面 clip-space 三角形 1 枚、three.js / R3F 不使用
  * - shader は water.frag.glsl を `?raw` で読む (byte-identical、tuning は waterDefaults のみ)
  * - rAF loop 1 本: hidden tab / paused では draw を skip、t += min(dt, 0.1) * speed
+ * - 発熱対策 (2026-10-06、比較スイッチは perfVariant.ts):
+ *   1. 描画は maxFps (既定 30) に間引く。rAF は画面の rate (ProMotion は 120 Hz) で回るので、
+ *      前の描画から 1/maxFps 経つまでは何もしない。kick (quiet zone / glass の移動) は即描く
+ *   2. animate: false (作業画面の calm preset) は静止画。preset の補間中だけ動かし、あとは
+ *      quiet zone / resize の変化で 1 frame 描く (reduced motion と同じ経路、uTime は止める)
+ *   4. glass layer は glass 面の外接矩形だけを scissor で描く (外は透明のまま)
  * - DPR cap (maxDpr、既定 1.25)
  * - prefers-reduced-motion: uTime = 12 の静止画。resize / quiet zone / preset 変化時だけ再描画
  * - webglcontextlost / restored 対応、WebGL 不可 / compile 失敗は何も描かず
@@ -27,10 +33,14 @@
 import { useCallback, useEffect, useRef } from "react";
 import fragSrc from "./water.frag.glsl?raw";
 import { resolveWaterParams, type WaterParams } from "./waterDefaults";
+import { perfOn, perfVariantLabel } from "./perfVariant";
+import { glassScissor } from "./quietZones";
 import { useQuietZones, type ZoneLayer } from "./useQuietZones";
 
 const VERT_SRC = "attribute vec2 a;\nvoid main() { gl_Position = vec4(a, 0.0, 1.0); }";
 const STILL_TIME = 12.0;
+/** fps 上限の判定の余裕 (ms)。120 Hz の 1 frame の半分。30 fps なら 120 Hz で 4 frame、60 Hz で 2 frame ごとに描く */
+const FRAME_SLACK_MS = 4;
 /** 既定の光源 (左上から)。shader の uLight と CSS の --glass-light-angle の基準 */
 const DEFAULT_LIGHT = { x: -0.6, y: 0.8 };
 const UNIFORMS = [
@@ -253,6 +263,19 @@ export function WaterBackground({ params, paused = false, className, glassClassN
       g.uniform1f(loc.uGlassOnly, l.glassOnly ? 1 : 0);
       // lens は glass layer (無ければ水面 layer) だけ。水面 layer の droplet rect は集光用
       g.uniform1f(loc.uGlassLens, l.glassOnly || !glassLayer ? 1 : 0);
+      if (l.glassOnly && perfOn(4)) {
+        // glass の外は shader が透明を返すだけだが、その前に glass の SDF を全 glass 分回すので、
+        // 外接矩形の外は fragment を走らせない。描画バッファは毎 frame 透明に戻る (preserveDrawingBuffer: false)
+        const box = glassScissor(q.glassRects, q.glassMeta, q.glassShape, q.glassCount, l.canvas.width, l.canvas.height);
+        if (!box) {
+          g.disable(g.SCISSOR_TEST);
+          g.clearColor(0, 0, 0, 0);
+          g.clear(g.COLOR_BUFFER_BIT);
+          return;
+        }
+        g.enable(g.SCISSOR_TEST);
+        g.scissor(box.x, box.y, box.w, box.h);
+      }
       g.drawArrays(g.TRIANGLES, 0, 3);
     };
     const draw = () => {
@@ -286,23 +309,32 @@ export function WaterBackground({ params, paused = false, className, glassClassN
 
     const frame = (now: number) => {
       raf = 0;
-      const dt = Math.min((now - last) / 1000, 0.1);
-      last = now;
       if (lost) return;
       const hidden = document.visibilityState === "hidden";
       if (hidden || pausedRef.current) {
         setState(hidden ? "hidden" : "paused");
         return; // idle: visibilitychange / kick で再開
       }
+      // 対策 1: fps 上限。前の描画から 1/maxFps 経っていなければ次の rAF を待つ (kick で dirty なら即描く)
+      const fps = still ? 0 : target.current.maxFps;
+      if (fps > 0 && !dirty && now - last < 1000 / fps - FRAME_SLACK_MS) {
+        raf = requestAnimationFrame(frame);
+        return;
+      }
+      const dt = Math.min((now - last) / 1000, 0.1);
+      last = now;
       resize();
       // quiet / glass rect は描く直前に毎回取り直す (イベントで拾えない DOM の動きでも古い rect を残さない)
       quiet.current.measure();
       const moving = approach(dt);
-      if (still) {
+      if (still || !target.current.animate) {
         // 静止画 1 枚を描いて loop を止める。resize / quiet zone / preset / motion 設定の
-        // 変化は kick() で 1 frame だけ再描画する
+        // 変化は kick() で 1 frame だけ再描画する。
+        // 対策 2 (animate: false) では preset の補間中だけ時間も進めて loop を続け、補間が終わったら止まる
         setState("still");
+        if (!still && moving) t += dt * cur.speed;
         if (dirty || moving || stale()) draw();
+        if (!still && moving) raf = requestAnimationFrame(frame);
         return;
       }
       setState("animating");
@@ -392,9 +424,16 @@ export function WaterBackground({ params, paused = false, className, glassClassN
     };
   }, [quiet]);
 
+  const variant = perfVariantLabel();
   return (
     <>
       <div ref={hostRef} className={className} aria-hidden="true" />
+      {/* dev の比較スイッチ (?water-perf=) が効いている時だけ、どの組み合わせかを隅に出す */}
+      {variant && (
+        <div className="water-perf-badge" aria-hidden="true">
+          {variant}
+        </div>
+      )}
       {/* glass layer: スクロール内容の中の sticky (rubber band でも glass の DOM 枠と一緒に動く) */}
       <div className="water-track" aria-hidden="true">
         <div ref={glassHostRef} className={glassClassName} />

@@ -7,6 +7,7 @@ import {
   collectGlassRects,
   collectQuietRects,
   DROPLET_WOBBLE_PX,
+  glassScissor,
   glassVariant,
   packFloaters,
   GLASS_VARIANTS,
@@ -28,13 +29,18 @@ describe("water.frag.glsl", () => {
 
 describe("waterDefaults", () => {
   it("matches the spec defaults", () => {
-    expect(waterDefaults).toEqual({ speed: 1, scale: 4.5, caustic: 0.5, refraction: 0.012, tint: 0.5, quiet: 0.6, glass: 1, maxDpr: 1.25 });
+    expect(waterDefaults).toEqual({ speed: 1, scale: 4.5, caustic: 0.5, refraction: 0.012, tint: 0.5, quiet: 0.6, glass: 1, maxDpr: 1.25, maxFps: 30, animate: true });
   });
   it("calm preset is quieter than defaults", () => {
     expect(waterCalm.caustic).toBeLessThan(waterDefaults.caustic);
     expect(waterCalm.quiet).toBe(1);
     expect(waterCalm.maxDpr).toBe(waterDefaults.maxDpr);
     expect(waterCalm.glass).toBeLessThan(waterDefaults.glass);
+  });
+  it("work screens hold a still frame, Home animates (heat measure 2)", () => {
+    expect(waterCalm.animate).toBe(false);
+    expect(waterDefaults.animate).toBe(true);
+    expect(waterCalm.maxFps).toBe(waterDefaults.maxFps);
   });
   it("partial params fall back to defaults", () => {
     expect(resolveWaterParams({ tint: 1 })).toEqual({ ...waterDefaults, tint: 1 });
@@ -186,5 +192,34 @@ describe("floaters", () => {
     const packed = packFloaters(fs);
     expect(packed).toHaveLength(8);
     expect(Array.from(packed.slice(0, 4))).toEqual([50, 750, 50, 0.5]);
+  });
+});
+
+describe("glassScissor (heat measure 4)", () => {
+  const pack = (gs: { cx: number; cy: number; w: number; h: number; angle?: number; wobble?: number }[]) =>
+    packGlassRects(
+      gs.map((g, i) => ({ radius: 0, angle: 0, lens: 1, frost: 0, droplet: false, wobble: 0, seed: i, ...g }))
+    );
+  it("is null without glass", () => {
+    const p = pack([]);
+    expect(glassScissor(p.rects, p.meta, p.shape, 0, 800, 600)).toBeNull();
+  });
+  it("covers every glass rect with a 3px pad plus the droplet wobble", () => {
+    const p = pack([
+      { cx: 100, cy: 500, w: 100, h: 40 },
+      { cx: 400, cy: 200, w: 60, h: 60, wobble: 5 },
+    ]);
+    expect(glassScissor(p.rects, p.meta, p.shape, 2, 800, 600)).toEqual({ x: 47, y: 162, w: 391, h: 361 });
+  });
+  it("grows with rotation and is clipped to the canvas", () => {
+    const p = pack([{ cx: 10, cy: 10, w: 100, h: 20, angle: Math.PI / 2 }]);
+    // rotated 90°: the extent is 20 × 100
+    const box = glassScissor(p.rects, p.meta, p.shape, 1, 800, 600)!;
+    expect(box).toMatchObject({ x: 0, y: 0 });
+    // cos(π/2) is not exactly 0 in float32, so allow the 1px ceil
+    expect(box.w).toBeGreaterThanOrEqual(23);
+    expect(box.w).toBeLessThanOrEqual(24);
+    expect(box.h).toBeGreaterThanOrEqual(63);
+    expect(box.h).toBeLessThanOrEqual(64);
   });
 });

@@ -216,6 +216,44 @@ export function packGlassRects(
 }
 
 /**
+ * 発熱対策 4 (2026-10-06): glass layer の scissor 矩形 (device px、bottom-left origin、整数)。
+ * 詰めた uGlassRects / uGlassMeta / uGlassShape から、全 glass 面の回転込みの外接矩形の和を返す。
+ * shader の glass は輪郭の外 1px まで (smoothstep(-1, 1, sd)) と droplet の揺らぎの分だけはみ出すので、
+ * その分と 2px の余白を足す。canvas の外は切る。glass が無ければ null (何も描かない)
+ */
+export function glassScissor(
+  rects: Float32Array,
+  meta: Float32Array,
+  shape: Float32Array,
+  count: number,
+  width: number,
+  height: number
+): { x: number; y: number; w: number; h: number } | null {
+  let x0 = Infinity;
+  let y0 = Infinity;
+  let x1 = -Infinity;
+  let y1 = -Infinity;
+  for (let i = 0; i < Math.min(count, MAX_GLASS_RECTS); i++) {
+    const [cx, cy, w, h] = [rects[i * 4]!, rects[i * 4 + 1]!, rects[i * 4 + 2]!, rects[i * 4 + 3]!];
+    const angle = meta[i * 4 + 1]!;
+    const pad = Math.abs(shape[i * 4]!) + 3;
+    const c = Math.abs(Math.cos(angle));
+    const s = Math.abs(Math.sin(angle));
+    const ex = (c * w + s * h) / 2 + pad;
+    const ey = (s * w + c * h) / 2 + pad;
+    x0 = Math.min(x0, cx - ex);
+    y0 = Math.min(y0, cy - ey);
+    x1 = Math.max(x1, cx + ex);
+    y1 = Math.max(y1, cy + ey);
+  }
+  const x = Math.max(0, Math.floor(x0));
+  const y = Math.max(0, Math.floor(y0));
+  const r = Math.min(width, Math.ceil(x1));
+  const t = Math.min(height, Math.ceil(y1));
+  return r > x && t > y ? { x, y, w: r - x, h: t - y } : null;
+}
+
+/**
  * glass 面を Web Animations 等で動かす時に呼ぶ。WAAPI は style 属性を変えないので
  * MutationObserver では拾えない。受け取った useQuietZones が ms の間 rAF ごとに rect を取り直す。
  */
