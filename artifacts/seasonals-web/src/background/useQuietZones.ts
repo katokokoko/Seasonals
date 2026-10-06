@@ -5,7 +5,7 @@
  * - 座標は canvas の実 box 基準 (canvasFrame)。viewport / innerHeight / dpr を前提にしない
  * - canvas は 2 枚 (水面 = fixed、glass = スクロール内容と一緒に動く sticky)。rect は canvas ごとに
  *   その box 基準で詰める。glass rect は glass layer にだけ入れる
- * - `measure()` は WaterBackground の描画ループが **アニメーション中は毎フレーム** 呼ぶ。
+ * - `measure()` は WaterBackground の描画ループが **アニメーション中は描く frame ごとに** 呼ぶ (fps 上限で間引いた frame では呼ばない)。
  *   scroll / sticky / macOS の弾性スクロール / route 遷移 / WAAPI / HMR など、どんな動きでも
  *   次のフレームで追従し、古い rect が残らない (要素の一覧はキャッシュし、毎フレームは rect だけ読む)
  * - ループが止まる静止モード (reduced motion) 用に、イベント駆動の再計算も持つ:
@@ -23,6 +23,8 @@ export interface QuietZoneState {
   count: number;
   glassRects: Float32Array;
   glassMeta: Float32Array;
+  /** droplet の形 (vec4 × 6: 揺らぎ, droplet 0/1, seed, 0) */
+  glassShape: Float32Array;
   glassCount: number;
   /** 水面に浮かぶもの (vec4 × 2) と数 */
   floaters: Float32Array;
@@ -31,7 +33,10 @@ export interface QuietZoneState {
   version: number;
 }
 
-/** rect を詰める先の canvas。glass: true の layer にだけ glass rect を入れる */
+/**
+ * rect を詰める先の canvas。glass: true の layer に glass rect を入れる (lens を描く)。
+ * glass: false の layer (水面) にも droplet の rect だけは入れる (カードの外の砂に集光を描くため)
+ */
 export interface ZoneLayer {
   canvas: HTMLCanvasElement;
   glass: boolean;
@@ -40,7 +45,12 @@ export interface ZoneLayer {
 export interface QuietZoneTracker {
   /** canvas ごとの最新値 (無ければ空) */
   stateFor: (canvas: HTMLCanvasElement) => QuietZoneState;
-  /** 今の DOM から rect を取り直す。どれかの layer が変わっていれば true */
+  /**
+   * 今の DOM から rect を取り直す。どれかの layer の quiet / glass rect が変わっていれば true
+   * (呼び出し側はすぐ描く)。floater (Home のキャラクター) だけの変化は version は上げるが false を返す:
+   * キャラクターは毎フレーム style を書くので、それで即描くと描画の fps 上限 (発熱対策 1) を素通りする。
+   * 波紋と影は次の描画で追従すれば足りる
+   */
   measure: () => boolean;
 }
 
@@ -49,6 +59,7 @@ const EMPTY: QuietZoneState = {
   count: 0,
   glassRects: new Float32Array(24),
   glassMeta: new Float32Array(24),
+  glassShape: new Float32Array(24),
   glassCount: 0,
   floaters: new Float32Array(8),
   floaterCount: 0,
@@ -78,33 +89,34 @@ export function useQuietZones(
     for (const layer of getLayers()) {
       const frame = canvasFrame(layer.canvas);
       const rects = collectQuietRects(quietEls.current, frame);
-      const glass = layer.glass ? collectGlassRects(glassEls.current, frame) : [];
+      const glass = collectGlassRects(glassEls.current, frame, { dropletsOnly: !layer.glass });
       const next = packQuietRects(rects);
       const nextGlass = packGlassRects(glass);
       const floaters = collectFloaters(floaterEls.current, frame);
       const nextFloaters = packFloaters(floaters);
       const cur = states.current.get(layer.canvas) ?? EMPTY;
-      const changed =
+      const zonesChanged =
         cur === EMPTY ||
         cur.count !== rects.length ||
         cur.glassCount !== glass.length ||
         !sameRects(cur.rects, next) ||
         !sameRects(cur.glassRects, nextGlass.rects) ||
         !sameRects(cur.glassMeta, nextGlass.meta) ||
-        cur.floaterCount !== floaters.length ||
-        !sameRects(cur.floaters, nextFloaters);
-      if (changed) {
+        !sameRects(cur.glassShape, nextGlass.shape);
+      const floatersChanged = cur.floaterCount !== floaters.length || !sameRects(cur.floaters, nextFloaters);
+      if (zonesChanged || floatersChanged) {
         states.current.set(layer.canvas, {
           rects: next,
           count: rects.length,
           glassRects: nextGlass.rects,
           glassMeta: nextGlass.meta,
+          glassShape: nextGlass.shape,
           glassCount: glass.length,
           floaters: nextFloaters,
           floaterCount: floaters.length,
           version: cur.version + 1,
         });
-        any = true;
+        if (zonesChanged) any = true;
       }
     }
     return any;

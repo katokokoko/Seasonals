@@ -9,7 +9,8 @@
     "start": "tsx src/index.ts",
     "test": "jest",
     "typecheck": "tsc --noEmit",
-    "verify:tx": "node scripts/verify-tx-routes.mjs"
+    "verify:tx": "node scripts/verify-tx-routes.mjs",
+    "verify:oracle": "tsx scripts/verify-oracle-feeds.ts"
   },
   "dependencies": {
     "@1inch/aqua-sdk": "0.3.4",

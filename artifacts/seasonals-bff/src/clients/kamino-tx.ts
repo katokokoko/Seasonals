@@ -245,6 +245,12 @@ export interface KaminoVaultMetrics {
   apy: string;
   tokensPerShare: string;
   tokenPrice: string;
+  /**
+   * 2026-10: reserve へ投下済み / 未投下の USD 額 (decimal string)。
+   * 合計が vault TVL (menu の表示専用 tvl_usd)。API が返さなければ undefined
+   */
+  tokensInvestedUsd?: string;
+  tokensAvailableUsd?: string;
 }
 
 export async function fetchKaminoVaultMetrics(
@@ -254,11 +260,17 @@ export async function fetchKaminoVaultMetrics(
     apy?: string;
     tokensPerShare?: string;
     tokenPrice?: string;
+    tokensInvestedUsd?: unknown;
+    tokensAvailableUsd?: unknown;
   }>(`/kvaults/${vault}/metrics`);
   return {
     apy: raw.apy ?? "0",
     tokensPerShare: raw.tokensPerShare ?? "0",
     tokenPrice: raw.tokenPrice ?? "0",
+    tokensInvestedUsd:
+      typeof raw.tokensInvestedUsd === "string" ? raw.tokensInvestedUsd : undefined,
+    tokensAvailableUsd:
+      typeof raw.tokensAvailableUsd === "string" ? raw.tokensAvailableUsd : undefined,
   };
 }
 

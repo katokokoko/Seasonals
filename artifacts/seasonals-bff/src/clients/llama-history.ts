@@ -11,7 +11,7 @@
  * 2026-05-11 の 1.04269 → 08-01 の 1.05372 = +1.06%、Jupiter の earnings
  * 107982 と整合)。これを **履歴表示専用** の第 3 経路として使う。
  *
- * **oracle 経路とは隔離する**: §4.6 の primary=Pyth / fallback=Switchboard は
+ * **oracle 経路とは隔離する**: §4.6 の primary=Pyth / secondary=RedStone (on-chain push feed) は
  * simulate / execute の fail-closed 判定であり、本 module はそこに一切入らない。
  * ここは chart の値付け (display only) だけに使う。
  *

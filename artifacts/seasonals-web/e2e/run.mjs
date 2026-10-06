@@ -114,7 +114,9 @@ for (const vp of WIDTHS) {
 
   // date click → dialog (URL 不変) → Esc で閉じて focus 復帰
   const cell = page.locator(".home-card .month-cell-hit").nth(12);
-  await cell.click();
+  // 日付の帯 (上端 26px) を押す。中央は実データの event chip が重なり、chip がクリックを取る
+  const dateStrip = { position: { x: 10, y: 12 } };
+  await cell.click(dateStrip);
   const dialog = page.getByRole("dialog");
   await dialog.waitFor();
   check(`${vp.name} date click opens dialog`, await dialog.isVisible());
@@ -130,7 +132,7 @@ for (const vp of WIDTHS) {
   check(`${vp.name} Esc closes dialog`, (await page.getByRole("dialog").count()) === 0);
   check(`${vp.name} focus returns to date cell`, await page.evaluate(() => document.activeElement?.classList.contains("month-cell-hit")));
   // outside click
-  await cell.click();
+  await cell.click(dateStrip);
   await page.mouse.click(5, vp.height - 5);
   check(`${vp.name} outside click closes dialog`, (await page.getByRole("dialog").count()) === 0);
 
@@ -197,6 +199,8 @@ for (const vp of WIDTHS) {
   const shown = await page.locator(".menu-item").count();
   const heldShown = await page.locator(".menu-item .menu-holding").count();
   check("Deposited only narrows the menu to held products", shown > 0 && shown < all && heldShown === shown, `all=${all} shown=${shown} held=${heldShown}`);
+  // 絞り込みを外してから sUSDe を選ぶ (watch している address の保有は mainnet 次第で変わる)
+  await page.getByRole("button", { name: "Deposited only" }).click();
   const card = page.locator(".menu-item", { hasText: "sUSDe" }).first();
   await card.getByRole("button", { name: "Deposit" }).click();
   await card.getByLabel("Amount").fill("1");
@@ -245,6 +249,243 @@ for (const vp of WIDTHS) {
   await page.close();
 }
 
+// Solana wallet (Wallet Standard): 偽 wallet を wallet-standard:register-wallet で名乗らせ、接続 → reload で silent 再接続。
+// 本物の拡張は入れない。signTransaction は常に拒否 (4001) するので、何も署名・送信されない
+const SOLANA_FAKE_WALLET = () => {
+  const icon = "data:image/svg+xml;base64," + btoa('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 8 8"><circle cx="4" cy="4" r="4"/></svg>');
+  const address = "7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU";
+  window.__solCalls = [];
+  const account = { address, publicKey: new Uint8Array(32), chains: ["solana:mainnet"], features: ["solana:signTransaction"] };
+  const wallet = {
+    version: "1.0.0",
+    name: "Fake Phantom",
+    icon,
+    chains: ["solana:mainnet"],
+    accounts: [],
+    features: {
+      "standard:connect": { version: "1.0.0", connect: async (input) => (window.__solCalls.push(`connect:${input?.silent ? "silent" : "prompt"}`), { accounts: [account] }) },
+      "standard:events": { version: "1.0.0", on: () => () => {} },
+      "solana:signTransaction": {
+        version: "1.0.0",
+        supportedTransactionVersions: ["legacy", 0],
+        signTransaction: async (...inputs) => {
+          window.__solCalls.push(`sign:${inputs.length}`);
+          // 既定は拒否。network を route で差し替えた block だけ "sign" にして、末尾に 0xff を足した bytes を返す
+          if (window.__solSignMode === "sign") return inputs.map((i) => ({ signedTransaction: Uint8Array.from([...i.transaction, 0xff]) }));
+          throw Object.assign(new Error("User rejected the request."), { code: 4001 });
+        },
+      },
+    },
+  };
+  const callback = ({ register }) => register(wallet);
+  try {
+    window.dispatchEvent(new CustomEvent("wallet-standard:register-wallet", { detail: callback }));
+  } catch {}
+  window.addEventListener("wallet-standard:app-ready", ({ detail }) => callback(detail));
+};
+{
+  const page = await newPage(WIDTHS[0]);
+  await page.addInitScript(SOLANA_FAKE_WALLET);
+  await page.goto(BASE + "/settings", { waitUntil: "networkidle" });
+  await page.getByRole("button", { name: /Connect wallet/ }).click();
+  const solNames = await page.getByRole("list", { name: "Detected Solana wallets" }).locator(".wallet-choice-name").allInnerTexts();
+  check("Connect wallet lists Wallet Standard Solana wallets", solNames.join(",") === "Fake Phantom", solNames.join(","));
+  await page.getByRole("button", { name: /Fake Phantom/ }).click();
+  await page.locator(".wallet-button.is-active").waitFor({ timeout: 10_000 }).catch(() => {});
+  const header = await page.locator(".wallet-button").innerText();
+  check("Solana wallet connects its base58 account", header.includes("7xKX") && !header.includes("watching"), header.replace(/\s+/g, " "));
+  await page.screenshot({ path: ".screenshots/wallet-solana-1440.png" });
+  await page.reload({ waitUntil: "networkidle" });
+  await page.locator(".wallet-button.is-active").waitFor({ timeout: 10_000 }).catch(() => {});
+  const calls = await page.evaluate(() => window.__solCalls);
+  const header2 = await page.locator(".wallet-button").innerText();
+  check("reload reconnects the Solana wallet silently", calls.join(",") === "connect:silent" && header2.includes("7xKX"), `${calls.join(",")} | ${header2.replace(/\s+/g, " ")}`);
+  check("Solana wallet pages have no errors", page.errors.length === 0, page.errors.join(" | "));
+  await page.close();
+}
+
+// Solana Menu deposit (SOL_E2E=1、BFF に HELIUS_API_KEY が要る): 実 mainnet の public address を名乗る偽 wallet で
+// Jupiter Lend USDC に 0.1 USDC → BFF が unsigned tx を組む → wallet prompt → 偽 wallet が拒否 (4001)。
+// 署名も送信も起きないことを /tx/submit が 0 回であることで確かめる
+if (process.env.SOL_E2E === "1") {
+  const page = await newPage(WIDTHS[0]);
+  await page.addInitScript(SOLANA_FAKE_WALLET);
+  const submits = [];
+  page.on("request", (r) => r.url().includes("/tx/submit") && submits.push(r.url()));
+  await page.goto(BASE + "/menu", { waitUntil: "networkidle" });
+  await page.getByRole("button", { name: /Connect wallet/ }).click();
+  await page.getByRole("button", { name: /Fake Phantom/ }).click();
+  await page.locator(".wallet-button.is-active").waitFor({ timeout: 10_000 }).catch(() => {});
+  await page.keyboard.press("Escape");
+  await page.getByRole("group", { name: "Chain" }).getByRole("button", { name: "Solana" }).click();
+  const card = page.locator(".menu-item").filter({ has: page.locator(".menu-item-protocol", { hasText: /^Jupiter/ }) }).filter({ has: page.locator("h3", { hasText: "USDC" }) }).first();
+  await card.getByRole("button", { name: "Deposit" }).click();
+  await card.getByText(/Wallet balance:/).waitFor({ timeout: 60_000 }).catch(() => {});
+  check("Solana deposit panel reads the wallet balance", /Wallet balance: [0-9.]+ USDC/.test(await card.innerText()), (await card.innerText()).slice(0, 200));
+  await card.getByLabel("Amount").fill("0.1");
+  const cta = card.getByRole("button", { name: "Sign in wallet" });
+  // oracle が blocked (§4.6 fail-closed) なら CTA は押せないまま。その時は「止まること」だけを確かめ、署名経路は検証済みと言わない
+  await Promise.race([
+    page.waitForFunction((el) => el && !el.disabled, await cta.elementHandle(), { timeout: 60_000 }),
+    card.getByText(/Blocked for safety/).waitFor({ timeout: 60_000 }),
+  ]).catch(() => {});
+  if (await card.getByText(/Blocked for safety/).isVisible()) {
+    check("Solana deposit stays fail-closed while the price oracle is blocked", await cta.isDisabled(), (await card.locator(".oracle-gate").innerText()).slice(0, 160));
+    console.error("NOTE: oracle blocked on this BFF; the build → wallet prompt path was NOT exercised in this run");
+  } else {
+    await cta.click();
+    const outcome = await card
+      .locator(".sign-result")
+      .getByText(/Cancelled in your wallet|Nothing was signed|failed|error/i)
+      .first()
+      .waitFor({ timeout: 90_000 })
+      .then(() => card.locator(".sign-result").innerText())
+      .catch((e) => String(e));
+    const calls = await page.evaluate(() => window.__solCalls);
+    check(
+      "Solana deposit builds on the BFF, prompts the wallet once, and sends nothing when rejected",
+      /Cancelled in your wallet/.test(outcome) && calls.includes("sign:1") && submits.length === 0,
+      `${outcome.replace(/\s+/g, " ").slice(0, 160)} | ${calls.join(",")} | submits=${submits.length}`
+    );
+  }
+  await page.screenshot({ path: ".screenshots/menu-solana-deposit-1440.png" });
+  check("Solana menu deposit has no page errors", page.errors.length === 0, page.errors.join(" | "));
+  await page.close();
+}
+
+// Solana 署名 → 送信 → 確認の画面の流れ (network は page.route で差し替え。BFF にも mainnet にも触れない):
+// oracle ok → deposit-tx が tx を 1 本 → 偽 wallet が署名 → /tx/submit (skipPreflight なし) → /tx/status が confirmed
+{
+  const page = await newPage(WIDTHS[0]);
+  await page.addInitScript(SOLANA_FAKE_WALLET);
+  await page.addInitScript(() => (window.__solSignMode = "sign"));
+  const submits = [];
+  const json = (body) => ({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
+  await page.route("**/api/oracle/status**", (r) => r.fulfill(json({ asset_symbol: "USDC", status: "ok", primary: "pyth", price_usd: "1.00000000", warnings: [], block_reason: null })));
+  await page.route("**/api/positions?wallet=**", (r) => r.fulfill(json([{ protocol_id: "wallet_holding", asset_symbol: "USDC", current_amount: "5000000" }])));
+  await page.route("**/api/protocols/swap-earn/deposit-tx", (r) =>
+    r.fulfill(json({ swapTransaction: Buffer.from([1, 2, 3, 250]).toString("base64"), lastValidBlockHeight: 1, outAmount: "1", outputMint: "x", quote: {} }))
+  );
+  await page.route("**/api/tx/submit", (r) => {
+    submits.push(JSON.parse(r.request().postData() ?? "{}"));
+    return r.fulfill(json({ signature: String(submits.length).repeat(87) }));
+  });
+  await page.route("**/api/tx/status**", (r) => r.fulfill(json({ signature: new URL(r.request().url()).searchParams.get("signature"), status: "confirmed", slot: 1, err: null })));
+  await page.goto(BASE + "/menu", { waitUntil: "networkidle" });
+  await page.getByRole("button", { name: /Connect wallet/ }).click();
+  await page.getByRole("button", { name: /Fake Phantom/ }).click();
+  await page.locator(".wallet-button.is-active").waitFor({ timeout: 10_000 }).catch(() => {});
+  await page.keyboard.press("Escape");
+  await page.getByRole("group", { name: "Chain" }).getByRole("button", { name: "Solana" }).click();
+  const card = page.locator(".menu-item").filter({ has: page.locator(".menu-item-protocol", { hasText: /^Jupiter/ }) }).filter({ has: page.locator("h3", { hasText: "USDC" }) }).first();
+  await card.getByRole("button", { name: "Deposit" }).click();
+  await card.getByLabel("Amount").fill("1.5");
+  const cta = card.getByRole("button", { name: "Sign in wallet" });
+  await page.waitForFunction((el) => el && !el.disabled, await cta.elementHandle(), { timeout: 20_000 }).catch(() => {});
+  await cta.click();
+  const done = await card.getByText("Confirmed on Solana mainnet.").waitFor({ timeout: 20_000 }).then(() => true).catch(() => false);
+  const calls = await page.evaluate(() => window.__solCalls);
+  check(
+    "Solana sign → submit → confirm flow in the browser (network stubbed)",
+    done && calls.includes("sign:1") && submits.length === 1 && submits[0].signedTx === Buffer.from([1, 2, 3, 250, 255]).toString("base64") && submits[0].skipPreflight === false,
+    `${done} | ${calls.join(",")} | ${JSON.stringify(submits)}`
+  );
+  const link = await card.locator(".sign-txs a").getAttribute("href").catch(() => null);
+  check("confirmed tx links to Solscan", link === `https://solscan.io/tx/${"1".repeat(87)}`, String(link));
+  await page.screenshot({ path: ".screenshots/menu-solana-signed-1440.png" });
+  check("Solana signed flow has no page errors", page.errors.length === 0, page.errors.join(" | "));
+  await page.close();
+}
+
+// Solana agent plan inbox (/agent、SOL_E2E=1): Agent が作った pending_user の plan を web で Approve & sign →
+// BFF (route で差し替え) が token と unsigned tx 1 本を返す → 偽 wallet が拒否 (4001) → web が /failed を報告し card が Failed になる。
+// network はすべて page.route で差し替える (BFF の plan store にも mainnet にも触れない)
+if (process.env.SOL_E2E === "1") {
+  const page = await newPage(WIDTHS[0]);
+  await page.addInitScript(SOLANA_FAKE_WALLET);
+  const owner = "7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU";
+  const json = (body, status = 200) => ({ status, contentType: "application/json", body: JSON.stringify(body) });
+  let plan = {
+    plan_id: "plan_e2e",
+    user_id: "user_e2e",
+    mcp_client_id: "claude",
+    objective: "max_yield",
+    constraints: {},
+    candidate_actions: [],
+    selected_action: { wallet_id: owner, action_type: "deposit", protocol: "jupiter", asset: "USDC", amount: "1500000", metadata: { pool_id: "jupiter_usdc" } },
+    simulation_result: {
+      simulation_id: "sim_e2e",
+      estimated_out: "1480000",
+      estimated_fee: "5000",
+      bundle_hash: "0x" + "cd".repeat(32),
+      oracle: { primary: "pyth", primary_age_seconds: 4, divergence_pct: 0.1, warnings: [] },
+    },
+    status: "pending_user",
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+    expires_at: new Date(Date.now() + 86_400_000).toISOString(),
+  };
+  const posts = [];
+  const submits = [];
+  await page.route(/\/api\/agent-plans(\?|\/|$)/, (r) => {
+    const req = r.request();
+    const u = new URL(req.url());
+    if (req.method() === "GET" && u.pathname === "/api/agent-plans") return r.fulfill(json(u.searchParams.get("wallet") === owner ? [plan] : []));
+    const m = u.pathname.match(/^\/api\/agent-plans\/([^/]+)\/(approve|execute|signatures|failed|reject)$/);
+    if (req.method() !== "POST" || !m || m[1] !== plan.plan_id) return r.fulfill(json({ error: "not_found" }, 404));
+    const body = req.postData() ? JSON.parse(req.postData()) : undefined;
+    posts.push({ action: m[2], body });
+    if (m[2] === "approve") {
+      plan = { ...plan, status: "approved", approved_by: "user" };
+      const now = new Date().toISOString();
+      const token = { token_id: "tok_e2e", user_id: "user_e2e", plan_id: plan.plan_id, mcp_client_id: "claude", bundle_hash: plan.simulation_result.bundle_hash, issued_at: now, expires_at: new Date(Date.now() + 300_000).toISOString(), consumed_at: null };
+      return r.fulfill(json({ ...plan, approval_token: token }));
+    }
+    if (m[2] === "execute") {
+      plan = { ...plan, status: "executing" };
+      return r.fulfill(
+        json({ execution_id: "exec_e2e", status: "awaiting_signature", plan, unsigned_transactions: [{ index: 0, label: "deposit", tx_base64: Buffer.from([1, 2, 3, 250]).toString("base64") }] })
+      );
+    }
+    if (m[2] === "failed") plan = { ...plan, status: "failed", failure_reason: body?.reason };
+    if (m[2] === "signatures") plan = { ...plan, status: "broadcasted" };
+    if (m[2] === "reject") plan = { ...plan, status: "rejected" };
+    return r.fulfill(json(plan));
+  });
+  await page.route("**/api/tx/submit", (r) => {
+    submits.push(r.request().postData());
+    return r.fulfill(json({ error: "unexpected" }, 500));
+  });
+  await page.goto(BASE + "/agent", { waitUntil: "networkidle" });
+  await page.locator(".wallet-button").click();
+  await page.getByRole("button", { name: /Fake Phantom/ }).click();
+  await page.locator(".wallet-button.is-active").waitFor({ timeout: 10_000 }).catch(() => {});
+  await page.keyboard.press("Escape");
+  const card = page.locator("section.proposal-card", { hasText: "Agent plan · Solana mainnet" }).first();
+  await card.waitFor({ timeout: 20_000 }).catch(() => {});
+  const head = await card.innerText().catch((e) => String(e));
+  check("Solana agent plan card shows the pending plan", /Needs your approval/.test(head) && /Deposit 1\.5 USDC/.test(head), head.replace(/\s+/g, " ").slice(0, 200));
+  await card.getByRole("button", { name: "Approve & sign" }).click().catch(() => {});
+  const failedShown = await card.locator(".tag", { hasText: /^Failed$/ }).waitFor({ timeout: 20_000 }).then(() => true).catch(() => false);
+  const calls = await page.evaluate(() => window.__solCalls);
+  const failed = posts.find((p) => p.action === "failed");
+  check(
+    "Solana agent plan: approve → execute → wallet declines → /failed reported, card shows Failed, nothing sent",
+    failedShown &&
+      posts.map((p) => p.action).join(",") === "approve,execute,failed" &&
+      posts[1].body?.approval_token === "tok_e2e" &&
+      posts[1].body?.via === "web" &&
+      failed?.body?.execution_id === "exec_e2e" &&
+      failed?.body?.reason === "user_cancelled" &&
+      calls.includes("sign:1") &&
+      submits.length === 0,
+    `${failedShown} | ${JSON.stringify(posts)} | ${calls.join(",")} | submits=${submits.length}`
+  );
+  await page.screenshot({ path: ".screenshots/agent-solana-plan-failed-1440.png" });
+  check("Solana agent plan inbox has no page errors", page.errors.length === 0, page.errors.join(" | "));
+  await page.close();
+}
+
 // Learn: 横 3 枚のカード、/learn#pendle で詳細 dialog が開き見出しに focus、Esc で閉じる
 for (const vp of WIDTHS) {
   const page = await newPage(vp);
@@ -280,6 +521,26 @@ for (const vp of WIDTHS) {
   check("top bar stays sticky under the glass class", (await page.locator(".global-nav").evaluate((el) => getComputedStyle(el).position)) === "sticky");
   check("droplet is out of the link flow", (await page.locator(".nav-droplet").evaluate((el) => getComputedStyle(el).position)) === "absolute");
   check("WebGL glass mode", (await page.evaluate(() => document.documentElement.dataset.water)) === "webgl");
+  // Home の portal card は水の blob (droplet glass): lens は glass layer が描き、水面 layer には集光用に droplet の rect だけが入る
+  check("portal cards are droplet glass", (await page.locator(".portal-card[data-water-glass=droplet]").count()) === 4);
+  const dropletLayers = await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => {
+    const read = (sel) => {
+      const c = document.querySelector(sel);
+      const gl = c?.getContext("webgl");
+      const p = gl?.getParameter(gl.CURRENT_PROGRAM);
+      if (!p) return null;
+      const n = gl.getUniform(p, gl.getUniformLocation(p, "uGlassCount"));
+      let drops = 0;
+      for (let i = 0; i < n; i++) drops += gl.getUniform(p, gl.getUniformLocation(p, `uGlassShape[${i}]`))[1] > 0.5 ? 1 : 0;
+      return { n, drops, lens: gl.getUniform(p, gl.getUniformLocation(p, "uGlassLens")) };
+    };
+    resolve({ water: read(".water-canvas canvas"), glass: read(".glass-canvas canvas") });
+  })));
+  check(
+    "droplet cards: glass layer draws the lenses, water layer only casts their light pools",
+    dropletLayers.glass?.lens === 1 && dropletLayers.glass?.drops === 4 && dropletLayers.water?.lens === 0 && dropletLayers.water?.n === 4 && dropletLayers.water?.drops === 4,
+    JSON.stringify(dropletLayers)
+  );
   // pointer tilt が portal card に乗る
   const menuCard = page.locator(".portal-card.slot-menu");
   const box = await menuCard.boundingBox();

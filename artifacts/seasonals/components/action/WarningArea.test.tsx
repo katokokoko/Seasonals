@@ -92,7 +92,7 @@ describe("WarningArea", () => {
     );
     expect(screen.getByText("Price oracle anomaly detected")).toBeTruthy();
     expect(
-      screen.getByText("Pyth and Switchboard prices differ by 3.4%")
+      screen.getByText("Pyth and the secondary price source differ by 3.4%")
     ).toBeTruthy();
   });
 
@@ -106,7 +106,7 @@ describe("WarningArea", () => {
     );
     expect(screen.getByText("Pyth is returning a stale price")).toBeTruthy();
     expect(
-      screen.getByText("Pyth last updated 92s ago · using Switchboard")
+      screen.getByText("Pyth last updated 92s ago · using the secondary source")
     ).toBeTruthy();
   });
 
@@ -148,17 +148,17 @@ describe("WarningArea", () => {
     expect(screen.getByTestId("wa-oracle-1")).toBeTruthy();
   });
 
-  it("Switchboard stale warning の見出しと経過秒数を render する", () => {
+  it("secondary stale warning の見出しと経過秒数を render する", () => {
     render(
       <WarningArea
-        oracleWarnings={[{ kind: "oracle_switchboard_stale", switchboardAgeSeconds: 121 }]}
+        oracleWarnings={[{ kind: "oracle_secondary_stale", secondaryAgeSeconds: 121 }]}
         renderCta={(state) => <MockCta {...state} />}
         testID="wa"
       />
     );
-    expect(screen.getByText("Switchboard is returning a stale price")).toBeTruthy();
+    expect(screen.getByText("Secondary price source is stale")).toBeTruthy();
     expect(
-      screen.getByText("Switchboard last updated 121s ago · using Pyth")
+      screen.getByText("Secondary source last updated 121s ago · using Pyth (prices not cross-checked)")
     ).toBeTruthy();
   });
 

@@ -94,3 +94,18 @@ a {
     animation-duration: 0.01ms !important;
   }
 }
+/* dev の発熱対策の比較スイッチ (background/perfVariant.ts、?water-perf=) が効いている時だけ出る */
+.water-perf-badge {
+  position: fixed;
+  left: 8px;
+  bottom: 8px;
+  z-index: 100;
+  padding: 2px 8px;
+  border-radius: 6px;
+  background: var(--c-textPrimary);
+  color: var(--c-textOnColor);
+  font-family: var(--f-mono);
+  font-size: 12px;
+  opacity: 0.8;
+  pointer-events: none;
+}

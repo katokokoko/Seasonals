@@ -173,13 +173,64 @@ describe("fromUnifiedTimeEventDTO", () => {
     agentReadable: true,
     metadata: { source: "maturity", headline: "PT matures" },
   };
-  it("protocol event keeps Seeker actions but marks them unsupported on web", () => {
+  it("protocol event keeps Seeker actions; without withdraw metadata they stay unsupported (fail-closed)", () => {
     const t = fromUnifiedTimeEventDTO(base, NOW.toISOString());
     expect(t.chain).toBe("solana");
     expect(t.class).toBe("protocol");
     expect(t.title).toBe("PT matures");
     expect(t.protocolName).toBe("Kamino");
     expect(t.actions).toHaveLength(1);
+    expect(t.actions[0]!.availability).toBe("unsupported");
+    expect(t.actions[0]!.params).toEqual({});
+  });
+  it("claim event with withdraw metadata → available, metadata copied into string params", () => {
+    const t = fromUnifiedTimeEventDTO(
+      {
+        ...base,
+        protocol: "orca",
+        category: "claim",
+        actions: [{ actionType: "withdraw", label: "Withdraw & claim", requiresApproval: true, riskLevel: "medium" }],
+        metadata: {
+          source: "claimable",
+          protocol_id: "orca",
+          share_mint: "PosMint1111111111111111111111111111111111111",
+          shares: "1",
+          share_decimals: 0,
+          underlying_decimals: 6,
+          underlying_amount: "2500000",
+          asset_symbol: "USDC",
+        },
+      },
+      NOW.toISOString()
+    );
+    expect(t.actions[0]!.availability).toBe("available");
+    expect(t.actions[0]!.reason).toBeUndefined();
+    expect(t.actions[0]!.params).toEqual({
+      protocol_id: "orca",
+      asset_symbol: "USDC",
+      shares: "1",
+      share_mint: "PosMint1111111111111111111111111111111111111",
+      share_decimals: "0",
+      underlying_decimals: "6",
+      underlying_amount: "2500000",
+    });
+  });
+  it("withdraw metadata that no BFF route accepts stays unsupported", () => {
+    const t = fromUnifiedTimeEventDTO(
+      {
+        ...base,
+        metadata: {
+          protocol_id: "kamino",
+          share_mint: "Unknown11111111111111111111111111111111111",
+          shares: "10",
+          share_decimals: 6,
+          underlying_decimals: 6,
+          underlying_amount: "10",
+          asset_symbol: "USDC",
+        },
+      },
+      NOW.toISOString()
+    );
     expect(t.actions[0]!.availability).toBe("unsupported");
   });
   it("helius_tx → executed with Solscan link", () => {

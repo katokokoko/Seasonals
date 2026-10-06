@@ -101,7 +101,7 @@ function renderInbox(list: EthAgentProposal[]) {
 }
 
 beforeEach(() => {
-  useSession.setState({ watchlist: [{ chain: "ethereum", address: OWNER }], connectedEvm: null });
+  useSession.setState({ watchlist: [{ chain: "ethereum", address: OWNER }], connected: {} });
 });
 
 test("shows the strategy brief: name, before → after, blended APY delta, Aqua sleeve, horizon and unpriced note", async () => {
@@ -148,7 +148,7 @@ test("reject posts to the reject route and the card leaves the pending state", a
 });
 
 test("without an Ethereum address it asks for a wallet instead of fetching", async () => {
-  useSession.setState({ watchlist: [], connectedEvm: null });
+  useSession.setState({ watchlist: [], connected: {} });
   const calls = renderInbox([pending]);
   await screen.findByText("No wallet yet");
   expect(calls).toHaveLength(0);

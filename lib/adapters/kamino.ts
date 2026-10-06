@@ -139,10 +139,9 @@ export const kaminoAdapter: LendingAdapter = {
     _ctx: AdapterContext,
     _spec: ActionSpec
   ): Promise<{ tx_base64: string }> {
-    // mock: BFF 側の buildMemoTransaction で memo tx を構築するため、本層は
-    // metadata だけ返す。実 BFF 統合では BFF が adapter の simulate 結果から
-    // memo or 実 instruction を選択して serialize する。
-    // (本 method は将来 klend-sdk の depositTransaction(...) 等を呼ぶ予定。)
+    // mock: 実 tx は BFF の /protocols/kamino/* (klend-sdk) が組み、agent plan の
+    // /execute は resolveSolanaRoute → agent-plan-executor でそこへ流す。本層は
+    // metadata だけ返す (memo stub は 2026-10-06 に廃止)。
     return { tx_base64: "" };
   },
 

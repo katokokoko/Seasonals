@@ -256,4 +256,67 @@ describe("MCPApprovalPushCard", () => {
       expect(onRejectSuccess.mock.calls[0]![0].status).toBe("rejected");
     });
   });
+
+  describe("token なし (BFF push 形 { type, plan_id }、契約 2026-10)", () => {
+    it("countdown を出さず、CTA は有効", () => {
+      render(
+        wrap(
+          <MCPApprovalPushCard
+            plan={fixtureAgentPlanSimulated}
+            warningGrayoutMs={0}
+            hapticsEnabled={false}
+            testID="push"
+          />
+        )
+      );
+      expect(screen.queryByTestId("push-expires")).toBeNull();
+      expect(screen.queryByText(/Expires in/)).toBeNull();
+      expect(screen.queryByText("Expired")).toBeNull();
+      const cta = screen.getByTestId("push-approve");
+      expect(
+        cta.props.accessibilityState?.disabled ?? cta.props.disabled
+      ).toBeFalsy();
+      expect(screen.getByText("Approve")).toBeTruthy();
+      // 承認前は web 案内を出さない
+      expect(screen.queryByTestId("push-web-hint")).toBeNull();
+    });
+
+    it("approve 成功で応答 token の TTL と web 署名の案内を出し、CTA / Reject を止める", async () => {
+      const onApproveSuccess = jest.fn();
+      render(
+        wrap(
+          <MCPApprovalPushCard
+            plan={fixtureAgentPlanSimulated}
+            warningGrayoutMs={0}
+            hapticsEnabled={false}
+            onApproveSuccess={onApproveSuccess}
+            testID="push"
+          />
+        )
+      );
+      fireEvent.press(screen.getByTestId("push-approve"));
+      await waitFor(() => expect(onApproveSuccess).toHaveBeenCalledTimes(1));
+      // 契約: 応答は { ...plan, approval_token }
+      const result = onApproveSuccess.mock.calls[0]![0];
+      expect(result.status).toBe("approved");
+      expect(result.approval_token?.plan_id).toBe(fixtureAgentPlanSimulated.plan_id);
+
+      await waitFor(() =>
+        expect(screen.getByTestId("push-web-hint")).toBeTruthy()
+      );
+      expect(
+        screen.getByText("Sign & send from the Seasonals web app.")
+      ).toBeTruthy();
+      expect(screen.getByText(/^Expires in (5:00|4:5\d)$/)).toBeTruthy();
+      expect(screen.getByText("Approved")).toBeTruthy();
+      const cta = screen.getByTestId("push-approve");
+      expect(
+        cta.props.accessibilityState?.disabled ?? cta.props.disabled
+      ).toBeTruthy();
+      const rejectBtn = screen.getByTestId("push-reject");
+      expect(
+        rejectBtn.props.accessibilityState?.disabled ?? rejectBtn.props.disabled
+      ).toBeTruthy();
+    });
+  });
 });
