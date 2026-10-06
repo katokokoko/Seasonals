@@ -71,8 +71,10 @@ function cpuTimes() {
 async function measure(variant, route) {
   const page = await ctx.newPage();
   page.on("pageerror", (e) => errors.push(`${variant} ${route}: ${e.message}`));
-  const q = variant.replaceAll("+", ",");
-  await page.goto(`${BASE}${route}${route.includes("?") ? "&" : "?"}water-perf=${q}`, { waitUntil: "networkidle" });
+  // "1+2+4+5@10" = 対策 1,2,4,5 を fps 上限 10 で
+  const [set, fps] = variant.split("@");
+  const q = `water-perf=${set.replaceAll("+", ",")}&water-fps=${fps ?? 0}`;
+  await page.goto(`${BASE}${route}${route.includes("?") ? "&" : "?"}${q}`, { waitUntil: "networkidle" });
   await page.bringToFront();
   await page.waitForTimeout(WARM_MS);
   const c0 = await page.evaluate(() => ({ ...window.__waterCounts, t: performance.now() }));

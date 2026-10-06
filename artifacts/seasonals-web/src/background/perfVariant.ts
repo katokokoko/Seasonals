@@ -5,6 +5,7 @@
  *   ?water-perf=1,3         対策 1 と 3 だけ
  *   ?water-perf=all         1〜5 全部
  *   ?water-perf=default     スイッチを解除して既定 (DEFAULT_MEASURES) に戻す
+ *   ?water-fps=10           fps 上限を 10 などに変える (対策 1 / 5 の 30 の代わり、0 で解除。default で一緒に解除)
  *
  * 選んだ値は sessionStorage に残すので、SPA の遷移や reload でも同じ組み合わせが続く。
  *
@@ -20,6 +21,7 @@ const ALL: readonly PerfMeasure[] = [1, 2, 3, 4, 5];
 export const DEFAULT_MEASURES: ReadonlySet<PerfMeasure> = new Set<PerfMeasure>([1, 2, 4, 5]);
 
 const KEY = "water-perf";
+const FPS_KEY = "water-fps";
 
 function parse(v: string): Set<PerfMeasure> {
   if (v === "all") return new Set(ALL);
@@ -38,6 +40,7 @@ function readVariant(): Set<PerfMeasure> | null {
     const q = new URLSearchParams(window.location.search).get(KEY);
     if (q === "default") {
       window.sessionStorage.removeItem(KEY);
+      window.sessionStorage.removeItem(FPS_KEY);
       return null;
     }
     if (q !== null) window.sessionStorage.setItem(KEY, q);
@@ -48,8 +51,27 @@ function readVariant(): Set<PerfMeasure> | null {
   }
 }
 
+function readFps(): number | null {
+  if (!import.meta.env.DEV || typeof window === "undefined") return null;
+  try {
+    const q = new URLSearchParams(window.location.search).get(FPS_KEY);
+    if (q !== null) {
+      if (Number(q) > 0) window.sessionStorage.setItem(FPS_KEY, q);
+      else window.sessionStorage.removeItem(FPS_KEY);
+    }
+    const n = Number(window.sessionStorage.getItem(FPS_KEY));
+    return Number.isFinite(n) && n > 0 ? Math.min(n, 240) : null;
+  } catch {
+    return null;
+  }
+}
+
 /** 比較中の組み合わせ (無ければ null = 既定) */
 export const perfVariant: ReadonlySet<PerfMeasure> | null = readVariant();
+/** 比較中の fps 上限 (無ければ null = 30) */
+export const perfFps: number | null = readFps();
+/** 対策 1 / 5 の fps 上限 */
+export const CAPPED_FPS = perfFps ?? 30;
 
 export function perfOn(m: PerfMeasure): boolean {
   return (perfVariant ?? DEFAULT_MEASURES).has(m);
@@ -57,6 +79,8 @@ export function perfOn(m: PerfMeasure): boolean {
 
 /** 画面の隅に出す表示用の名前 */
 export function perfVariantLabel(): string | null {
-  if (!perfVariant) return null;
-  return perfVariant.size ? `water-perf: ${[...perfVariant].sort().join(",")}` : "water-perf: none";
+  if (!perfVariant && !perfFps) return null;
+  const set = perfVariant ?? DEFAULT_MEASURES;
+  const fps = perfFps && (set.has(1) || set.has(5)) ? ` @${perfFps}fps` : "";
+  return set.size ? `water-perf: ${[...set].sort().join(",")}${fps}` : "water-perf: none";
 }

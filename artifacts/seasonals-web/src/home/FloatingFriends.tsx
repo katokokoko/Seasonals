@@ -16,7 +16,7 @@ import { useEffect, useRef } from "react";
 import chara1 from "../assets/characters/chara1.webp";
 import chara2 from "../assets/characters/chara2.webp";
 import { appearance, spawn, stepFriend, type Env, type FriendState, type Pointer, type Zone } from "./friendsMotion";
-import { perfOn } from "../background/perfVariant";
+import { CAPPED_FPS, perfOn } from "../background/perfVariant";
 import "./floating.css";
 
 const SOURCES = [chara1, chara2];
@@ -29,8 +29,8 @@ const MAX_SIZE = 100;
 const MIN_ZONE = 72;
 const MARGIN = 18;
 const TAU = Math.PI * 2;
-/** 動きの更新の上限 (発熱対策 5)。判定の余裕は 120 Hz の半 frame */
-const STEP_MS = 1000 / 30 - 4;
+/** 動きの更新の上限 (発熱対策 5、水と同じ fps)。判定の余裕は 120 Hz の半 frame */
+const STEP_MS = 1000 / CAPPED_FPS - 4;
 
 function measureZone([topSel, bottomSel]: [string, string]): Zone | null {
   const top = document.querySelector(topSel)?.getBoundingClientRect();

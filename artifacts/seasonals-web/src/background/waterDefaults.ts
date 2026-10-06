@@ -1,4 +1,4 @@
-import { perfOn, perfVariant } from "./perfVariant";
+import { CAPPED_FPS, perfFps, perfOn, perfVariant } from "./perfVariant";
 
 /**
  * Water background parameters (docs/web/water-background-spec.md "Component API").
@@ -60,10 +60,10 @@ export const waterCalm: WaterParams = {
 export function resolveWaterParams(params?: Partial<WaterParams>): WaterParams {
   const p = { ...waterDefaults, ...params };
   // dev の比較スイッチ (perfVariant.ts の ?water-perf=) で対策 1〜3 を個別に入れ切りする
-  if (!perfVariant) return p;
+  if (!perfVariant && !perfFps) return p;
   return {
     ...p,
-    maxFps: perfOn(1) ? 30 : 0,
+    maxFps: perfOn(1) ? CAPPED_FPS : 0,
     animate: perfOn(2) ? p.animate : true,
     maxDpr: perfOn(3) ? 1 : 1.25,
   };
