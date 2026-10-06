@@ -384,6 +384,16 @@ Web 側 (`artifacts/seasonals-web`) は `BFF_URL` (Vite dev proxy 先、node 側
 - 検証: lib 293 / BFF 600 / mobile 427 / MCP 20 / web 139 tests green、`pnpm -r typecheck` green。`verify:tx` 連続 2 回とも 要調査 0 / exit 0、`verify:oracle` 7 asset OK。web e2e 113/113。Menu の Staking tab を screenshot で確認 ($275.9M / $1.2B / $124.1M / $382.1M / $24.2M)
 - 未検証: 実際の 429 を再試行で吸収する経路は live で踏めなかった (今回の実行では 429 が出なかった)。単体 test では 429 → 200 / 3 回 429 / Retry-After を確認済み
 
+### Seeker を web と同じ部品に乗せ替え (2026-10-06、未 commit、Opus 5.5 subagent)
+- 背景: ActionModal の `handleExecute` は market 解決と 13 分岐 (swap-earn → Kamino reserve → kVault → Meteora → Orca → Save → Exponent) を約 400 行自前で持っていた。web 移植で同じ cascade を `lib/derive/solana-action.ts` の `resolveSolanaRoute` に写していたので、Seeker もそれに乗せ替えて重複を消す
+- 実装:
+  - `services/solana-tx.ts` (新規): `buildSolanaTxs(route, user, amount)` が 13 route を mobile の `api.get*` builder に写す (web `src/solana/buildTx.ts` と同じ switch。swap-earn は `slippageBps: 50` を明示、応答 key の `swapTransaction` / `transaction` / `transactions` の差を吸収、`default` は `never`)
+  - `ActionModal.tsx`: `resolveSolanaRoute(action)` → `runOnchainTx(() => buildSolanaTxs(...))` に置換 (-400 行)。`canOnchain` / `action.amount` の gate、fail-closed (`route === null` → lib の `UNSUPPORTED_MARKET_MESSAGE`)、`signSubmitAndSettle`、`BffError` / plain Error の扱いは従来どおり。registry の `find*` import と web3.js `Transaction` 依存を削除
+  - tier C (Pyth 単独 asset) の注記: `<WarningArea>` の外に muted 1 行「Single price source (Pyth). Not cross-checked against a second oracle.」(warning ではないので CTA を止めない。testID `oracle-single-source-note`)。`ActionModal.test.tsx` を新設 (tier C で出る / tier A で出ない / blocked なら blocked card)
+  - Perena の案内: `VaultRow` に `note` / `externalUrl` (pool から写す)。`VaultRowView` に note の caption と「Open Perena ↗」(`Linking.openURL`、testID `pool-link-<key>`)。「View only」badge は維持
+- 検証: mobile 427 → 456 tests green (suites 38 → 40)、`tsc` 新規エラーなし。`verify:tx` 23 経路 要調査 0
+- 未検証 (Seeker 実機、ユーザー): deposit / withdraw 1 往復 (route 無しの pool で Unsupported market が出ること)、tier C 注記、Menu → Perena → Tri-Stable の link
+
 ## 最終状態 (2026-09-26 05:30 JST 時点)
 
 | 領域 | 状態 | 実際に確認したこと |

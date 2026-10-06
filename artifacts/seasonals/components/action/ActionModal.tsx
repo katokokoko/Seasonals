@@ -1,16 +1,17 @@
 /**
- * ActionModal — calendar から approve → MWA sign → Devnet broadcast までの flow
+ * ActionModal — calendar / Menu から review → MWA sign → submit までの flow
  *
  * 5 phase の state machine:
  *   review     : plan summary + 「署名して実行」 (default 表示)
- *   approving  : BFF へ POST /agent-plans/:id/approve
- *   signing    : Phantom / Seed Vault で sign + broadcast
- *   success    : Devnet signature + Explorer link
+ *   approving  : BFF から unsigned tx を取得 (非 onchain は POST /agent-plans/:id/approve)
+ *   signing    : Seed Vault / wallet で sign-only → BFF /tx/submit
+ *   success    : signature + Explorer link
  *   error      : 失敗詳細 + retry
  *
- * BFF から返ってきた tx (base64) を Transaction.from で復元、MWA に渡して
- * Phantom が internally に Devnet RPC へ broadcast する (Mobile 側に Connection
- * を持たせない、CLAUDE.md §32.2 fail-closed safety 準拠)。
+ * onchain の market 解決は lib `resolveSolanaRoute`、builder 呼び分けは
+ * `services/solana-tx.ts` の `buildSolanaTxs` (web と同じ部品、CLAUDE.md §1)。
+ * BFF が返す base64 v0 tx を VersionedTransaction で復元して MWA で署名する
+ * (Mobile 側に Connection を持たせない、CLAUDE.md §32.2 fail-closed safety 準拠)。
  */
 
 import React, { useCallback, useEffect, useMemo, useState } from "react";
@@ -33,7 +34,7 @@ import Animated, {
   withTiming,
 } from "react-native-reanimated";
 import { BlurView } from "expo-blur";
-import { Transaction, VersionedTransaction } from "@solana/web3.js";
+import { VersionedTransaction } from "@solana/web3.js";
 
 import {
   FONT,
@@ -67,31 +68,14 @@ import {
 import { WarningArea } from "./WarningArea";
 import { oracleBlockLabel, resolveOracleMint } from "@workspace/lib/derive/oracle-gate";
 import {
-  findMarketByProtocolAsset,
-  findMarketByShareMint,
-} from "@workspace/lib/config/swap-earn-markets";
-import {
-  findKaminoMarketByAsset,
-  findKaminoMarketByPool,
-  findKaminoMarketByReserve,
-  findKaminoVaultByAddress,
-  findKaminoVaultByPool,
-} from "@workspace/lib/config/kamino-markets";
-import {
-  findSaveMarketByAsset,
-  findSaveMarketByCToken,
-  findSaveMarketByPool,
-} from "@workspace/lib/config/save-markets";
-import { findMeteoraMarketByPool } from "@workspace/lib/config/meteora-markets";
-import { findExponentMarketByPtMint } from "@workspace/lib/config/exponent-markets";
-import { findOrcaMarketByPool } from "@workspace/lib/config/orca-markets";
+  resolveSolanaRoute,
+  UNSUPPORTED_MARKET_MESSAGE,
+} from "@workspace/lib/derive/solana-action";
 import { useWallet } from "../../services/useWallet";
-import {
-  signAndSendTransactions,
-  signTransactions,
-} from "../../services/mwa";
+import { signTransactions } from "../../services/mwa";
 import { USE_ONCHAIN } from "../../services/config";
 import * as api from "../../services/api";
+import { buildSolanaTxs } from "../../services/solana-tx";
 // 8.74: BFF の拒否 code を判別するため (失敗と拒否を見分ける)
 import { BffError } from "../../services/api";
 import { useQueryClient } from "@tanstack/react-query";
@@ -256,149 +240,13 @@ export function ActionModal({
     const execAmount = amountValidation.ok
       ? amountValidation.smallest
       : action?.amount;
-    // Phase 8.15: swap-earn market 解決で deposit/withdraw dispatch を一般化。
-    // Jupiter Lend に加え Jito/Marinade/Sanctum 等 swap-routable protocol を同経路に統合。
-    // Menu catalog の protocol_id "jupiter" は registry の "jupiter_lend" に正規化。
-    const protocolId =
-      action?.protocol === "jupiter" ? "jupiter_lend" : action?.protocol;
-    const depositMarket =
-      protocolId && action?.asset
-        ? findMarketByProtocolAsset(protocolId, action.asset)
-        : undefined;
-    // withdraw path: share_mint と shares amount を metadata で渡す (Phase 8.9 から)
-    const withdrawShareMint =
-      typeof (action?.metadata?.share_mint as unknown) === "string"
-        ? (action!.metadata!.share_mint as string)
-        : undefined;
-    const withdrawMarket = withdrawShareMint
-      ? findMarketByShareMint(withdrawShareMint)
-      : undefined;
-
-    // Phase 8.15b: Kamino Lend (obligation 型、swap でない REST unsigned tx)。
-    // deposit は pool_id (pool tap 由来) → reserve、fallback で asset 解決。
-    const poolId =
-      typeof (action?.metadata?.pool_id as unknown) === "string"
-        ? (action!.metadata!.pool_id as string)
-        : undefined;
-    // Phase 8.15d: kVault は pool_id でのみ解決 (同一 asset の reserve pool と併存するため
-    // asset fallback は使わない)。vault hit したら reserve 解決はスキップ。
-    const kaminoVaultDeposit =
-      protocolId === "kamino" && poolId
-        ? findKaminoVaultByPool(poolId)
-        : undefined;
-    const kaminoDepositMarket =
-      protocolId === "kamino" && !kaminoVaultDeposit
-        ? (poolId ? findKaminoMarketByPool(poolId) : undefined) ??
-          (action?.asset ? findKaminoMarketByAsset(action.asset) : undefined)
-        : undefined;
-    // withdraw は position の share_mint に reserve / vault address が入る (BFF が付与)。
-    const kaminoWithdrawMarket = withdrawShareMint
-      ? findKaminoMarketByReserve(withdrawShareMint)
-      : undefined;
-    const kaminoVaultWithdraw = withdrawShareMint
-      ? findKaminoVaultByAddress(withdrawShareMint)
-      : undefined;
-
-    // Phase 8.15c: Save (旧 Solend)。deposit は pool_id → reserve、withdraw は
-    // position の share_mint (= cToken mint) で market を解決。
-    const saveDepositMarket =
-      protocolId === "savefi"
-        ? (poolId ? findSaveMarketByPool(poolId) : undefined) ??
-          (action?.asset ? findSaveMarketByAsset(action.asset) : undefined)
-        : undefined;
-    const saveWithdrawMarket = withdrawShareMint
-      ? findSaveMarketByCToken(withdrawShareMint)
-      : undefined;
-
-    // Phase 8.34: Exponent PT redeem。share_mint = pt_mint で解決 (withdraw として
-    // モデル化。満期前は server が 400 not_matured で fail-closed)。
-    const exponentRedeemMarket = withdrawShareMint
-      ? findExponentMarketByPtMint(withdrawShareMint)
-      : undefined;
-
-    // Phase 8.17: Meteora DLMM。deposit は pool_id のみ (asset fallback 無し —
-    // LP は pool 特定が必須)。withdraw は protocol=meteora + share_mint (= position
-    // account の実 pubkey) で判定 (静的 registry では引けない)。
-    const meteoraDepositMarket =
-      protocolId === "meteora" && poolId
-        ? findMeteoraMarketByPool(poolId)
-        : undefined;
-    const isMeteoraWithdraw =
-      protocolId === "meteora" && Boolean(withdrawShareMint);
-
-    // Phase 8.18: Orca Whirlpools。deposit は pool_id のみ (zap-in、pool 特定必須)。
-    // withdraw は protocol=orca + share_mint (= position mint NFT の実 pubkey) で
-    // 判定 (静的 registry では引けない)。
-    const orcaDepositMarket =
-      protocolId === "orca" && poolId ? findOrcaMarketByPool(poolId) : undefined;
-    const isOrcaWithdraw = protocolId === "orca" && Boolean(withdrawShareMint);
-
+    // §1 same source of truth: market 解決 (swap-earn → Kamino reserve → kVault →
+    // Meteora → Orca → Save → Exponent の順) は lib の resolveSolanaRoute が canonical。
+    // web (seasonals-web/src/solana/buildTx.ts) と同じ route を同じ builder に写す。
+    const route = resolveSolanaRoute(action);
     const canOnchain = Boolean(USE_ONCHAIN && isConnected && authorization);
-    const isOnchainSwapEarnDeposit =
-      canOnchain &&
-      action?.action_type === "deposit" &&
-      Boolean(action?.amount) &&
-      Boolean(depositMarket);
-    const isOnchainSwapEarnWithdraw =
-      canOnchain &&
-      action?.action_type === "withdraw" &&
-      Boolean(action?.amount) &&
-      Boolean(withdrawMarket);
-    const isOnchainKaminoDeposit =
-      canOnchain &&
-      action?.action_type === "deposit" &&
-      Boolean(action?.amount) &&
-      Boolean(kaminoDepositMarket);
-    const isOnchainKaminoWithdraw =
-      canOnchain &&
-      action?.action_type === "withdraw" &&
-      Boolean(action?.amount) &&
-      Boolean(kaminoWithdrawMarket);
-    const isOnchainKaminoVaultDeposit =
-      canOnchain &&
-      action?.action_type === "deposit" &&
-      Boolean(action?.amount) &&
-      Boolean(kaminoVaultDeposit);
-    const isOnchainKaminoVaultWithdraw =
-      canOnchain &&
-      action?.action_type === "withdraw" &&
-      Boolean(action?.amount) &&
-      Boolean(kaminoVaultWithdraw);
-    const isOnchainSaveDeposit =
-      canOnchain &&
-      action?.action_type === "deposit" &&
-      Boolean(action?.amount) &&
-      Boolean(saveDepositMarket);
-    const isOnchainSaveWithdraw =
-      canOnchain &&
-      action?.action_type === "withdraw" &&
-      Boolean(action?.amount) &&
-      Boolean(saveWithdrawMarket);
-    const isOnchainExponentRedeem =
-      canOnchain &&
-      action?.action_type === "withdraw" &&
-      Boolean(action?.amount) &&
-      Boolean(exponentRedeemMarket);
-    const isOnchainMeteoraDeposit =
-      canOnchain &&
-      action?.action_type === "deposit" &&
-      Boolean(action?.amount) &&
-      Boolean(meteoraDepositMarket);
-    const isOnchainMeteoraWithdraw =
-      canOnchain &&
-      action?.action_type === "withdraw" &&
-      Boolean(action?.amount) &&
-      isMeteoraWithdraw;
-    const isOnchainOrcaDeposit =
-      canOnchain &&
-      action?.action_type === "deposit" &&
-      Boolean(action?.amount) &&
-      Boolean(orcaDepositMarket);
-    const isOnchainOrcaWithdraw =
-      canOnchain &&
-      action?.action_type === "withdraw" &&
-      Boolean(action?.amount) &&
-      isOrcaWithdraw;
+    const isDepositOrWithdraw =
+      action?.action_type === "deposit" || action?.action_type === "withdraw";
 
     // Phase 8.15b/8.15c: sign-only + Helius RPC submit の共通 tail (§8.8)。
     // BFF が返す base64 unsigned v0 tx 群を MWA で **一括署名** (承認 1 回) → 順次
@@ -459,248 +307,48 @@ export function ActionModal({
       }
     };
 
-    // ── Phase 8.15: onchain swap-earn deposit (underlying → share、実 mainnet swap) ──
-    if (isOnchainSwapEarnDeposit) {
-      await runOnchainTx(
-        async () =>
-          (
-            await api.getSwapEarnDepositTx({
-              user: authorization!.address,
-              shareMint: depositMarket!.share_mint,
-              amount: execAmount!,
-              slippageBps: 50,
-            })
-          ).swapTransaction
-      );
-      return;
-    }
-
-    // ── Phase 8.15: onchain swap-earn withdraw (share → underlying) ──
-    if (isOnchainSwapEarnWithdraw) {
-      await runOnchainTx(
-        async () =>
-          (
-            await api.getSwapEarnWithdrawTx({
-              user: authorization!.address,
-              shareMint: withdrawShareMint!,
-              amount: execAmount!,
-              slippageBps: 50,
-            })
-          ).swapTransaction
-      );
-      return;
-    }
-
-    // ── Phase 8.15b: onchain Kamino Lend deposit (underlying → reserve obligation) ──
-    if (isOnchainKaminoDeposit) {
-      await runOnchainTx(
-        async () =>
-          (
-            await api.getKaminoDepositTx({
-              user: authorization!.address,
-              reserve: kaminoDepositMarket!.reserve,
-              amount: execAmount!,
-            })
-          ).transaction
-      );
-      return;
-    }
-
-    // ── Phase 8.15b: onchain Kamino Lend withdraw (reserve → underlying) ──
-    if (isOnchainKaminoWithdraw) {
-      await runOnchainTx(
-        async () =>
-          (
-            await api.getKaminoWithdrawTx({
-              user: authorization!.address,
-              reserve: kaminoWithdrawMarket!.reserve,
-              amount: execAmount!,
-            })
-          ).transaction
-      );
-      return;
-    }
-
-    // ── Phase 8.15d: onchain Kamino kVault deposit (underlying → vault share) ──
-    if (isOnchainKaminoVaultDeposit) {
-      await runOnchainTx(
-        async () =>
-          (
-            await api.getKaminoVaultDepositTx({
-              user: authorization!.address,
-              vault: kaminoVaultDeposit!.vault,
-              amount: execAmount!,
-            })
-          ).transaction
-      );
-      return;
-    }
-
-    // ── Phase 8.15d: onchain Kamino kVault withdraw (share 建て) ──
-    if (isOnchainKaminoVaultWithdraw) {
-      await runOnchainTx(
-        async () =>
-          (
-            await api.getKaminoVaultWithdrawTx({
-              user: authorization!.address,
-              vault: kaminoVaultWithdraw!.vault,
-              amount: execAmount!,
-            })
-          ).transaction
-      );
-      return;
-    }
-
-    // ── Phase 8.17: onchain Meteora DLMM deposit (single-sided、部分署名済 tx) ──
-    if (isOnchainMeteoraDeposit) {
-      await runOnchainTx(
-        async () =>
-          (
-            await api.getMeteoraDepositTxns({
-              user: authorization!.address,
-              poolKey: meteoraDepositMarket!.pool_id,
-              amount: execAmount!,
-            })
-          ).transactions
-      );
-      return;
-    }
-
-    // ── Phase 8.17: onchain Meteora DLMM withdraw (bps は BFF 換算、全量で claim&close) ──
-    if (isOnchainMeteoraWithdraw) {
-      await runOnchainTx(
-        async () =>
-          (
-            await api.getMeteoraWithdrawTxns({
-              user: authorization!.address,
-              position: withdrawShareMint!,
-              amount: execAmount!,
-            })
-          ).transactions
-      );
-      return;
-    }
-
-    // ── Phase 8.18: onchain Orca zap-in deposit (2 tx: swap + 部分署名済 open) ──
-    if (isOnchainOrcaDeposit) {
-      await runOnchainTx(
-        async () =>
-          (
-            await api.getOrcaDepositTxns({
-              user: authorization!.address,
-              poolKey: orcaDepositMarket!.pool_id,
-              amount: execAmount!,
-            })
-          ).transactions
-      );
-      return;
-    }
-
-    // ── Phase 8.18: onchain Orca withdraw (bps は BFF 換算、全量で close + NFT burn) ──
-    if (isOnchainOrcaWithdraw) {
-      await runOnchainTx(
-        async () =>
-          (
-            await api.getOrcaWithdrawTxns({
-              user: authorization!.address,
-              position: withdrawShareMint!,
-              amount: execAmount!,
-            })
-          ).transactions
-      );
-      return;
-    }
-
-    // ── Phase 8.15c: onchain Save deposit (underlying → cToken、複数 tx あり得る) ──
-    if (isOnchainSaveDeposit) {
-      await runOnchainTx(
-        async () =>
-          (
-            await api.getSaveDepositTxns({
-              user: authorization!.address,
-              reserve: saveDepositMarket!.reserve,
-              amount: execAmount!,
-            })
-          ).transactions
-      );
-      return;
-    }
-
-    // ── Phase 8.15c: onchain Save withdraw (redeem cToken → underlying) ──
-    if (isOnchainSaveWithdraw) {
-      await runOnchainTx(
-        async () =>
-          (
-            await api.getSaveWithdrawTxns({
-              user: authorization!.address,
-              ctokenMint: saveWithdrawMarket!.ctoken_mint,
-              amount: execAmount!,
-            })
-          ).transactions
-      );
-      return;
-    }
-
-    // ── Phase 8.34: onchain Exponent PT redeem (満期後 wrapper_merge、単発 tx) ──
-    if (isOnchainExponentRedeem) {
-      await runOnchainTx(
-        async () =>
-          (
-            await api.getExponentRedeemTx({
-              user: authorization!.address,
-              ptMint: exponentRedeemMarket!.pt_mint,
-              amount: execAmount!,
-            })
-          ).transaction
-      );
+    // ── onchain: 解決した route の builder 1 本 → MWA 一括署名 → 順次 submit ──
+    if (canOnchain && isDepositOrWithdraw && action?.amount && route) {
+      const user = authorization!.address;
+      await runOnchainTx(() => buildSolanaTxs(route, user, execAmount!));
       return;
     }
 
     // ── Phase 8.37 (M-H1): onchain 対象なのに market 未解決 → fail-closed ──
-    // ここに到達した deposit/withdraw は全 onchain 分岐が解決しなかったもの。
-    // memo fallback に落とすと「Approved & executed」の偽成功表示になるため、
+    // memo / approve fallback に落とすと「Approved & executed」の偽成功表示になるため、
     // canOnchain (onchain build + wallet 接続) の間はエラーで止める。
     // fallback は fixture/デモ (非 onchain) のときだけの経路にする。
-    if (
-      canOnchain &&
-      (action?.action_type === "deposit" || action?.action_type === "withdraw")
-    ) {
-      setErrorMsg(
-        "Unsupported market — no onchain route resolved for this pool"
-      );
+    if (canOnchain && isDepositOrWithdraw) {
+      setErrorCode(null);
+      setErrorMsg(UNSUPPORTED_MARKET_MESSAGE);
       setPhase("error");
       return;
     }
 
-    // ── Fallback path: BFF memo tx (Phase 5 / 8 までの動作) ──
-    const feePayer =
-      isConnected && authorization ? authorization.address : undefined;
-
+    // ── Fallback path (非 onchain = fixture / デモ build のみ): plan を approve するだけ ──
+    // BFF の memo stub (fee_payer → devnet memo tx) は agent-plan 契約の改訂で廃止。
+    // approve は body なしで送り、tx は broadcast しない (SuccessBody が明示する)。
     setPhase("approving");
     try {
       const result = await approveMutation.mutateAsync({
         plan_id: plan.plan_id,
-        fee_payer: feePayer,
       });
       onSettled?.(result);
-
-      if (!result.tx || !authorization) {
-        setPhase("success");
-        return;
-      }
-
-      setPhase("signing");
-      const bytes = Buffer.from(result.tx, "base64");
-      const tx = Transaction.from(bytes);
-      const sigs = await signAndSendTransactions(authorization, [tx]);
-      setSignature(sigs[0] ?? null);
       setPhase("success");
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       setErrorMsg(msg);
       setPhase("error");
     }
-  }, [plan, isConnected, authorization, approveMutation, onSettled, amountValidation]);
+  }, [
+    plan,
+    isConnected,
+    authorization,
+    approveMutation,
+    onSettled,
+    amountValidation,
+    queryClient,
+  ]);
 
   const visible = plan !== null;
 
@@ -1059,6 +707,14 @@ function ReviewBody({
         </View>
       )}
 
+      {/* §4.6 tier C (Pyth のみ): warning ではない注記なので WarningArea の外・oracleWarnings
+          に入れない。web OracleGate の「single price source」表示と同じ文言 */}
+      {oracle?.tier === "C" && oracle.status !== "blocked" && (
+        <Text style={styles.singleSourceNote} testID="oracle-single-source-note">
+          Single price source (Pyth). Not cross-checked against a second oracle.
+        </Text>
+      )}
+
       {!isConnected && (
         <View style={styles.notice} testID={testID ? `${testID}-not-connected` : undefined}>
           <Text style={styles.noticeText}>
@@ -1404,6 +1060,12 @@ function makeStyles(c: ThemeColors) {
     },
     balanceText: {
       flex: 1,
+      fontSize: FONT_SIZE.bodySM,
+      fontFamily: FONT.body,
+      color: c.textMuted,
+    },
+    // tier C 注記: balanceText と同じ muted caption (column 内なので flex は持たない)
+    singleSourceNote: {
       fontSize: FONT_SIZE.bodySM,
       fontFamily: FONT.body,
       color: c.textMuted,

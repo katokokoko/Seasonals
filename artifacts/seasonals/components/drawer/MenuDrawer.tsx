@@ -22,6 +22,7 @@ import {
   BackHandler,
   Dimensions,
   Image,
+  Linking,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -1097,6 +1098,7 @@ function DefaultPoolDetailPane({
             row={row}
             onDeposit={() => handleDeposit(row)}
             onManage={() => handleManage(row)}
+            protocolName={entry.display_name}
             testID={testID ? `${testID}-pool-${row.key}` : undefined}
           />
         ))}
@@ -1117,6 +1119,7 @@ function DefaultPoolDetailPane({
               row={row}
               onDeposit={() => handleDeposit(row)}
               onManage={() => handleManage(row)}
+              protocolName={entry.display_name}
               testID={testID ? `${testID}-pool-${row.key}` : undefined}
             />
           ))}
@@ -1400,11 +1403,14 @@ function VaultRowView({
   row,
   onDeposit,
   onManage,
+  protocolName,
   testID,
 }: {
   row: VaultRow;
   onDeposit: () => void;
   onManage: () => void;
+  /** externalUrl の導線ラベル ("Open <protocol> ↗") に使う protocol 表示名 */
+  protocolName?: string;
   testID?: string;
 }) {
   const deposited = row.isDeposited;
@@ -1522,6 +1528,29 @@ function VaultRowView({
         <Text style={styles.poolUtilWarning}>
           High utilization — withdrawals may be limited
         </Text>
+      )}
+
+      {/* pool の補足案内 (Perena の legacy USD* 等)。Seasonals は案内だけで、操作は protocol 側 */}
+      {row.note && (
+        <Text style={styles.jupVaultCapLine} testID={`pool-note-${row.key}`}>
+          {row.note}
+        </Text>
+      )}
+      {row.externalUrl && (
+        <Pressable
+          accessibilityRole="link"
+          onPress={() => {
+            const url = row.externalUrl;
+            if (url) Linking.openURL(url).catch(() => undefined);
+          }}
+          hitSlop={8}
+          style={styles.poolLink}
+          testID={`pool-link-${row.key}`}
+        >
+          <Text style={styles.poolLinkText}>
+            {`Open ${protocolName ?? "protocol app"} ↗`}
+          </Text>
+        </Pressable>
       )}
     </View>
   );
@@ -2009,6 +2038,16 @@ const styles = StyleSheet.create({
     fontFamily: FONT.body,
     color: COLOR.cherryDark,
     marginTop: 2,
+  },
+  poolLink: {
+    alignSelf: "flex-start",
+    marginTop: SPACE.xs,
+  },
+  poolLinkText: {
+    fontSize: FONT_SIZE.bodySM,
+    fontFamily: FONT.body,
+    fontWeight: WEIGHT.semibold,
+    color: COLOR.sodaText,
   },
   // ─── Phase 8.11 — Jupiter drill-down (unified vault list) ──────────────
   jupAssetLine: {
