@@ -1,4 +1,4 @@
-import { CAPPED_FPS, perfFps, perfOn, perfVariant } from "./perfVariant";
+import { perfFps, perfOn, perfVariant } from "./perfVariant";
 
 /**
  * Water background parameters (docs/web/water-background-spec.md "Component API").
@@ -38,7 +38,9 @@ export const waterDefaults: WaterParams = {
   quiet: 0.6,
   glass: 1,
   maxDpr: 1.25,
-  maxFps: 30,
+  // 発熱対策 1 (2026-10-06): 10 / 15 / 20 / 25 / 30 を見比べてユーザーが 20 に決めた (10 はコマ送りに見えた)。
+  // Home で水を描く GPU 時間の目安は 20 fps で約 27 % (上限なしは約 94 %)
+  maxFps: 20,
   animate: true,
 };
 
@@ -63,7 +65,7 @@ export function resolveWaterParams(params?: Partial<WaterParams>): WaterParams {
   if (!perfVariant && !perfFps) return p;
   return {
     ...p,
-    maxFps: perfOn(1) ? CAPPED_FPS : 0,
+    maxFps: perfOn(1) ? (perfFps ?? waterDefaults.maxFps) : 0,
     animate: perfOn(2) ? p.animate : true,
     maxDpr: perfOn(3) ? 1 : 1.25,
   };

@@ -282,16 +282,18 @@ Web 側 (`artifacts/seasonals-web`) は `BFF_URL` (Vite dev proxy 先、node 側
 - 原因: MacBook Pro M4 Pro (ProMotion 120 Hz) で、水面と glass の 2 枚の canvas を毎フレーム全画面に描いていた。
   GPU がほぼ常に水を描いていて追いつかず、Home の rAF は 120 Hz から 70 Hz 前後に落ちていた。
 - 対策 (`src/background/perfVariant.ts`、dev では `?water-perf=none|1,3|all|default` で 1 つずつ切り替えられる):
-  1. 描画を 30 fps に間引く (`waterDefaults.maxFps`)。kick (quiet zone / glass の移動) は即描く。
+  1. 水の描画を 20 fps に間引く (`waterDefaults.maxFps`)。kick (quiet zone / glass の移動) は即描く。
      キャラクターの style 書き換えだけでは kick しない (`useQuietZones` の measure が floater だけの変化で false を返す)。
   2. 作業画面 (calm preset) は静止画 (`waterCalm.animate: false`、`data-water-state="still"`)。
   3. DPR 上限 1.0。見た目の判断待ちで既定には入れていない。
   4. glass layer を glass の外接矩形だけ描く (`glassScissor()`)。
-  5. Home のキャラクターの動きを 30 fps に。
+  5. Home のキャラクターの動きを 30 fps に (水とは別)。
 - 計測 (`e2e/water-power.mjs`、画面に Chrome を出して 120 Hz で、各版 10 秒 × 2 周):
   水を描いている GPU 時間の目安は、対策なしで Home 約 94 %、Calendar 約 98 %。
   既定 (1+2+4+5) で Home 約 37 %、Calendar 0 % (静止画)。3 も入れると Home 約 25 %。
   単独では 1 と 2 が効き、3 は単独だと fps が上がるだけで GPU の忙しさはほぼ変わらない。4 と 5 は単独では小さい。
+- 最終版 (ユーザーが決定): 10 / 15 / 20 / 25 / 30 fps を `?water-fps=` で見比べ、水は 20 fps、作業画面は静止画、キャラは 30 fps。
+  10 fps はコマ送りに見えた。DPR は 1.25 のまま。Home で水を描く GPU 時間の目安は約 94 % → 約 30 %、Calendar は 0 %。
 - 確認: web typecheck / test 152、`water-shots.mjs` の gate 全 true、`e2e/run.mjs` 110/110。
 
 ### Solana を web で実行 (Seeker 版の移植、2026-10-05、未 commit)

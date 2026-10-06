@@ -5,7 +5,7 @@
  * - shader は water.frag.glsl を `?raw` で読む (byte-identical、tuning は waterDefaults のみ)
  * - rAF loop 1 本: hidden tab / paused では draw を skip、t += min(dt, 0.1) * speed
  * - 発熱対策 (2026-10-06、比較スイッチは perfVariant.ts):
- *   1. 描画は maxFps (既定 30) に間引く。rAF は画面の rate (ProMotion は 120 Hz) で回るので、
+ *   1. 描画は maxFps (既定 20) に間引く。rAF は画面の rate (ProMotion は 120 Hz) で回るので、
  *      前の描画から 1/maxFps 経つまでは何もしない。kick (quiet zone / glass の移動) は即描く
  *   2. animate: false (作業画面の calm preset) は静止画。preset の補間中だけ動かし、あとは
  *      quiet zone / resize の変化で 1 frame 描く (reduced motion と同じ経路、uTime は止める)
@@ -39,7 +39,7 @@ import { useQuietZones, type ZoneLayer } from "./useQuietZones";
 
 const VERT_SRC = "attribute vec2 a;\nvoid main() { gl_Position = vec4(a, 0.0, 1.0); }";
 const STILL_TIME = 12.0;
-/** fps 上限の判定の余裕 (ms)。120 Hz の 1 frame の半分。30 fps なら 120 Hz で 4 frame、60 Hz で 2 frame ごとに描く */
+/** fps 上限の判定の余裕 (ms)。120 Hz の 1 frame の半分。20 fps なら 120 Hz で 6 frame、60 Hz で 3 frame ごとに描く */
 const FRAME_SLACK_MS = 4;
 /** 既定の光源 (左上から)。shader の uLight と CSS の --glass-light-angle の基準 */
 const DEFAULT_LIGHT = { x: -0.6, y: 0.8 };

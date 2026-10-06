@@ -105,7 +105,7 @@ export type WaterParams = {
 export const waterDefaults: WaterParams = {
   speed: 1, scale: 4.5, caustic: 0.5, refraction: 0.012,
   tint: 0.5, quiet: 0.6, glass: 1, maxDpr: 1.25,
-  maxFps: 30, animate: true,
+  maxFps: 20, animate: true,
 };
 // work screens: waterCalm = { ...waterDefaults, speed: 0.6, caustic: 0.28, refraction: 0.008, quiet: 1, glass: 0.7, animate: false }
 
@@ -646,17 +646,17 @@ Frame loop:
 - One `requestAnimationFrame` loop owned by the component; cancel it on unmount and release the GL context with `WEBGL_lose_context` if available.
 - Time accumulates as `t += min(dt, 0.1) * speed`, so changing `speed` never jumps the animation and a long frame stall does not skip ahead.
 - Skip the draw entirely (keep the loop idle) when `document.visibilityState === 'hidden'`, when `paused` is true, or when the canvas is fully covered by an opaque overlay the app controls (optional prop later).
-- (2026-10-06, heat) Draw at most `maxFps` (30) times a second. The rAF loop still runs at the display rate (120 Hz on ProMotion) but does nothing until `1000 / maxFps − 4` ms have passed since the last draw; a kick (quiet zone / glass moved, resize, preset change) draws at once so glass never lags its DOM frame. Before this, a MacBook Pro M4 Pro at 1440×900 CSS px drew both canvases about 70–100 times a second and the GPU never idled (rAF fell to 71 Hz on Home): the laptop ran hot.
+- (2026-10-06, heat) Draw at most `maxFps` (20) times a second (the user compared 10 / 15 / 20 / 25 / 30 and chose 20; 10 looked choppy). The rAF loop still runs at the display rate (120 Hz on ProMotion) but does nothing until `1000 / maxFps − 4` ms have passed since the last draw; a kick (quiet zone / glass moved, resize, preset change) draws at once so glass never lags its DOM frame. Before this, a MacBook Pro M4 Pro at 1440×900 CSS px drew both canvases about 70–100 times a second and the GPU never idled (rAF fell to 71 Hz on Home): the laptop ran hot.
 - (2026-10-06, heat) `animate: false` (work screens) holds a still frame like reduced motion, but keeps `uTime` and the light where they are. The loop runs only while the preset eases in (time advances during the ease), then stops; quiet zone / resize changes draw one frame. `data-water-state` is `still`.
 - (2026-10-06, heat) The glass layer draws only inside the union of the glass rects' rotated bounding boxes (`glassScissor()` in `quietZones.ts`, `gl.scissor`, pad 3 px + droplet wobble). Outside it the drawing buffer stays transparent.
-- (2026-10-06, heat) The Home characters (`FloatingFriends`) update at 30 fps too, matching the water.
-- The five heat measures can be toggled one by one on the dev server for comparison: `?water-perf=none | 1,3 | all | default` (`src/background/perfVariant.ts`, kept in sessionStorage, a small badge shows the active set). `?water-fps=10` changes the 30 fps cap of measures 1 and 5 (0 clears it). Measured on Home: 30 fps ≈ 37 % GPU time on the water, 10 fps ≈ 12 %. `e2e/water-power.mjs` measures each set on a visible Chrome window.
+- (2026-10-06, heat) The Home characters (`FloatingFriends`) update at 30 fps (not the display rate). This is separate from the water's 20 fps, by the user's choice, so they move a little more smoothly than the water; their ripples and shadow follow at the water's 20 fps.
+- The five heat measures can be toggled one by one on the dev server for comparison: `?water-perf=none | 1,3 | all | default` (`src/background/perfVariant.ts`, kept in sessionStorage, a small badge shows the active set). `?water-fps=10` changes the water's fps cap of measure 1 (0 clears it). GPU time spent on the water on Home: no cap ≈ 94 %, 30 fps ≈ 37 %, 25 fps (24 at 120 Hz) ≈ 32 %, 20 fps ≈ 27 %, 15 fps ≈ 20 %, 10 fps ≈ 12 %. `e2e/water-power.mjs` measures each set on a visible Chrome window.
 - On `resize`, set `canvas.width/height = clientWidth/clientHeight * dpr` (of `document.documentElement`, i.e. the viewport minus scrollbars) where `dpr = min(devicePixelRatio, maxDpr)`, call `gl.viewport`, and re-upload `uRes`. Scrollbars can appear or disappear without a `resize` event, so also watch the canvas host with a `ResizeObserver` (both the canvas size and the quiet / glass rects). Debounce is unnecessary; the draw is cheap.
 
 Quality:
 
 - `maxDpr` defaults to 1.25. The image is soft by nature, so 2x rendering buys nothing visible and doubles the fragment cost. On a 4K display the 1.25 cap still renders about 3.1 million fragments per frame, which is within budget for this shader on an integrated GPU.
-- Target 60 fps on Apple Silicon and recent Intel integrated graphics. If profiling shows the frame over 8 ms, lower `maxDpr` to 1.0 before touching the shader. (Superseded 2026-10-06: the draw rate is capped at 30 fps, see "Frame loop". At 120 Hz uncapped the shader kept the GPU busy almost all the time.)
+- Target 60 fps on Apple Silicon and recent Intel integrated graphics. If profiling shows the frame over 8 ms, lower `maxDpr` to 1.0 before touching the shader. (Superseded 2026-10-06: the draw rate is capped at 20 fps, see "Frame loop". At 120 Hz uncapped the shader kept the GPU busy almost all the time.)
 
 Reduced motion:
 
