@@ -42,6 +42,25 @@ jest.mock("./clients/oracle", () => ({
     block_reason: null,
   })),
 }));
+// 2026-10-08: /simulate が route ごとの実見積り (Jupiter quote + LST 償還価値) を読むため mock
+// (無 mock だと lite-api.jup.ag / stake pool RPC を叩く)
+jest.mock("./clients/jupiter-swap", () => ({
+  fetchSwapQuote: jest.fn(async (p: { inputMint: string; outputMint: string; amount: string }) => ({
+    inputMint: p.inputMint,
+    outputMint: p.outputMint,
+    inAmount: p.amount,
+    outAmount: p.amount,
+    otherAmountThreshold: p.amount,
+    swapMode: "ExactIn",
+    slippageBps: 50,
+    priceImpactPct: "0",
+    routePlan: [],
+  })),
+  fetchSwapTransaction: jest.fn(),
+}));
+jest.mock("./clients/lst-rates", () => ({
+  fetchLstSolValues: jest.fn(async () => new Map([["jitoSOL", 1_293_886_836n]])),
+}));
 jest.mock("./clients/solana-devnet", () => ({
   ...jest.requireActual("./clients/solana-devnet"),
   sendAndConfirmDevnetTx: jest.fn(),
@@ -233,6 +252,12 @@ describe("runAutonomousCycle — decision + guards", () => {
     expect(plan.execution).toEqual(
       expect.objectContaining({ signatures: ["SIG_DEVNET_CONFIRMED"], via: "autonomous" })
     );
+    // devnet の lamport 送金は market の見積りに通さない (USD を token 欄に入れる偽値も出さない)
+    expect(plan.simulation_result).toEqual({
+      simulation_id: expect.any(String),
+      bundle_hash: expect.any(String),
+      metadata: { source: "autonomous_devnet_transfer" },
+    });
     expect(rec.amount_usd8).toBe(AUTONOMOUS_MAX_TX_USD8); // policy 無制限 → $20 に第1クランプ
     expect(mockSend).toHaveBeenCalledTimes(1);
     expect(push).toHaveBeenCalledWith(
@@ -467,8 +492,10 @@ describe("routes: /autonomous/* + PATCH /user-policy", () => {
         payload: { objective: "max_yield", mcp_client_id: "t" },
       })
     ).json();
-    // orca は fixture default policy の enabled_protocols 外 → 短絡しない
-    await app.inject({
+    // orca は fixture default policy の enabled_protocols 外 → 短絡しない。
+    // 2026-10-08: 実在の Orca pool (deposit SOL) を pool_id で指す — route が解決しない plan は
+    // request-approval が 422 simulation_failed で止めるため、policy の判定まで届かなくなる
+    const sim = await app.inject({
       method: "POST",
       url: `/agent-plans/${plan.plan_id}/simulate`,
       payload: {
@@ -478,9 +505,11 @@ describe("routes: /autonomous/* + PATCH /user-policy", () => {
           protocol: "orca",
           asset: "SOL",
           amount: "1000000",
+          metadata: { pool_id: "orca_jitosol_sol_whirlpool" },
         },
       },
     });
+    expect(sim.json().simulation.estimate_kind).toBe("lp_position");
     const req = await app.inject({
       method: "POST",
       url: `/agent-plans/${plan.plan_id}/request-approval`,

@@ -25,8 +25,11 @@ import type {
 } from "@workspace/lib/types";
 import type { SolanaRoute } from "@workspace/lib/derive/solana-action";
 
-/** swap-earn は呼び手が slippage を明示する (Seeker / web と同じ 50bps) */
-const SWAP_EARN_SLIPPAGE_BPS = 50;
+/**
+ * swap-earn は呼び手が slippage を明示する (Seeker / web と同じ 50bps)。
+ * simulate の見積り (agent-plan-estimate.ts) も同じ値で quote を取る (見積りと実行で min_out を揃える)
+ */
+export const SWAP_EARN_SLIPPAGE_BPS = 50;
 
 /** route 1 本 → BFF の tx builder endpoint と body、応答の tx が入っている key */
 export interface TxBuildRequest {

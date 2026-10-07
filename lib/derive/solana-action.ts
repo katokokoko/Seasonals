@@ -10,6 +10,8 @@
  *   Meteora deposit / withdraw → Orca deposit / withdraw → Save deposit / withdraw → Exponent redeem
  */
 import type { EarnPosition, SolanaActionInput, SolanaActionShape } from "../types";
+import { isValidTokenAmount } from "../utils/numeric";
+import { isSolanaAddress } from "../config/chains";
 import { findMarketByProtocolAsset, findMarketByShareMint } from "../config/swap-earn-markets";
 import {
   findKaminoMarketByAsset,
@@ -18,7 +20,12 @@ import {
   findKaminoVaultByAddress,
   findKaminoVaultByPool,
 } from "../config/kamino-markets";
-import { findSaveMarketByAsset, findSaveMarketByCToken, findSaveMarketByPool } from "../config/save-markets";
+import {
+  findSaveMarketByAsset,
+  findSaveMarketByCToken,
+  findSaveMarketByPool,
+  findSaveMarketByReserve,
+} from "../config/save-markets";
 import { findExponentMarketByPtMint } from "../config/exponent-markets";
 import { findMeteoraMarketByPool } from "../config/meteora-markets";
 import { findOrcaMarketByPool } from "../config/orca-markets";
@@ -200,4 +207,127 @@ export function withdrawActionFromParams(params: Record<string, string>): Solana
       underlying_amount: underlyingAmount,
     },
   };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// action metadata の境界検証 (2026-10-08、MCP simulate_action が metadata を運べるようにした時の入口)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Solana action の `metadata` に載ってよいキー。これ以外は境界 (BFF simulate / MCP zod) で拒否する。
+ * - pool_id: deposit の market 特定 (resolveSolanaRoute / resolveOracleMint)
+ * - share_mint: withdraw の market 特定 (swap-earn share mint / Kamino reserve / kVault address /
+ *   Save cToken / Exponent PT mint / Meteora・Orca の position pubkey)
+ * - share_decimals / underlying_decimals: 入力単位 (resolveAmountUnit)
+ * - underlying_amount: 部分 withdraw の ≈underlying 表示用 (display-only)
+ * withdrawActionFromPosition / withdrawActionFromParams が組む形と同じ集合。
+ */
+export const ACTION_METADATA_KEYS = [
+  "pool_id",
+  "share_mint",
+  "share_decimals",
+  "underlying_decimals",
+  "underlying_amount",
+] as const;
+
+export type ActionMetadataKey = (typeof ACTION_METADATA_KEYS)[number];
+
+/** Menu の pool_id (lib/config の registry と BFF の exponentPoolId が作る形はすべて英小文字・数字・_) */
+export const POOL_ID_RE = /^[a-z0-9_]{1,64}$/;
+
+/** decimals の上限 (SPL token は 0..18 で十分。Number の小整数で扱ってよい §4.5 適用外) */
+const MAX_DECIMALS = 18;
+
+function isDecimals(v: unknown): boolean {
+  return typeof v === "number" && Number.isInteger(v) && v >= 0 && v <= MAX_DECIMALS;
+}
+
+/**
+ * action metadata を厳格に検証する (未知キーは拒否)。値は読むだけで書き換えない
+ * (bundle_hash は action を丸ごと hash するので、境界で正規化すると承認と実行がずれる)。
+ * undefined (metadata 無し) は ok。失敗時は最初に問題のあった field 名を返す。
+ */
+export function validateActionMetadata(
+  m: unknown
+): { ok: true } | { ok: false; field: string } {
+  if (m === undefined) return { ok: true };
+  if (m === null || typeof m !== "object" || Array.isArray(m)) {
+    return { ok: false, field: "metadata" };
+  }
+  const allowed = new Set<string>(ACTION_METADATA_KEYS);
+  for (const [key, value] of Object.entries(m as Record<string, unknown>)) {
+    if (!allowed.has(key)) return { ok: false, field: key };
+    switch (key as ActionMetadataKey) {
+      case "pool_id":
+        if (typeof value !== "string" || !POOL_ID_RE.test(value)) return { ok: false, field: key };
+        break;
+      case "share_mint":
+        if (typeof value !== "string" || !isSolanaAddress(value)) return { ok: false, field: key };
+        break;
+      case "share_decimals":
+      case "underlying_decimals":
+        if (!isDecimals(value)) return { ok: false, field: key };
+        break;
+      case "underlying_amount":
+        if (!isValidTokenAmount(value)) return { ok: false, field: key };
+        break;
+    }
+  }
+  return { ok: true };
+}
+
+/** route に預け入れる token (deposit 側) */
+export interface RouteInputToken {
+  mint: string;
+  symbol: string;
+  decimals: number;
+}
+
+/**
+ * deposit route が受け取る token。withdraw route (入力は share 等で、asset 照合の対象外) は null。
+ * BFF simulate の `asset_mismatch` 判定 (pool_id が指す market と action.asset の不一致) に使う。
+ * resolveSolanaRoute は pool_id を信じて market を引くので、SOL pool に USDC 建ての amount を
+ * 渡すと 1000 倍の桁ずれになる。それを simulate / 承認の前に止めるための材料。
+ */
+export function routeInputSymbol(route: SolanaRoute): RouteInputToken | null {
+  switch (route.kind) {
+    case "swap_earn_deposit": {
+      const m = findMarketByShareMint(route.shareMint);
+      return m ? { mint: m.underlying_mint, symbol: m.underlying_symbol, decimals: m.underlying_decimals } : null;
+    }
+    case "kamino_deposit": {
+      const m = findKaminoMarketByReserve(route.reserve);
+      return m ? { mint: m.underlying_mint, symbol: m.underlying_symbol, decimals: m.underlying_decimals } : null;
+    }
+    case "kamino_vault_deposit": {
+      const v = findKaminoVaultByAddress(route.vault);
+      return v ? { mint: v.underlying_mint, symbol: v.underlying_symbol, decimals: v.underlying_decimals } : null;
+    }
+    case "meteora_deposit": {
+      const m = findMeteoraMarketByPool(route.poolKey);
+      return m ? { mint: m.deposit_mint, symbol: m.deposit_symbol, decimals: m.deposit_decimals } : null;
+    }
+    case "orca_deposit": {
+      const m = findOrcaMarketByPool(route.poolKey);
+      return m ? { mint: m.deposit_mint, symbol: m.deposit_symbol, decimals: m.deposit_decimals } : null;
+    }
+    case "save_deposit": {
+      const m = findSaveMarketByReserve(route.reserve);
+      return m ? { mint: m.underlying_mint, symbol: m.underlying_symbol, decimals: m.underlying_decimals } : null;
+    }
+    default:
+      return null;
+  }
+}
+
+/** 表記揺れの吸収: 大文字小文字 (JitoSOL / jitoSOL) と wrapped SOL (WSOL = SOL) */
+function normalizeAssetSymbol(symbol: string): string {
+  const upper = symbol.trim().toUpperCase();
+  return upper === "WSOL" ? "SOL" : upper;
+}
+
+/** action.asset と deposit route の入力 token が同じ asset か (asset 無しは不一致扱い) */
+export function assetMatchesRouteInput(asset: string | undefined, input: RouteInputToken): boolean {
+  if (!asset) return false;
+  return normalizeAssetSymbol(asset) === normalizeAssetSymbol(input.symbol);
 }

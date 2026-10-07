@@ -36,9 +36,17 @@ import type {
   MenuHoldingsResponse,
   MenuProduct,
   ProtocolMenuEntry,
+  SimulationResult,
   UnifiedTimeEventDTO,
 } from "@workspace/lib/types";
 import { SWAP_SYMBOLS } from "@workspace/lib/types";
+import {
+  POOL_ID_RE,
+  depositAction,
+  resolveSolanaRoute,
+} from "@workspace/lib/derive/solana-action";
+import { resolveAmountUnit } from "@workspace/lib/derive/amount-utils";
+import { isSolanaAddress } from "@workspace/lib/config/chains";
 
 import { BffHttpError, type BffClient } from "./bff-client";
 import type { TimelineEvent, TimelineEventsResponse } from "@workspace/lib/types";
@@ -75,6 +83,36 @@ import {
 
 const OBJECTIVES = LIB_OBJECTIVES as unknown as [string, ...string[]];
 const ACTION_TYPES = LIB_ACTION_TYPES as unknown as [string, ...string[]];
+
+/**
+ * simulate_action の action_spec.metadata (2026-10-08)。BFF の validateActionMetadata
+ * (lib/derive/solana-action.ts) と同じ規則 — キーは ACTION_METADATA_KEYS だけ (strict で未知キーを拒否)。
+ * BFF も同じ検証をする (MCP を通らない呼び手もいるため二重に持つ)
+ */
+const DECIMALS = z.number().int().min(0).max(18);
+const ACTION_METADATA = z
+  .object({
+    pool_id: z
+      .string()
+      .regex(POOL_ID_RE, "pool_id from compare_opportunities (lowercase letters, digits, _)")
+      .describe("Deposit: the market (from action_spec_template)"),
+    share_mint: z
+      .string()
+      .refine(isSolanaAddress, "base58 Solana address")
+      .describe("Withdraw: position.share_mint from seasonals://positions/{wallet}"),
+    share_decimals: DECIMALS.describe("Withdraw: position.share_decimals"),
+    underlying_decimals: DECIMALS.describe("Withdraw: position.underlying_decimals"),
+    underlying_amount: z
+      .string()
+      .regex(/^[0-9]+$/, "smallest-unit integer string (§4.5)")
+      .describe("Withdraw: position.underlying_amount (display only)"),
+  })
+  .partial()
+  .strict()
+  .optional();
+
+/** compare_opportunities の候補に載せる deposit の雛形 (wallet_id / amount は Agent が足す) */
+type ActionSpecTemplate = Omit<ReturnType<typeof depositAction>, "amount">;
 
 /** tool 応答は JSON text content (MCP の標準形) */
 function jsonContent(value: unknown) {
@@ -127,6 +165,11 @@ export function buildMcpServer(
       description:
         "Compare and rank deposit opportunities across Seasonals-registered protocols " +
         "(live APY/TVL/utilization). Creates a draft AgentPlan and returns plan_id. " +
+        "Only pools with an executable onchain route are listed. Each candidate carries " +
+        "action_spec_template (action_type/protocol/asset/metadata.pool_id), route_kind, and " +
+        "amount_unit/amount_decimals. To deposit, pass action_spec = {...action_spec_template, " +
+        "wallet_id, amount} to simulate_action, where amount is in smallest units of amount_unit " +
+        "(e.g. 1.5 USDC with amount_decimals 6 = \"1500000\"). Keep metadata.pool_id as is. " +
         "Follow with simulate_action → request_user_approval (the user approves, signs and " +
         "sends in the Seasonals web app; execute_approved_action is only for policy auto-approved plans).",
       inputSchema: {
@@ -168,7 +211,17 @@ export function buildMcpServer(
                 ? p.utilization <= constraints.max_utilization
                 : true
             )
-            .map((p) => ({ entry, pool: p }))
+            // 2026-10-08: lib の resolveSolanaRoute (execute と同じ 13 route) に解決する pool だけ。
+            // 解決しない pool は simulate で unsupported_market、承認で 422 になるので最初から出さない
+            .flatMap((p) => {
+              const { amount: _blank, ...template } = depositAction(
+                entry.protocol_id,
+                p.deposit_asset ?? p.asset,
+                p.pool_id
+              );
+              const route = resolveSolanaRoute(template);
+              return route ? [{ entry, pool: p, template, route }] : [];
+            })
         );
         // ランク: safety_first は TVL 優先、それ以外は APY 優先
         pools.sort((a, b) =>
@@ -176,7 +229,7 @@ export function buildMcpServer(
             ? b.pool.tvl_usd - a.pool.tvl_usd
             : b.pool.apy - a.pool.apy
         );
-        const ranked = pools.slice(0, 8).map(({ entry, pool }, i) => {
+        const ranked = pools.slice(0, 8).map(({ entry, pool, template, route }, i) => {
           const reasoning: string[] = [
             `APY ${(pool.apy * 100).toFixed(2)}%`,
             `TVL $${Math.round(pool.tvl_usd).toLocaleString()}`,
@@ -186,6 +239,9 @@ export function buildMcpServer(
               `WARNING: utilization ${(pool.utilization * 100).toFixed(0)}% — withdrawals may be limited`
             );
           }
+          // amount は amount_unit の smallest unit (resolveAmountUnit = Seeker / web の入力単位と同じ)
+          const unit = resolveAmountUnit(template);
+          const action_spec_template: ActionSpecTemplate = template;
           return {
             rank: i + 1,
             protocol_id: entry.protocol_id,
@@ -194,6 +250,10 @@ export function buildMcpServer(
             tvl: pool.tvl_usd,
             utilization: pool.utilization ?? null,
             reasoning,
+            action_spec_template,
+            route_kind: route.kind,
+            amount_decimals: unit.decimals,
+            amount_unit: unit.unitSymbol,
           };
         });
         const plan = await bff.post<AgentPlan>("/agent-plans", {
@@ -214,8 +274,23 @@ export function buildMcpServer(
     "simulate_action",
     {
       description:
-        "Simulate an action against an existing AgentPlan (sets selected_action, " +
-        "returns deterministic bundle_hash). Use plan_id (not simulation_id) for approval.",
+        "Simulate an action against an existing AgentPlan: sets selected_action, returns a " +
+        "deterministic bundle_hash and the expected output from the same source the user's " +
+        "transaction builder uses. Only deposit and withdraw are executable (other action " +
+        "types return status \"failed\" with failure_reason \"unsupported_market\"). " +
+        "DEPOSIT: pass a candidate's action_spec_template from compare_opportunities plus " +
+        "wallet_id and amount (smallest units of that candidate's amount_unit). " +
+        "WITHDRAW: read the resource seasonals://positions/{wallet} and, for one position, send " +
+        "action_type \"withdraw\", protocol = position.protocol_id, asset = position.asset_symbol, " +
+        "amount = position.shares (or less, smallest units), and metadata = {share_mint, " +
+        "share_decimals, underlying_decimals, underlying_amount} copied from the position. " +
+        "Output: status \"ok\" | \"failed\"; estimate_kind (quote | exchange_rate | same_as_input " +
+        "| lp_position | pt_redeem | none); estimated_out / min_out in smallest units of " +
+        "estimated_out_symbol (estimated_out_decimals); warnings (e.g. fair_value_deviation — " +
+        "execution may refuse); oracle_warnings; failure_reason when failed (asset_mismatch = " +
+        "metadata.pool_id is a different asset's pool; amount_required; quote_unavailable; " +
+        "rate_unavailable). A failed simulation with unsupported_market or asset_mismatch cannot " +
+        "be approved. Use plan_id (not simulation_id) for approval.",
       inputSchema: {
         plan_id: z.string(),
         action_spec: z.object({
@@ -228,6 +303,7 @@ export function buildMcpServer(
             .regex(/^[0-9]+$/, "smallest-unit integer string (§4.5)")
             .optional(),
           to_protocol: z.string().optional(),
+          metadata: ACTION_METADATA,
         }),
       },
     },
@@ -236,16 +312,33 @@ export function buildMcpServer(
       try {
         const res = await bff.post<{
           plan_id: string;
-          simulation: Record<string, unknown>;
+          simulation: SimulationResult;
         }>(`/agent-plans/${plan_id}/simulate`, { action_spec });
-        audit("simulate_action", plan_id, "ok", t0);
+        const sim = res.simulation;
+        // oracle の warning は primary がある時は oracle.warnings、無い時 (secondary のみ等) は metadata 側
+        const metaOracleWarnings = sim.metadata?.oracle_warnings;
+        const oracleWarnings: string[] =
+          sim.oracle?.warnings ??
+          (Array.isArray(metaOracleWarnings)
+            ? metaOracleWarnings.filter((w): w is string => typeof w === "string")
+            : []);
+        const failed = sim.failure_reason !== undefined;
+        audit("simulate_action", plan_id, failed ? "rejected" : "ok", t0);
         return jsonContent({
-          simulation_id: res.simulation.simulation_id,
+          simulation_id: sim.simulation_id,
           plan_id: res.plan_id,
-          status: "ok",
-          estimated_out: res.simulation.estimated_out,
-          slippage_bps: res.simulation.slippage_bps,
-          bundle_hash: res.simulation.bundle_hash,
+          status: failed ? "failed" : "ok",
+          estimate_kind: sim.estimate_kind,
+          estimated_out: sim.estimated_out,
+          estimated_out_mint: sim.estimated_out_mint,
+          estimated_out_symbol: sim.estimated_out_symbol,
+          estimated_out_decimals: sim.estimated_out_decimals,
+          min_out: sim.min_out,
+          slippage_bps: sim.slippage_bps,
+          warnings: sim.warnings ?? [],
+          oracle_warnings: oracleWarnings,
+          failure_reason: sim.failure_reason,
+          bundle_hash: sim.bundle_hash,
         });
       } catch (err) {
         audit("simulate_action", plan_id, "error", t0);
@@ -264,7 +357,9 @@ export function buildMcpServer(
         "agent never signs. Returns {status:\"broadcasted\", signatures} when the user " +
         "signed and sent it, {status:\"failed\", failure_reason} when signing/sending " +
         "failed or was cancelled, {status:\"rejected\"} or {status:\"expired\"} " +
-        "(plans expire 24h after creation), or {status:\"timeout\"} if nothing " +
+        "(plans expire 24h after creation), {status:\"simulation_failed\", failure_reason} " +
+        "when the simulation found no executable route or a pool/asset mismatch (re-simulate " +
+        "first), or {status:\"timeout\"} if nothing " +
         "settled within timeout_seconds (safe to call again). If the user's policy " +
         "auto-approves the plan, returns {status:\"approved\", approval_token} for " +
         "execute_approved_action instead. Idempotent — safe to retry while pending.",
@@ -283,6 +378,20 @@ export function buildMcpServer(
             timeout_seconds,
           });
         } catch (err) {
+          // 2026-10-08: simulate が unsupported_market / asset_mismatch の plan は承認に進めない (422)
+          if (err instanceof BffHttpError && err.status === 422) {
+            const body = err.body as { error?: string; failure_reason?: string } | null;
+            if (body?.error === "simulation_failed") {
+              audit("request_user_approval", plan_id, "rejected", t0);
+              return jsonContent({
+                status: "simulation_failed",
+                failure_reason: body.failure_reason,
+                message:
+                  "This plan's simulation has no executable route (or the pool does not match the asset). " +
+                  "Fix the action_spec and call simulate_action again.",
+              });
+            }
+          }
           const current =
             err instanceof BffHttpError
               ? (err.body as { current?: string } | null)?.current

@@ -33,6 +33,7 @@ import { getWalletBalanceSmallest } from "./clients/helius-rpc";
 import {
   fetchKaminoDepositCaps,
   fetchKaminoDepositTx,
+  fetchKaminoVaultMetrics,
   fetchKaminoWithdrawTx,
 } from "./clients/kamino-tx";
 
@@ -66,6 +67,13 @@ const mockKaminoWithdraw = fetchKaminoWithdrawTx as jest.MockedFunction<
 const mockKaminoCaps = fetchKaminoDepositCaps as jest.MockedFunction<
   typeof fetchKaminoDepositCaps
 >;
+const mockKaminoVaultMetrics = fetchKaminoVaultMetrics as jest.MockedFunction<
+  typeof fetchKaminoVaultMetrics
+>;
+
+const USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+const SOL_MINT = "So11111111111111111111111111111111111111112";
+const JITOSOL_MINT = "J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn";
 
 /** 実測相当 (2026-08-03) の jitoSOL レート */
 const JITOSOL_LAMPORTS = 1_293_886_836n;
@@ -280,6 +288,192 @@ describe("simulate / bundle_hash", () => {
   });
 });
 
+describe("simulate の実見積り (2026-10-08、mock registry 廃止)", () => {
+  async function simulate(action: ActionSpec) {
+    const planId = (await post("/agent-plans", { objective: "max_yield" })).json().plan_id as string;
+    const res = await post(`/agent-plans/${planId}/simulate`, { action_spec: action });
+    return { planId, res };
+  }
+
+  it("swap-earn (jito SOL): Jupiter quote の out を受け取る token (jitoSOL, 9 dec) で返す。min_out あり、fee なし", async () => {
+    const { planId, res } = await simulate(ACTION);
+    expect(res.statusCode).toBe(200);
+    const sim = res.json().simulation;
+    expect(sim).toMatchObject({
+      estimate_kind: "quote",
+      estimated_out: "95000000",
+      estimated_out_mint: JITOSOL_MINT,
+      estimated_out_symbol: "jitoSOL",
+      estimated_out_decimals: 9,
+      min_out: "94000000",
+      slippage_bps: 50,
+    });
+    expect(sim.estimated_fee).toBeUndefined();
+    expect(sim.failure_reason).toBeUndefined();
+    expect(sim.warnings).toBeUndefined(); // ユーザー有利の quote は fair value ok
+    expect(sim.metadata.fair_value).toMatchObject({ status: "ok" });
+    // builder と同じ向き・slippage で quote を取る
+    expect(mockQuote).toHaveBeenCalledWith({
+      inputMint: SOL_MINT,
+      outputMint: JITOSOL_MINT,
+      amount: "100000000",
+      slippageBps: 50,
+    });
+    // 永続された結果も同じ
+    expect((await get(`/agent-plans/${planId}`)).json().simulation_result.estimated_out).toBe("95000000");
+  });
+
+  it("fair value が不利方向に外れた quote は simulate では止めず warning (execute が 409 で止める)", async () => {
+    mockQuote.mockResolvedValue({
+      inputMint: "in",
+      outputMint: "out",
+      inAmount: "100000000",
+      outAmount: "70000000",
+      otherAmountThreshold: "69000000",
+      swapMode: "ExactIn",
+      slippageBps: 50,
+      priceImpactPct: "0.01",
+      routePlan: [],
+    });
+    const { res } = await simulate(ACTION);
+    expect(res.statusCode).toBe(200);
+    const sim = res.json().simulation;
+    expect(sim.warnings).toEqual(["fair_value_deviation"]);
+    expect(sim.metadata).toMatchObject({ price_impact_pct: "0.01", fair_value: { status: "blocked" } });
+  });
+
+  it("quote 失敗は 200 + estimate_kind none / quote_unavailable (simulate は落ちない)", async () => {
+    mockQuote.mockRejectedValue(new Error("Jupiter swap quote HTTP 500"));
+    const { res } = await simulate(ACTION);
+    expect(res.statusCode).toBe(200);
+    expect(res.json().simulation).toMatchObject({ estimate_kind: "none", failure_reason: "quote_unavailable" });
+  });
+
+  it("regression: Menu の protocol 'jupiter' + USDC も oracle gate を通る (USDC mint で問い合わせ、両 stale は 409)", async () => {
+    const jup: ActionSpec = { ...ACTION, protocol: "jupiter", asset: "USDC", amount: "1000000" };
+    const ok = await simulate(jup);
+    expect(ok.res.statusCode).toBe(200);
+    expect(mockOracle).toHaveBeenCalledWith(USDC_MINT);
+    expect(ok.res.json().simulation).toMatchObject({
+      estimate_kind: "quote",
+      estimated_out_symbol: "jlUSDC",
+      estimated_out_decimals: 6,
+    });
+    mockOracle.mockResolvedValue(blockedOracle("oracle_both_stale"));
+    const blocked = await simulate(jup);
+    expect(blocked.res.statusCode).toBe(409);
+    expect(blocked.res.json().block_reason).toBe("oracle_both_stale");
+  });
+
+  it("Kamino reserve: oracle を見るようになった (SOL mint)、受け取り量 = 入力量 (same_as_input)", async () => {
+    const { res } = await simulate(KAMINO_DEPOSIT);
+    expect(res.statusCode).toBe(200);
+    expect(mockOracle).toHaveBeenCalledWith(SOL_MINT);
+    expect(res.json().simulation).toMatchObject({
+      estimate_kind: "same_as_input",
+      estimated_out: "2500000000",
+      estimated_out_symbol: "SOL",
+      estimated_out_decimals: 9,
+    });
+    expect(mockQuote).not.toHaveBeenCalled(); // mock registry / USDC→SOL 固定 quote は呼ばない
+    mockOracle.mockResolvedValue(blockedOracle("oracle_unavailable"));
+    expect((await simulate(KAMINO_DEPOSIT)).res.statusCode).toBe(409);
+  });
+
+  it("Kamino USDC (registry で預入停止) は deposit_unavailable の warning", async () => {
+    const { res } = await simulate({ ...KAMINO_DEPOSIT, asset: "USDC", amount: "1000000" });
+    expect(res.json().simulation).toMatchObject({
+      estimate_kind: "same_as_input",
+      warnings: ["deposit_unavailable"],
+    });
+  });
+
+  it("rotate (route 無し) は 200 + unsupported_market、request-approval / approve は 422 simulation_failed", async () => {
+    const rotate: ActionSpec = {
+      wallet_id: WALLET,
+      action_type: "rotate",
+      protocol: "kamino",
+      to_protocol: "jupiter",
+      asset: "USDC",
+      amount: "1000000",
+    };
+    const { planId, res } = await simulate(rotate);
+    expect(res.statusCode).toBe(200);
+    expect(res.json().simulation).toMatchObject({ estimate_kind: "none", failure_reason: "unsupported_market" });
+    expect(mockQuote).not.toHaveBeenCalled();
+    expect(mockOracle).not.toHaveBeenCalled();
+    const req = await post(`/agent-plans/${planId}/request-approval`);
+    expect(req.statusCode).toBe(422);
+    expect(req.json()).toMatchObject({ error: "simulation_failed", failure_reason: "unsupported_market" });
+    const appr = await post(`/agent-plans/${planId}/approve`);
+    expect(appr.statusCode).toBe(422);
+    expect((await get(`/agent-plans/${planId}`)).json().status).toBe("simulated");
+  });
+
+  it("asset_mismatch: pool_id (SOL reserve) と asset (USDC) が食い違えば見積らず、承認にも進ませない", async () => {
+    const mismatch: ActionSpec = { ...KAMINO_DEPOSIT, asset: "USDC", amount: "1000000", metadata: { pool_id: "kamino_sol_main" } };
+    const { planId, res } = await simulate(mismatch);
+    expect(res.statusCode).toBe(200);
+    expect(res.json().simulation).toMatchObject({ estimate_kind: "none", failure_reason: "asset_mismatch" });
+    expect(res.json().simulation.estimated_out).toBeUndefined();
+    const req = await post(`/agent-plans/${planId}/request-approval`);
+    expect(req.statusCode).toBe(422);
+    expect(req.json().failure_reason).toBe("asset_mismatch");
+    expect((await post(`/agent-plans/${planId}/approve`)).statusCode).toBe(422);
+  });
+
+  it("amount 無しは amount_required (見積りを呼ばない)", async () => {
+    const { amount: _omit, ...noAmount } = ACTION;
+    const { res } = await simulate(noAmount as ActionSpec);
+    expect(res.statusCode).toBe(200);
+    expect(res.json().simulation).toMatchObject({ estimate_kind: "none", failure_reason: "amount_required" });
+    expect(mockQuote).not.toHaveBeenCalled();
+  });
+
+  it("境界検証: amount '1.5' は 400 invalid_amount、metadata の不正値 / 未知キーは 400 invalid_action_metadata", async () => {
+    const amt = await simulate({ ...ACTION, amount: "1.5" });
+    expect(amt.res.statusCode).toBe(400);
+    expect(amt.res.json().error).toBe("invalid_amount");
+
+    const badMint = await simulate({ ...KAMINO_WITHDRAW, metadata: { share_mint: "not-base58-0OIl" } });
+    expect(badMint.res.statusCode).toBe(400);
+    expect(badMint.res.json()).toMatchObject({ error: "invalid_action_metadata", field: "share_mint" });
+
+    const unknown = await simulate({ ...ACTION, metadata: { pool_id: "jito_jitosol", slippage_bps: 9999 } });
+    expect(unknown.res.statusCode).toBe(400);
+    expect(unknown.res.json().field).toBe("slippage_bps");
+    // 400 の plan は simulated にならない (draft のまま)
+    expect((await get(`/agent-plans/${unknown.planId}`)).json().status).toBe("draft");
+  });
+
+  it("metadata で pool を変えると bundle_hash が変わり、古い approval token は 403 で拒否される", async () => {
+    mockKaminoVaultMetrics.mockResolvedValue({ apy: "0.1", tokensPerShare: "1.25", tokenPrice: "80" });
+    const reserve: ActionSpec = { ...KAMINO_DEPOSIT, metadata: { pool_id: "kamino_sol_main" } };
+    const vault: ActionSpec = { ...KAMINO_DEPOSIT, metadata: { pool_id: "kamino_allez_sol_vault" } };
+    const { planId, tokenId: oldToken } = await approvedPlan(reserve);
+    const first = (await get(`/agent-plans/${planId}`)).json().simulation_result.bundle_hash as string;
+
+    const re = await post(`/agent-plans/${planId}/simulate`, { action_spec: vault });
+    expect(re.statusCode).toBe(200);
+    const sim = re.json().simulation;
+    expect(sim.bundle_hash).not.toBe(first);
+    expect(sim.bundle_hash).toBe(computeBundleHash(vault)); // metadata は書き換えずに hash される
+    // kVault deposit: 2.5 SOL / 1.25 SOL per share = 2 shares (shares は 6 dec)
+    expect(sim).toMatchObject({
+      estimate_kind: "exchange_rate",
+      estimated_out: "2000000",
+      estimated_out_symbol: "Allez SOL shares",
+      estimated_out_decimals: 6,
+    });
+    expect((await get(`/agent-plans/${planId}`)).json().status).toBe("simulated");
+
+    await post(`/agent-plans/${planId}/approve`); // 新しい token (旧 token は使わない)
+    const exec = await post(`/agent-plans/${planId}/execute`, { approval_token: oldToken });
+    expect(exec.statusCode).toBe(403);
+    expect(exec.json().reason).toBe("bundle_hash_mismatch");
+  });
+});
+
 describe("approve → execute (unsigned tx を web が署名する)", () => {
   it("approve は body 不要、approved_by=user + token。execute は awaiting_signature + unsigned tx (swap-earn)", async () => {
     const planId = await createSimulatedPlan();
@@ -363,11 +557,17 @@ describe("approve → execute (unsigned tx を web が署名する)", () => {
   });
 
   it("route に解決できない action は 422 unsupported_market (token 未消費)", async () => {
-    const { planId, tokenId } = await approvedPlan({
-      ...ACTION,
-      protocol: "nowhere_protocol",
-      asset: "XYZ",
-    });
+    // 2026-10-08: simulate が unsupported_market を返した plan は request-approval / approve が 422 で
+    // 止めるので、ここでは store を直接 approved にして execute 自身の fail-closed を確かめる
+    const unsupported = { ...ACTION, protocol: "nowhere_protocol", asset: "XYZ" };
+    const planId = await createSimulatedPlan(unsupported);
+    updatePlan(planId, { status: AgentPlanStatus.Approved, approved_by: "user" });
+    const tokenId = issueApprovalToken({
+      user_id: "u",
+      plan_id: planId,
+      mcp_client_id: "m",
+      bundle_hash: computeBundleHash(unsupported),
+    }).token_id;
     const exec = await post(`/agent-plans/${planId}/execute`, { approval_token: tokenId });
     expect(exec.statusCode).toBe(422);
     expect(exec.json().error).toBe("unsupported_market");

@@ -15,6 +15,12 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { chainInfo } from "@workspace/lib/config/chains";
 import { resolveAmountUnit } from "@workspace/lib/derive/amount-utils";
 import { ORACLE_WARNING_HEADLINE, oracleWarningBody } from "@workspace/lib/derive/oracle-gate";
+import {
+  describeSimulationFailure,
+  describeSimulationFee,
+  describeSimulationOut,
+  describeSimulationWarning,
+} from "@workspace/lib/derive/simulation-display";
 import { AgentPlanStatus, type AgentPlan, type OracleWarningKind } from "@workspace/lib/types";
 import { toHumanReadable } from "@workspace/lib/utils/numeric";
 import { api, ApiError } from "../services/api";
@@ -71,6 +77,53 @@ function failureReason(s: SignState): string {
   const code = s.code ?? (s.txs.length > 0 ? "submit_failed" : "sign_failed");
   const sent = s.txs.length > 0 ? ` (sent ${s.txs.length} of ${s.total || s.txs.length}: ${s.txs.map((t) => t.signature).join(",")})` : "";
   return `${code}: ${s.message ?? "failed"}${sent}`;
+}
+
+/**
+ * simulate 結果の見積り部分 (受け取り量 / 最低受け取り量 / 手数料 / 見積り不能の理由 / oracle 以外の注意)。
+ * 文言は Seeker の承認画面と共有 (lib/derive/simulation-display)。新形式は受け取り token の単位、
+ * estimate_kind の無い旧形式だけ入力 asset の単位 (legacy) で出す。
+ */
+function SimulationEstimate({ sim, legacy }: { sim: NonNullable<AgentPlan["simulation_result"]>; legacy: { decimals: number; unitSymbol: string } }) {
+  const out = describeSimulationOut(sim, legacy);
+  // 旧形式の fee は mock adapter の lamports を入力 asset 建てと取り違えた値なので出さない (以前から非表示)
+  const fee = sim.estimate_kind !== undefined ? describeSimulationFee(sim, legacy) : null;
+  const failure = sim.failure_reason ? describeSimulationFailure(sim.failure_reason) : null;
+  // 新形式で見積り不能の時は out も同じ理由の文になる。理由は hf-warn の 1 行だけで出す
+  const showOut = out !== null && out !== failure;
+  const minOut =
+    sim.estimate_kind === "quote" && sim.min_out
+      ? `${human(sim.min_out, sim.estimated_out_decimals ?? legacy.decimals)} ${sim.estimated_out_symbol ?? legacy.unitSymbol}`
+      : null;
+  return (
+    <>
+      {showOut && (
+        <li>
+          <span className="small">Estimated out: {out}</span>
+        </li>
+      )}
+      {minOut && (
+        <li>
+          <span className="muted small">Minimum out: {minOut}</span>
+        </li>
+      )}
+      {fee && (
+        <li>
+          <span className="muted small">Estimated fee: {fee}</span>
+        </li>
+      )}
+      {failure && (
+        <li>
+          <span className="small hf-warn">{failure}</span>
+        </li>
+      )}
+      {(sim.warnings ?? []).map((w) => (
+        <li key={w}>
+          <span className="small hf-warn">{describeSimulationWarning(w)}</span>
+        </li>
+      ))}
+    </>
+  );
 }
 
 function OracleSummary({ oracle }: { oracle: NonNullable<AgentPlan["simulation_result"]>["oracle"] }) {
@@ -185,19 +238,10 @@ export function SolanaPlanCard({ plan: p }: { plan: AgentPlan }) {
       {rationale && <p className="small">{rationale}</p>}
       {sim && (
         <ul className="plan-steps plain-list">
-          <li>
-            <span className="small">
-              Estimated out: {human(sim.estimated_out, unit.decimals)} {unit.unitSymbol}
-            </span>
-          </li>
+          <SimulationEstimate sim={sim} legacy={{ decimals: unit.decimals, unitSymbol: unit.unitSymbol }} />
           {sim.oracle && (
             <li>
               <OracleSummary oracle={sim.oracle} />
-            </li>
-          )}
-          {sim.failure_reason && (
-            <li>
-              <span className="small hf-warn">Simulation: {sim.failure_reason}</span>
             </li>
           )}
         </ul>

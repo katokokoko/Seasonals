@@ -27,6 +27,30 @@ approval_token を返し、`execute_approved_action` で unsigned tx を受け�
 plan に `execute_approved_action` を呼ぶと `{status:"awaiting_user_signature"}` が返る
 (**Agent は署名に一切触れない**、§6.5)。
 
+### action_spec の組み方 (2026-10-08)
+
+実行できるのは **deposit と withdraw だけ** (lib の `resolveSolanaRoute`、Seeker / web / execute と同じ 13 route)。
+それ以外の action_type は simulate が `status: "failed"` / `failure_reason: "unsupported_market"` を返し、
+`request_user_approval` は `{status: "simulation_failed"}` になる (BFF の request-approval / approve が 422)。
+
+- **deposit**: `compare_opportunities` の候補 (route の解決する pool だけが出る) の `action_spec_template`
+  (`{action_type, protocol, asset, metadata: {pool_id}}`) に `wallet_id` と `amount` を足して `simulate_action` へ。
+  `amount` は候補の `amount_unit` の smallest unit (`amount_decimals` 桁。1.5 USDC = `"1500000"`)
+- **withdraw**: resource `seasonals://positions/{wallet}` の position から
+  `{action_type: "withdraw", protocol: protocol_id, asset: asset_symbol, amount: shares,
+  metadata: {share_mint, share_decimals, underlying_decimals, underlying_amount}}`
+  (lib `withdrawActionFromPosition` と同じ形)。部分 withdraw は amount を減らす
+- `metadata` は上の 5 キーだけ (zod strict + BFF `validateActionMetadata`。未知キー / base58 でない
+  share_mint / 形式外の pool_id は拒否)。BFF は metadata ごと bundle_hash を取るので、承認後に変えると token は無効
+
+`simulate_action` の出力: `status` (`ok` | `failed`)、`estimate_kind` (`quote` = Jupiter quote /
+`exchange_rate` = kVault・Save の交換レート / `same_as_input` = Kamino reserve / `lp_position` = Meteora・Orca /
+`pt_redeem` = Exponent / `none`)、`estimated_out` + `estimated_out_symbol` / `_decimals` / `_mint` (**受け取る token
+の単位**。jlUSDC、"Steakhouse USDC shares" 等)、`min_out` (quote のみ)、`slippage_bps`、`warnings`
+(`fair_value_deviation` / `fair_value_unavailable` / `deposit_unavailable`)、`oracle_warnings`、`failure_reason`
+(`unsupported_market` / `asset_mismatch` / `amount_required` / `quote_unavailable` / `rate_unavailable`)、
+`bundle_hash`。fee は出さない (署名前に正直な値が無い)。
+
 **Resources**: `seasonals://protocols` / `seasonals://positions/{wallet}` /
 `seasonals://events/{wallet}` (agentReadable のみ) / `seasonals://policy/default`
 

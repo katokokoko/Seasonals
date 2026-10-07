@@ -6,7 +6,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { AgentPlanStatus, ActionType, Objective, type AgentPlan } from "@workspace/lib/types";
-import { depositAction } from "@workspace/lib/derive/solana-action";
+import { depositAction, UNSUPPORTED_MARKET_MESSAGE } from "@workspace/lib/derive/solana-action";
 import { useSession } from "../state/session";
 import { _resetSolanaWalletsForTest, connectSolanaWallet } from "../services/solanaWallet";
 import { fakeSolanaWallet, signedMarker, SOL_OTHER, SOL_OWNER, type FakeWalletOptions } from "../testing/fakeSolanaWallet";
@@ -129,10 +129,72 @@ test("shows the plan: amount in human units, estimated out, oracle summary, bund
   expect(tags()).toEqual(["Needs your approval"]);
   const text = document.body.textContent!;
   expect(text).toContain("Estimated out: 1.48 USDC");
+  // 旧形式の fee (mock の lamports を入力 asset 建てと取り違えた値) は出さない
+  expect(text).not.toContain("Estimated fee");
   expect(text).toContain("Price at simulation: redstone, 12s old · using secondary source · sources differ by 3.2%");
   expect(text).toContain("Pyth is returning a stale price: Pyth is stale · using the secondary source");
   expect(text).toContain(`${HASH.slice(0, 14)}…`);
   expect(text).toContain("expires");
+});
+
+/** 新形式の simulate 結果 (estimate_kind あり、fee 無し、oracle 無し) の plan */
+function newFormatPlan(sim: Partial<NonNullable<AgentPlan["simulation_result"]>>): AgentPlan {
+  return plan({ simulation_result: { simulation_id: "sim_2", bundle_hash: HASH, ...sim } });
+}
+
+const count = (text: string, needle: string) => text.split(needle).length - 1;
+
+test("quote: estimated and minimum out in the received token's units, no fee line", async () => {
+  await connect();
+  installFakeBff(
+    agentBff([
+      newFormatPlan({ estimate_kind: "quote", estimated_out: "940000", estimated_out_symbol: "jlUSDC", estimated_out_decimals: 6, min_out: "935300" }),
+    ])
+  );
+  renderInbox();
+  await screen.findByRole("heading", { level: 3 });
+  const text = document.body.textContent!;
+  expect(text).toContain("Estimated out: ≈ 0.94 jlUSDC");
+  expect(text).toContain("Minimum out: 0.9353 jlUSDC");
+  expect(text).not.toContain("Estimated fee");
+});
+
+test("no estimate: the failure reason is shown once, in the warning style", async () => {
+  await connect();
+  installFakeBff(agentBff([newFormatPlan({ estimate_kind: "none", failure_reason: "unsupported_market" })]));
+  renderInbox();
+  await screen.findByRole("heading", { level: 3 });
+  const text = document.body.textContent!;
+  expect(count(text, UNSUPPORTED_MARKET_MESSAGE)).toBe(1);
+  expect(screen.getByText(UNSUPPORTED_MARKET_MESSAGE).className).toContain("hf-warn");
+  expect(text).not.toContain("Estimated out");
+  expect(text).not.toContain("Simulation: unsupported_market");
+});
+
+test("non-oracle warnings are shown as sentences", async () => {
+  await connect();
+  installFakeBff(
+    agentBff([
+      newFormatPlan({
+        estimate_kind: "exchange_rate",
+        estimated_out: "95000000",
+        estimated_out_symbol: "cSOL",
+        estimated_out_decimals: 9,
+        warnings: ["fair_value_unavailable"],
+      }),
+    ])
+  );
+  renderInbox();
+  expect(await screen.findByText("Couldn't verify the redemption value")).toBeTruthy();
+  expect(document.body.textContent).toContain("Estimated out: ≈ 0.095 cSOL");
+});
+
+test("lp_position: no single output amount", async () => {
+  await connect();
+  installFakeBff(agentBff([newFormatPlan({ estimate_kind: "lp_position" })]));
+  renderInbox();
+  await screen.findByRole("heading", { level: 3 });
+  expect(document.body.textContent).toContain("Estimated out: LP position (no single output)");
 });
 
 test("Approve & sign: approve → execute (token, via web) → one wallet prompt → /tx/submit in index order → /signatures", async () => {

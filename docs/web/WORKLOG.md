@@ -427,6 +427,24 @@ Web 側 (`artifacts/seasonals-web`) は `BFF_URL` (Vite dev proxy 先、node 側
 - 未検証: 実 wallet で web から署名して送る (mainnet 少額、ユーザー)、Seeker 実機で承認画面が token 無しで開くこと
 - 範囲外: Seeker 上での agent plan 署名、`/agent-plans` の認証 (従来どおり無し)
 
+### 実機確認の 4 点: 承認画面の期限と状態 / 戻れない / EST. OUT の実値化 + MCP の経路 / EGL ログ (2026-10-08、未 commit、Opus 5.5 subagent 3 本で実装)
+- 背景 (2026-10-08 の Seeker 実機確認): (1) 承認画面の「Expires in 4:57」は 5 分の approval token の残りで、web が token を再発行する新契約では意味が無い。card は `plan.status` も読まず、web で却下されても Approved のまま。(2) 承認画面から戻れない。原因は `MenuDrawer` の BackHandler が `visible` の間ずっと有効で、下に開いたままの Menu 詳細が戻る操作を飲み込んでいた。(3) agent plan の EST. OUT が 0。simulate は mock registry (kamino の 30 日 APY 見込み、他は全部 "0") で、単位も入力 asset 表示。MCP `simulate_action` は metadata を運べず、Agent の plan では kVault / Meteora / Orca の deposit と全 withdraw が `/execute` で 422。simulate の oracle gate は `jupiter` を正規化せず素通り。(4) logcat の `EGLConsumer is not attached`
+- 判断 (ユーザー決定): 期限は plan の `expires_at` を出し状態も反映 / EST. OUT は既存の見積り元で実値化 / MCP の metadata 経路も今回直す
+- 契約 (lib): `SimulationResult` に `estimate_kind` (quote / exchange_rate / same_as_input / lp_position / pt_redeem / none)、受け取り単位 (`estimated_out_mint` / `_symbol` / `_decimals`)、`min_out`、`warnings` (fair value / 預入停止)、型付きの `failure_reason`。`estimated_out` / `estimated_fee` は optional (fee は署名なしで正直な値が無いので出さない)。表示文言は `lib/derive/simulation-display.ts` で web と Seeker が共有。`estimate_kind` の無い旧結果は従来どおり入力 asset の単位
+- BFF / MCP:
+  - simulate は `resolveSolanaRoute` の route ごとに見積る (`agent-plan-estimate.ts`): swap-earn = Jupiter quote (+ fair value は warning、拒否は従来どおり execute の builder)、Kamino reserve = 入力量そのまま、kVault / Save = 交換レート (`exchange-rate-math.ts` に bigint で切り出し、Menu の position 換算も同じ関数に)、Meteora / Orca / Exponent = 数値なし。route が無ければ 0 ではなく `unsupported_market`
+  - oracle は `resolveOracleMint` で全 route に掛ける (`jupiter` の素通りを修正)。metadata は strict に検証 (400 `invalid_action_metadata`)、小数 amount は 400。deposit で pool と asset が合わなければ `asset_mismatch` (pool_id を Agent が送れるようになったので、SOL pool に USDC 建て amount = 1000 倍の取り違えを防ぐ)。request-approval と approve は `unsupported_market` / `asset_mismatch` の plan を 422 で止める
+  - MCP: `compare_opportunities` の候補に `action_spec_template` / `route_kind` / `amount_decimals` / `amount_unit` (route の無い pool は外す)。`simulate_action` は `metadata` を受け、出力に `status: ok|failed` と見積り項目。withdraw は `seasonals://positions/{wallet}` の値を metadata で渡す
+  - autonomous (devnet の lamport 送金) は見積りに通さず `metadata.source = "autonomous_devnet_transfer"` だけ (USD を token 欄に入れていた偽値を削除)
+- Seeker: 承認画面に ✕ (`canGoBack` なら back、無ければ Home)、Menu の BackHandler は Home が focus の時だけ、cold start の push は処理後に消して同じ plan を 5 秒以内に二重で開かない。card は「Valid until」(plan の 24h 期限、過ぎたら fail-closed で Approve を出さない) と status ごとの 1 行 (Approved / Being signed / Sent + Solscan / Failed / Rejected / Expired)、Approve・Reject は simulated | pending_user の時だけ、画面表示中は live な status なら 5 秒で取り直す。水面の frame callback は Home が focus かつ foreground の時だけ回す
+- web: inbox の Estimated out / Minimum out / 理由 / 注意を共有 helper に。旧結果の fee (mock の lamports を入力 asset 建てと取り違えた値) は従来どおり出さない
+- 検証: lib 308 / BFF 668 / mobile 495 / MCP 29 / web 162 tests green、`pnpm -r typecheck` green、`verify:tx` 23 経路 要調査 0。MCP e2e (新 MCP server を stdio で spawn、dev BFF、署名なし) 15/15: jupiter USDC 1.0 → 「≈ 0.940502 jlUSDC」+ min_out、kVault deposit と実 position (jlUSDC) からの 0.1 withdraw が unsigned tx まで組める (以前は Agent 経由で 422)、未知 metadata key / 壊れた mint / 小数 amount の拒否、rotate → unsupported_market + request-approval 422
+- Seeker 実機: Menu の Perena 詳細を開いたまま承認画面を重ね、戻る操作と ✕ のどちらでも詳細に戻れる。「≈ 0.940502 jlUSDC」/ fee「—」/「Valid until 2026/10/09 03:21」。BFF 側で reject すると 4 秒で Rejected 表示になり Approve・Reject が消える。wallet 選択の取り消しは従来どおり
+- 実機で分かったこと:
+  - Metro (watchman の root が `~/Documents` 全体) が起動後に作られた lib の新 file を拾わず、bundle の build に失敗して端末は古い bundle のまま動いていた。古い card は fee の無い新形式 plan で Render Error。Metro の再起動で解消 (ユーザー)。lib に新 file を足した時は Metro の再起動が要る
+  - EGL ログは水面の描画中ずっと出る定常的なもの (再読込直後の素の Home でも 30 秒で 10 行前後)。今回の修正でアプリが裏にある間は 0 行・描画停止。前面での発生は Skia の TextureView の挙動 (Skia 自身が「無視してよい」と出す) なので範囲外
+- 範囲外 / 既知: Exponent PT の換算値 (JS Number の rate、式未検証)、fee の見積り、Save の交換レートが上流から取れない時に client が「1」で代用する既存の問題 (cToken 見積りが過大になり得る)、mainnet での署名・送金 (ユーザー)
+
 ## 最終状態 (2026-09-26 05:30 JST 時点)
 
 | 領域 | 状態 | 実際に確認したこと |
