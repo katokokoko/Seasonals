@@ -170,13 +170,13 @@ MUSTテストは次の10件にまとめる。入力パターンは同じfixture�
 
 共有型変更時は`pnpm -r test`と`pnpm -r typecheck`、Seeker実機確認を行う。既存失敗と新規失敗を分けて記録する。R1基盤やOracle、RFCの未完了をR0の不合格理由にしない。
 
-## 7. 実装状況と結果 (2026-10-05)
+## 7. 実装状況と結果 (2026-10-05、実機確認 2026-10-08)
 
 branch `worktree-skr-r0` (base: main `9a964eb`)。起動と実機確認の手順は [demo runbook](skr-r0-demo-runbook.md)。
 
 ### 完了ゲート
 
-`pnpm -r test` と `pnpm -r typecheck` が全 workspace で green。baseline (main) の既存失敗は 0 件。
+`pnpm -r test` と `pnpm -r typecheck` が全 workspace で green。baseline (main) の既存失敗は 0 件。2026-10-08 (`dc7b23d`、実機確認後) の再実行も同数で green。
 
 | workspace | baseline | 実装後 |
 |---|---|---|
@@ -199,11 +199,38 @@ branch `worktree-skr-r0` (base: main `9a964eb`)。起動と実機確認の手順
 | R0-07 | pass | `artifacts/seasonals-mcp-server/src/skr-events.test.ts` |
 | R0-08 | pass | `artifacts/seasonals/services/{cooldown-reminder,useCooldownReminderSync}.test.*` |
 | R0-09 | pass | `artifacts/seasonals/services/cooldown-boundary-retry.test.ts` |
-| R0-10 | not_run | Seeker 実機確認は未実施 (runbook §3) |
+| R0-10 | pass | 2026-10-08 に Seeker 実機で demo を無人実行 (下記「R0-10 実機確認」)。項目 2 は Calendar の day modal が開かない既存不具合 (gorhom v5 更新由来、SKR 起因でない) を PR #36 の fix を当てて確認し pass |
 | LIVE-01 | not_run | 利用者の pending 未確保。共通 account (config / pool / vault / mint / Clock) は 2026-10-05 mainnet slot 453616074 で live read の検証を通過 (手動 curl) |
 | LIVE-02 | not_run | 実機未実施 |
 
-判定: R0-DEMO は R0-10 の実機確認待ち。R0-LIVE は LIVE-01 / 02 待ち。
+判定: **R0-DEMO 合格** (MUST 10 件 pass。fixture には Demo pill を表示し、live 対応完成とは説明しない)。R0-LIVE は LIVE-01 / 02 待ち (利用者の手動 unstake → pending の raw batch fixture → Seeker live 表示と BFF の照合)。
+
+### R0-10 実機確認 (2026-10-08)
+
+Seeker (Android 16、build `BP2A.260812.100.A3`)、APK `app.seasonals.onchain` 0.0.1 (2026-08-05 build、SDK 57)、worktree HEAD `dc7b23d`。demo source (BFF `SKR_DEMO_FIXTURE=true` を :3031、Metro `SKR_SOURCE=demo BFF_BASE_URL=http://localhost:3031` を :8082 で、main 側の :3030 / :8081 と並走。runbook §2.1)。adb + uiautomator だけの無人実行 (runbook §3.1)。証拠は `~/Documents/Seasonals/evidence/skr-r0-2026-10-08/` (local-only。`REPORT.md` が一覧と観測値)。
+
+| runbook §3 | 結果 | 観測 | 証拠 |
+|---|---|---|---|
+| 1 droplet | pass | 終了予定日の cell に `Lockup end` の droplet (`droplet-lockup_end:mainnet-beta:skr_staking:…`) | 01-home-calendar.png / .xml |
+| 2 詳細 | pass (修正後) | 修正前は日付 tap で選択ハイライトは付くが day modal (BottomSheetModal) が開かなかった (main 側の bundle でも同じ。原因は下記)。`EventDayModal` の fix (PR #36) 適用後: `-cooldown` あり、`-demo` "Demo"、`-status` "Cooling down · ends …"、`-amounts` "Unstaking 250 SKR · Staked (est.) 1,141,844.79 SKR"、`-refresh` / `-portal` あり、ActionModal 系 testID 無し。Refresh tap で BFF に 1 request。✕ / backdrop / pan-down で閉じて再度開ける。Refresh 経由の stale ("(last seen)" + "awaiting update") と復帰も確認 | 02-day-detail.png (修正前), 02x-main-8081-day-tap-no-modal.png, 11-* (修正後), DAYMODAL-DIAGNOSIS.md |
+| 3 Staking row | pass | `Demo` / `Not in totals` / Staked (est.) / `Unstaking 250 SKR` / `Cooling down · ends …` / Observed / portal link。portfolio 合計は SKR あり・`absent` とも同じ (100.49 USDC) | 03-staking-row.png, 03b-absent-total.png, 03c-absent-sheet.png |
+| 4 stale | pass | BFF への転送を切って復帰 → `… (last seen)` + `Observed … · awaiting update`、Withdrawable は出ない。転送を戻すと fresh。1 回目は Staking row と復帰時の再取得で、day modal 修正後は詳細の Refresh でも確認 | 04a-stale-staking-row.png, 04b-fresh-again.png, 11-* |
+| 5 通知 | pass | 同じ event id のまま予定が置換され、alarm は 1 件のまま入れ替わる。配送は予定 +87.5 秒、shade から tap して 3.3 秒後に BFF を再取得 (1200 秒版は +385 秒配送、tap +3.0 秒) | 05-bff-state-120*.json, 05d / 05e (alarm), 05f / 05g (通知), 05h |
+| 6 permission 拒否 | pass | 拒否 (`USER_FIXED` まで) でも droplet は表示、alarm 0 件。`pm grant` 後の復帰で alarm 1 件 | 06a–06f |
+| 7 cold start | pass (注記) | HOME → `am kill` → 配送 (予定 +74.4 秒) → tap で launcher を経由せず起動、12.6 秒後に再取得。`am force-stop` は alarm ごと消すので再現に使えない | 07a–07f |
+| 8 MCP | pass (注記) | `seasonals://events/<wallet>` の SKR event は id / triggerAt が BFF と一致、`actions=[]`、`positionRef=null`。SKR 口だけ失敗 → 0 件 + contents[1] `#skr_staking` 補足。BFF 全体停止 → base の `/time-events` が先に失敗し resource read が error (従来どおり) | 08-mcp-events*.json |
+| 9 logcat | pass | FATAL / AndroidRuntime / ReactNativeJS error 0 件、SKR / cooldown / expo-notifications の E/W 0 件。既存の `EGLConsumer` (水面背景) のみ。main buffer は 256 KiB で後半しか残らない | 09-logcat.txt, 09-logcat-crash.txt |
+| 任意 ready | pass | 境界で demo が ready に遷移し `Withdrawable on the official portal`。urgency は critical → watch で、Critical (期限切れ) 扱いにならない | 10-bff-state-ready.json, 10a / 10b |
+
+観測値: event id は全版で同一 (`lockup_end:mainnet-beta:skr_staking:<wallet>:<position_account>`)、`schedule_revision` は `v1:<unstake_timestamp>:172800` で BFF 再起動 (= 本人の解除時刻の変化) ごとに変わる。境界の再取得は +0.57 秒で 1 回 (demo は境界で即 ready を返すので 15/30/60… 秒の追加 retry は観測対象にならない)。Seed Vault の操作は発生しなかった (read-only)。
+
+実機で分かったこと (runbook / roadmap に反映済み):
+
+- **day modal が開かない (既存不具合、PR #36 で修正)**: `EventDayModal` は親の `visible` を `useEffect` で `present()` / `dismiss()` に橋渡ししており、mount 時 (visible=false) に `dismiss()` を呼んでいた。`@gorhom/bottom-sheet` v5.2.14 では未 present の sheet に `dismiss()` すると内部 status が `DISMISSING` に固まり、以後の `present()` が portal の render を skip する (v4 では no-op。SDK 57 更新 `ca4ab12`、2026-08-05 から)。pan-down / backdrop で閉じた後も同じ罠に落ちる。`presentedRef` で present 済みの時だけ `dismiss()` する修正と回帰 test (`EventDayModal.test.tsx`、present / dismiss の呼び出し回数を検証) は SKR と独立なので **PR #36** に分けた (merge 順は #36 → 本 PR)。これまで `EventDayModal` には test が無く、実機で day modal を開く確認も SDK 57 更新後に無かったので見逃された。Fast Refresh では固まった status が残るため、確認は Metro 再起動 + cold start で行った。記録は evidence の `DAYMODAL-DIAGNOSIS.md`
+- **通知の遅延**: DATE trigger は inexact alarm で登録され、配送は毎回 window の末尾 (予定までの約 75% 遅れ)。48 時間 cooldown では数十時間遅れ得る → R1 で exact alarm か予定間際の再予約を決める (roadmap §2)
+- **MCP**: 「BFF を止めると SKR 0 件 + 補足」は SKR 口だけ失敗した時の挙動。BFF 全体停止は resource error (runbook §3-8 を修正)
+- **adb での再現**: `adb reverse --remove` 後は keep-alive が切れるまで約 72 秒待つ。cold start は `am kill` (force-stop は alarm を消す)
+- **urgency**: cooling_down は残り 24 時間以内で critical (droplet 赤)。既存 lockup_end と同じ規則で、ready は watch。意図どおりだが「赤 = 期限切れ」と読まれないかは試用で観察する
 
 ### 実装で確定した解釈
 

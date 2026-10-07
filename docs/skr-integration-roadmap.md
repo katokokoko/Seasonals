@@ -30,6 +30,8 @@ pendingはaccount購読+15分repair、activeのみは30分。unlock前後だけ�
 
 R0で省略したretry予算の永続化、時計変更への追加耐性、通知response二重処理抑止、batch中変更の競合再現試験はここで必要性を再評価する。
 
+**2026-10-08 追記 (R0 実機で判明)**: Android では expo-notifications の DATE trigger が inexact alarm で登録され、配送は予約から予定までの時間の約 75% 遅れる (Seeker Android 16 で 3 回とも window 末尾に配送)。48 時間 cooldown を unstake 直後に予約すると数十時間遅れ得るので、R1 では (a) exact alarm (`SCHEDULE_EXACT_ALARM` / `USE_EXACT_ALARM` の permission と Play policy の確認) か、(b) 予定間際で再予約する (foreground poll / R1 の server push で window を短くする) かを決める。R0 の runbook §5 に実測を記録。
+
 受け入れは他userへの送信0件、再起動後の予定復旧、取消/延期後の旧job配送0件、未観測系譜のbackfill呼出し0件。端末の受信履歴は重複を抑えるが、OS通知欄の完全な重複排除は約束しない。
 
 ## 3. R2の操作と検証

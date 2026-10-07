@@ -2,6 +2,13 @@
 
 履歴資料。実装規範は [R0指示書](skr-r0-implementation.md)、後続判断は [ロードマップ](skr-integration-roadmap.md)。
 
+## 0.4.2 — 2026-10-08 (実機確認)
+
+- R0-10 を Seeker 実機 (Android 16) で demo source を使い無人実行し、全 9 項目 + ready 遷移が pass → **R0-DEMO 合格**。結果と観測値は [R0指示書 §7](skr-r0-implementation.md)。LIVE-01/02 は未実施 (手動 unstake 待ち)
+- Calendar の day modal (`EventDayModal`) が実機で開かない既存不具合を発見 (gorhom v5 で未 present の sheet に `dismiss()` を呼ぶと `DISMISSING` に固まる。SDK 57 更新由来、SKR 起因でない)。fix + 回帰 test は別 PR #36
+- dev の BFF URL を env `BFF_BASE_URL` で差し替え可能に (別ポート並走、runbook §2.1)。無人確認の手順を runbook §3.1 に追加
+- 実機で分かった制約を runbook §3 / §5 と roadmap §2 に反映: inexact alarm による配送遅延 (予定までの約 75%)、MCP は BFF 全体停止で resource error、adb の cold start 再現は `am kill`
+
 ## 0.4.1 — 2026-10-05 (実装)
 
 - R0 を実装 (lib 共有型 / BFF read 口 / MCP 投影 / mobile row・Calendar 詳細・確認通知・境界 retry)。結果表は [R0指示書 §7](skr-r0-implementation.md)

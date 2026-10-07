@@ -67,11 +67,13 @@ MCP (Agent 側) で同じ event を読む: repo root の `.mcp.json` の env に
 2. その日を tap → 詳細に「SKR staking cooldown」、状態、Unstaking 量、Refresh、公式ポータル link。ActionModal は開かない
 3. 下部シートを上げる → 「Staking」section に SKR staking row、Demo pill (demo 時)、Not in totals。portfolio 合計は変わらない
 4. 機内モードで Refresh → 観測時刻と awaiting update (stale)。引き出し可能とは言わない
+   - adb で代替するなら `adb reverse --remove tcp:<BFF port>`。既存の keep-alive 接続は Fastify の keepAliveTimeout (約 72 秒) まで生きるので、**70 秒以上待ってから** Refresh する
 5. 通知: 終了予定に「SKRの引き出し状況を確認してください」が届く。tap で app が開き BFF を再取得する
    - 短く確認するなら `SKR_DEMO_UNLOCK_IN_SECONDS=120` で BFF を再起動する (同じ event id のまま予定が動き、旧予約は置換される)
 6. 通知 permission を拒否しても Calendar は表示される
 7. app を終了した状態で通知を tap (cold start) → 起動後に再取得する
-8. MCP の `seasonals://events/<wallet>` に同じ id / triggerAt の event がある。BFF を止めると SKR event は 0 件になり、補足文が付く
+   - adb で再現する時は `am force-stop` を使わない (Android は force-stop で app の alarm ごと取り消すので通知が来ない)。HOME → `adb shell am kill app.seasonals.onchain` か、最近のアプリから swipe で終了する
+8. MCP の `seasonals://events/<wallet>` に同じ id / triggerAt の event がある。SKR の read 口だけが失敗した時 (unavailable / unsupported / `demo_source_disabled` 等) は SKR event 0 件 + contents[1] に `#skr_staking` の補足文。BFF 全体が止まると base の `/time-events/wallet` が先に失敗するので、resource read 自体が error になる (従来どおり)
 9. logcat にエラーが無い
 
 ### 3.1 無人 (adb だけ) で確認する時のメモ
@@ -79,8 +81,9 @@ MCP (Agent 側) で同じ event を読む: repo root の `.mcp.json` の env に
 - RN の `testID` は `adb exec-out uiautomator dump /dev/tty` に `resource-id` として出る (例 `home-calendar-grid-day-2026-10-08`、`home-portfolio-staking-skr-status`)。`bounds` の中心を `adb shell input tap X Y` する。アニメ中は dump が失敗するので 1–2 秒待って再試行
 - 通知 permission は `adb shell pm grant app.seasonals.onchain android.permission.POST_NOTIFICATIONS` (拒否側は `pm revoke`)。予約は `adb shell dumpsys alarm | grep -A8 app.seasonals.onchain`、配送済みは `adb shell dumpsys notification --noredact | grep -A14 app.seasonals.onchain`
 - 通知 shade は `adb shell cmd statusbar expand-notifications` / `collapse`。tap は shade の uiautomator dump から "SKR staking" の bounds を取る
-- 機内モードの代わりに `adb reverse --remove tcp:<BFF port>` で BFF だけを切ると stale を再現できる (Metro は生きたまま)。戻すのは `adb reverse tcp:<port> tcp:<port>`
-- cold start は `adb shell am force-stop app.seasonals.onchain` → 通知 tap。dev-client は launcher 画面で止まることがあるので、その場合は "Recently opened" の Metro URL を tap して bundle を載せる
+- 機内モードの代わりに `adb reverse --remove tcp:<BFF port>` で BFF だけを切ると stale を再現できる (Metro は生きたまま)。keep-alive 接続が切れるまで約 72 秒かかるので 70 秒以上待つ。戻すのは `adb reverse tcp:<port> tcp:<port>`
+- day modal が開かない時は gorhom の status が `DISMISSING` に固まっている可能性 (PR #36 で `EventDayModal` を修正)。固まった status は Fast Refresh では直らないので、Metro 再起動 + cold start で確認する
+- cold start は HOME → `adb shell am kill app.seasonals.onchain` → 通知 tap (`am force-stop` は alarm ごと消すので使わない)。実測では dev-client は launcher を経由せず最後の bundle を直接読んだ。launcher 画面で止まった場合は "Recently opened" の Metro URL を tap して bundle を載せる
 
 ## 4. 追加解除の録画 (live、P0)
 
@@ -93,6 +96,6 @@ MCP (Agent 側) で同じ event を読む: repo root の `.mcp.json` の env に
 
 ## 5. 既知の制約
 
-- OS 通知の配送時刻は保証しない (Android の exact alarm 制限)。実機での遅延は結果表に記録する
+- OS 通知の配送時刻は保証しない (Android の exact alarm 制限)。**実測 (2026-10-08、Seeker Android 16)**: expo-notifications の DATE trigger は inexact alarm (`window=+…`) で登録され、3 回とも window の末尾で配送された (予定 +385 / +87.5 / +74.4 秒)。window は「予約から予定までの時間 × 約 0.75」なので、48 時間 cooldown を unstake 直後に予約すると数十時間遅れ得る (上限は OS 依存で未確認)。exact alarm 化か予定間際の再予約は R1 で検討 (roadmap §2)
 - app 停止中の外部変更は追跡しない。古い確認通知が届き得るが、tap で最新 read に解決する
 - 任意の wallet を読める read 口は本人認証ではない (R0 は既存のデモ / 開発環境で使う)
