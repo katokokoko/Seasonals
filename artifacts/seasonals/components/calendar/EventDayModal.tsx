@@ -128,16 +128,30 @@ export function EventDayModal({
   const ref = useRef<BottomSheetModal>(null);
   const snapPoints = useMemo(() => ["55%", "90%"], []);
 
+  // sheet が present 済み (まだ閉じていない) か。dismiss() は present 済みの時だけ呼ぶ
+  const presentedRef = useRef(false);
+
   // visible boolean を imperative present/dismiss にブリッジ
+  // v5 の dismiss() は未 present (status INITIAL) で呼ぶと status が DISMISSING の
+  // まま残り、次の present() で portal の render が握りつぶされて sheet が出ない
+  // (mount 時の visible=false と、pan-down で閉じた後の visible=false の両方が該当)
   useEffect(() => {
-    if (visible) ref.current?.present();
-    else ref.current?.dismiss();
+    if (visible) {
+      presentedRef.current = true;
+      ref.current?.present();
+    } else if (presentedRef.current) {
+      presentedRef.current = false;
+      ref.current?.dismiss();
+    }
   }, [visible]);
 
   const handleChange = useCallback(
     (index: number) => {
       // dismiss (index=-1) 時に親の visible を false にする
-      if (index === -1) onClose();
+      if (index === -1) {
+        presentedRef.current = false;
+        onClose();
+      }
     },
     [onClose]
   );
