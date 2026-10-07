@@ -11,12 +11,22 @@
 import React, { type ReactNode } from "react";
 import { QueryClientProvider, type QueryClient } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react-native";
-import { Linking } from "react-native";
+import { BackHandler, Linking } from "react-native";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { fixtureMenuListings } from "@workspace/lib/__fixtures__";
 
 import { MenuDrawer } from "./MenuDrawer";
 import { createQueryClient } from "../../services/queryClient";
+
+// 2026-10-08: BackHandler は Home が focus の間だけ登録する (useFocusEffect)。
+// navigation context が無いので、focus の有無をテストごとに切り替える mock にする
+let mockFocused = true;
+jest.mock("expo-router", () => ({
+  useFocusEffect: (cb: () => void | (() => void)) => {
+    const React = require("react");
+    React.useEffect(() => (mockFocused ? cb() : undefined), [cb]);
+  },
+}));
 
 function freshClient(): QueryClient {
   return createQueryClient({
@@ -118,5 +128,38 @@ describe("MenuDrawer drill-down (8.54 カード行)", () => {
     fireEvent.press(link);
     expect(openURL).toHaveBeenCalledWith(pool.external_url);
     openURL.mockRestore();
+  });
+});
+
+describe("MenuDrawer — Android back (2026-10-08)", () => {
+  afterEach(() => {
+    mockFocused = true;
+    jest.restoreAllMocks();
+  });
+
+  function backRegistrations(spy: jest.SpyInstance) {
+    return spy.mock.calls.filter(([event]) => event === "hardwareBackPress");
+  }
+
+  it("Home が focus なら back を処理する (詳細 → 一覧で true を返す)", async () => {
+    const spy = jest.spyOn(BackHandler, "addEventListener");
+    await openProtocol("kamino");
+    await waitFor(() =>
+      expect(screen.getByTestId("menu-detail-pool-kamino_usdc_main")).toBeTruthy()
+    );
+    const regs = backRegistrations(spy);
+    expect(regs.length).toBeGreaterThan(0);
+    const handler = regs[regs.length - 1]![1] as () => boolean;
+    expect(handler()).toBe(true);
+  });
+
+  it("Home が focus 外 (承認画面が上に積まれている) なら back を登録しない = 上の画面に届く", async () => {
+    mockFocused = false;
+    const spy = jest.spyOn(BackHandler, "addEventListener");
+    await openProtocol("kamino");
+    await waitFor(() =>
+      expect(screen.getByTestId("menu-detail-pool-kamino_usdc_main")).toBeTruthy()
+    );
+    expect(backRegistrations(spy)).toHaveLength(0);
   });
 });

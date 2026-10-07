@@ -74,18 +74,65 @@ export interface ActionSpec {
 }
 
 /**
+ * 見積りの出所 (2026-10-08、simulate の実値化)。
+ * - quote: Jupiter の swap quote (swap-earn の share / underlying)
+ * - exchange_rate: 交換レートで換算 (Kamino kVault shares / Save cToken / その逆)
+ * - same_as_input: 受け取り量 = 入力量 (Kamino reserve。担保は underlying 建てで管理される)
+ * - lp_position: 単一の受け取り量が無い (Meteora / Orca の LP position)
+ * - pt_redeem: Exponent PT の償還 (換算値は出さない)
+ * - none: 見積り不能。failure_reason が必ず付く
+ */
+export type SimulationEstimateKind =
+  | "quote"
+  | "exchange_rate"
+  | "same_as_input"
+  | "lp_position"
+  | "pt_redeem"
+  | "none";
+
+/** simulate が見積りを出せなかった理由 */
+export type SimulationFailureReason =
+  | "unsupported_market"
+  | "asset_mismatch"
+  | "amount_required"
+  | "quote_unavailable"
+  | "rate_unavailable";
+
+/**
+ * oracle 以外の注意 (oracle の warning は `oracle.warnings`)。
+ * simulate は情報提供なので止めない。実際の拒否は execute の tx builder が行う (§4.6)
+ */
+export type SimulationWarning =
+  | "fair_value_deviation"
+  | "fair_value_unavailable"
+  | "deposit_unavailable";
+
+/**
  * simulate_action の結果 (§24.9 outputSchema)
  *
  * 数値表現規約 (§4.5):
- * - estimated_out / fee は smallest unit string または USD 8 decimals string
+ * - estimated_out / min_out / estimated_fee は smallest unit string
+ *
+ * `estimate_kind` が無い結果は旧形式 (2026-10-08 より前の永続 plan と fixture)。
+ * 旧形式の estimated_out / estimated_fee は入力 asset の単位で解釈する。
  */
 export interface SimulationResult {
   /** simulation の一意 ID。simulate を再実行するごとに新規発行 */
   simulation_id: string;
-  /** 推定 output amount (string) */
-  estimated_out: string;
-  /** 推定手数料 (string) */
-  estimated_fee: string;
+  /** 見積りの出所。無ければ旧形式 */
+  estimate_kind?: SimulationEstimateKind;
+  /** 推定受け取り量 (smallest unit)。quote / exchange_rate / same_as_input の時だけ */
+  estimated_out?: string;
+  /** 受け取る token の mint (kVault shares のように SPL mint を持たない時は無い) */
+  estimated_out_mint?: string;
+  /** 受け取る token の表示名 (例: "jlUSDC", "Steakhouse USDC shares") */
+  estimated_out_symbol?: string;
+  /** estimated_out / min_out の decimals */
+  estimated_out_decimals?: number;
+  /** quote の最低受け取り量 (= Jupiter otherAmountThreshold)。quote の時だけ */
+  min_out?: string;
+  /** 推定手数料 (SOL lamports)。署名なしで正直な値が出せないため新形式の BFF は出さない */
+  estimated_fee?: string;
   /** スリッページ (bps) */
   slippage_bps?: number;
   /** transaction bundle の hash (改ざん検出に使用、approval_token と紐付く) */
@@ -97,8 +144,10 @@ export interface SimulationResult {
     divergence_pct?: number;
     warnings: string[]; // oracle_divergence_warning 等
   };
-  /** simulation 失敗時の理由 */
-  failure_reason?: string;
+  /** oracle 以外の注意 (fair value の確認結果、預入停止中など) */
+  warnings?: SimulationWarning[];
+  /** 見積りを出せなかった理由 (estimate_kind "none" の時は必須) */
+  failure_reason?: SimulationFailureReason;
   /** simulation の追加メタ */
   metadata?: Record<string, unknown>;
 }

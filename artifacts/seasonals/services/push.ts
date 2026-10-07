@@ -179,6 +179,52 @@ export async function getInitialApprovalResponse(): Promise<
 }
 
 /**
+ * 2026-10-08: cold start の通知 response を処理済みにする。消さないと、root layout が
+ * mount し直す度 (dev の JS reload 等) に getLastNotificationResponseAsync が同じ
+ * response を返し、承認画面を再び push してしまう。
+ * expo-notifications 57 は `clearLastNotificationResponse` (sync、Async 版は deprecated)。
+ * native module が無い環境では UnavailabilityError を投げるので握りつぶす
+ * (重複は claimApprovalRoute の plan_id guard でも防ぐ)。
+ */
+export function clearInitialApprovalResponse(): void {
+  try {
+    Notifications.clearLastNotificationResponse();
+  } catch {
+    // unavailable — guard 側で重複を防ぐ
+  }
+}
+
+/**
+ * 同じ plan への遷移を連続で行わないための guard (module-level)。
+ * cold start の response と warm listener が同じ tap を両方届ける場合や、同じ通知の
+ * response が短時間に重なった場合に、承認画面を 2 枚積まない。
+ * 時間窓を過ぎた同じ plan (ユーザーが閉じて再度 tap) は通す。
+ */
+const APPROVAL_ROUTE_DEDUPE_MS = 5_000;
+let lastApprovalRoute: { planId: string; atMs: number } | null = null;
+
+/** この plan へ遷移してよければ true を返し、遷移したことを記録する */
+export function claimApprovalRoute(
+  planId: string,
+  nowMs: number = Date.now()
+): boolean {
+  if (
+    lastApprovalRoute !== null &&
+    lastApprovalRoute.planId === planId &&
+    nowMs - lastApprovalRoute.atMs < APPROVAL_ROUTE_DEDUPE_MS
+  ) {
+    return false;
+  }
+  lastApprovalRoute = { planId, atMs: nowMs };
+  return true;
+}
+
+/** test 用: guard を初期化 */
+export function __resetApprovalRouteGuard(): void {
+  lastApprovalRoute = null;
+}
+
+/**
  * Phase 8.29: 自律実行の「資金が動いた」通知 tap を受ける (v1 は log のみ、
  * 専用画面は後続)。ExecutionPushPayload を受け取る generic listener。
  */

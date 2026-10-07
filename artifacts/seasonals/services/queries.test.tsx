@@ -132,6 +132,40 @@ describe("services/queries", () => {
       await waitFor(() => expect(result.current.isError).toBe(true));
       expect(result.current.error?.message).toMatch(/agent_plan_not_found/);
     });
+
+    it("2026-10-08: refetchInterval (関数) は最新 plan を受け、返した間隔で polling する", async () => {
+      const api = require("./api") as typeof import("./api");
+      const spy = jest.spyOn(api, "getAgentPlan");
+      const seen: Array<string | undefined> = [];
+      const { result, unmount } = renderHook(
+        () =>
+          useAgentPlan("plan_003", {
+            refetchInterval: (plan) => {
+              seen.push(plan?.status);
+              return plan?.status === "pending_user" ? 20 : false;
+            },
+          }),
+        { wrapper: makeWrapper(freshClient()) }
+      );
+      await waitFor(() => expect(result.current.isSuccess).toBe(true));
+      await waitFor(() => expect(spy.mock.calls.length).toBeGreaterThanOrEqual(2));
+      expect(seen).toContain("pending_user");
+      unmount();
+      spy.mockRestore();
+    });
+
+    it("option 無しは polling しない (従来の呼び手の挙動を変えない)", async () => {
+      const api = require("./api") as typeof import("./api");
+      const spy = jest.spyOn(api, "getAgentPlan");
+      const { result, unmount } = renderHook(() => useAgentPlan("plan_003"), {
+        wrapper: makeWrapper(freshClient()),
+      });
+      await waitFor(() => expect(result.current.isSuccess).toBe(true));
+      await new Promise((r) => setTimeout(r, 60));
+      expect(spy).toHaveBeenCalledTimes(1);
+      unmount();
+      spy.mockRestore();
+    });
   });
 
   describe("useUserPolicy", () => {

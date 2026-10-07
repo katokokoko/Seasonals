@@ -135,10 +135,19 @@ export function GlassLayer() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // 2026-10-08: frame callback は **Home が focus かつ app が foreground の間だけ** 回す
+  // (senseActive = enabled && focused && foreground、useTiltRoll が計算済み)。
+  // 以前は focus / AppState を見ずに 120Hz で回り続け、wallet chooser (MWA) や
+  // 承認画面に隠れている間も Skia の TextureView に描画していた。その時 surface が
+  // 外れているため logcat に `EGLConsumer is not attached` が大量に出る (Skia 自身が
+  // catch して無害としているログ)。止めれば UI thread / GPU の無駄な仕事が消え、
+  // 電池と発熱にも効く。Canvas は mount したまま (復帰時に shader を再 compile しない)。
+  // 復帰直後に 1 行程度は残り得る (Skia 本体の挙動、patch は範囲外)
+  const frameActive = active && senseActive;
   const frameCb = useFrameCallback(frameWorklet, false);
   useEffect(() => {
-    frameCb.setActive(active);
-  }, [active, frameCb]);
+    frameCb.setActive(frameActive);
+  }, [frameActive, frameCb]);
 
   // 8.46: センサー購読 (null render)。退避分岐より前に置き、available 未判定の
   // うちから登録を進める。senseActive=false なら mount されない = 購読停止

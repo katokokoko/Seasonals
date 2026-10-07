@@ -74,6 +74,7 @@ import {
 import { ICON_BY_ID, scaleOf } from "./protocol-icons";
 import { AssetBadge } from "../icons/AssetBadge";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { useFocusEffect } from "expo-router";
 // 8.51 の預入枠表示 (deposit-cap.ts) は 8.54 で vault-rows 経由に集約
 // 8.54: カード行のモデルと出し分け判断 (純関数、単体テスト済)
 import {
@@ -429,19 +430,26 @@ export function MenuDrawer({
     );
   }, [paneTx]);
 
-  // Android hardware back: detail なら list へ / list なら drawer 閉
-  useEffect(() => {
-    if (!visible) return;
-    const sub = BackHandler.addEventListener("hardwareBackPress", () => {
-      if (selectedProtocolId !== null) {
-        goBackToList();
-      } else {
-        onClose();
-      }
-      return true;
-    });
-    return () => sub.remove();
-  }, [visible, selectedProtocolId, goBackToList, onClose]);
+  // Android hardware back: detail なら list へ / list なら drawer 閉。
+  // 2026-10-08 (実機で確定): 登録は **Home 画面が focus の間だけ**。以前は visible の
+  // 間ずっと登録していたため、Menu の詳細を開いたまま /approval/[planId] を重ねると、
+  // 戻る操作が見えない Menu の「詳細 → 一覧」に使われ true で飲み込まれて戻れなかった。
+  // useFocusEffect は blur で cleanup (= remove) し、focus 復帰で再登録する
+  // (useTiltRoll と同じ書き方)
+  useFocusEffect(
+    useCallback(() => {
+      if (!visible) return;
+      const sub = BackHandler.addEventListener("hardwareBackPress", () => {
+        if (selectedProtocolId !== null) {
+          goBackToList();
+        } else {
+          onClose();
+        }
+        return true;
+      });
+      return () => sub.remove();
+    }, [visible, selectedProtocolId, goBackToList, onClose])
+  );
 
   // Swipe-to-close gesture (detail 表示中は無効化)
   const swipeGesture = Gesture.Pan()

@@ -52,6 +52,8 @@ import {
 import {
   addApprovalResponseListener,
   addExecutionResponseListener,
+  claimApprovalRoute,
+  clearInitialApprovalResponse,
   getInitialApprovalResponse,
   setupNotificationHandler,
   type ApprovalPushPayload,
@@ -154,17 +156,24 @@ export default function RootLayout() {
   useEffect(() => {
     setupNotificationHandler();
 
-    // cold start: app が完全に閉じている状態で notification tap で起動した場合
+    // cold start: app が完全に閉じている状態で notification tap で起動した場合。
+    // 2026-10-08: 処理したら last response を消す (残すと layout の再 mount = dev の
+    // JS reload 等で同じ承認画面を再び push する)。同じ plan への連続遷移は
+    // claimApprovalRoute で防ぐ (cold と warm が同じ tap を両方届ける場合も 1 枚だけ)
     let mounted = true;
     void (async () => {
       const initial = await getInitialApprovalResponse();
-      if (mounted && initial) {
+      // unmount 済みなら消さずに次の mount へ残す
+      if (!initial || !mounted) return;
+      clearInitialApprovalResponse();
+      if (claimApprovalRoute(initial.plan_id)) {
         router.push(approvalDeepLink(initial));
       }
     })();
 
     // warm: foreground / background 状態で notification tap
     const sub = addApprovalResponseListener((payload) => {
+      if (!claimApprovalRoute(payload.plan_id)) return;
       router.push(approvalDeepLink(payload));
     });
 

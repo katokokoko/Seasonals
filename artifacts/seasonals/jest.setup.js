@@ -34,6 +34,7 @@ jest.mock("expo-notifications", () => {
       };
     }),
     getLastNotificationResponseAsync: jest.fn(async () => null),
+    clearLastNotificationResponse: jest.fn(),
     scheduleNotificationAsync: jest.fn(async () => "notification_id_mock"),
     __triggerResponse: (response) => {
       listeners.forEach((h) => h(response));

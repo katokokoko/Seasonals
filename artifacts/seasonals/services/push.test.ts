@@ -11,7 +11,10 @@
 import * as Notifications from "expo-notifications";
 
 import {
+  __resetApprovalRouteGuard,
   addApprovalResponseListener,
+  claimApprovalRoute,
+  clearInitialApprovalResponse,
   getInitialApprovalResponse,
   getPushToken,
   isApprovalPushPayload,
@@ -28,6 +31,7 @@ const mockedNotifications = Notifications as unknown as {
   getExpoPushTokenAsync: jest.Mock;
   addNotificationResponseReceivedListener: jest.Mock;
   getLastNotificationResponseAsync: jest.Mock;
+  clearLastNotificationResponse: jest.Mock;
   scheduleNotificationAsync: jest.Mock;
   __triggerResponse: (response: unknown) => void;
 };
@@ -329,5 +333,44 @@ describe("scheduleLocalApprovalNotification", () => {
     await scheduleLocalApprovalNotification({ delaySeconds: 10 });
     const call = mockedNotifications.scheduleNotificationAsync.mock.calls[0]![0];
     expect(call.trigger).toMatchObject({ seconds: 10 });
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 2026-10-08: cold start response の消去 / 同じ plan への連続遷移の抑止
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("clearInitialApprovalResponse", () => {
+  it("expo-notifications の clearLastNotificationResponse を呼ぶ", () => {
+    clearInitialApprovalResponse();
+    expect(mockedNotifications.clearLastNotificationResponse).toHaveBeenCalledTimes(1);
+  });
+
+  it("native module が無く throw しても落ちない (guard 側で重複を防ぐ)", () => {
+    mockedNotifications.clearLastNotificationResponse.mockImplementationOnce(() => {
+      throw new Error("UnavailabilityError");
+    });
+    expect(() => clearInitialApprovalResponse()).not.toThrow();
+  });
+});
+
+describe("claimApprovalRoute", () => {
+  beforeEach(() => __resetApprovalRouteGuard());
+
+  it("同じ plan への連続遷移は 2 回目を拒否する (cold + warm の二重届き)", () => {
+    expect(claimApprovalRoute("plan_a", 1_000)).toBe(true);
+    expect(claimApprovalRoute("plan_a", 1_500)).toBe(false);
+  });
+
+  it("別の plan は通す", () => {
+    expect(claimApprovalRoute("plan_a", 1_000)).toBe(true);
+    expect(claimApprovalRoute("plan_b", 1_100)).toBe(true);
+    // 直前が plan_b なので plan_a は再び通る
+    expect(claimApprovalRoute("plan_a", 1_200)).toBe(true);
+  });
+
+  it("時間窓 (5 秒) を過ぎた同じ plan は通す (閉じてから再度 tap)", () => {
+    expect(claimApprovalRoute("plan_a", 1_000)).toBe(true);
+    expect(claimApprovalRoute("plan_a", 6_000)).toBe(true);
   });
 });

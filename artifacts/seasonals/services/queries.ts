@@ -243,13 +243,27 @@ export function useAgentPlans(): UseQueryResult<AgentPlan[], Error> {
   });
 }
 
+export interface UseAgentPlanOptions {
+  /**
+   * 再取得間隔 (ms)。関数なら最新の plan (未取得なら undefined) から決める。
+   * 省略時は polling しない (従来どおり)。承認画面は live な status の間だけ 5 秒で
+   * polling し、web での送信 / 却下を反映する (web の useSolanaAgentPlans と同じ間隔)
+   */
+  refetchInterval?:
+    | number
+    | false
+    | ((plan: AgentPlan | undefined) => number | false);
+}
+
 /**
  * AgentPlan を plan_id で取得。planId 未確定 (null) の場合は disabled にして
  * 不要 fetch を抑制する。
  */
 export function useAgentPlan(
-  planId: string | null
+  planId: string | null,
+  options: UseAgentPlanOptions = {}
 ): UseQueryResult<AgentPlan, Error> {
+  const { refetchInterval } = options;
   return useQuery({
     queryKey: queryKeys.agentPlan(planId ?? ""),
     queryFn: () => {
@@ -260,6 +274,15 @@ export function useAgentPlan(
       return api.getAgentPlan(planId);
     },
     enabled: planId !== null,
+    ...(refetchInterval !== undefined
+      ? {
+          refetchInterval:
+            typeof refetchInterval === "function"
+              ? (query: { state: { data?: AgentPlan } }) =>
+                  refetchInterval(query.state.data)
+              : refetchInterval,
+        }
+      : {}),
   });
 }
 
