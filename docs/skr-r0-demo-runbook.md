@@ -32,6 +32,27 @@ adb shell am start -a android.intent.action.VIEW -d "seasonals://expo-developmen
 
 `expo-notifications` は既に APK に入っているので native の再ビルドは不要 (JS reload で足りる)。
 
+### 2.1 別ポートで並走する (main 側の BFF / Metro を止めずに確認する時)
+
+別セッションが `:3030` / `:8081` を使っている時は、worktree 側を別ポートで立て、app の BFF URL だけを差し替える。`adb reverse` の 3030 / 8081 は触らない。
+
+```sh
+# BFF (worktree) :3031
+cd artifacts/seasonals-bff
+PORT=3031 SKR_DEMO_FIXTURE=true SKR_DEMO_UNLOCK_IN_SECONDS=1200 pnpm dev
+
+# Metro (worktree) :8082。BFF_BASE_URL は app.config.ts が extra.bffBaseUrl に入れる (services/config.ts が参照)
+cd artifacts/seasonals
+APP_VARIANT=onchain EXPO_PUBLIC_USE_ONCHAIN=true SKR_SOURCE=demo BFF_BASE_URL=http://localhost:3031 \
+  pnpm exec expo start --dev-client --port 8082
+
+adb reverse tcp:3031 tcp:3031
+adb reverse tcp:8082 tcp:8082
+adb shell am start -a android.intent.action.VIEW -d "seasonals://expo-development-client/?url=http%3A%2F%2Flocalhost%3A8082" app.seasonals.onchain
+```
+
+終了したら `adb reverse --remove tcp:3031` / `--remove tcp:8082` で戻し、元の Metro が生きていれば deep link を `localhost:8081` で再投入して app の bundle を戻す。
+
 BFF の応答を直接見る:
 
 ```sh
@@ -52,6 +73,14 @@ MCP (Agent 側) で同じ event を読む: repo root の `.mcp.json` の env に
 7. app を終了した状態で通知を tap (cold start) → 起動後に再取得する
 8. MCP の `seasonals://events/<wallet>` に同じ id / triggerAt の event がある。BFF を止めると SKR event は 0 件になり、補足文が付く
 9. logcat にエラーが無い
+
+### 3.1 無人 (adb だけ) で確認する時のメモ
+
+- RN の `testID` は `adb exec-out uiautomator dump /dev/tty` に `resource-id` として出る (例 `home-calendar-grid-day-2026-10-08`、`home-portfolio-staking-skr-status`)。`bounds` の中心を `adb shell input tap X Y` する。アニメ中は dump が失敗するので 1–2 秒待って再試行
+- 通知 permission は `adb shell pm grant app.seasonals.onchain android.permission.POST_NOTIFICATIONS` (拒否側は `pm revoke`)。予約は `adb shell dumpsys alarm | grep -A8 app.seasonals.onchain`、配送済みは `adb shell dumpsys notification --noredact | grep -A14 app.seasonals.onchain`
+- 通知 shade は `adb shell cmd statusbar expand-notifications` / `collapse`。tap は shade の uiautomator dump から "SKR staking" の bounds を取る
+- 機内モードの代わりに `adb reverse --remove tcp:<BFF port>` で BFF だけを切ると stale を再現できる (Metro は生きたまま)。戻すのは `adb reverse tcp:<port> tcp:<port>`
+- cold start は `adb shell am force-stop app.seasonals.onchain` → 通知 tap。dev-client は launcher 画面で止まることがあるので、その場合は "Recently opened" の Metro URL を tap して bundle を載せる
 
 ## 4. 追加解除の録画 (live、P0)
 

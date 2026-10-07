@@ -4,6 +4,8 @@
  * 優先順位:
  *   1. `app.json` の `extra.bffBaseUrl` (build-time / EAS で env 別に override、
  *      production では実 BFF URL を必ず指定する)
+ *      - dev で別ポートの BFF と並走する時は Metro 起動時に `BFF_BASE_URL=http://localhost:3031`
+ *        を渡す (app.config.ts が extra に入れる。docs/skr-r0-demo-runbook.md §2)
  *   2. dev default: `http://localhost:3030`
  *      - port 3030 は Seasonals BFF 専用 (3000 は Next.js dev server 慣例で衝突回避)
  *      - Android (emulator / 実機 Seeker 共通): `adb reverse tcp:3030 tcp:3030` を
