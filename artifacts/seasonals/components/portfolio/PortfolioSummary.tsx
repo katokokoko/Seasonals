@@ -63,6 +63,8 @@ import {
 import { AllocationDonut } from "./AllocationDonut";
 import { Charts } from "./Charts";
 import { SponsoredCard } from "./SponsoredCard";
+import { StakingRow } from "./StakingRow";
+import type { SkrStakingView } from "../../services/useSkrStakingView";
 import {
   aggregateAllocation,
   depositedUsdValue,
@@ -134,6 +136,11 @@ export interface PortfolioSummaryProps {
    * 「月ごとにカード位置が上下する」問題は起きない)。null なら 50% 固定
    */
   minTopY?: number | null;
+  /**
+   * SKR staking cooldown (docs/skr-r0-implementation.md §4)。`positions` とは別に受け取り、
+   * 合計・allocation・履歴には入れない専用 section で表示する
+   */
+  cooldown?: SkrStakingView | null;
   testID?: string;
 }
 
@@ -151,6 +158,7 @@ export const PortfolioSummary = React.memo(function PortfolioSummary({
   walletAddress,
   animatedPosition,
   minTopY = null,
+  cooldown = null,
   testID,
 }: PortfolioSummaryProps) {
   // Phase 7.9: theme 連動 styles
@@ -832,6 +840,14 @@ export const PortfolioSummary = React.memo(function PortfolioSummary({
                 );
               })}
             </View>
+          </View>
+        )}
+
+        {/* SKR staking (docs/skr-r0-implementation.md §4): positions の外 = 合計 / allocation / 履歴に入らない */}
+        {walletAddress && cooldown && (
+          <View style={styles.section} testID={testID ? `${testID}-staking` : undefined}>
+            <Text style={styles.sectionLabel}>Staking</Text>
+            <StakingRow view={cooldown} testID={testID ? `${testID}-staking-skr` : undefined} />
           </View>
         )}
 

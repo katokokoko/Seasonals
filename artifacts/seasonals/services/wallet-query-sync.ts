@@ -22,6 +22,8 @@ export const WALLET_SCOPED_QUERY_KEYS = [
   "earn-positions",
   "wallet-time-events",
   "portfolio-history",
+  // SKR cooldown (docs/skr-r0-implementation.md §3: wallet 切替後の旧応答を使わない)
+  "skr-staking",
 ] as const;
 
 export interface WalletSyncState {

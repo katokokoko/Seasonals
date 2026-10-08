@@ -4,6 +4,8 @@
  * 優先順位:
  *   1. `app.json` の `extra.bffBaseUrl` (build-time / EAS で env 別に override、
  *      production では実 BFF URL を必ず指定する)
+ *      - dev で別ポートの BFF と並走する時は Metro 起動時に `BFF_BASE_URL=http://localhost:3031`
+ *        を渡す (app.config.ts が extra に入れる。docs/skr-r0-demo-runbook.md §2)
  *   2. dev default: `http://localhost:3030`
  *      - port 3030 は Seasonals BFF 専用 (3000 は Next.js dev server 慣例で衝突回避)
  *      - Android (emulator / 実機 Seeker 共通): `adb reverse tcp:3030 tcp:3030` を
@@ -19,6 +21,7 @@
  */
 
 import Constants from "expo-constants";
+import { CooldownSource } from "@workspace/lib/types";
 
 function resolveBffBaseUrl(): string {
   const fromExtra = Constants.expoConfig?.extra?.bffBaseUrl;
@@ -55,6 +58,16 @@ export const SHOULD_FALLBACK_TO_FIXTURES: boolean =
  */
 export const USE_ONCHAIN: boolean =
   Constants.expoConfig?.extra?.useOnchain === true;
+
+/**
+ * SKR staking cooldown の取得元 (docs/skr-r0-implementation.md §1 P0)。
+ * Metro を `SKR_SOURCE=demo` で起動した時だけ "demo" (BFF 側も SKR_DEMO_FIXTURE=true が必要)。
+ * それ以外は "live"。live の失敗を demo / fixture に差し替えることはしない。
+ */
+export const SKR_SOURCE: CooldownSource =
+  Constants.expoConfig?.extra?.skrSource === CooldownSource.Demo
+    ? CooldownSource.Demo
+    : CooldownSource.Live;
 
 /**
  * test 環境判定。jest globals の存在で識別する。

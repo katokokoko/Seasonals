@@ -81,6 +81,7 @@ import {
   useThemedStyles,
   type ThemeColors,
 } from "../../stores/theme";
+import { eventProtocolLabel } from "./event-display";
 
 // 5-card strip
 const OFFSETS = [-2, -1, 0, 1, 2] as const;
@@ -475,7 +476,7 @@ function DayCardContent({
               </View>
               <View style={styles.eventMain}>
                 <Text style={styles.eventName} numberOfLines={1}>
-                  {capitalize(e.protocol)}
+                  {capitalize(eventProtocolLabel(e))}
                 </Text>
                 <Text
                   style={[styles.eventVerb, { color: verbColorOf(e.category, themeColors) }]}

@@ -89,6 +89,13 @@ const config: ExpoConfig = {
   extra: {
     // services/config.ts USE_ONCHAIN が参照
     useOnchain: isOnchain,
+    // services/config.ts BFF_BASE_URL が参照。別ポートの BFF と並走する時だけ Metro 起動時に
+    // `BFF_BASE_URL=http://localhost:3031` を渡す (docs/skr-r0-demo-runbook.md §2)。
+    // 未指定なら undefined → manifest から消え、dev 既定の localhost:3030 のまま
+    bffBaseUrl: process.env.BFF_BASE_URL,
+    // services/config.ts SKR_SOURCE が参照 (docs/skr-r0-implementation.md)。
+    // "demo" の時だけ demo source を読む。未指定は live (live を demo に見せない)
+    skrSource: process.env.SKR_SOURCE === "demo" ? "demo" : "live",
     eas: {
       // 8.87: EAS プロジェクト紐付け (expo.dev で作成した seasonals プロジェクト)
       projectId: "6de0c8ab-80b1-491b-8317-cf8b48890496",

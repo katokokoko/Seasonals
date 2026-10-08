@@ -38,7 +38,12 @@ import type {
   ProtocolMenuEntry,
   UnifiedTimeEventDTO,
 } from "@workspace/lib/types";
-import { SWAP_SYMBOLS } from "@workspace/lib/types";
+import {
+  CooldownDataStatus,
+  CooldownSource,
+  SWAP_SYMBOLS,
+  isCooldownStateResponse,
+} from "@workspace/lib/types";
 
 import { BffHttpError, type BffClient } from "./bff-client";
 import type { TimelineEvent, TimelineEventsResponse } from "@workspace/lib/types";
@@ -107,6 +112,44 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 export interface BuildOptions {
   /** request_user_approval の poll 間隔 (テストで短縮) */
   pollIntervalMs?: number;
+  /**
+   * SKR cooldown event の取得元 (docs/skr-r0-implementation.md §4)。
+   * default は env `SKR_SOURCE=demo` の時だけ demo、それ以外は live
+   */
+  skrSource?: CooldownSource;
+}
+
+export const SKR_STATE_PATH = "/protocols/skr-staking/state";
+
+/**
+ * events resource に SKR cooldown の lockup_end を投影する (§4「MCPはeventのみ公開する」)。
+ * - BFF が導出した fresh な event だけを追加し、MCP 独自に日時や状態を導出しない
+ * - 取得失敗 / unavailable / unsupported / 形の不正 / 別 wallet の応答は SKR event 0 件 + 補足文
+ * - 既存 event と id で重複排除。position / 実行候補は作らない
+ */
+export function projectCooldownEvents(
+  base: UnifiedTimeEventDTO[],
+  skr: PromiseSettledResult<unknown>,
+  wallet: string
+): { events: UnifiedTimeEventDTO[]; note: string | null } {
+  if (skr.status === "rejected") {
+    return { events: base, note: "skr_staking events omitted: fetch_failed" };
+  }
+  const state = skr.value;
+  if (!isCooldownStateResponse(state)) {
+    return { events: base, note: "skr_staking events omitted: invalid_response" };
+  }
+  if (state.wallet_address !== wallet) {
+    return { events: base, note: "skr_staking events omitted: scope_mismatch" };
+  }
+  if (state.data_status !== CooldownDataStatus.Fresh) {
+    return { events: base, note: `skr_staking events omitted: ${state.data_status}` };
+  }
+  const seen = new Set(base.map((e) => e.id));
+  const added = state.events
+    .map((e) => e.event)
+    .filter((e) => e.agentReadable !== false && !seen.has(e.id));
+  return { events: [...base, ...added], note: null };
 }
 
 export function buildMcpServer(
@@ -114,6 +157,9 @@ export function buildMcpServer(
   opts: BuildOptions = {}
 ): McpServer {
   const pollIntervalMs = opts.pollIntervalMs ?? 2000;
+  const skrSource: CooldownSource =
+    opts.skrSource ??
+    (process.env.SKR_SOURCE === CooldownSource.Demo ? CooldownSource.Demo : CooldownSource.Live);
   const server = new McpServer({
     name: "seasonals",
     version: "0.1.0",
@@ -502,20 +548,30 @@ export function buildMcpServer(
       mimeType: "application/json",
     },
     async (uri, { wallet }) => {
-      const events = await bff.get<UnifiedTimeEventDTO[]>(
-        `/time-events/wallet?wallet=${wallet}`
+      const w = String(wallet);
+      // SKR の読取失敗で既存 event まで落とさない (base の失敗は従来どおり error)
+      const [base, skr] = await Promise.allSettled([
+        bff.get<UnifiedTimeEventDTO[]>(`/time-events/wallet?wallet=${wallet}`),
+        bff.get<unknown>(
+          `${SKR_STATE_PATH}?wallet=${encodeURIComponent(w)}&source=${skrSource}`
+        ),
+      ]);
+      if (base.status === "rejected") throw base.reason;
+      const { events, note } = projectCooldownEvents(
+        base.value.filter((e) => e.agentReadable !== false),
+        skr,
+        w
       );
       return {
         contents: [
           {
             uri: uri.href,
             mimeType: "application/json",
-            text: JSON.stringify(
-              events.filter((e) => e.agentReadable !== false),
-              null,
-              2
-            ),
+            text: JSON.stringify(events, null, 2),
           },
+          ...(note
+            ? [{ uri: `${uri.href}#skr_staking`, mimeType: "text/plain", text: note }]
+            : []),
         ],
       };
     }

@@ -56,6 +56,13 @@ import {
   setupNotificationHandler,
   type ApprovalPushPayload,
 } from "../services/push";
+import {
+  addCooldownReminderResponseListener,
+  deliverCooldownReminderTap,
+  ensureCooldownNotificationChannel,
+  getInitialCooldownReminderResponse,
+  reconcileCooldownRemindersOnStartup,
+} from "../services/cooldown-reminder";
 import { ComingSoonToast } from "../components/feedback/ComingSoonToast";
 import { usePrefsStore } from "../stores/prefs";
 import { usePortfolioHistoryStore } from "../stores/portfolioHistory";
@@ -174,10 +181,27 @@ export default function RootLayout() {
       console.log("[push] autonomous execution", payload);
     });
 
+    // SKR 確認通知 (docs/skr-r0-implementation.md §5): channel 作成と OS 予約一覧との照合。
+    // tap は cold start / warm とも HomeScreen へ渡し、scope が一致すれば BFF を再取得する
+    void ensureCooldownNotificationChannel();
+    void reconcileCooldownRemindersOnStartup().catch(() => undefined);
+    void (async () => {
+      const initialCooldown = await getInitialCooldownReminderResponse();
+      if (mounted && initialCooldown) {
+        deliverCooldownReminderTap(initialCooldown);
+        router.navigate("/");
+      }
+    })();
+    const cooldownSub = addCooldownReminderResponseListener((payload) => {
+      deliverCooldownReminderTap(payload);
+      router.navigate("/");
+    });
+
     return () => {
       mounted = false;
       sub.remove();
       execSub.remove();
+      cooldownSub.remove();
     };
   }, [router]);
 

@@ -45,6 +45,7 @@ import {
 } from "@workspace/lib/design-system";
 import {
   AgentPlanStatus,
+  fromDTO,
   type ActionDescriptor,
   type AgentPlan,
   type UnifiedTimeEvent,
@@ -56,6 +57,10 @@ import { EventDayModal } from "../components/calendar/EventDayModal";
 import { syntheticPlanFromEventAction } from "@workspace/lib/derive/event-action";
 import { ActionModal } from "../components/action/ActionModal";
 import { PortfolioSummary } from "../components/portfolio/PortfolioSummary";
+import { isCooldownCalendarEvent } from "../components/portfolio/cooldown-display";
+import { useSkrStakingView } from "../services/useSkrStakingView";
+import { useCooldownReminderSync } from "../services/useCooldownReminderSync";
+import { useCooldownBoundaryRetry } from "../services/useCooldownBoundaryRetry";
 import { SettingsDrawer } from "../components/drawer/SettingsDrawer";
 import { MenuDrawer } from "../components/drawer/MenuDrawer";
 import { ViewModeTogglePill } from "../components/header/ViewModeTogglePill";
@@ -134,6 +139,11 @@ export default function HomeScreen() {
   // Phase 8.3: wallet tx 履歴から派生する deposit/withdraw time events を取得し、
   // 既存 fixture events と merge して calendar に渡す
   const { data: walletEvents = [] } = useWalletTimeEvents(onchainAddress);
+  // SKR staking cooldown (docs/skr-r0-implementation.md): Calendar event / Staking row /
+  // 確認通知 / 境界 retry を 1 つの query で賄う。positions には入れない
+  const skr = useSkrStakingView(onchainAddress);
+  useCooldownReminderSync(skr);
+  useCooldownBoundaryRetry(skr);
   const { data: protocols = [] } = useProtocols();
 
   // Phase 8.3 Part A: earn positions を Position に変換して portfolio donut に計上
@@ -155,9 +165,15 @@ export default function HomeScreen() {
   }, [positions, priceStrings]);
 
   // Phase 8.3 Part B: wallet tx 由来 events + fixture events を merge
+  // SKR: BFF の wrapper.event を fromDTO で渡す (stale でも最後の観測を残す。取消済みと解釈しない)
+  const skrEvents = skr.state?.events;
   const events = useMemo(
-    () => [...fixtureEvents, ...walletEvents],
-    [fixtureEvents, walletEvents]
+    () => [
+      ...fixtureEvents,
+      ...walletEvents,
+      ...(skrEvents ?? []).map((e) => fromDTO(e.event)),
+    ],
+    [fixtureEvents, walletEvents, skrEvents]
   );
   const { data: plans = [] } = useAgentPlans();
   const customEvents = useAllCustomEvents();
@@ -332,6 +348,12 @@ export default function HomeScreen() {
     event: UnifiedTimeEvent,
     action: ActionDescriptor
   ) => {
+    // SKR cooldown は actions 空 (解除・引き出しは公式ポータル)。DailyView の 1 件 tap が
+    // 下の fallback で無関係な AgentPlan を開かないよう、その日の詳細を開いて止める
+    if (isCooldownCalendarEvent(event)) {
+      handleDayPress(event.triggerAt);
+      return;
+    }
     // Phase 8.20 (§29.1 event-driven action): claim イベント等の metadata から
     // synthetic plan を組めるなら、カレンダーから直接 ActionModal を起動する。
     // day modal close → 130ms 遅延は drawer と同じ choreography (Phase 7.7)。
@@ -469,6 +491,7 @@ export default function HomeScreen() {
         events={dayEvents}
         onClose={() => setDayModalOpen(false)}
         onActionPress={handleActionPress}
+        cooldown={skr}
         testID="home-day-modal"
       />
 
@@ -494,6 +517,7 @@ export default function HomeScreen() {
         walletAddress={onchainAddress}
         animatedPosition={sheetPosition}
         minTopY={viewMode === "monthly" ? calendarBottomY : null}
+        cooldown={skr}
         testID="home-portfolio"
       />
 

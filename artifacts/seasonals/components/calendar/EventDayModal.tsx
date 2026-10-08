@@ -40,10 +40,14 @@ import {
 } from "@workspace/lib/types";
 
 import { DropletMarker } from "./DropletMarker";
+import { CooldownEventDetail } from "./CooldownEventDetail";
+import { isCooldownCalendarEvent } from "../portfolio/cooldown-display";
+import type { SkrStakingView } from "../../services/useSkrStakingView";
 import {
   dropletShapeForEvent,
   eventDirectionLabel,
   eventHeadline,
+  eventProtocolLabel,
   sortEventsByUrgency,
 } from "./event-display";
 import {
@@ -98,6 +102,8 @@ export interface EventDayModalProps {
   events: UnifiedTimeEvent[];
   onClose: () => void;
   onActionPress: (event: UnifiedTimeEvent, action: ActionDescriptor) => void;
+  /** SKR cooldown event の詳細を read response から直接解決する (docs/skr-r0-implementation.md §4) */
+  cooldown?: SkrStakingView | null;
   testID?: string;
 }
 
@@ -118,6 +124,7 @@ export function EventDayModal({
   events,
   onClose,
   onActionPress,
+  cooldown = null,
   testID,
 }: EventDayModalProps) {
   // Phase 8.0: theme 連動 styles
@@ -211,6 +218,7 @@ export function EventDayModal({
               key={event.id}
               event={event}
               onActionPress={(action) => onActionPress(event, action)}
+              cooldown={cooldown}
               testID={testID ? `${testID}-event-${event.id}` : undefined}
             />
           ))
@@ -396,10 +404,12 @@ function CustomRow({
 function EventCard({
   event,
   onActionPress,
+  cooldown,
   testID,
 }: {
   event: UnifiedTimeEvent;
   onActionPress: (action: ActionDescriptor) => void;
+  cooldown: SkrStakingView | null;
   testID?: string;
 }) {
   // Phase 8.0: sub-component で theme 連動 styles + urgency 配色
@@ -416,7 +426,7 @@ function EventCard({
           size={18}
         />
         <View style={styles.eventTitle}>
-          <Text style={styles.eventProtocol}>{event.protocol}</Text>
+          <Text style={styles.eventProtocol}>{eventProtocolLabel(event)}</Text>
           <Text style={styles.eventCategory}>
             {eventDirectionLabel(event) ?? CATEGORY_LABELS[event.category]}
           </Text>
@@ -447,6 +457,14 @@ function EventCard({
         >
           {headline}
         </Text>
+      )}
+
+      {isCooldownCalendarEvent(event) && (
+        <CooldownEventDetail
+          view={cooldown}
+          eventId={event.id}
+          testID={testID ? `${testID}-cooldown` : undefined}
+        />
       )}
 
       {event.actions.length > 0 && (
