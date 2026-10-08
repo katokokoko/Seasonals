@@ -6,7 +6,7 @@
  */
 import type { FastifyInstance } from "fastify";
 import { isEvmAddress } from "@workspace/lib/config/chains";
-import { ethereumRpcUrl, executionTarget, forkRpcUrl, getEthClient, sanitizeError, undiciFetch } from "../ethereum/client";
+import { ethereumRpcUrl, executionTarget, forkRpcUrl, getEthClient, rpcUsageSnapshot, sanitizeError, undiciFetch } from "../ethereum/client";
 import { getPublicEvents, getUserEvents } from "../ethereum/events";
 import { buildActionPlan, PlanError } from "../ethereum/plans";
 import { buildProposal } from "../ethereum/proposals";
@@ -71,13 +71,24 @@ async function ethRoutes(app: FastifyInstance): Promise<void> {
     return indexProgress();
   });
 
+  /**
+   * 全ページの nav が 30 秒ごとに読むので、block は 1 block 分 (12 秒) cache、chainId は一度取れたら保持
+   * (mainnet 固定)。Infura credit 削減 (docs/web/WORKLOG.md)
+   */
+  let statusBlock: { at: number; value: string } | null = null;
+  let statusChainId: number | null = null;
   app.get("/eth/status", async () => {
     const client = getEthClient();
     let latestBlock: string | null = null;
-    let chainId: number | null = null;
+    let chainId: number | null = statusChainId;
     if (client) {
       try {
-        [latestBlock, chainId] = await Promise.all([client.getBlockNumber().then((b) => b.toString()), client.getChainId()]);
+        if (statusBlock && Date.now() - statusBlock.at < 12_000) latestBlock = statusBlock.value;
+        else {
+          latestBlock = (await client.getBlockNumber()).toString();
+          statusBlock = { at: Date.now(), value: latestBlock };
+        }
+        if (chainId === null) chainId = statusChainId = await client.getChainId();
       } catch (e) {
         app.log.warn({ err: sanitizeError(e) }, "eth status read failed");
       }
@@ -92,6 +103,9 @@ async function ethRoutes(app: FastifyInstance): Promise<void> {
       latestBlock,
     };
   });
+
+  /** BFF 起動後に Infura へ出た RPC の method 別件数と credit の目安 (削減効果の確認用) */
+  app.get("/eth/rpc-usage", async () => rpcUsageSnapshot());
 
   app.get("/eth/public-events", async () => getPublicEvents());
 

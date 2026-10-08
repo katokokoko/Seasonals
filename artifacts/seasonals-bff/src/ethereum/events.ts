@@ -16,8 +16,14 @@ import { fetchPendlePublicEvents, fetchPendleUserEvents } from "./pendle";
 type Source = { name: string; run: (observedAt: string) => Promise<TimelineEvent[]>; needsRpc: boolean };
 
 const cache = new Map<string, { at: number; value: TimelineEventsResponse; ttlMs: number }>();
-/** 部分失敗 (429 等) を含む結果は短時間だけ cache して早めに再試行する */
+/**
+ * 部分失敗 (429 等) を含む応答は短時間だけ cache して早めに再試行する。
+ * 再試行するのは失敗した source だけ: 成功した source の結果は sourceCache に通常 TTL で残し、
+ * 1 source の失敗 (CCA bid の background scan 等) で他 source の RPC read を毎回やり直さない
+ * (Infura credit 削減、docs/web/WORKLOG.md)
+ */
 const FAILED_TTL_MS = 10_000;
+const sourceCache = new Map<string, { at: number; events: TimelineEvent[]; observedAt: string }>();
 const inflight = new Map<string, Promise<TimelineEventsResponse>>();
 
 async function collect(key: string, sources: Source[], ttlMs: number): Promise<TimelineEventsResponse> {
@@ -28,15 +34,24 @@ async function collect(key: string, sources: Source[], ttlMs: number): Promise<T
   const p = (async () => {
     const observedAt = new Date().toISOString();
     const hasRpc = getEthClient() !== null;
+    const now = Date.now();
     const settled = await Promise.allSettled(
-      sources.map((s) => (s.needsRpc && !hasRpc ? Promise.reject(new Error("Ethereum RPC is not configured.")) : s.run(observedAt)))
+      sources.map(async (s) => {
+        const sk = `${key}|${s.name}`;
+        const fresh = sourceCache.get(sk);
+        if (fresh && now - fresh.at < ttlMs) return fresh;
+        if (s.needsRpc && !hasRpc) throw new Error("Ethereum RPC is not configured.");
+        const entry = { at: Date.now(), events: await s.run(observedAt), observedAt };
+        sourceCache.set(sk, entry);
+        return entry;
+      })
     );
     const lists: TimelineEvent[][] = [];
     const status: TimelineEventsResponse["sources"] = settled.map((r, i) => {
       const name = sources[i]!.name;
       if (r.status === "fulfilled") {
-        lists.push(r.value);
-        return { source: name, ok: true, observedAt };
+        lists.push(r.value.events);
+        return { source: name, ok: true, observedAt: r.value.observedAt };
       }
       return { source: name, ok: false, error: sanitizeError(r.reason), observedAt };
     });
@@ -46,6 +61,11 @@ async function collect(key: string, sources: Source[], ttlMs: number): Promise<T
   })().finally(() => inflight.delete(key));
   inflight.set(key, p);
   return p;
+}
+
+function dropKey(key: string) {
+  cache.delete(key);
+  for (const k of sourceCache.keys()) if (k.startsWith(`${key}|`)) sourceCache.delete(k);
 }
 
 /** extra: CCA など後段で登録される source (公開 / address 別) */
@@ -82,9 +102,10 @@ export function getUserEvents(owner: string): Promise<TimelineEventsResponse> {
 
 /** 実行後など、address の cache を捨てて次回再導出させる */
 export function _invalidateUser(owner: string) {
-  cache.delete(`user:${owner.toLowerCase()}`);
+  dropKey(`user:${owner.toLowerCase()}`);
 }
 
 export function _clearEthCacheForTest() {
   cache.clear();
+  sourceCache.clear();
 }

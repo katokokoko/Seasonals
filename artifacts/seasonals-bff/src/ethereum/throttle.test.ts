@@ -32,3 +32,16 @@ test("light reads overtake queued eth_getLogs", async () => {
   await Promise.all([f("x", body("eth_getLogs")), f("x", body("eth_getLogs")), f("x", body("eth_getLogs")), f("x", body("eth_call"))]);
   expect(order.indexOf("eth_call")).toBeLessThan(2);
 });
+
+test("counts dispatched RPC requests by method with approximate Infura credits", async () => {
+  const { _resetRpcUsageForTest, rpcUsageSnapshot } = await import("./client");
+  _resetRpcUsageForTest();
+  const fake = (async () => new Response("{}")) as unknown as typeof fetch;
+  const f = throttledFetch(4, 1, fake);
+  const body = (m: string) => ({ method: "POST", body: JSON.stringify({ method: m }) });
+  await Promise.all([f("x", body("eth_getLogs")), f("x", body("eth_call")), f("x", body("eth_call"))]);
+  const u = rpcUsageSnapshot();
+  expect(u.byMethod).toEqual({ eth_call: 2, eth_getLogs: 1 });
+  expect(u.requests).toBe(3);
+  expect(u.approxCredits).toBe(255 + 2 * 80);
+});
