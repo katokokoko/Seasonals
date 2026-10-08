@@ -259,6 +259,20 @@ Web 側 (`artifacts/seasonals-web`) は `BFF_URL` (Vite dev proxy 先、node 側
 - 検証: unit (BFF `strategy-brief.test.ts` 11 件 / `prices.test.ts` 5 件 / agent-proposals 追加 4 件、MCP 20 件、web ProposalInbox 4 件)。**fork e2e (2026-09-26、🍋 Lemon Ladder、owner `0x28C6…1d60`)**: `POST /eth/agent-proposals` で 3 step (100 USDC → USDe swap / 99 USDe → sUSDe / Aqua PEGGED_STABLE 40 + 40 ship) を提出 → brief は "This rebalance moves $178.94: 0.00% → 2.67% (+2.67% pts)" / "Deployed capital (DeFi only): $924.80 → $1,103.77 · 2.25% → 2.32%"、表は 4 行 + Unchanged 2 件 → web `/agent` のカードで承認 → 36 秒で `executed` (`via: "web"`)、**8 tx すべて success** (Permit2 approve / permit / swap、sUSDe approve / deposit → 79.2001 sUSDe、Aqua USDC approve / USDe approve / ship)。カレンダーに Executed 3 件 + `strategy_review` (2026-10-10) が出て、brief の horizon で予告した予定がそのまま乗った
 - 既知: Pendle の暗黙単価は 8 桁に丸めるため 1e-6 USD 程度ずれる (approx 表示)。YT は Llama に無いことが多く dashboard 評価額が無ければ unpriced
 
+### Infura credit 削減 (2026-10-05)
+- 背景: Infura free (3M credit/日) を 9 割近く消費。主因は CCA bid scan (address ごとに 24.33M → head を 10k block 分割 `eth_getLogs` ≈ 180 call ≈ 46k credit、cache 5 分・永続化なし)、それを初回必ず `ok:false` にして web が 15 秒 polling で回す連鎖、Anvil fork が毎回 latest を fork して `~/.foundry/cache/rpc` が効かないこと
+- 実装:
+  - bid scan は `ETHERSCAN_API_KEY` があれば Etherscan V2 `module=logs` (block 範囲制限なし、address 無し topic0 AND topic2=owner の検索が可能なことを実測) で event ごと 1 call。key 無しは従来の Infura 経路に fallback。`userCache` 10 分
+  - `events.ts` は source 単位の cache。失敗した source だけ 10 秒で再試行し、成功 source (Ethena / Lido 等) の RPC read は通常 TTL まで再利用
+  - web Timeline の部分失敗時 refetch は 15 → 30 → 60 … 秒、上限 5 分の backoff
+  - CCA `head()` 12 秒 cache、`enrich` の個別 revert は 24h 再試行しない、`/eth/status` は block 12 秒 cache + chainId 保持
+  - `GET /eth/rpc-usage`: BFF 起動後に Infura へ出た request の method 別件数と credit 目安。`rpc-proxy.mjs` も上流 request 数を 60 秒ごとに log
+  - `eth-fork.sh`: `--fork-block-number` を `.data/fork-block` に固定 (`FORK_MAX_AGE_H` 既定 24h、`FORK_REFRESH=1` で更新)。上流は `FORK_UPSTREAM_RPC_URL` (例: Alchemy free) を優先できる
+  - Settings に Etherscan API 規約の表記 ("Powered by Etherscan.io APIs")
+- 実測: bid のある実 address で `/eth/events` が初回から全 source ok・1.4 秒・Infura 4 request (≈495 credit、うち getLogs は CCA factory index の差分 1 回)。2 回目は 0 request。`/eth/status` 4 回で blockNumber 1 + chainId 1
+- 実測 (fork、2026-10-09): block 26148842 を固定して 2 回起動、上流 request は 1 回目 50 → 2 回目 6 (`~/.foundry/cache/rpc/mainnet/26148842/` を再利用、reachable まで 12 秒 → 3 秒)。同じ fork で Lemon Ladder 相当 (100 USDC → USDe swap → 99 USDe → sUSDe) を REST で提出 → 実行: 5 tx すべて success、31 秒、`FORK_REFRESH` 不要。e2e 中の上流 request は +99 (tx が触る storage slot 48 件など、以後は cache)、BFF 側の Infura は +9 request (≈720 credit)。execute は `approvedBy` / `bundleHash` に加えて `via: "web"` が必須。残る気づき: proxy 経由で `anvil_nodeInfo` と fork tx の `eth_getTransactionReceipt` (10 件) が上流に出ている (次の削減候補)
+- 不採用: HyperSync (新依存 + token、free は fair-use のみ)、Alchemy free の getLogs (10 block 制限)、JSON-RPC batch (課金は減らず、429 時に結果欠落した過去あり)
+
 ### Home portal card を水の blob に (droplet glass、2026-10-05)
 - 経緯: 水面に独立した blob を浮かべる案 (`web-liquid-blobs-attempt1`) は想定と違ったため取り消し、4 隅の portal card 自体を blob の質感にした
 - `data-water-glass="droplet"` (`GLASS_VARIANTS.droplet`、lens 1.2 / frost 0) + `uGlassShape` (輪郭の揺らぎ 4 CSS px、seed)。shader は透明な「水への窓」(quiet × 0.6 で線の間を沈める、縁だけ薄い水色)、光の側の細い光の線、光に向いた角の 4 点星、水面 layer (`uGlassLens = 0`) にカードの外の集光。CSS は WebGL 中だけ tint / rim / 影を外し、文字の後ろに薄い vanilla の楕円と白い縁取り。WebGL 不可 / reduced transparency は従来の glass

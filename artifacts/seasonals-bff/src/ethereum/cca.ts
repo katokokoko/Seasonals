@@ -18,6 +18,7 @@ import { CCA } from "./config";
 import { baseEvent, etherscanAddress } from "./common";
 import { registerPublicSource, registerUserSource } from "./events";
 import { loadJson, saveJson } from "../persistence";
+import { etherscanApiKey, fetchLogs } from "../clients/etherscan";
 
 /** 最も古い factory (v1.0.0) の deploy block (getCode の二分探索で実測、2026-09-26) */
 export const CCA_DEPLOY_MIN_BLOCK = 23_780_787n;
@@ -46,6 +47,8 @@ export interface CcaAuction {
   currencySymbol?: string;
   currencyDecimals?: number;
   graduated?: boolean | null;
+  /** symbol / decimals / isGraduated の個別 read が revert した時刻 (ms)。ENRICH_RETRY_MS は再試行しない */
+  enrichFailedAt?: number;
 }
 
 interface IndexState {
@@ -193,8 +196,19 @@ export function indexProgress() {
   };
 }
 
+/**
+ * 個別 read の revert (symbol 未実装の token 等) は 429 と違って再試行しても直らないことが多い。
+ * 毎回の relevantAuctions で読み直すと eth_call が積もるので 24h 空ける (Infura credit 削減)
+ */
+const ENRICH_RETRY_MS = 24 * 3600_000;
+
 async function enrich(client: PublicClient, list: CcaAuction[], latest: bigint): Promise<void> {
-  const need = list.filter((a) => a.tokenSymbol === undefined || (a.graduated == null && BigInt(a.endBlock) <= latest));
+  const now = Date.now();
+  const need = list.filter(
+    (a) =>
+      (a.tokenSymbol === undefined || (a.graduated == null && BigInt(a.endBlock) <= latest)) &&
+      !(a.enrichFailedAt !== undefined && now - a.enrichFailedAt < ENRICH_RETRY_MS)
+  );
   if (need.length === 0) return;
   const calls = need.flatMap((a) => [
     { address: a.token as `0x${string}`, abi: erc20Abi, functionName: "symbol" as const },
@@ -227,6 +241,10 @@ async function enrich(client: PublicClient, list: CcaAuction[], latest: bigint):
     }
     const g = pick();
     if (BigInt(a.endBlock) <= latest && g.status === "success") a.graduated = Boolean(g.result);
+    // multicall 自体は成功 (= 429 ではない) のに個別 read が落ちた → 24h 再試行しない
+    const stillMissing = a.tokenSymbol === undefined || (a.graduated == null && BigInt(a.endBlock) <= latest);
+    if (stillMissing) a.enrichFailedAt = now;
+    else delete a.enrichFailedAt;
   }
   saveJson(STORE, load());
 }
@@ -355,9 +373,18 @@ export function deriveBidEvents(owner: string, a: CcaAuction, bid: CcaBid, head:
   ];
 }
 
-async function head(client: PublicClient) {
-  const b = await client.getBlock();
-  return { block: Number(b.number), timestampSec: Number(b.timestamp) };
+/** 最新 block (≈12 秒/block なので 1 block 分 cache。public / bid scan が同時に呼んでも getBlock 1 回) */
+const HEAD_TTL_MS = 12_000;
+let headCache: { at: number; value: Promise<{ block: number; timestampSec: number }> } | null = null;
+
+function head(client: PublicClient) {
+  if (headCache && Date.now() - headCache.at < HEAD_TTL_MS) return headCache.value;
+  const value = client.getBlock().then((b) => ({ block: Number(b.number), timestampSec: Number(b.timestamp) }));
+  headCache = { at: Date.now(), value };
+  value.catch(() => {
+    if (headCache?.value === value) headCache = null;
+  });
+  return value;
 }
 
 async function relevantAuctions(client: PublicClient) {
@@ -382,23 +409,28 @@ export async function fetchCcaPublicEvents(observedAt: string): Promise<Timeline
 }
 
 const userCache = new Map<string, { at: number; events: TimelineEvent[] }>();
+/** bid scan 結果の cache。Etherscan 経路なら再 scan も数 call で済むが、Infura fallback は重いので長めに */
+const USER_CACHE_TTL_MS = 10 * 60_000;
 
 /**
- * address 別 bid: 全 relevant auction をまとめて 1 回の eth_getLogs (10k block 単位) で、
- * BidSubmitted / BidExited / TokensClaimed を owner topic (3 event とも topic2) で絞る。
- * auction ごとに呼ぶと数百回になり Infura の 429 に当たるため (実測)。
+ * address 別 bid: BidSubmitted / BidExited / TokensClaimed を owner topic (3 event とも topic2) で絞る。
+ * - ETHERSCAN_API_KEY があれば Etherscan logs API (block 範囲制限なし、topic のみで検索可) で
+ *   event ごとに 1 call (計 3 call 程度)。Infura の 10k block 分割 getLogs (address 1 つにつき
+ *   ~180 call ≈ 46k credit、実測 2026-10-05) を使わない
+ * - key が無ければ従来どおり Infura: relevant auction 全部をまとめて 10k block 単位の eth_getLogs
+ *   (auction ごとに呼ぶと数百回になり 429 に当たるため)
  */
 const userScans = new Map<string, Promise<TimelineEvent[]>>();
 const USER_SCAN_WAIT_MS = 6_000;
 
 /**
- * bid scan は getLogs を数十回 (700ms 間隔) 使うため、他 source の応答を待たせないよう
+ * bid scan (特に Infura fallback) は時間がかかるため、他 source の応答を待たせないよう
  * 6 秒で打ち切り、scan は background で続けて完了後に cache する (次回の取得で出る)。
  */
 export async function fetchCcaUserEvents(owner: string, observedAt: string): Promise<TimelineEvent[]> {
   const key = owner.toLowerCase();
   const hit = userCache.get(key);
-  if (hit && Date.now() - hit.at < 5 * 60_000) return hit.events;
+  if (hit && Date.now() - hit.at < USER_CACHE_TTL_MS) return hit.events;
   let scan = userScans.get(key);
   if (!scan) {
     scan = scanUserBids(owner, observedAt).finally(() => userScans.delete(key));
@@ -416,6 +448,33 @@ export async function fetchCcaUserEvents(owner: string, observedAt: string): Pro
   }
 }
 
+type RawLog = { address: string; topics: [`0x${string}`, ...`0x${string}`[]]; data: `0x${string}` };
+
+/** Etherscan: event ごとに topic0 AND topic2(owner)、全期間 1 call。relevant auction 以外は捨てる */
+async function bidLogsViaEtherscan(topic0: `0x${string}`[], ownerTopic: `0x${string}`, from: bigint, latest: bigint, byAddr: Map<string, CcaAuction>): Promise<RawLog[]> {
+  const out: RawLog[] = [];
+  for (const t of topic0) {
+    const logs = await fetchLogs({ fromBlock: from, toBlock: latest, topics: { 0: t, 2: ownerTopic } });
+    for (const l of logs) if (byAddr.has(l.address)) out.push(l);
+  }
+  return out;
+}
+
+/** Infura fallback: relevant auction をまとめて 10k block 単位の eth_getLogs */
+async function bidLogsViaRpc(client: PublicClient, topic0: `0x${string}`[], ownerTopic: `0x${string}`, from: bigint, latest: bigint, byAddr: Map<string, CcaAuction>): Promise<RawLog[]> {
+  const out: RawLog[] = [];
+  for (let s0 = from; s0 <= latest; s0 += MAX_CHUNK) {
+    const e0 = s0 + MAX_CHUNK - 1n > latest ? latest : s0 + MAX_CHUNK - 1n;
+    const logs = (await client.request({
+      method: "eth_getLogs",
+      params: [{ address: [...byAddr.keys()] as `0x${string}`[], topics: [topic0, null, ownerTopic], fromBlock: toHex(s0), toBlock: toHex(e0) }],
+    })) as RawLog[];
+    out.push(...logs);
+    await sleep(THROTTLE_MS);
+  }
+  return out;
+}
+
 async function scanUserBids(owner: string, observedAt: string): Promise<TimelineEvent[]> {
   const client = getEthClient();
   if (!client) throw new Error("Ethereum RPC is not configured.");
@@ -426,32 +485,28 @@ async function scanUserBids(owner: string, observedAt: string): Promise<Timeline
   const ownerTopic = pad(owner.toLowerCase() as `0x${string}`, { size: 32 });
   const from = list.reduce((m, a) => (BigInt(a.startBlock) < m ? BigInt(a.startBlock) : m), BigInt(h.block));
   const latest = BigInt(h.block);
-  const bids = new Map<string, CcaBid>();
-  for (let s0 = from; s0 <= latest; s0 += MAX_CHUNK) {
-    const e0 = s0 + MAX_CHUNK - 1n > latest ? latest : s0 + MAX_CHUNK - 1n;
-    const logs = (await client.request({
-      method: "eth_getLogs",
-      params: [{ address: [...byAddr.keys()] as `0x${string}`[], topics: [topic0, null, ownerTopic], fromBlock: toHex(s0), toBlock: toHex(e0) }],
-    })) as Array<{ address: string; topics: [`0x${string}`, ...`0x${string}`[]]; data: `0x${string}` }>;
-    for (const l of logs) {
-      let dec;
-      try {
-        dec = decodeEventLog({ abi: ccaAuctionAbi, topics: l.topics, data: l.data });
-      } catch {
-        continue;
-      }
-      const args = dec.args as Record<string, unknown>;
-      if (dec.eventName === "BidSubmitted") {
-        const key = `${l.address.toLowerCase()}:${String(args.id)}`;
-        bids.set(key, { auction: l.address, bidId: String(args.id), priceQ96: String(args.priceQ96), amount: String(args.amount), exited: false, claimed: false });
-      } else {
-        const key = `${l.address.toLowerCase()}:${String(args.bidId)}`;
-        const b = bids.get(key);
-        if (b && dec.eventName === "BidExited") b.exited = true;
-        if (b && dec.eventName === "TokensClaimed") b.claimed = true;
-      }
+  const logs = etherscanApiKey()
+    ? await bidLogsViaEtherscan(topic0, ownerTopic, from, latest, byAddr)
+    : await bidLogsViaRpc(client, topic0, ownerTopic, from, latest, byAddr);
+  // BidSubmitted を先に処理してから exit / claim を当てる (Etherscan 経路は event 種別ごとに返るため)
+  const decoded = logs.flatMap((l) => {
+    try {
+      return [{ address: l.address, ev: decodeEventLog({ abi: ccaAuctionAbi, topics: l.topics, data: l.data }) }];
+    } catch {
+      return [];
     }
-    await sleep(THROTTLE_MS);
+  });
+  const bids = new Map<string, CcaBid>();
+  for (const { address, ev } of decoded) {
+    if (ev.eventName !== "BidSubmitted") continue;
+    const args = ev.args as Record<string, unknown>;
+    bids.set(`${address.toLowerCase()}:${String(args.id)}`, { auction: address, bidId: String(args.id), priceQ96: String(args.priceQ96), amount: String(args.amount), exited: false, claimed: false });
+  }
+  for (const { address, ev } of decoded) {
+    if (ev.eventName !== "BidExited" && ev.eventName !== "TokensClaimed") continue;
+    const b = bids.get(`${address.toLowerCase()}:${String((ev.args as Record<string, unknown>).bidId)}`);
+    if (b && ev.eventName === "BidExited") b.exited = true;
+    if (b && ev.eventName === "TokensClaimed") b.claimed = true;
   }
   const events = [...bids.values()].flatMap((b) => {
     const a = byAddr.get(b.auction.toLowerCase());
@@ -466,7 +521,11 @@ registerUserSource((owner) => ({ name: "cca:bids", needsRpc: true, run: (t) => f
 
 export function _resetCcaForTest() {
   state = { low: "1", high: "0", auctions: [] };
+  headCache = null;
+  userCache.clear();
 }
 export function _setCcaAuctionsForTest(a: CcaAuction[]) {
   state = { low: String(CCA_DEPLOY_MIN_BLOCK), high: "99999999", auctions: a };
+  headCache = null;
+  userCache.clear();
 }

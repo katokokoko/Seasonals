@@ -82,6 +82,13 @@ export default function SettingsScreen() {
               <li>Proposals: {status.data.llmConfigured ? "LLM" : "rule-based"}</li>
             </ul>
           )}
+          {/* Etherscan API 利用規約の表記義務 (wallet 履歴と CCA bid scan に使用) */}
+          <p className="muted small">
+            Wallet history and auction bids:{" "}
+            <a href="https://etherscan.io/apis" target="_blank" rel="noreferrer">
+              Powered by Etherscan.io APIs
+            </a>
+          </p>
         </section>
       </div>
     </WorkspaceShell>
