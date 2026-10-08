@@ -9,11 +9,15 @@
  * - prefers-reduced-motion では空きの中央に静止
  * - `data-water-floater` を付けて水面 shader に位置を渡し、波紋と水底の影を描かせる
  *   (不透明度に合わせて波紋と影も薄くなる)
+ * - 発熱対策 5 (2026-10-06): 動きは 30 fps で更新する。rAF は 120 Hz で回るが、毎回の rect 計測と
+ *   style 書き込み (drop-shadow 付きの層の再合成) は 1/30 秒ごとだけ。水面 (20 fps) より滑らかに動かす
+ *   (ユーザー指定)。波紋と影は水の描画に合わせて 20 fps で追従する
  */
 import { useEffect, useRef } from "react";
 import chara1 from "../assets/characters/chara1.webp";
 import chara2 from "../assets/characters/chara2.webp";
 import { appearance, spawn, stepFriend, type Env, type FriendState, type Pointer, type Zone } from "./friendsMotion";
+import { perfOn } from "../background/perfVariant";
 import "./floating.css";
 
 const SOURCES = [chara1, chara2];
@@ -26,6 +30,8 @@ const MAX_SIZE = 100;
 const MIN_ZONE = 72;
 const MARGIN = 18;
 const TAU = Math.PI * 2;
+/** 動きの更新の上限 (発熱対策 5、30 fps、水とは別)。判定の余裕は 120 Hz の半 frame */
+const STEP_MS = 1000 / 30 - 4;
 
 function measureZone([topSel, bottomSel]: [string, string]): Zone | null {
   const top = document.querySelector(topSel)?.getBoundingClientRect();
@@ -69,6 +75,10 @@ export function FloatingFriends() {
     };
 
     const frame = (now: number) => {
+      if (perfOn(5) && now - last < STEP_MS && !(reduce?.matches ?? false)) {
+        raf = requestAnimationFrame(frame);
+        return;
+      }
       const dt = Math.min((now - last) / 1000, 0.1);
       last = now;
       const t = (now - t0) / 1000;

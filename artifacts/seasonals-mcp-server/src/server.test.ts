@@ -6,7 +6,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 
 import { buildMcpServer } from "./server";
-import type { BffClient } from "./bff-client";
+import { BffHttpError, type BffClient } from "./bff-client";
 
 type Handler = (body?: unknown) => unknown;
 
@@ -287,86 +287,142 @@ describe("Seasonals MCP server", () => {
     expect(bad.isError).toBe(true);
   });
 
-  it("request_user_approval: approved / rejected / timeout の 3 分岐", async () => {
-    // approved: 2 回目の poll で token が付く
-    let calls = 0;
-    const approvedBff = fakeBff({
-      "/agent-plans/p1/request-approval": () => ({ status: "pending_user" }),
-      "/agent-plans/p1/approval": () => {
-        calls++;
-        return calls < 2
-          ? { status: "pending_user", approval_token: null }
-          : {
-              status: "approved",
-              approval_token: {
-                token_id: "tok_1",
-                expires_at: "2026-07-11T00:05:00.000Z",
-              },
-            };
+  it("request_user_approval: web で approve → 署名中 → broadcasted まで待って signatures を返す", async () => {
+    const SIG = "5".repeat(88);
+    const states = [
+      { plan_id: "p1", status: "pending_user", approved_by: null },
+      { plan_id: "p1", status: "approved", approved_by: "user" }, // 人の承認: token は出ない
+      { plan_id: "p1", status: "executing", approved_by: "user" }, // web で署名中
+      {
+        plan_id: "p1",
+        status: "broadcasted",
+        approved_by: "user",
+        execution: {
+          execution_id: "exec_p1",
+          signatures: [SIG],
+          submitted_at: "2026-10-06T00:00:00.000Z",
+          via: "web",
+        },
       },
-    });
-    const a = await connect(approvedBff);
-    const approved = textOf(
-      await a.client.callTool({
+    ];
+    let calls = 0;
+    const { client } = await connect(
+      fakeBff({
+        "/agent-plans/p1/request-approval": () => ({ status: "pending_user" }),
+        "/agent-plans/p1/approval": () => states[Math.min(calls++, states.length - 1)],
+      })
+    );
+    const out = textOf(
+      await client.callTool({
         name: "request_user_approval",
         arguments: { plan_id: "p1", timeout_seconds: 5 },
       })
-    ) as { status: string; approval_token: string };
-    expect(approved.status).toBe("approved");
-    expect(approved.approval_token).toBe("tok_1");
+    ) as { status: string; signatures: string[]; via: string };
+    expect(calls).toBe(4); // approved / executing では返らず待ち続けた
+    expect(out.status).toBe("broadcasted");
+    expect(out.signatures).toEqual([SIG]);
+    expect(out.via).toBe("web");
+  });
 
-    const r = await connect(
+  it("request_user_approval: auto 承認は token を返す (autonomous 経路)", async () => {
+    const { client } = await connect(
       fakeBff({
-        "/agent-plans/p2/request-approval": () => ({}),
-        "/agent-plans/p2/approval": () => ({
-          status: "rejected",
-          approval_token: null,
+        "/agent-plans/pa/request-approval": () => ({ status: "approved" }),
+        "/agent-plans/pa/approval": () => ({
+          plan_id: "pa",
+          status: "approved",
+          approved_by: "auto",
+          approval_token: { token_id: "tok_auto", expires_at: "2026-10-06T00:05:00.000Z" },
         }),
       })
     );
-    expect(
-      (
-        textOf(
-          await r.client.callTool({
-            name: "request_user_approval",
-            arguments: { plan_id: "p2", timeout_seconds: 5 },
-          })
-        ) as { status: string }
-      ).status
-    ).toBe("rejected");
+    const out = textOf(
+      await client.callTool({
+        name: "request_user_approval",
+        arguments: { plan_id: "pa", timeout_seconds: 5 },
+      })
+    ) as { status: string; approval_token: string; approved_by: string };
+    expect(out).toMatchObject({ status: "approved", approved_by: "auto", approval_token: "tok_auto" });
+  });
+
+  it("request_user_approval: failed / rejected / expired は理由付きで返す、未決は timeout", async () => {
+    for (const [status, reason] of [
+      ["failed", "user_cancelled"],
+      ["rejected", "user_declined"],
+      ["expired", undefined],
+    ] as const) {
+      const { client } = await connect(
+        fakeBff({
+          "/agent-plans/p2/request-approval": () => ({}),
+          "/agent-plans/p2/approval": () => ({
+            plan_id: "p2",
+            status,
+            approved_by: status === "failed" ? "user" : null,
+            ...(reason ? { failure_reason: reason } : {}),
+          }),
+        })
+      );
+      const out = textOf(
+        await client.callTool({
+          name: "request_user_approval",
+          arguments: { plan_id: "p2", timeout_seconds: 5 },
+        })
+      ) as { status: string; failure_reason?: string };
+      expect(out.status).toBe(status);
+      expect(out.failure_reason).toBe(reason);
+    }
 
     const t = await connect(
       fakeBff({
         "/agent-plans/p3/request-approval": () => ({}),
         "/agent-plans/p3/approval": () => ({
-          status: "pending_user",
-          approval_token: null,
+          plan_id: "p3",
+          status: "approved",
+          approved_by: "user", // 人が承認したが web でまだ署名していない
         }),
       })
     );
-    expect(
-      (
-        textOf(
-          await t.client.callTool({
-            name: "request_user_approval",
-            arguments: { plan_id: "p3", timeout_seconds: 1 },
-          })
-        ) as { status: string }
-      ).status
-    ).toBe("timeout");
+    const out = textOf(
+      await t.client.callTool({
+        name: "request_user_approval",
+        arguments: { plan_id: "p3", timeout_seconds: 1 },
+      })
+    ) as { status: string; last_status: string };
+    expect(out).toEqual({ status: "timeout", last_status: "approved" });
   }, 15000);
 
-  it("execute_approved_action: unsigned tx を透過 (署名は受け取らない)", async () => {
+  it("request_user_approval: 既に approved の plan への再呼び出し (request-approval 409) も poll に進む", async () => {
+    const { client } = await connect({
+      get: async () =>
+        ({
+          plan_id: "p4",
+          status: "broadcasted",
+          approved_by: "user",
+          execution: { execution_id: "e", signatures: ["S"], submitted_at: "t", via: "web" },
+        }) as never,
+      post: async () => {
+        throw new BffHttpError(409, { error: "invalid_status_transition", current: "executing" });
+      },
+    });
+    const out = textOf(
+      await client.callTool({
+        name: "request_user_approval",
+        arguments: { plan_id: "p4", timeout_seconds: 5 },
+      })
+    ) as { status: string; signatures: string[] };
+    expect(out).toMatchObject({ status: "broadcasted", signatures: ["S"] });
+  });
+
+  it("execute_approved_action: 人が承認した plan は /execute を呼ばず awaiting_user_signature", async () => {
+    const executed = jest.fn();
     const { client } = await connect(
       fakeBff({
-        "/agent-plans/p1/execute": (body) => ({
-          execution_id: "exec_p1",
-          status: "pushed_to_mobile",
-          unsigned_transactions: [
-            { index: 0, label: "deposit", tx_base64: "TX" },
-          ],
-          echo: body,
+        "/agent-plans/p1/approval": () => ({
+          plan_id: "p1",
+          status: "approved",
+          approved_by: "user",
         }),
+        "/agent-plans/p1/execute": executed,
       })
     );
     const out = textOf(
@@ -374,8 +430,41 @@ describe("Seasonals MCP server", () => {
         name: "execute_approved_action",
         arguments: { plan_id: "p1", approval_token: "tok_1" },
       })
+    ) as { status: string; message: string };
+    expect(out.status).toBe("awaiting_user_signature");
+    expect(out.message).toMatch(/Seasonals web app/);
+    expect(executed).not.toHaveBeenCalled();
+  });
+
+  it("execute_approved_action: auto 承認の plan は unsigned tx を透過 (署名は受け取らない)", async () => {
+    let sentBody: unknown;
+    const { client } = await connect(
+      fakeBff({
+        "/agent-plans/pa/approval": () => ({
+          plan_id: "pa",
+          status: "approved",
+          approved_by: "auto",
+          approval_token: { token_id: "tok_auto" },
+        }),
+        "/agent-plans/pa/execute": (body) => {
+          sentBody = body;
+          return {
+            execution_id: "exec_pa",
+            status: "awaiting_signature",
+            plan: {},
+            unsigned_transactions: [{ index: 0, label: "deposit", tx_base64: "TX" }],
+          };
+        },
+      })
+    );
+    const out = textOf(
+      await client.callTool({
+        name: "execute_approved_action",
+        arguments: { plan_id: "pa", approval_token: "tok_auto" },
+      })
     ) as { status: string; unsigned_transactions: { tx_base64: string }[] };
-    expect(out.status).toBe("pushed_to_mobile");
+    expect(sentBody).toEqual({ approval_token: "tok_auto", via: "autonomous" });
+    expect(out.status).toBe("awaiting_signature");
     expect(out.unsigned_transactions[0]!.tx_base64).toBe("TX");
   });
 

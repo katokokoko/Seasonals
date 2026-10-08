@@ -23,7 +23,7 @@ import {
   incrementDaily,
   type AutonomousDeps,
 } from "./autonomous";
-import { _clearPlanStoreForTest } from "./plan-store";
+import { _clearPlanStoreForTest, getStoredPlan } from "./plan-store";
 import { _resetPolicyForTest } from "./policy-store";
 import { sendAndConfirmDevnetTx, getDevnetConnection } from "./clients/solana-devnet";
 
@@ -35,7 +35,8 @@ jest.mock("./clients/oracle", () => ({
     primary: "pyth",
     price_usd: "80.00000000",
     pyth: { available: true, price_usd: "80.00000000", age_seconds: 2 },
-    switchboard: { available: false, price_usd: null, age_seconds: null },
+    secondary: { source: null, available: false, price_usd: null, age_seconds: null },
+    tier: "C",
     divergence_pct: null,
     warnings: [],
     block_reason: null,
@@ -225,6 +226,13 @@ describe("runAutonomousCycle — decision + guards", () => {
     );
     expect(rec.decision).toBe("executed");
     expect(rec.tx_signature).toBe("SIG_DEVNET_CONFIRMED");
+    // plan は委任署名で送信済み = broadcasted (auto 承認、execution に署名を記録)
+    const plan = getStoredPlan(rec.plan_id!)!;
+    expect(plan.status).toBe("broadcasted");
+    expect(plan.approved_by).toBe("auto");
+    expect(plan.execution).toEqual(
+      expect.objectContaining({ signatures: ["SIG_DEVNET_CONFIRMED"], via: "autonomous" })
+    );
     expect(rec.amount_usd8).toBe(AUTONOMOUS_MAX_TX_USD8); // policy 無制限 → $20 に第1クランプ
     expect(mockSend).toHaveBeenCalledTimes(1);
     expect(push).toHaveBeenCalledWith(
@@ -389,12 +397,14 @@ describe("routes: /autonomous/* + PATCH /user-policy", () => {
       url: `/agent-plans/${plan.plan_id}/request-approval`,
     });
     expect(req.json().status).toBe("approved"); // pending_user を飛ばした
-    // approval poll で token が取れる
+    expect(req.json().approved_by).toBe("auto");
+    // approval poll で token が取れる (auto 承認の時だけ token を出す)
     const appr = await app.inject({
       method: "GET",
       url: `/agent-plans/${plan.plan_id}/approval`,
     });
-    expect(appr.json().approval_token).not.toBeNull();
+    expect(appr.json().approved_by).toBe("auto");
+    expect(appr.json().approval_token.token_id).toEqual(expect.any(String));
     // Expo push は呼ばれていない
     expect(
       fetchSpy.mock.calls.filter((c) =>
@@ -441,7 +451,7 @@ describe("routes: /autonomous/* + PATCH /user-policy", () => {
       method: "GET",
       url: `/agent-plans/${plan.plan_id}/approval`,
     });
-    expect(appr.json().approval_token).toBeNull();
+    expect(appr.json().approval_token).toBeUndefined();
   });
 
   it("auto-approve 短絡: policy 外 protocol は短絡せず pending_user (F3 fail-closed)", async () => {
@@ -480,7 +490,7 @@ describe("routes: /autonomous/* + PATCH /user-policy", () => {
       method: "GET",
       url: `/agent-plans/${plan.plan_id}/approval`,
     });
-    expect(appr.json().approval_token).toBeNull(); // token 未発行
+    expect(appr.json().approval_token).toBeUndefined(); // token 未発行
   });
 
   /**

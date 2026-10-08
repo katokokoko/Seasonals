@@ -23,12 +23,6 @@ import Fastify, {
 import cors from "@fastify/cors";
 import { registerEthRoutes } from "./routes/eth";
 import { registerSkrStakingRoutes } from "./routes/skr-staking";
-import {
-  Connection,
-  PublicKey,
-  Transaction,
-  TransactionInstruction,
-} from "@solana/web3.js";
 
 import {
   fixtureUnifiedTimeEvents,
@@ -47,6 +41,7 @@ import {
   type AgentPlan,
   type EarnPosition,
   type EarnPositionsResponse,
+  type OracleSourceId,
   type Position,
   type PortfolioHistoryResponse,
   type PortfolioHoldingsResponse,
@@ -89,6 +84,7 @@ import {
   getTokenSupplyUi,
   getWalletBalanceSmallest,
   sendTransactionViaHelius,
+  getSignatureStatus,
   type StakeAccountInfo,
 } from "./clients/helius-rpc";
 import {
@@ -163,8 +159,12 @@ import {
   fetchJupiterRateOut,
   fetchLstApys,
   fetchPerenaUsdStarApy,
+  fetchPerenaUsdStarPrice,
+  fetchSanctumTvls,
   type ExponentFullMarket,
 } from "./clients/rates";
+import { fetchSaveReserveTotals, type SaveReserveTotal } from "./clients/save-reserve";
+import { fetchJupiterUsdPrices } from "./clients/jupiter-price";
 import {
   EXPONENT_MARKETS,
   exponentMaturityIso,
@@ -237,6 +237,9 @@ import {
 } from "./autonomous";
 import type {
   ActionSpec,
+  AgentPlanApprovalStatus,
+  AgentPlanExecuteResponse,
+  AgentPlanExecutionVia,
   CandidateAction,
   ProtocolMenuEntry,
   ProtocolPool,
@@ -246,63 +249,22 @@ import {
   computeBundleHash,
   createPlan,
   getLatestTokenForPlan,
+  getPendingExecution,
   getStoredPlan,
   getStoredToken,
+  isTerminalPlanStatus,
   issueApprovalToken,
   listPushTokens,
   listStoredPlans,
+  peekApprovalToken,
   registerPushToken,
+  startPlanExecution,
   updatePlan,
   validateAndConsumeToken,
 } from "./plan-store";
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Solana 接続 (Devnet) — approve endpoint で memo tx を構築するため
-// ─────────────────────────────────────────────────────────────────────────────
-
-const SOLANA_RPC_URL =
-  process.env.SOLANA_RPC_URL ?? "https://api.devnet.solana.com";
-const MEMO_PROGRAM_ID = new PublicKey(
-  "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr"
-);
-
-let cachedConnection: Connection | null = null;
-function getConnection(): Connection {
-  if (!cachedConnection) {
-    cachedConnection = new Connection(SOLANA_RPC_URL, "confirmed");
-  }
-  return cachedConnection;
-}
-
-/**
- * 指定 wallet (feePayer) を signer とする Memo Program transaction を構築。
- * memo に "Seasonals approve <plan_id> @<timestamp>" を書き込む。
- * 成功すると base64 serialized tx を返す。
- *
- * NOTE: 実 production では §11.7 simulate_action で構築した bundle (lending /
- * staking / etc. の実 instruction) をここに置換する。本実装は MWA round-trip
- * を end-to-end で検証するための stub。
- */
-async function buildMemoTransaction(
-  feePayer: string,
-  planId: string
-): Promise<string> {
-  const conn = getConnection();
-  const { blockhash } = await conn.getLatestBlockhash();
-  const memoText = `Seasonals approve ${planId} @${new Date().toISOString()}`;
-  const ix = new TransactionInstruction({
-    programId: MEMO_PROGRAM_ID,
-    keys: [],
-    data: Buffer.from(memoText, "utf-8"),
-  });
-  const tx = new Transaction({
-    feePayer: new PublicKey(feePayer),
-    recentBlockhash: blockhash,
-  }).add(ix);
-  // signer なしで serialize (mobile 側で MWA 経由で sign される)
-  const serialized = tx.serialize({ requireAllSignatures: false });
-  return Buffer.from(serialized).toString("base64");
-}
+import { buildPlanTransactions } from "./agent-plan-executor";
+import { resolveSolanaRoute } from "@workspace/lib/derive/solana-action";
+import { fetchPerenaTriStableTvlUsd } from "./clients/perena";
 
 /**
  * Phase 8.1: Helius DAS asset 配列を Position[] に正規化する。
@@ -555,7 +517,7 @@ async function loadSolanaHistoryInputs(
  * 上がる token の過去が全部「現在価格」になり、Deposited のグラフが横一直線になる。
  * 価格マップは **mint キー** で合流させる (8.64)。
  */
-async function solanaPriceSeries(
+export async function solanaPriceSeries(
   historyAssets: HistoryAsset[],
   priceFrom: number,
   priceTo: number,
@@ -584,13 +546,27 @@ async function solanaPriceSeries(
     fetchLlamaPriceSeries(feedlessMints, priceFrom, priceTo, step),
   ]);
 
+  // 2026-10: Pyth Benchmarks が 404 を返すようになった。feed のある asset でも series が
+  // 取れなければ DefiLlama に落とす (取れない asset を「現在価格の横一直線」にしない)
+  // fetchPriceSeries は失敗を空 series で返すので、点が無いものを欠けとして扱う
+  const hasPythSeries = (a: HistoryAsset) => (seriesBySymbol.get(a.symbol === "WSOL" ? "SOL" : a.symbol)?.t.length ?? 0) > 0;
+  const pythMissing = historyAssets.filter((a) => a.feedId && !hasPythSeries(a)).map((a) => a.mint);
+  if (pythMissing.length > 0) {
+    const fallback = await fetchLlamaPriceSeries(pythMissing, priceFrom, priceTo, step).catch(
+      () => new Map<string, PriceSeries>()
+    );
+    for (const [mint, series] of fallback) llamaByMint.set(mint, series);
+  }
+
   const seriesByMint = new Map<string, PriceSeries>();
   for (const asset of historyAssets) {
     if (asset.feedId) {
       const symbol = asset.symbol === "WSOL" ? "SOL" : asset.symbol;
       const series = seriesBySymbol.get(symbol);
-      if (series) seriesByMint.set(asset.mint, series);
-      continue;
+      if (series && series.t.length > 0) {
+        seriesByMint.set(asset.mint, series);
+        continue;
+      }
     }
     const llama = llamaByMint.get(asset.mint);
     // 見出しの現在値 (DAS 価格) と chart の右端を揃える。形は観測値のまま
@@ -861,9 +837,9 @@ const COST_BASIS_SHARE_TO_UNDERLYING: Record<string, string> = {
 function oracleBlockMessage(reason: string | null | undefined): string {
   switch (reason) {
     case "oracle_both_stale":
-      return "Both Pyth and Switchboard are stale (>60s), so the price can't be trusted. Stopped before signing.";
+      return "The price sources are stale, so the price can't be trusted. Stopped before signing.";
     case "oracle_divergence_too_large":
-      return "Pyth and Switchboard disagree by more than 5%. Stopped before signing.";
+      return "The price sources disagree by more than 5%. Stopped before signing.";
     case "oracle_unavailable":
       return "Price oracle unavailable, so this action can't be checked. Stopped before signing.";
     default:
@@ -2866,6 +2842,16 @@ export interface MenuLiveSources {
   meteoraStats?: Map<string, MeteoraPoolStats>;
   /** Phase 8.26: eUSX 総供給 × syExchangeRate (表示専用 USD) */
   solsticeTvlUsd?: number;
+  /** 2026-10: Perena 新 USD* 総供給 × api.perena.org の単価 (表示専用 USD) */
+  perenaUsdStarTvlUsd?: number;
+  /** 2026-10: Perena Tri-Stable Pool の vault 残高合計 (旧 USD* の pool、表示専用 USD) */
+  perenaTriStableTvlUsd?: number;
+  /** 2026-10: LST symbol → TVL (lamports、Sanctum /v1/tvl/current)。USD 換算は solPriceUsd */
+  lstTvlLamports?: Map<string, bigint>;
+  /** 2026-10: Save reserve address → 供給総量 (smallest unit、on-chain reserve decode) */
+  saveReserveTotals?: Map<string, SaveReserveTotal>;
+  /** 2026-10: sHYUSD 総供給 × Jupiter Price v3 単価 (表示専用 USD) */
+  shyusdTvlUsd?: number;
   /**
    * Phase 8.33: Exponent PT markets (live)。undefined = fetch 失敗 → lib registry
    * snapshot へ degrade (どちらも buildExponentMenuPools が maturity filter する)。
@@ -2891,7 +2877,18 @@ export const LST_POOL_SYMBOLS: Record<string, string> = {
   solstice_eusx: "eUSX", // Exponent underlyingApy (8.24)
   perena_usd_star: "USD*", // Perena app の非公開 endpoint (8.25)
   hylo_hylosol: "hyloSOL", // Exponent underlyingApy (8.27)
+  // hylo_shyusd は対象外: Exponent markets に sHYUSD の underlying が無い (2026-10-06 確認)
 };
+
+/**
+ * 2026-10: Sanctum /v1/tvl/current で TVL を引く LST symbol (SOL 建て LST のみ)。
+ * eUSX / USD* は Sanctum LST ではないので除外 (それぞれ別ソースで TVL を出す)。
+ */
+export const LST_TVL_SYMBOLS: string[] = [
+  ...new Set(
+    Object.values(LST_POOL_SYMBOLS).filter((s) => s !== "eUSX" && s !== "USD*")
+  ),
+];
 
 /** 有限 number のみ採用 (不正値は fixture 維持)。 */
 function finite(n: number): number | null {
@@ -2902,8 +2899,9 @@ function finite(n: number): number | null {
  * fixture menu listing に live APY/TVL を pool 単位で overlay する純関数。
  * apy (0..1 fraction) / tvl_usd / borrowed_usd (USD number) は ProtocolPool の
  * documented display carve-out (§3) — smallest-unit string 規約の適用外。
- * 対応 protocol: jupiter / kamino (reserve + kVault) / savefi / orca。
- * それ以外 (LST / meteora / perena / solstice) は live ソースが無く fixture 値。
+ * 対応 protocol: jupiter / kamino (reserve + kVault) / savefi / orca / meteora /
+ * LST 系 (sanctum / marinade / jito / hylo) / perena / solstice。
+ * live ソースの無い pool (savefi_turbo_sol / jito_restaking_vault 等) は fixture 値。
  * Phase 8.33: exponent entry のみ patch でなく pools **置換** (market 世代交代対応)。
  */
 export function applyMenuLiveOverlays(
@@ -2993,15 +2991,43 @@ export function applyMenuLiveOverlays(
         const vm = vault ? s.kaminoVaults?.get(vault.vault) : undefined;
         if (vm) {
           const apy = finite(Number(vm.apy));
-          if (apy !== null) out.apy = apy; // TVL は metrics に無く fixture 維持
+          if (apy !== null) out.apy = apy;
+          // 2026-10: TVL = 投下済み + 未投下 (metrics の USD decimal string、§3 表示専用)。
+          // どちらか欠落 / 不正なら fixture 維持
+          if (vm.tokensInvestedUsd !== undefined && vm.tokensAvailableUsd !== undefined) {
+            const invested = finite(Number(vm.tokensInvestedUsd));
+            const available = finite(Number(vm.tokensAvailableUsd));
+            if (invested !== null && available !== null && invested + available > 0) {
+              out.tvl_usd = invested + available;
+            }
+          }
         }
-      } else if (entry.protocol_id === "savefi" && s.saveRates) {
+      } else if (entry.protocol_id === "savefi") {
         const mkt = SAVE_MARKETS.find((mk) => mk.pool_id === pool.pool_id);
-        const rate = mkt
-          ? s.saveRates.find((r) => r.reserve === mkt.reserve)
-          : undefined;
+        const rate =
+          mkt && s.saveRates
+            ? s.saveRates.find((r) => r.reserve === mkt.reserve)
+            : undefined;
         const apy = rate ? finite(rate.supply_apy) : null;
         if (apy !== null) out.apy = apy;
+        // 2026-10: TVL = on-chain reserve の供給総量 × 単価 (USDC は 1、SOL は oracle)。
+        // §3 display carve-out — bigint の総量を表示直前にだけ Number 化する
+        const totals = mkt ? s.saveReserveTotals?.get(mkt.reserve) : undefined;
+        const price =
+          mkt?.underlying_symbol === "USDC"
+            ? 1
+            : mkt?.underlying_symbol === "SOL"
+              ? s.solPriceUsd
+              : undefined;
+        if (
+          totals &&
+          price !== undefined &&
+          Number.isFinite(price) &&
+          price > 0
+        ) {
+          const tvl = finite((Number(totals.total) / 10 ** totals.decimals) * price);
+          if (tvl !== null && tvl > 0) out.tvl_usd = tvl;
+        }
       } else if (entry.protocol_id === "orca" && s.orcaStats) {
         const mkt = ORCA_MARKETS.find((mk) => mk.pool_id === pool.pool_id);
         const stats = mkt ? s.orcaStats.get(mkt.pool_address) : undefined;
@@ -3017,13 +3043,34 @@ export function applyMenuLiveOverlays(
           entry.protocol_id === "sanctum" ||
           entry.protocol_id === "solstice" ||
           entry.protocol_id === "perena" ||
-          entry.protocol_id === "hylo") &&
-        s.lstApys
+          entry.protocol_id === "hylo")
       ) {
-        // Phase 8.23/8.24: yield token APY (TVL は原則ソース無し、fixture 維持)
+        // Phase 8.23/8.24: yield token APY。TVL は 2026-10 から各ソースで live
+        // (APY ソースの成否と独立 — どれかが落ちても他は overlay される)
         const sym = LST_POOL_SYMBOLS[pool.pool_id];
-        const apy = sym !== undefined ? s.lstApys.get(sym) : undefined;
+        const apy = sym !== undefined ? s.lstApys?.get(sym) : undefined;
         if (apy !== undefined && finite(apy) !== null) out.apy = apy;
+        // 2026-10: SOL 建て LST の TVL = Sanctum TVL (lamports) × SOL oracle 価格
+        // (§3 display carve-out — bigint の lamports を表示直前にだけ Number 化)
+        const lamports = sym !== undefined ? s.lstTvlLamports?.get(sym) : undefined;
+        if (
+          lamports !== undefined &&
+          s.solPriceUsd !== undefined &&
+          Number.isFinite(s.solPriceUsd) &&
+          s.solPriceUsd > 0
+        ) {
+          const tvl = finite((Number(lamports) / 1e9) * s.solPriceUsd);
+          if (tvl !== null && tvl > 0) out.tvl_usd = tvl;
+        }
+        // 2026-10: sHYUSD = 総供給 × Jupiter 単価
+        if (
+          pool.pool_id === "hylo_shyusd" &&
+          s.shyusdTvlUsd !== undefined &&
+          finite(s.shyusdTvlUsd) !== null &&
+          s.shyusdTvlUsd > 0
+        ) {
+          out.tvl_usd = s.shyusdTvlUsd;
+        }
         // Phase 8.26: solstice のみ供給 × syRate で実 TVL
         if (
           pool.pool_id === "solstice_eusx" &&
@@ -3043,6 +3090,16 @@ export function applyMenuLiveOverlays(
           if (apy !== null) out.apy = apy;
           if (tvl !== null && tvl > 0) out.tvl_usd = tvl;
         }
+      }
+      // Perena の TVL は APY の有無と独立に live (取れなければ fixture のまま)
+      if (entry.protocol_id === "perena") {
+        const tvl =
+          pool.pool_id === "perena_usd_star"
+            ? s.perenaUsdStarTvlUsd
+            : pool.pool_id === "perena_tri_stable"
+              ? s.perenaTriStableTvlUsd
+              : undefined;
+        if (tvl !== undefined && finite(tvl) !== null && tvl > 0) out.tvl_usd = tvl;
       }
       return out;
     }),
@@ -3076,9 +3133,11 @@ export async function buildServer(
   await registerSkrStakingRoutes(app);
 
   // ── health ────────────────────────────────────────────────────────────
+  // solana.heliusConfigured: Web Settings が Solana 実行可否を出すための boolean のみ (key / URL は返さない)
   app.get("/health", async () => ({
     status: "ok",
     timestamp: new Date().toISOString(),
+    solana: { heliusConfigured: Boolean(process.env.HELIUS_API_KEY) },
   }));
 
   // ── time events / positions / wallets / protocols / user policy ──────
@@ -3302,6 +3361,11 @@ export async function buildServer(
       solTvlR,
       expMktR,
       solPriceR,
+      perenaTvlR,
+      perenaTriTvlR,
+      lstTvlR,
+      saveTotalsR,
+      shyusdTvlR,
     ] = await Promise.allSettled([
         fetchEarnMarkets(),
         fetchKaminoReserveMetrics(KAMINO_MAIN_MARKET),
@@ -3333,6 +3397,31 @@ export async function buildServer(
         // Phase 8.33: Exponent PT markets + SOL 価格 (SOL quote market の TVL 換算用)
         fetchExponentFullMarkets(),
         getOracleResult("So11111111111111111111111111111111111111112"),
+        // 2026-10: Perena USD* TVL = 新 mint の総供給 × Perena API の単価 (eUSX と同じ型)
+        (async () => {
+          const usdStar = SWAP_EARN_MARKETS.find((m) => m.protocol_id === "perena");
+          if (!usdStar) throw new Error("perena market not registered");
+          const [supply, price] = await Promise.all([getTokenSupplyUi(usdStar.share_mint), fetchPerenaUsdStarPrice()]);
+          return supply * price;
+        })(),
+        // 2026-10: Perena Tri-Stable Pool (旧 USD* の pool) TVL = vault 残高の合計
+        fetchPerenaTriStableTvlUsd(),
+        // 2026-10: SOL 建て LST の TVL (lamports、Sanctum extra-api)
+        fetchSanctumTvls(LST_TVL_SYMBOLS),
+        // 2026-10: Save reserve の供給総量 (on-chain、getMultipleAccounts 1 回)
+        fetchSaveReserveTotals(SAVE_MARKETS.map((m) => m.reserve)),
+        // 2026-10: sHYUSD TVL = 総供給 × Jupiter Price v3 単価 (eUSX / USD* と同じ型)
+        (async () => {
+          const shy = SWAP_EARN_MARKETS.find((m) => m.share_symbol === "sHYUSD");
+          if (!shy) throw new Error("sHYUSD market not registered");
+          const [supply, prices] = await Promise.all([
+            getTokenSupplyUi(shy.share_mint),
+            fetchJupiterUsdPrices([shy.share_mint]),
+          ]);
+          const price = prices.get(shy.share_mint);
+          if (price === undefined) throw new Error("no sHYUSD usdPrice");
+          return supply * price;
+        })(),
       ]);
     for (const [r, label] of [
       [jupR, "jupiter lend markets"],
@@ -3344,6 +3433,11 @@ export async function buildServer(
       [metR, "meteora stats"],
       [perenaR, "perena apy"],
       [solTvlR, "solstice tvl"],
+      [perenaTvlR, "perena tvl"],
+      [perenaTriTvlR, "perena tri-stable tvl"],
+      [lstTvlR, "sanctum lst tvl"],
+      [saveTotalsR, "save reserve totals"],
+      [shyusdTvlR, "shyusd tvl"],
       [expMktR, "exponent pt markets"],
       [solPriceR, "sol oracle price"],
     ] as const) {
@@ -3392,6 +3486,16 @@ export async function buildServer(
       lstApys: yieldApys.size > 0 ? yieldApys : undefined,
       meteoraStats: metR.status === "fulfilled" ? metR.value : undefined,
       solsticeTvlUsd: solTvlR.status === "fulfilled" ? solTvlR.value : undefined,
+      perenaUsdStarTvlUsd: perenaTvlR.status === "fulfilled" ? perenaTvlR.value : undefined,
+      perenaTriStableTvlUsd: perenaTriTvlR.status === "fulfilled" ? perenaTriTvlR.value : undefined,
+      // 2026-10: instanceof guard は不正 resolve (mock 未設定等) 対策 — yieldApys と同じ
+      lstTvlLamports:
+        lstTvlR.status === "fulfilled" && lstTvlR.value instanceof Map ? lstTvlR.value : undefined,
+      saveReserveTotals:
+        saveTotalsR.status === "fulfilled" && saveTotalsR.value instanceof Map
+          ? saveTotalsR.value
+          : undefined,
+      shyusdTvlUsd: shyusdTvlR.status === "fulfilled" ? shyusdTvlR.value : undefined,
       // Phase 8.33: Exponent (失敗時は undefined → registry snapshot へ degrade)
       exponentMarkets: expMktR.status === "fulfilled" ? expMktR.value : undefined,
       solPriceUsd:
@@ -3748,20 +3852,44 @@ export async function buildServer(
     }
   );
 
-  // ── agent plans (list + read + approve/reject) ───────────────────────
-  // Phase 8.28: MCP 由来の store plan と fixture を merge (store 優先)
-  app.get("/agent-plans", async () => [
-    ...listStoredPlans(),
-    ...fixtureAgentPlans,
-  ]);
+  // ── agent plans (list + read + approve → execute → signatures) ───────
+  // 2026-10-06: 人が承認する plan は web が approve → execute (unsigned tx) → 署名 →
+  // 送信 → /signatures まで一気に行う (承認 = 実行、ETH agent proposal と同じ)。
+  // plan は .data/agent-plans.json に永続、24h で expired (plan-store.ts)。
+  // fixture plan は test 環境でのみ混ぜる (dev / prod の inbox に偽 plan を出さない)
+  const fixturePlansEnabled = (): boolean => process.env.NODE_ENV === "test";
+  const findFixturePlan = (planId: string): AgentPlan | undefined =>
+    fixturePlansEnabled()
+      ? fixtureAgentPlans.find((p) => p.plan_id === planId)
+      : undefined;
+  /** /failed や /reject の reason は表示用の短い文字列に限る (ログ / UI に生で出るため) */
+  const sanitizeReason = (v: unknown): string | undefined =>
+    typeof v === "string" && v.trim().length > 0
+      ? v.trim().slice(0, 200)
+      : undefined;
+  /** base58 の tx signature (ed25519 64 byte = 87〜88 文字、短い表現も許容) */
+  const SIGNATURE_RE = /^[1-9A-HJ-NP-Za-km-z]{64,88}$/;
+
+  app.get<{ Querystring: { wallet?: string } }>("/agent-plans", async (req) => {
+    const wallet = req.query?.wallet;
+    const stored = listStoredPlans();
+    const filtered =
+      typeof wallet === "string" && wallet.length > 0
+        ? stored.filter((p) => p.selected_action?.wallet_id === wallet)
+        : stored;
+    if (!fixturePlansEnabled()) return filtered;
+    const fixtures =
+      typeof wallet === "string" && wallet.length > 0
+        ? fixtureAgentPlans.filter((p) => p.selected_action?.wallet_id === wallet)
+        : fixtureAgentPlans;
+    return [...filtered, ...fixtures];
+  });
 
   app.get<{ Params: { planId: string } }>(
     "/agent-plans/:planId",
     async (req, reply) => {
       const { planId } = req.params;
-      const found =
-        getStoredPlan(planId) ??
-        fixtureAgentPlans.find((p) => p.plan_id === planId);
+      const found = getStoredPlan(planId) ?? findFixturePlan(planId);
       if (!found) {
         reply.code(404);
         return { error: "agent_plan_not_found", plan_id: planId };
@@ -3772,7 +3900,7 @@ export async function buildServer(
 
   /**
    * Phase 8.28: MCP compare_opportunities が draft plan を作成する (§11.7)。
-   * store 保存 (in-memory — §17/§25 の永続化前段)。
+   * expires_at = 作成 + 24h (plan-store)。
    */
   app.post<{
     Body: {
@@ -3801,8 +3929,8 @@ export async function buildServer(
 
   /**
    * Phase 8.28: MCP request_user_approval — status を pending_user にし、
-   * 登録済み push token へ Expo push を best-effort 送信 (ApprovalPushPayload
-   * 契約 = mobile services/push.ts)。push 失敗/token 無しでも 200 (poll で成立)。
+   * 登録済み push token へ Expo push を best-effort 送信 (payload は
+   * `{ type: "approval", plan_id }`)。push 失敗/token 無しでも 200 (web inbox / poll で成立)。
    */
   app.post<{ Params: { planId: string }; Body: { timeout_seconds?: number } }>(
     "/agent-plans/:planId/request-approval",
@@ -3860,7 +3988,10 @@ export async function buildServer(
           bundle_hash: plan.simulation_result.bundle_hash,
         });
         incrementDaily(); // auto 承認も日次枠を消費 (自律実行と合算の保守側運用)
-        return updatePlan(planId, { status: AgentPlanStatus.Approved })!;
+        return updatePlan(planId, {
+          status: AgentPlanStatus.Approved,
+          approved_by: "auto",
+        })!;
       }
       // idempotent (§10.3): pending_user なら push を再送しない
       const alreadyPending = plan.status === AgentPlanStatus.PendingUser;
@@ -3896,9 +4027,10 @@ export async function buildServer(
   );
 
   /**
-   * Phase 8.28: MCP request_user_approval の poll 先 — 承認状態と、承認済み
-   * なら発行済み approval_token を返す (§24.9)。v1 は client 認証の無い dev
-   * 前提 (plan_id を知る者が token を取得できる — README に明記、v2 で auth)。
+   * MCP request_user_approval の poll 先 (§24.9)。承認状態・署名結果・失敗理由を返す。
+   * approval_token は **policy の自動承認 (approved_by === "auto") で approved の時だけ** 含める —
+   * 人が承認した plan の token は web が approve 応答で直接受け取り、ここからは出さない
+   * (plan_id を知る者が人の承認を横取りして execute できないように)。
    */
   app.get<{ Params: { planId: string } }>(
     "/agent-plans/:planId/approval",
@@ -3910,34 +4042,61 @@ export async function buildServer(
         return { error: "agent_plan_not_found", plan_id: planId };
       }
       const token =
-        plan.status === AgentPlanStatus.Approved
+        plan.status === AgentPlanStatus.Approved && plan.approved_by === "auto"
           ? getLatestTokenForPlan(planId)
           : undefined;
-      return {
+      const res: AgentPlanApprovalStatus = {
         plan_id: planId,
         status: plan.status,
-        approval_token: token ?? null,
+        approved_by: plan.approved_by ?? null,
+        ...(token ? { approval_token: token } : {}),
+        ...(plan.execution ? { execution: plan.execution } : {}),
+        ...(plan.failure_reason ? { failure_reason: plan.failure_reason } : {}),
       };
+      return res;
     }
   );
 
-  app.post<{
-    Params: { planId: string };
-    Body: { fee_payer?: string };
-  }>("/agent-plans/:planId/approve", async (req, reply) => {
-    const { planId } = req.params;
-    // Phase 8.28: store plan は永続遷移 + ApprovalToken 発行
-    const stored = getStoredPlan(planId);
-    if (stored) {
+  /**
+   * 人の承認 (web / Seeker)。body 不要。simulated | pending_user → approved +
+   * approved_by "user" + ApprovalToken 発行。応答 `{ ...plan, approval_token }`。
+   *
+   * 既に人が承認した plan (approved + approved_by "user") も受け付け、token を再発行する:
+   * Seeker で承認 → web で署名、や、gate 拒否 (token 未消費のまま approved) 後の再試行のため。
+   * token は plan 側の status guard (execute は approved からのみ、消費で executing) で 1 回しか使えない。
+   * auto 承認 (autonomous) の plan は Agent が /execute を呼ぶので人は触れない (409)。
+   */
+  app.post<{ Params: { planId: string } }>(
+    "/agent-plans/:planId/approve",
+    async (req, reply) => {
+      const { planId } = req.params;
+      const stored = getStoredPlan(planId);
+      const target = stored ?? findFixturePlan(planId);
+      if (!target) {
+        reply.code(404);
+        return { error: "agent_plan_not_found", plan_id: planId };
+      }
+      const reissue =
+        target.status === AgentPlanStatus.Approved && target.approved_by === "user";
       if (
-        stored.status !== AgentPlanStatus.Simulated &&
-        stored.status !== AgentPlanStatus.PendingUser
+        target.status !== AgentPlanStatus.Simulated &&
+        target.status !== AgentPlanStatus.PendingUser &&
+        !reissue
       ) {
         reply.code(409);
         return {
           error: "invalid_status_transition",
-          current: stored.status,
+          current: target.status,
           target: AgentPlanStatus.Approved,
+        };
+      }
+      if (!stored) {
+        // fixture plan (test のみ) は非永続の遷移だけ返す (回帰用)
+        return {
+          ...target,
+          status: AgentPlanStatus.Approved,
+          approved_by: "user",
+          updated_at: new Date().toISOString(),
         };
       }
       if (!stored.selected_action || !stored.simulation_result) {
@@ -3950,86 +4109,73 @@ export async function buildServer(
         mcp_client_id: stored.mcp_client_id,
         bundle_hash: stored.simulation_result.bundle_hash,
       });
-      const next = updatePlan(planId, { status: AgentPlanStatus.Approved })!;
+      const next = updatePlan(planId, {
+        status: AgentPlanStatus.Approved,
+        approved_by: "user",
+      })!;
       return { ...next, approval_token: token };
     }
+  );
 
-    const found = fixtureAgentPlans.find((p) => p.plan_id === planId);
-    if (!found) {
-      reply.code(404);
-      return { error: "agent_plan_not_found", plan_id: planId };
-    }
-    if (
-      found.status !== AgentPlanStatus.Simulated &&
-      found.status !== AgentPlanStatus.PendingUser
-    ) {
-      reply.code(409);
-      return {
-        error: "invalid_status_transition",
-        current: found.status,
-        target: AgentPlanStatus.Approved,
-      };
-    }
-    const next: AgentPlan & { tx?: string } = {
-      ...found,
-      status: AgentPlanStatus.Approved,
-      updated_at: new Date().toISOString(),
-    };
-    // fee_payer が渡された場合、Devnet RPC から blockhash 取得 + memo tx を構築。
-    // fee_payer 不在 / Devnet RPC 失敗時は plan のみ返す (mobile 側で sign skip)。
-    const feePayer = req.body?.fee_payer;
-    if (feePayer && typeof feePayer === "string" && feePayer.length > 0) {
-      try {
-        next.tx = await buildMemoTransaction(feePayer, planId);
-      } catch (err) {
-        // Devnet RPC が落ちている等。tx field を欠落させるだけで approve 自体は成功扱い
-        req.log.warn(
-          { err: (err as Error).message },
-          "memo tx build failed"
-        );
-      }
-    }
-    return next;
-  });
-
+  /** simulated | pending_user | approved からのみ rejected (executing 以降は 409) */
   app.post<{ Params: { planId: string }; Body: { reason?: string } }>(
     "/agent-plans/:planId/reject",
     async (req, reply) => {
       const { planId } = req.params;
-      // Phase 8.28: store plan は永続遷移
       const stored = getStoredPlan(planId);
-      if (stored) {
-        return updatePlan(planId, { status: AgentPlanStatus.Rejected })!;
-      }
-      const found = fixtureAgentPlans.find((p) => p.plan_id === planId);
-      if (!found) {
+      const target = stored ?? findFixturePlan(planId);
+      if (!target) {
         reply.code(404);
         return { error: "agent_plan_not_found", plan_id: planId };
       }
-      const next: AgentPlan = {
-        ...found,
+      if (
+        target.status !== AgentPlanStatus.Simulated &&
+        target.status !== AgentPlanStatus.PendingUser &&
+        target.status !== AgentPlanStatus.Approved
+      ) {
+        reply.code(409);
+        return {
+          error: "invalid_status",
+          current: target.status,
+          target: AgentPlanStatus.Rejected,
+        };
+      }
+      const reason = sanitizeReason(req.body?.reason);
+      const patch: Partial<AgentPlan> = {
         status: AgentPlanStatus.Rejected,
-        updated_at: new Date().toISOString(),
+        ...(reason ? { failure_reason: reason } : {}),
       };
-      return next;
+      if (!stored) {
+        return { ...target, ...patch, updated_at: new Date().toISOString() };
+      }
+      return updatePlan(planId, patch)!;
     }
   );
 
   /**
-   * Phase 8.28: MCP execute_approved_action (§24.9 / §29.3)。
-   * approval_token を単一操作で検証+消費 (single-use / TTL / bundle_hash /
-   * plan 一致)。v1 は swap-earn の deposit / withdraw のみ unsigned tx を構築。
-   * Agent は unsigned tx を受け取るだけで署名しない (§6.5)。
+   * execute (§24.9 / §29.3)。approved のみ。selected_action を lib の
+   * resolveSolanaRoute で 13 route のどれかに解決し、人と同じ /protocols/* の tx builder
+   * (agent-plan-executor.ts) で unsigned tx を組む。署名は呼び手 (web の接続 wallet) が
+   * 行い、結果を /signatures (成功) か /failed (拒否・送信失敗) で報告する。
+   *
+   * 順序 (8.37 B1 / 8.75): token の早期検証 (非消費) → tx build (oracle gate / 償還価値
+   * ガード / 残高 gate は builder 内) → **最後に** token を消費。gate で止まった時に
+   * 単発 token を失わない。plan は approved のまま残るので回復後に同じ token で再実行できる。
    */
   app.post<{
     Params: { planId: string };
-    Body: { approval_token?: string };
+    Body: { approval_token?: string; via?: string };
   }>("/agent-plans/:planId/execute", async (req, reply) => {
     const { planId } = req.params;
     const tokenId = req.body?.approval_token;
     if (!tokenId || typeof tokenId !== "string") {
       reply.code(400);
       return { error: "missing_required_field", required: ["approval_token"] };
+    }
+    const viaRaw = req.body?.via;
+    if (viaRaw !== undefined && viaRaw !== "web" && viaRaw !== "autonomous") {
+      reply.code(400);
+      return { error: "invalid_via", via: viaRaw, allowed: ["web", "autonomous"] };
     }
     const plan = getStoredPlan(planId);
     if (!plan) {
@@ -4049,114 +4195,144 @@ export async function buildServer(
       reply.code(409);
       return { error: "selected_action_required", plan_id: planId };
     }
-
-    // v1: swap-earn (Jupiter routable) の deposit / withdraw のみ。
-    // Phase 8.37: 実行可否と oracle gate を **token 消費より前** に判定する —
-    // 単発 token を oracle block / 非対応 action で無駄に消費させない (§29.3)。
-    // Phase 8.75: 償還価値ガードも同じ理由で token 消費より前に置いた
-    const market = action.asset
-      ? findMarketByProtocolAsset(action.protocol, action.asset)
-      : undefined;
-    if (
-      !market ||
-      (action.action_type !== "deposit" && action.action_type !== "withdraw") ||
-      !action.amount ||
-      !isValidTokenAmount(action.amount)
-    ) {
+    const route = resolveSolanaRoute(action);
+    if (route === null) {
       reply.code(422);
       return {
-        error: "unsupported_action_v1",
-        message:
-          "v1 executes swap-earn deposit/withdraw only (valid amount required)",
+        error: "unsupported_market",
+        message: "Unsupported market — no onchain route resolved for this plan",
       };
     }
+    const amount = action.amount;
+    if (amount === undefined || !isValidTokenAmount(amount)) {
+      reply.code(422);
+      return { error: "invalid_amount", amount: amount ?? null };
+    }
 
-    // Phase 8.37 (B1): execute にも §4.6 fail-closed gate — 直接 tx-build endpoint
-    // (buildSwapEarnTx 等) と同一の判定。agent 経路だけ oracle 無検査で署名可能
-    // tx を返していた drift の修正
-    const oracle = await getOracleResult(market.underlying_mint);
-    if (oracle.status === "blocked") {
+    const expect = { plan_id: planId, bundle_hash: computeBundleHash(action) };
+    const peek = peekApprovalToken(tokenId, expect);
+    if (!peek.valid) {
+      reply.code(403);
+      return { error: "approval_token_invalid", reason: peek.reason };
+    }
+
+    const built = await buildPlanTransactions(app, route, { ...action, amount });
+    if (!built.ok) {
       req.log.warn(
-        { planId, block_reason: oracle.block_reason },
-        "execute blocked by oracle gate"
+        { planId, route: route.kind, status: built.statusCode, error: built.body.error },
+        "agent plan execute: tx build refused"
       );
+      reply.code(built.statusCode);
+      return built.body;
+    }
+
+    const validation = validateAndConsumeToken(tokenId, expect);
+    if (!validation.valid) {
+      reply.code(403);
+      return { error: "approval_token_invalid", reason: validation.reason };
+    }
+    // max_daily_executions: 人が承認した plan も実行試行として数える。
+    // auto 承認は request-approval の短絡時に数え済みなので二重に数えない
+    if (plan.approved_by !== "auto") incrementDaily();
+
+    const via: AgentPlanExecutionVia =
+      viaRaw ?? (plan.approved_by === "auto" ? "autonomous" : "web");
+    const executionId = `exec_${planId}_${Date.now().toString(36)}`;
+    const next = startPlanExecution(planId, {
+      execution_id: executionId,
+      tx_count: built.transactions.length,
+      via,
+    })!;
+    const res: AgentPlanExecuteResponse = {
+      execution_id: executionId,
+      status: "awaiting_signature",
+      plan: next,
+      unsigned_transactions: built.transactions,
+    };
+    return res;
+  });
+
+  /**
+   * web が署名・送信に成功したら報告する。executing のみ、execution_id 一致、
+   * 本数が unsigned tx と一致、各 signature は base58。→ broadcasted + execution 保存。
+   */
+  app.post<{
+    Params: { planId: string };
+    Body: { execution_id?: string; signatures?: unknown };
+  }>("/agent-plans/:planId/signatures", async (req, reply) => {
+    const { planId } = req.params;
+    const executionId = req.body?.execution_id;
+    const signatures = req.body?.signatures;
+    if (typeof executionId !== "string" || !Array.isArray(signatures)) {
+      reply.code(400);
+      return { error: "missing_required_field", required: ["execution_id", "signatures"] };
+    }
+    const plan = getStoredPlan(planId);
+    if (!plan) {
+      reply.code(404);
+      return { error: "agent_plan_not_found", plan_id: planId };
+    }
+    const pending = getPendingExecution(planId);
+    if (plan.status !== AgentPlanStatus.Executing || !pending) {
       reply.code(409);
-      return { error: "oracle_blocked", block_reason: oracle.block_reason, oracle };
+      return { error: "invalid_status", current: plan.status, target: AgentPlanStatus.Broadcasted };
     }
-
-    const isDeposit = action.action_type === "deposit";
-    try {
-      // Phase 8.75: quote は **token 消費より前** に取る。8.72 の償還価値ガードで
-      // 止まる時に単発 token を無駄にしないため — 8.37 (B1) が oracle gate で
-      // 確立した順序をそのまま踏襲する (§29.3)
-      const quote = await fetchSwapQuote({
-        inputMint: isDeposit ? market.underlying_mint : market.share_mint,
-        outputMint: isDeposit ? market.share_mint : market.underlying_mint,
-        amount: action.amount,
-        slippageBps: 50,
-      });
-
-      // Phase 8.75: 8.72 の償還価値ガードは buildSwapEarnTx 経由の human 経路にしか
-      // 掛かっておらず、**agent 経路だけ素通り**していた。oracle で 8.37 (B1) が直した
-      // drift の再発で、しかもこちらは画面を見ている人間がいない分だけ悪い。
-      // 上で取った quote をそのまま判定に使うので Jupiter への追加呼び出しは無い
-      const fv = await evaluateSwapFairValue(req, quote, {
-        direction: isDeposit ? "deposit" : "withdraw",
-        shareSymbol: market.share_symbol,
-      });
-      if (fv.status === "blocked") {
-        // plan は Approved のまま残す (Failed にしない) — 乖離が戻れば同じ token で
-        // 再実行できる。oracle block と同じ扱い
-        reply.code(409);
-        return {
-          error: "fair_value_blocked",
-          reason: fv.reason,
-          deviation_bps: fv.deviation_bps,
-          guard_bps: fairValueGuardBps(),
-          message: fairValueBlockMessage(
-            fv.reason,
-            market.share_symbol,
-            fv.deviation_bps,
-            fairValueGuardBps()
-          ),
-        };
-      }
-
-      const validation = validateAndConsumeToken(tokenId, {
-        plan_id: planId,
-        bundle_hash: computeBundleHash(action),
-      });
-      if (!validation.valid) {
-        reply.code(403);
-        return { error: "approval_token_invalid", reason: validation.reason };
-      }
-
-      const tx = await fetchSwapTransaction({
-        quoteResponse: quote,
-        userPublicKey: action.wallet_id,
-      });
-      const next = updatePlan(planId, { status: AgentPlanStatus.Executing })!;
+    if (pending.execution_id !== executionId) {
+      reply.code(409);
+      return { error: "execution_id_mismatch" };
+    }
+    if (signatures.length !== pending.tx_count) {
+      reply.code(409);
       return {
-        execution_id: `exec_${planId}`,
-        status: "pushed_to_mobile",
-        plan: next,
-        unsigned_transactions: [
-          {
-            index: 0,
-            label: `${action.action_type} ${action.asset} on ${action.protocol}`,
-            tx_base64: tx.swapTransaction,
-          },
-        ],
+        error: "signature_count_mismatch",
+        expected: pending.tx_count,
+        got: signatures.length,
       };
-    } catch (err) {
-      req.log.error(
-        { err: (err as Error).message, planId },
-        "execute tx build failed"
-      );
-      updatePlan(planId, { status: AgentPlanStatus.Failed });
-      reply.code(502);
-      return { error: "execute_tx_build_failed", message: readableUpstreamError(err, "Jupiter API") };
     }
+    if (!signatures.every((s) => typeof s === "string" && SIGNATURE_RE.test(s))) {
+      reply.code(409);
+      return { error: "invalid_signature_format" };
+    }
+    return updatePlan(planId, {
+      status: AgentPlanStatus.Broadcasted,
+      execution: {
+        execution_id: executionId,
+        signatures: signatures as string[],
+        submitted_at: new Date().toISOString(),
+        via: pending.via,
+      },
+    })!;
+  });
+
+  /** web が wallet 拒否 / 送信失敗を報告する。executing → failed + failure_reason */
+  app.post<{
+    Params: { planId: string };
+    Body: { execution_id?: string; reason?: string };
+  }>("/agent-plans/:planId/failed", async (req, reply) => {
+    const { planId } = req.params;
+    const executionId = req.body?.execution_id;
+    if (typeof executionId !== "string") {
+      reply.code(400);
+      return { error: "missing_required_field", required: ["execution_id", "reason"] };
+    }
+    const plan = getStoredPlan(planId);
+    if (!plan) {
+      reply.code(404);
+      return { error: "agent_plan_not_found", plan_id: planId };
+    }
+    const pending = getPendingExecution(planId);
+    if (plan.status !== AgentPlanStatus.Executing || !pending) {
+      reply.code(409);
+      return { error: "invalid_status", current: plan.status, target: AgentPlanStatus.Failed };
+    }
+    if (pending.execution_id !== executionId) {
+      reply.code(409);
+      return { error: "execution_id_mismatch" };
+    }
+    return updatePlan(planId, {
+      status: AgentPlanStatus.Failed,
+      failure_reason: sanitizeReason(req.body?.reason) ?? "unknown",
+    })!;
   });
 
   // ── adapter-driven endpoints (CLAUDE.md §13 / §26) ───────────────────
@@ -4217,7 +4393,7 @@ export async function buildServer(
   });
 
   /**
-   * Phase 8.14 §4.6: underlying mint の実 oracle 判定 (Pyth→Switchboard fail-closed)。
+   * §4.6: underlying mint の実 oracle 判定 (Pyth push → RedStone push、fail-closed。2026-10 に on-chain feed へ移行)。
    * Mobile ActionModal が review 時に引いて WarningArea 表示 / CTA gate に使う。
    * deposit/withdraw-tx の server 強制 gate と同じ getOracleResult を共有。
    */
@@ -4395,6 +4571,26 @@ export async function buildServer(
       }
     }
   );
+
+  /**
+   * Web: /tx/submit で送った tx の着地確認。Wallet Standard の sign-only wallet は送信後の状態を
+   * 出さないので、web はこれを数秒おきに引いて confirmed / failed を表示する (read-only)。
+   */
+  app.get<{ Querystring: { signature?: string } }>("/tx/status", async (req, reply) => {
+    const signature = req.query.signature ?? "";
+    // base58 の ed25519 signature (64 byte) は 86〜88 文字
+    if (!/^[1-9A-HJ-NP-Za-km-z]{86,88}$/.test(signature)) {
+      reply.code(400);
+      return { error: "invalid_signature", message: "signature must be a base58 transaction signature" };
+    }
+    try {
+      return await getSignatureStatus(signature);
+    } catch (err) {
+      req.log.error({ err: (err as Error).message.replace(/api-key=[^&\s]+/g, "api-key=***") }, "tx status failed");
+      reply.code(502);
+      return { error: "status_failed", message: "Could not read the transaction status from the Solana RPC." };
+    }
+  });
 
   /**
    * Phase 8.9: One-tap withdraw — jlToken → underlying mint の Jupiter Swap tx。
@@ -5138,11 +5334,23 @@ export async function buildServer(
       // Phase 8.28: store plan は body.action_spec を selected_action に採用し、
       // simulation_result を永続 (status→simulated)。bundle_hash は決定的 sha256。
       const stored = getStoredPlan(planId);
-      const found =
-        stored ?? fixtureAgentPlans.find((p) => p.plan_id === planId);
+      const found = stored ?? findFixturePlan(planId);
       if (!found) {
         reply.code(404);
         return { error: "agent_plan_not_found", plan_id: planId };
+      }
+      // 実行中 / 終端の plan を simulated に巻き戻さない (署名待ちの execution を壊さない)
+      if (
+        stored &&
+        (stored.status === AgentPlanStatus.Executing ||
+          isTerminalPlanStatus(stored.status))
+      ) {
+        reply.code(409);
+        return {
+          error: "invalid_status_transition",
+          current: stored.status,
+          target: AgentPlanStatus.Simulated,
+        };
       }
       const action = stored
         ? (req.body?.action_spec ?? stored.selected_action)
@@ -5195,7 +5403,7 @@ export async function buildServer(
       // (偽の健全表示をしない — optional field の正直な不在)
       let simOracle:
         | {
-            primary: "pyth" | "switchboard";
+            primary: OracleSourceId;
             primary_age_seconds: number;
             divergence_pct?: number;
             warnings: string[];
@@ -5227,7 +5435,7 @@ export async function buildServer(
         if (oracle.primary) {
           simOracle = {
             primary: oracle.primary,
-            primary_age_seconds: oracle[oracle.primary].age_seconds ?? 0,
+            primary_age_seconds: (oracle.primary === "pyth" ? oracle.pyth : oracle.secondary).age_seconds ?? 0,
             divergence_pct: oracle.divergence_pct ?? undefined,
             warnings,
           };
@@ -5247,11 +5455,13 @@ export async function buildServer(
         metadata: meta,
       };
       // store plan は selected_action + simulation_result を永続 (§11.7)
+      // 再 simulate は承認をやり直させる (approved_by を外す。旧 token は bundle_hash で弾かれる)
       if (stored) {
         updatePlan(planId, {
           selected_action: action,
           simulation_result: sim,
           status: AgentPlanStatus.Simulated,
+          approved_by: undefined,
         });
       }
       return { plan_id: planId, simulation: sim };

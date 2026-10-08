@@ -1,3 +1,5 @@
+import { perfFps, perfOn, perfVariant } from "./perfVariant";
+
 /**
  * Water background parameters (docs/web/water-background-spec.md "Component API").
  * 各値は shader uniform に 1:1 で対応する。見た目の調整は shader ではなくここで行う。
@@ -18,6 +20,10 @@ export type WaterParams = {
   glass: number;
   /** device pixel ratio cap */
   maxDpr: number;
+  /** 描画の上限 fps (0 = 画面の rate のまま)。発熱対策 1 (2026-10-06): 120 Hz の画面で毎フレーム全画面を描くと GPU が飽和する */
+  maxFps: number;
+  /** false = 静止画 (preset の切り替えと quiet zone の変化の時だけ描く)。発熱対策 2: 作業画面の水は静かなので動かさない */
+  animate: boolean;
 };
 
 /** Home (lobby) — spec の既定値そのまま (shader at its full expression) */
@@ -27,9 +33,15 @@ export const waterDefaults: WaterParams = {
   caustic: 0.5,
   refraction: 0.012,
   tint: 0.5,
-  quiet: 0.85,
+  // Home は 0.6 (2026-10-06、0.4 を試した後にユーザー指定): 0.85 だと列ごとに束ねた quiet zone が画面のほぼ全体を淡いミントの膜にしていた。
+  // カレンダーは不透明、portal card は文字の下に vanilla の楕円があるので、強く静めなくても読める
+  quiet: 0.6,
   glass: 1,
   maxDpr: 1.25,
+  // 発熱対策 1 (2026-10-06): 10 / 15 / 20 / 25 / 30 を見比べてユーザーが 20 に決めた (10 はコマ送りに見えた)。
+  // Home で水を描く GPU 時間の目安は 20 fps で約 27 % (上限なしは約 94 %)
+  maxFps: 20,
+  animate: true,
 };
 
 /**
@@ -44,8 +56,17 @@ export const waterCalm: WaterParams = {
   refraction: 0.008,
   quiet: 1,
   glass: 0.7,
+  animate: false,
 };
 
 export function resolveWaterParams(params?: Partial<WaterParams>): WaterParams {
-  return { ...waterDefaults, ...params };
+  const p = { ...waterDefaults, ...params };
+  // dev の比較スイッチ (perfVariant.ts の ?water-perf=) で対策 1〜3 を個別に入れ切りする
+  if (!perfVariant && !perfFps) return p;
+  return {
+    ...p,
+    maxFps: perfOn(1) ? (perfFps ?? waterDefaults.maxFps) : 0,
+    animate: perfOn(2) ? p.animate : true,
+    maxDpr: perfOn(3) ? 1 : 1.25,
+  };
 }

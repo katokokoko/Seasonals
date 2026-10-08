@@ -58,6 +58,26 @@ import {
 } from "./config";
 import { useDevFallbackLog } from "../stores/devFallbackLog";
 
+// Solana tx builder の応答型は lib が canonical (CLAUDE.md §1)。旧名のまま再 export する
+export type {
+  SwapEarnTxResponse as JupiterDepositTxResponse,
+  KaminoTxResponse,
+  KaminoVaultTxResponse,
+  ExponentRedeemTxResponse,
+  MeteoraTxResponse,
+  OrcaTxResponse,
+  SaveTxResponse,
+} from "@workspace/lib/types";
+import type {
+  SwapEarnTxResponse as JupiterDepositTxResponse,
+  KaminoTxResponse,
+  KaminoVaultTxResponse,
+  ExponentRedeemTxResponse,
+  MeteoraTxResponse,
+  OrcaTxResponse,
+  SaveTxResponse,
+} from "@workspace/lib/types";
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Internal helpers
 // ─────────────────────────────────────────────────────────────────────────────
@@ -94,7 +114,9 @@ async function httpGetJson<T>(path: string): Promise<T> {
 async function httpPostJson<T>(path: string, body?: unknown): Promise<T> {
   const res = await fetch(`${BFF_BASE_URL}${path}`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    // body 無しの POST (/agent-plans/:id/approve 等) に content-type を付けると Fastify は
+    // FST_ERR_CTP_EMPTY_JSON_BODY (400) を返すので、body がある時だけ付ける
+    headers: body !== undefined ? { "Content-Type": "application/json" } : {},
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
   if (!res.ok) throw await bffError(res, path);
@@ -104,7 +126,7 @@ async function httpPostJson<T>(path: string, body?: unknown): Promise<T> {
 async function httpPatchJson<T>(path: string, body?: unknown): Promise<T> {
   const res = await fetch(`${BFF_BASE_URL}${path}`, {
     method: "PATCH",
-    headers: { "Content-Type": "application/json" },
+    headers: body !== undefined ? { "Content-Type": "application/json" } : {},
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
   if (!res.ok) throw await bffError(res, path);
@@ -235,7 +257,12 @@ async function fxPatchUserPolicy(
   return { ...cloned(fixtureUserPolicyDefault), ...patch };
 }
 
-async function fxApproveAgentPlan(planId: string): Promise<AgentPlan> {
+/** fixture の approve token TTL (BFF と同じ 300 秒) */
+const FX_APPROVAL_TTL_MS = 300_000;
+
+async function fxApproveAgentPlan(
+  planId: string
+): Promise<AgentPlan & { approval_token: ApprovalToken }> {
   await nextTick();
   const found = fixtureAgentPlans.find((p) => p.plan_id === planId);
   if (!found) throw new Error(`agent_plan_not_found: ${planId}`);
@@ -247,10 +274,22 @@ async function fxApproveAgentPlan(planId: string): Promise<AgentPlan> {
       `invalid_status_transition: cannot approve from ${found.status}`
     );
   }
+  const nowMs = Date.now();
+  // BFF 契約と同形: { ...plan, approval_token } (token は TTL 300 秒)
   return cloned({
     ...found,
     status: AgentPlanStatus.Approved,
-    updated_at: new Date().toISOString(),
+    updated_at: new Date(nowMs).toISOString(),
+    approval_token: {
+      token_id: `tok_fx_${planId}`,
+      user_id: found.user_id,
+      plan_id: planId,
+      mcp_client_id: found.mcp_client_id,
+      bundle_hash: found.simulation_result?.bundle_hash ?? "",
+      issued_at: new Date(nowMs).toISOString(),
+      expires_at: new Date(nowMs + FX_APPROVAL_TTL_MS).toISOString(),
+      consumed_at: null,
+    },
   });
 }
 
@@ -449,13 +488,6 @@ export async function submitSignedTx(
   return (await res.json()) as { signature: string };
 }
 
-export interface JupiterDepositTxResponse {
-  swapTransaction: string;
-  lastValidBlockHeight: number;
-  outAmount: string;
-  outputMint: string;
-  quote: unknown;
-}
 
 export async function getJupiterDepositTx(input: {
   user: string;
@@ -566,12 +598,6 @@ export async function getSwapEarnWithdrawTx(input: {
 }
 
 /** Phase 8.15b: Kamino Lend の unsigned tx (base64)。swap でなく obligation deposit/withdraw。 */
-export interface KaminoTxResponse {
-  transaction: string;
-  reserve: string;
-  market: string;
-  underlyingMint: string;
-}
 
 async function postKaminoTx<T>(
   path: string,
@@ -613,11 +639,6 @@ export function getKaminoWithdrawTx(input: {
 }
 
 /** Phase 8.15d: Kamino Earn vault (kVault) の unsigned tx。 */
-export interface KaminoVaultTxResponse {
-  transaction: string;
-  vault: string;
-  underlyingMint: string;
-}
 
 /** kVault deposit tx (underlying → vault share、amount = underlying smallest-unit)。 */
 export function getKaminoVaultDepositTx(input: {
@@ -644,11 +665,6 @@ export function getKaminoVaultWithdrawTx(input: {
 }
 
 /** Phase 8.34: Exponent PT 満期 redeem (wrapper_merge) の unsigned v0 tx。 */
-export interface ExponentRedeemTxResponse {
-  transaction: string;
-  ptMint: string;
-  underlyingMint: string;
-}
 
 /** Exponent PT redeem tx (amount = PT smallest-unit string、満期後のみ 200)。 */
 export function getExponentRedeemTx(input: {
@@ -666,12 +682,6 @@ export function getExponentRedeemTx(input: {
  * Phase 8.17: Meteora DLMM LP。deposit の tx は position ephemeral の部分署名済み
  * (user 署名スロットのみ空 — MWA sign-only で保持される)。
  */
-export interface MeteoraTxResponse {
-  transactions: string[];
-  position?: string;
-  bps?: number;
-  poolAddress: string;
-}
 
 /** Meteora single-sided deposit txns (amount = deposit token smallest-unit)。 */
 export function getMeteoraDepositTxns(input: {
@@ -696,13 +706,6 @@ export function getMeteoraWithdrawTxns(input: {
  * [swap (user 単独), open+increase (position mint ephemeral の部分署名済み —
  * user 署名スロットのみ空、MWA sign-only で保持される)]。
  */
-export interface OrcaTxResponse {
-  transactions: string[];
-  /** deposit 時のみ: position mint (NFT) pubkey */
-  position?: string;
-  bps?: number;
-  poolAddress: string;
-}
 
 /** Orca zap-in deposit txns (amount = deposit token smallest-unit、半分 swap)。 */
 export function getOrcaDepositTxns(input: {
@@ -726,12 +729,6 @@ export function getOrcaWithdrawTxns(input: {
  * Phase 8.15c: Save (旧 Solend) の unsigned v0 tx 群 (base64[])。
  * 複数 tx は MWA 一括署名 → 順次 submit する (ATA 準備 + 本体等)。
  */
-export interface SaveTxResponse {
-  transactions: string[];
-  reserve: string;
-  ctokenMint: string;
-  underlyingMint: string;
-}
 
 async function postSaveTx(
   path: string,
@@ -773,7 +770,7 @@ export function getSaveWithdrawTxns(input: {
 }
 
 /**
- * Phase 8.14 §4.6: underlying mint の実 oracle 判定 (Pyth→Switchboard)。
+ * §4.6: underlying mint の実 oracle 判定 (Pyth push → RedStone push、on-chain feed)。
  * ActionModal が deposit/withdraw review 時に引いて WarningArea 表示 / CTA gate に使う。
  * test 環境では network を呼ばず安全側の ok を返す (fixture path)。
  */
@@ -785,7 +782,8 @@ export async function getOracleStatus(mint: string): Promise<OracleResult> {
       primary: "pyth",
       price_usd: null,
       pyth: { available: true, price_usd: null, age_seconds: 0 },
-      switchboard: { available: false, price_usd: null, age_seconds: null },
+      secondary: { source: null, available: false, price_usd: null, age_seconds: null },
+      tier: "C",
       divergence_pct: null,
       warnings: [],
       block_reason: null,
@@ -1048,18 +1046,16 @@ export async function getMenuListings(): Promise<ProtocolMenuEntry[]> {
 
 export interface ApproveAgentPlanInput {
   plan_id: string;
-  /**
-   * 任意。指定があれば BFF 側で Solana Devnet の memo tx (feePayer = この address)
-   * を構築し、戻り値の `tx` field に base64 で返す。Mobile はそれを MWA で署名 +
-   * broadcast する。
-   */
-  fee_payer?: string;
 }
 
-/** approve mutation の戻り値: AgentPlan + 署名対象 tx (任意) */
+/**
+ * approve mutation の戻り値 (agent-plan 契約 2026-10): `{ ...plan, approval_token }`。
+ * 人が承認した plan の署名・送信は Seasonals web が行う (Seeker は承認まで)。
+ * 旧 memo stub (`fee_payer` → devnet memo tx) は廃止。
+ */
 export type ApproveAgentPlanResult = AgentPlan & {
-  /** base64 serialized Solana transaction (signer 未付加) */
-  tx?: string;
+  /** BFF が発行した単発・短命の approval token (TTL は expires_at) */
+  approval_token?: ApprovalToken;
 };
 
 export interface RejectAgentPlanInput {
@@ -1082,11 +1078,10 @@ export async function postApproveAgentPlan(
   input: ApproveAgentPlanInput
 ): Promise<ApproveAgentPlanResult> {
   return tryHttpThenFixture(
+    // 契約: body なし (承認の主体は BFF が approved_by: "user" として記録する)
     () =>
       httpPostJson<ApproveAgentPlanResult>(
-        `/agent-plans/${encodeURIComponent(input.plan_id)}/approve`,
-        // body に fee_payer を載せる (BFF が memo tx を返す trigger)
-        input.fee_payer ? { fee_payer: input.fee_payer } : undefined
+        `/agent-plans/${encodeURIComponent(input.plan_id)}/approve`
       ),
     () => fxApproveAgentPlan(input.plan_id),
     `/agent-plans/${input.plan_id}/approve`

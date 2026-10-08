@@ -8,8 +8,9 @@
  *   - pointer に追従する specular (::after、--gx / --gy は useGlassPointer)
  * だけ。backdrop-filter は WebGL 不可 (背景が静止) の時だけ使う (spec: 毎フレーム再合成を避ける)。
  *
- * variant: `.glass` = regular (すりガラス寄り、Home の portal card)、
- *          `.glass.glass-clear` = clear (中央が透ける、top bar / 選択しずく)
+ * variant: `.glass` = regular (すりガラス寄り)、
+ *          `.glass.glass-clear` = clear (中央が透ける、top bar / 選択しずく)、
+ *          `.glass.glass-droplet` = droplet (水の blob、Home の portal card。下の節)
  */
 @property --glass-light-angle {
   syntax: "<angle>";
@@ -75,6 +76,29 @@
     linear-gradient(var(--c-sodaTextSoft), var(--c-sodaTextSoft)),
     var(--s-glassClear);
   box-shadow: 0 6px 16px var(--c-shadowStrong), inset 0 1px 0 var(--s-glassRim), inset 0 -1px 0 var(--c-shadow);
+}
+
+/* droplet variant (Home の portal card): 水の blob。面の屈折・揺らぐ輪郭・縁の光の線・きらめき・
+ * 砂の上の集光は water shader が描くので、WebGL が動いている間は CSS の tint / rim / 影 / specular を外す
+ * (矩形の CSS の縁が揺らぐ輪郭とずれないように)。CSS は文字の可読性の補助だけ: 縁に届かない薄い
+ * vanilla の楕円と、文字の白い縁取り (clear glass と同じ token)。WebGL 不可 / 透明度を下げる設定では
+ * 通常の glass のまま */
+:root[data-water="webgl"] .glass-droplet {
+  background: radial-gradient(ellipse 72% 62% at 50% 50%, var(--s-glassLegibility), transparent 78%);
+  box-shadow: none;
+  text-shadow: 0 0 10px var(--s-glassTextHalo), 0 1px 0 var(--s-glassTextHalo);
+}
+:root[data-water="webgl"] .glass-droplet::before,
+:root[data-water="webgl"] .glass-droplet::after {
+  display: none;
+}
+:root[data-water="webgl"] .glass-droplet:focus-visible {
+  box-shadow: var(--focus-ring);
+}
+@media (prefers-reduced-transparency: reduce) {
+  :root[data-water="webgl"] .glass-droplet {
+    background: var(--s-lobby);
+  }
 }
 
 /* WebGL 不可: 背景は静止した単色なので backdrop-filter の再合成コストは無い */

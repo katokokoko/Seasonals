@@ -50,6 +50,10 @@ export interface VaultRow {
   /** 8.26: lending market の稼働率 */
   utilization?: number;
   borrowedUsd?: number;
+  /** pool の補足案内 (ProtocolPool.note、例: Perena の legacy USD* 移行) */
+  note?: string;
+  /** protocol 側 app への導線 (ProtocolPool.external_url) */
+  externalUrl?: string;
 }
 
 
@@ -132,6 +136,8 @@ export function buildPoolVaultRows(
       capView: depositCapView(pool, decimalsOf(pool)),
       ...(pool.utilization != null ? { utilization: pool.utilization } : {}),
       ...(pool.borrowed_usd != null ? { borrowedUsd: pool.borrowed_usd } : {}),
+      ...(pool.note ? { note: pool.note } : {}),
+      ...(pool.external_url ? { externalUrl: pool.external_url } : {}),
       ...depositFields(position),
     };
   });

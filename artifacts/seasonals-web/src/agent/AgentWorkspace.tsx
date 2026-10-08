@@ -16,6 +16,7 @@ import { ProtocolBadge, brandStyle } from "../ui/ProtocolBadge";
 import { useNow } from "../ui/useNow";
 import { AquaPanel } from "./AquaPanel";
 import { ProposalInbox } from "./ProposalInbox";
+import { SolanaPlanInbox } from "./SolanaPlanInbox";
 import "./agent.css";
 
 const WEEK = 7 * 86_400_000;
@@ -43,6 +44,12 @@ export default function AgentWorkspace() {
             the local fork.
           </p>
           <ProposalInbox />
+          <h2>Solana plans from your Agent</h2>
+          <p className="muted small">
+            Actions your Agent simulated over MCP for a connected Solana wallet. Approving builds the transaction and opens your wallet; it is sent to
+            Solana mainnet only after you sign. Your Agent sees the result.
+          </p>
+          <SolanaPlanInbox />
           <h2>What to do when these dates arrive</h2>
           <p className="muted small">
             Proposals are rule-based from on-chain and protocol data (no LLM is configured on this server). They never contain calldata; a transaction

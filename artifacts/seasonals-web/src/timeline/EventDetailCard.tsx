@@ -14,7 +14,7 @@ import { Link } from "react-router";
 import { chainInfo } from "@workspace/lib/config/chains";
 import { deriveTimelineStatus, displayStatus, dayKey, isCustomPlan } from "@workspace/lib/derive/timeline";
 import type { TimelineAction, TimelineEvent } from "@workspace/lib/types";
-import { useActiveAddresses } from "../state/session";
+import { useActiveAddresses, sameAddress } from "../state/session";
 import { ChainIcon } from "../ui/ChainIcon";
 import { fmtAmount, fmtEventTime, fmtFullDate, fmtMetric, fmtTime, fmtUsd, parseDayKey } from "../ui/format";
 import { IconClose, IconExternal } from "../ui/icons";
@@ -300,7 +300,7 @@ function EventBody({ event, titleId, now, onDone }: { event: TimelineEvent; titl
   const active = useActiveAddresses();
   // owner のある event は、その address を閲覧 (watch) または接続している時だけ action を出す
   const hasWalletForChain = active.some(
-    (a) => event.chain !== null && a.chain === event.chain && (!event.owner || a.address.toLowerCase() === event.owner.toLowerCase())
+    (a) => event.chain !== null && a.chain === event.chain && (!event.owner || sameAddress(a.chain, a.address, event.owner))
   );
   const status = deriveTimelineStatus(event, now);
   const st = displayStatus(event, status);

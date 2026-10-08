@@ -2,33 +2,33 @@
  * oracle-gate — Phase 8.14 §4.6 の純粋ヘルパー (ActionModal から分離、test 容易化)。
  * RN/React に依存しないので jest で軽量に検証できる。
  */
-import type { AgentPlan, OracleBlockReason } from "@workspace/lib/types";
+import type { OracleBlockReason, OracleWarning, OracleWarningKind, SolanaActionShape } from "../types";
 import {
   SWAP_EARN_MARKETS,
   findMarketByProtocolAsset,
   findMarketByShareMint,
-} from "@workspace/lib/config/swap-earn-markets";
+} from "../config/swap-earn-markets";
 import {
   findKaminoMarketByAsset,
   findKaminoMarketByPool,
   findKaminoMarketByReserve,
   findKaminoVaultByAddress,
   findKaminoVaultByPool,
-} from "@workspace/lib/config/kamino-markets";
+} from "../config/kamino-markets";
 import {
   findSaveMarketByAsset,
   findSaveMarketByCToken,
   findSaveMarketByPool,
-} from "@workspace/lib/config/save-markets";
+} from "../config/save-markets";
 import {
   METEORA_MARKETS,
   findMeteoraMarketByPool,
-} from "@workspace/lib/config/meteora-markets";
-import { findExponentMarketByPtMint } from "@workspace/lib/config/exponent-markets";
+} from "../config/meteora-markets";
+import { findExponentMarketByPtMint } from "../config/exponent-markets";
 import {
   ORCA_MARKETS,
   findOrcaMarketByPool,
-} from "@workspace/lib/config/orca-markets";
+} from "../config/orca-markets";
 
 /**
  * underlying symbol → mint (SWAP_EARN_MARKETS から導出、§32.2 same source of truth)。
@@ -46,7 +46,7 @@ export const JUPITER_UNDERLYING_MINTS: Record<string, string> =
  * registry 外 (Kamino 等 swap-earn 非対象) は null = oracle gate スキップ。
  */
 export function resolveOracleMint(
-  action: AgentPlan["selected_action"] | undefined
+  action: SolanaActionShape | null | undefined
 ): string | null {
   if (!action) return null;
   // Menu catalog の "jupiter" は registry の "jupiter_lend" に正規化。
@@ -126,15 +126,43 @@ export function resolveOracleMint(
 export function oracleBlockLabel(
   reason: OracleBlockReason | null | undefined
 ): string {
+  // source 名は出さない (2026-10 に Pyth push + RedStone push へ移行、asset ごとに構成が違う)
   switch (reason) {
     case "oracle_both_stale":
-      return "Both Pyth and Switchboard are stale (>60s)";
+      return "Price sources are stale";
     case "oracle_divergence_too_large":
-      return "Pyth ↔ Switchboard divergence >5%";
+      return "Price sources disagree by more than 5%";
     case "oracle_unavailable":
       return "Price oracle unavailable";
     default:
       return "oracle check failed";
+  }
+}
+
+/**
+ * oracle warning の見出しと本文 (Seeker WarningArea と Web OracleGate が共有)。
+ * secondary の source 名は出さない (asset ごとに構成が違い、今後 source が増えても文言を変えない)
+ */
+export const ORACLE_WARNING_HEADLINE: Record<OracleWarningKind, string> = {
+  oracle_divergence_warning: "Price oracle anomaly detected",
+  oracle_pyth_stale: "Pyth is returning a stale price",
+  oracle_secondary_stale: "Secondary price source is stale",
+};
+
+export function oracleWarningBody(w: OracleWarning): string {
+  switch (w.kind) {
+    case "oracle_divergence_warning":
+      return w.divergencePct !== undefined
+        ? `Pyth and the secondary price source differ by ${w.divergencePct.toFixed(1)}%`
+        : "Pyth and the secondary price source differ";
+    case "oracle_pyth_stale":
+      return w.pythAgeSeconds !== undefined
+        ? `Pyth last updated ${Math.floor(w.pythAgeSeconds)}s ago · using the secondary source`
+        : "Pyth is stale · using the secondary source";
+    case "oracle_secondary_stale":
+      return w.secondaryAgeSeconds !== undefined
+        ? `Secondary source last updated ${Math.floor(w.secondaryAgeSeconds)}s ago · using Pyth (prices not cross-checked)`
+        : "Secondary source is stale · using Pyth (prices not cross-checked)";
   }
 }
 

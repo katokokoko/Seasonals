@@ -10,24 +10,24 @@
  *
  * 変換は必ず `toSmallestUnit` (throw する §4.5 バリデータ) 経由。`Number()` は使わない。
  */
-import type { AgentPlan } from "@workspace/lib/types";
+import type { SolanaActionShape } from "../types";
 import {
   TOKEN_DECIMALS,
   toHumanReadable,
   toSmallestUnit,
-} from "@workspace/lib/utils/numeric";
+} from "../utils/numeric";
 import {
   findMarketByProtocolAsset,
   findMarketByShareMint,
-} from "@workspace/lib/config/swap-earn-markets";
+} from "../config/swap-earn-markets";
 import {
   findKaminoMarketByReserve,
   findKaminoVaultByAddress,
-} from "@workspace/lib/config/kamino-markets";
-import { findSaveMarketByCToken } from "@workspace/lib/config/save-markets";
-import { findExponentMarketByPtMint } from "@workspace/lib/config/exponent-markets";
+} from "../config/kamino-markets";
+import { findSaveMarketByCToken } from "../config/save-markets";
+import { findExponentMarketByPtMint } from "../config/exponent-markets";
 
-type Action = NonNullable<AgentPlan["selected_action"]>;
+type Action = SolanaActionShape;
 
 export interface AmountUnit {
   /** 入力の decimals (toSmallestUnit に渡す) */

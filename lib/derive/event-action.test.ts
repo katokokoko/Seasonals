@@ -1,8 +1,8 @@
 /**
  * Phase 8.20: event-action — カレンダーイベント起点 synthetic plan のテスト。
  */
-import { AgentPlanStatus, TimeEventCategory, Urgency } from "@workspace/lib/types";
-import type { ActionDescriptor, UnifiedTimeEvent } from "@workspace/lib/types";
+import { AgentPlanStatus, TimeEventCategory, Urgency } from "../types";
+import type { ActionDescriptor, UnifiedTimeEvent } from "../types";
 
 import { syntheticPlanFromEventAction } from "./event-action";
 

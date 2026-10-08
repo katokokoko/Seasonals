@@ -8,6 +8,8 @@
 import { useNow } from "../ui/useNow";
 import { AaveContext } from "./AaveContext";
 import { PortfolioPanel } from "./portfolio/PortfolioPanel";
+import { SolanaPositions } from "./SolanaPositions";
+import { useActiveAddresses } from "../state/session";
 import { deriveTimelineStatus, displayStatus } from "@workspace/lib/derive/timeline";
 import { useDetail } from "../timeline/detailStore";
 import { StatusBadge } from "../timeline/StatusBadge";
@@ -25,6 +27,7 @@ export default function DashboardWorkspace() {
   const count = (pred: (s: ReturnType<typeof deriveTimelineStatus>) => boolean) =>
     t.events.filter((e) => e.class !== "executed" && pred(deriveTimelineStatus(e, now))).length;
   const open = useDetail((st) => st.open);
+  const hasSolana = useActiveAddresses().some((a) => a.chain === "solana");
   const positions = t.events.filter((e) => e.owner && e.class === "protocol" && !e.settled && e.amount);
   const week = t.events.filter((e) => {
     if (!e.at || e.class === "executed") return false;
@@ -41,6 +44,14 @@ export default function DashboardWorkspace() {
           </h2>
           <PortfolioPanel />
         </section>
+        {hasSolana && (
+          <section aria-labelledby="solana-positions">
+            <h2 id="solana-positions" className="section-heading">
+              Your positions (Solana)
+            </h2>
+            <SolanaPositions />
+          </section>
+        )}
         <h2 className="section-heading">Timeline</h2>
         <div className="stat-row">
           <Stat label="Needs attention" value={count((s) => s === "overdue" || s === "due")} />

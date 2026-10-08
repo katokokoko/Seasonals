@@ -15,3 +15,4 @@ export * from "./portfolio";
 export * from "./eth-plan";
 export * from "./eth-agent-proposal";
 export * from "./cooldown-position";
+export * from "./solana-tx";

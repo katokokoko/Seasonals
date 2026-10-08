@@ -1,14 +1,14 @@
 /**
  * Phase 8.16: 金額入力の純関数ヘルパー検証 (RN render 不要)。
  */
-import type { AgentPlan } from "@workspace/lib/types";
-import { SWAP_EARN_MARKETS } from "@workspace/lib/config/swap-earn-markets";
-import { SAVE_MARKETS } from "@workspace/lib/config/save-markets";
+import type { AgentPlan } from "../types";
+import { SWAP_EARN_MARKETS } from "../config/swap-earn-markets";
+import { SAVE_MARKETS } from "../config/save-markets";
 import {
   KAMINO_MARKETS,
   KAMINO_VAULTS,
-} from "@workspace/lib/config/kamino-markets";
-import { EXPONENT_MARKETS } from "@workspace/lib/config/exponent-markets";
+} from "../config/kamino-markets";
+import { EXPONENT_MARKETS } from "../config/exponent-markets";
 import {
   depositMaxSmallest,
   resolveAmountUnit,

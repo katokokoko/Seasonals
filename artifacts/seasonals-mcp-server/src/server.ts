@@ -15,6 +15,11 @@
  *
  * §4.5: amount は smallest-unit string を透過 (境界で ^[0-9]+$ 検証)。
  * §6.5: Agent は unsigned tx を受け取るだけで署名しない (秘密鍵ゼロ)。
+ *
+ * 2026-10-06: 人が承認する plan は web (Agent ページ) で approve → 署名 → 送信まで
+ * 一気に行う (承認 = 実行)。request_user_approval はその終端 (broadcasted / failed /
+ * rejected / expired) まで待って signatures を返す。execute_approved_action は policy の
+ * 自動承認 (approved_by = "auto") の plan だけが使う。
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -23,7 +28,8 @@ import { z } from "zod";
 
 import type {
   AgentPlan,
-  ApprovalToken,
+  AgentPlanApprovalStatus,
+  AgentPlanExecuteResponse,
   EthAgentProposal,
   EthProposalBriefResponse,
   EthProposalPreviewSlot,
@@ -39,7 +45,7 @@ import {
   isCooldownStateResponse,
 } from "@workspace/lib/types";
 
-import type { BffClient } from "./bff-client";
+import { BffHttpError, type BffClient } from "./bff-client";
 import type { TimelineEvent, TimelineEventsResponse } from "@workspace/lib/types";
 import { TIMELINE_STATUSES } from "@workspace/lib/types";
 import { deriveTimelineStatus } from "@workspace/lib/derive/timeline";
@@ -167,7 +173,8 @@ export function buildMcpServer(
       description:
         "Compare and rank deposit opportunities across Seasonals-registered protocols " +
         "(live APY/TVL/utilization). Creates a draft AgentPlan and returns plan_id. " +
-        "Follow with simulate_action → request_user_approval → execute_approved_action.",
+        "Follow with simulate_action → request_user_approval (the user approves, signs and " +
+        "sends in the Seasonals web app; execute_approved_action is only for policy auto-approved plans).",
       inputSchema: {
         objective: z.enum(OBJECTIVES),
         asset: z.string().describe('Deposit asset symbol, e.g. "USDC" or "SOL"'),
@@ -297,9 +304,16 @@ export function buildMcpServer(
     "request_user_approval",
     {
       description:
-        "Request user approval for a simulated plan (push notification to the " +
-        "user's mobile, then long-poll). Returns approval_token only after the " +
-        "user explicitly approves. Idempotent — safe to retry while pending.",
+        "Request user approval for a simulated plan, then long-poll until it settles. " +
+        "The user reviews the plan in the Seasonals web app (Agent page), and approving " +
+        "there also signs and sends the transaction from the user's own wallet — the " +
+        "agent never signs. Returns {status:\"broadcasted\", signatures} when the user " +
+        "signed and sent it, {status:\"failed\", failure_reason} when signing/sending " +
+        "failed or was cancelled, {status:\"rejected\"} or {status:\"expired\"} " +
+        "(plans expire 24h after creation), or {status:\"timeout\"} if nothing " +
+        "settled within timeout_seconds (safe to call again). If the user's policy " +
+        "auto-approves the plan, returns {status:\"approved\", approval_token} for " +
+        "execute_approved_action instead. Idempotent — safe to retry while pending.",
       inputSchema: {
         plan_id: z.string(),
         timeout_seconds: z.number().int().min(1).max(600).default(300),
@@ -308,23 +322,32 @@ export function buildMcpServer(
     async ({ plan_id, timeout_seconds }) => {
       const t0 = Date.now();
       try {
-        await bff.post(`/agent-plans/${plan_id}/request-approval`, {
-          timeout_seconds,
-        });
+        // 既に approved / executing の plan に request-approval は 409 (BFF の status guard)。
+        // その場合も poll で結果を待てるよう、409 だけは握って poll に進む
+        try {
+          await bff.post(`/agent-plans/${plan_id}/request-approval`, {
+            timeout_seconds,
+          });
+        } catch (err) {
+          const current =
+            err instanceof BffHttpError
+              ? (err.body as { current?: string } | null)?.current
+              : undefined;
+          if (!(err instanceof BffHttpError && err.status === 409 && current !== "draft")) {
+            throw err;
+          }
+        }
         const deadline = Date.now() + timeout_seconds * 1000;
-        // §10.3: long-running response — approved/rejected/timeout まで poll。
+        // §10.3: long-running response — 終端 (broadcasted / failed / rejected / expired)
+        // か auto 承認か timeout まで poll。
         // Phase 8.38 (F7): 一過性の BFF エラー (deploy 中の 502 等) で承認待ち全体を
         // abort しない — deadline 内なら次の poll で継続する (fail 側は timeout が拾う)
         for (;;) {
-          let res: {
-            status: AgentPlan["status"];
-            approval_token: ApprovalToken | null;
-          };
+          let res: AgentPlanApprovalStatus;
           try {
-            res = await bff.get<{
-              status: AgentPlan["status"];
-              approval_token: ApprovalToken | null;
-            }>(`/agent-plans/${plan_id}/approval`);
+            res = await bff.get<AgentPlanApprovalStatus>(
+              `/agent-plans/${plan_id}/approval`
+            );
           } catch {
             if (Date.now() >= deadline) {
               audit("request_user_approval", plan_id, "rejected", t0);
@@ -333,24 +356,43 @@ export function buildMcpServer(
             await sleep(pollIntervalMs);
             continue;
           }
-          if (res.status === "approved" && res.approval_token) {
+          // policy の自動承認 (autonomous 経路) — token を Agent に渡し execute_approved_action へ
+          if (
+            res.status === "approved" &&
+            res.approved_by === "auto" &&
+            res.approval_token
+          ) {
             audit("request_user_approval", plan_id, "ok", t0);
             return jsonContent({
               status: "approved",
+              approved_by: "auto",
               approval_token: res.approval_token.token_id,
               expires_at: res.approval_token.expires_at,
             });
           }
-          if (res.status === "rejected") {
-            audit("request_user_approval", plan_id, "rejected", t0);
+          if (res.status === "broadcasted") {
+            audit("request_user_approval", plan_id, "ok", t0);
             return jsonContent({
-              status: "rejected",
-              rejection_reason: "user_declined",
+              status: "broadcasted",
+              signatures: res.execution?.signatures ?? [],
+              ...(res.execution ? { submitted_at: res.execution.submitted_at, via: res.execution.via } : {}),
             });
           }
+          if (
+            res.status === "failed" ||
+            res.status === "rejected" ||
+            res.status === "expired"
+          ) {
+            audit("request_user_approval", plan_id, "rejected", t0);
+            return jsonContent({
+              status: res.status,
+              ...(res.failure_reason ? { failure_reason: res.failure_reason } : {}),
+            });
+          }
+          // pending_user / approved (人、署名前) / executing (web で署名中) は待ち続ける
           if (Date.now() >= deadline) {
             audit("request_user_approval", plan_id, "rejected", t0);
-            return jsonContent({ status: "timeout" });
+            return jsonContent({ status: "timeout", last_status: res.status });
           }
           await sleep(pollIntervalMs);
         }
@@ -365,9 +407,13 @@ export function buildMcpServer(
     "execute_approved_action",
     {
       description:
-        "Execute a previously user-approved plan. Requires the single-use " +
-        "approval_token issued at approval. Returns UNSIGNED transactions — " +
-        "the agent never receives signed transactions (§6.5).",
+        "Build the transactions for a plan that the user's policy auto-approved " +
+        "(request_user_approval returned approved_by:\"auto\" and an approval_token). " +
+        "Returns UNSIGNED transactions — the agent never receives signed transactions " +
+        "or keys (§6.5). Plans approved by a person are signed and sent by the user in " +
+        "the Seasonals web app instead; for those this tool returns " +
+        "{status:\"awaiting_user_signature\"} without executing — call " +
+        "request_user_approval to wait for the result.",
       inputSchema: {
         plan_id: z.string(),
         approval_token: z.string(),
@@ -376,9 +422,22 @@ export function buildMcpServer(
     async ({ plan_id, approval_token }) => {
       const t0 = Date.now();
       try {
-        const res = await bff.post<Record<string, unknown>>(
+        const approval = await bff.get<AgentPlanApprovalStatus>(
+          `/agent-plans/${plan_id}/approval`
+        );
+        if (approval.approved_by !== "auto") {
+          audit("execute_approved_action", plan_id, "rejected", t0);
+          return jsonContent({
+            status: "awaiting_user_signature",
+            plan_status: approval.status,
+            message:
+              "This plan is approved and signed by the user in the Seasonals web app; " +
+              "call request_user_approval to wait for the result.",
+          });
+        }
+        const res = await bff.post<AgentPlanExecuteResponse>(
           `/agent-plans/${plan_id}/execute`,
-          { approval_token }
+          { approval_token, via: "autonomous" }
         );
         audit("execute_approved_action", plan_id, "ok", t0);
         return jsonContent({

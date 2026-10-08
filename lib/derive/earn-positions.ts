@@ -111,3 +111,20 @@ export function heldPoolKeys(entries: ProtocolMenuEntry[], earns: EarnPositionsR
   }
   return out;
 }
+
+/**
+ * /positions/earn の全 protocol 配列を 1 列にする (Seeker earn-to-position.ts mergeEarnPositions と同じ並び)。
+ * Web の「Your Positions」と Seeker の portfolio 合成で共有する
+ */
+export function allEarnPositions(earn: EarnPositionsResponse | undefined): EarnPosition[] {
+  if (!earn) return [];
+  return [
+    ...earn.jupiterLend,
+    ...earn.kaminoBestEffort,
+    ...(earn.swapEarn ?? []),
+    ...(earn.save ?? []),
+    ...(earn.exponent ?? []),
+    ...(earn.meteora ?? []),
+    ...(earn.orca ?? []),
+  ];
+}

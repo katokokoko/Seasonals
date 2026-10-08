@@ -19,9 +19,13 @@ pnpm --filter @seasonals/mcp-server start
 
 **Tools**: `compare_opportunities` (live menu をランクし draft AgentPlan 作成) →
 `simulate_action` (selected_action 確定 + 決定的 bundle_hash) →
-`request_user_approval` (mobile へ push → long-poll、承認で single-use
-approval_token) → `execute_approved_action` (unsigned tx を返す — **Agent は
-署名に一切触れない**、§6.5)。
+`request_user_approval` (承認依頼 → long-poll)。人は **Seasonals web の Agent
+ページで approve → 自分の wallet で署名 → 送信** まで一気に行い (承認 = 実行)、
+tool は終端 (`broadcasted` + signatures / `failed` + failure_reason / `rejected` /
+`expired`) を返す。policy の自動承認 (`approved_by: "auto"`) の plan だけは
+approval_token を返し、`execute_approved_action` で unsigned tx を受け取る。人が承認した
+plan に `execute_approved_action` を呼ぶと `{status:"awaiting_user_signature"}` が返る
+(**Agent は署名に一切触れない**、§6.5)。
 
 **Resources**: `seasonals://protocols` / `seasonals://positions/{wallet}` /
 `seasonals://events/{wallet}` (agentReadable のみ) / `seasonals://policy/default`
@@ -62,14 +66,16 @@ pnpm --filter @seasonals/bff start
 
 - §12.3 の「共有 core service」直結ではなく **BFF REST を表現層として共有**
   (mobile と同一 endpoint = same source of truth は成立)
-- plan / approval_token は BFF の **in-memory store** (§17/§25 の Redis+Postgres
-  は後続)。プロセス再起動で消える
-- **client 認証なし** — `GET /agent-plans/:id/approval` は plan_id を知る者に
-  token を返す (ローカル dev 前提。v2 で MCP client 承認 §8.6 と連動)
+- plan / approval_token は BFF の `.data/agent-plans.json` に保存 (§17/§25 の
+  Redis+Postgres は後続)。plan は作成から 24h で `expired`
+- **client 認証なし** — `GET /agent-plans/:id/approval` は plan_id を知る者に状態を
+  返す。token は policy の自動承認 plan の時だけ含める (人の承認分は出さない)。
+  ローカル dev 前提、v2 で MCP client 承認 §8.6 と連動
 - 監査は stderr 構造化ログ (`mcp_audit`)。ClickHouse `mcp_audit_logs` (§25.3)
   は後続
-- `execute_approved_action` v1 は **swap-earn の deposit/withdraw のみ** tx 構築
-  (他 protocol は `unsupported_action_v1`)。mobile への tx push も後続 (§24.10)
+- execute は lib の `resolveSolanaRoute` (Seeker / web と同じ 13 route) で解決し、
+  人と同じ `/protocols/*` の tx builder で組む (解決できない market は 422
+  `unsupported_market`)。Seeker 上での署名は後続 (承認までは Seeker でもできる)
 
 ## Ethereum tools (web / ETHGlobal track)
 
@@ -104,4 +110,4 @@ step は symbol + 人が読む decimal (`{kind:"uniswap_swap", tokenIn:"USDC", t
 
 plan_rollover / prompts 残 3 種 / HTTP+SSE transport / rate limit (§15.4) /
 policy engine 連携 (`approval_mode=manual_only` 拒否等) / ClickHouse 監査 /
-Redis+Postgres 永続化 / execute の全 protocol 対応 + mobile tx push
+Redis+Postgres 永続化 / Seeker での agent plan 署名

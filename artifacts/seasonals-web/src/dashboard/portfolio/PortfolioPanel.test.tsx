@@ -97,12 +97,12 @@ beforeEach(() => {
       { chain: "ethereum", address: ETH },
       { chain: "solana", address: SOL },
     ],
-    connectedEvm: null,
+    connected: {},
   });
 });
 
 test("asks to connect when no address is watched", () => {
-  useSession.setState({ watchlist: [], connectedEvm: null });
+  useSession.setState({ watchlist: [], connected: {} });
   renderPanel([]);
   expect(screen.getByText(/Connect or watch a wallet/)).toBeTruthy();
   expect(screen.queryByTestId("portfolio-total")).toBeNull();
@@ -156,7 +156,7 @@ test("a failed address is left out and named, never counted as zero", async () =
 });
 
 test("shows no total (not $0.00) when every holdings request failed", async () => {
-  useSession.setState({ watchlist: [{ chain: "ethereum", address: ETH }], connectedEvm: null });
+  useSession.setState({ watchlist: [{ chain: "ethereum", address: ETH }], connected: {} });
   const down = { status: 503, body: { error: "etherscan_not_configured", message: "Ethereum history needs ETHERSCAN_API_KEY on the server." } };
   renderPanel([
     { match: `/eth/portfolio/history?address=${ETH}`, ...down },

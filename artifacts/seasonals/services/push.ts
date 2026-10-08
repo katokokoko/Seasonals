@@ -6,12 +6,14 @@
  * 役割:
  *   1. Expo Push Token の取得 (本番では BFF に登録、§5 で endpoint 接続)
  *   2. foreground / background での通知表示制御 (Notifications.setNotificationHandler)
- *   3. 通知 tap → deep link payload (plan_id / token_id) を取り出す listener
+ *   3. 通知 tap → deep link payload (plan_id、旧 payload は token_id も) を取り出す listener
  *   4. dev 用: fixture AgentPlan / ApprovalToken から local notification を発射
  *
  * 規約:
- *   - 通知 payload には **secret を含めない**。plan_id / token_id 等の参照のみ。
- *     詳細は MCPApprovalPushCard が `useAgentPlan` / `useApprovalToken` で別途 fetch。
+ *   - 通知 payload には **secret を含めない**。plan_id 等の参照のみ。
+ *     BFF が送る形は `{ type: "approval", plan_id }` (agent-plan 契約 2026-10)。
+ *     approval token は approve 後に BFF が発行するので、push 時点では存在しない。
+ *     詳細は MCPApprovalPushCard が `useAgentPlan` で別途 fetch。
  *   - notification の data.type === "approval" を契機に MCPApprovalPushCard 経路へ。
  *
  * @see CLAUDE.md §10 task #7 (MCP approval push handler)
@@ -21,10 +23,7 @@
 import * as Notifications from "expo-notifications";
 import type { Subscription } from "expo-notifications";
 
-import {
-  fixtureAgentPlanPendingUser,
-  fixtureApprovalTokenActive,
-} from "@workspace/lib/__fixtures__";
+import { fixtureAgentPlanPendingUser } from "@workspace/lib/__fixtures__";
 
 import { shouldPresentNotificationData } from "./cooldown-reminder";
 
@@ -38,8 +37,11 @@ export interface ApprovalPushPayload {
   type: "approval";
   /** AgentPlan の plan_id (本体は BFF から fetch) */
   plan_id: string;
-  /** ApprovalToken の token_id (本体は BFF から fetch) */
-  token_id: string;
+  /**
+   * 旧 payload 互換の ApprovalToken token_id (任意)。BFF は送らない —
+   * token は approve 後にしか無いため。dev の local notification だけが付け得る。
+   */
+  token_id?: string;
   /** 短縮表示用の hint (受信時にすぐ見せる用、機微情報は含めない) */
   protocol?: string;
   action_type?: string;
@@ -54,7 +56,8 @@ export function isApprovalPushPayload(
   return (
     d.type === "approval" &&
     typeof d.plan_id === "string" &&
-    typeof d.token_id === "string"
+    d.plan_id.length > 0 &&
+    (d.token_id === undefined || typeof d.token_id === "string")
   );
 }
 
@@ -202,7 +205,8 @@ export function addExecutionResponseListener(
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * fixture AgentPlan + ApprovalToken を payload に local notification を即発射。
+ * fixture AgentPlan を payload に local notification を即発射 (BFF と同じ
+ * `{ type, plan_id }` 形)。`token_id` は明示された時だけ載せる (旧 payload 互換の確認用)。
  * 開発用なので __DEV__ の場合のみ呼ぶこと。
  */
 export async function scheduleLocalApprovalNotification(opts: {
@@ -215,7 +219,6 @@ export async function scheduleLocalApprovalNotification(opts: {
   delaySeconds?: number;
 }): Promise<string> {
   const plan_id = opts.plan_id ?? fixtureAgentPlanPendingUser.plan_id;
-  const token_id = opts.token_id ?? fixtureApprovalTokenActive.token_id;
   const protocol =
     opts.protocol ??
     fixtureAgentPlanPendingUser.selected_action?.protocol ??
@@ -228,7 +231,7 @@ export async function scheduleLocalApprovalNotification(opts: {
   const payload: ApprovalPushPayload = {
     type: "approval",
     plan_id,
-    token_id,
+    ...(opts.token_id ? { token_id: opts.token_id } : {}),
     protocol,
     action_type,
   };

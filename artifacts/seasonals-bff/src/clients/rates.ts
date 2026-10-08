@@ -46,6 +46,46 @@ export async function fetchSanctumSolValues(
   return out;
 }
 
+// ── Sanctum TVL (2026-10、menu の LST pool TVL を live 化) ────────────────────
+
+const SANCTUM_TVL_TTL_MS = 5 * 60_000;
+let sanctumTvlCache: { at: number; key: string; values: Map<string, bigint> } | null = null;
+
+/**
+ * LST symbol 群の TVL (**lamports**、整数 bigint)。`/v1/tvl/current` の応答
+ * `{ tvls: { jitoSOL: "10416036201379766", ... }, errs: {} }` (2026-10-06 確認)。
+ * 整数 string 以外の値は捨てる (§4.5、Number() で parse しない)。USD 換算は呼び手が
+ * SOL oracle 価格で行う (表示専用)。5min cache。
+ */
+export async function fetchSanctumTvls(
+  symbols: string[]
+): Promise<Map<string, bigint>> {
+  const key = symbols.join(",");
+  if (
+    sanctumTvlCache &&
+    sanctumTvlCache.key === key &&
+    Date.now() - sanctumTvlCache.at < SANCTUM_TVL_TTL_MS
+  ) {
+    return sanctumTvlCache.values;
+  }
+  const qs = symbols.map((s) => `lst=${encodeURIComponent(s)}`).join("&");
+  const res = await fetchWithTimeout(`${SANCTUM_BASE}/v1/tvl/current?${qs}`, {
+    headers: { accept: "application/json" },
+  });
+  if (!res.ok) {
+    throw new Error(`Sanctum tvl HTTP ${res.status}`);
+  }
+  const json = (await res.json()) as { tvls?: Record<string, unknown> };
+  const out = new Map<string, bigint>();
+  for (const [sym, v] of Object.entries(json.tvls ?? {})) {
+    if (typeof v === "string" && /^[0-9]+$/.test(v)) {
+      out.set(sym, BigInt(v));
+    }
+  }
+  sanctumTvlCache = { at: Date.now(), key, values: out };
+  return out;
+}
+
 // ── Jupiter quote rate (probe smallest in → out smallest) ────────────────────
 
 const jupRateCache = new Map<string, { at: number; out: bigint }>();
@@ -349,11 +389,35 @@ export async function fetchPerenaUsdStarApy(): Promise<number> {
   return apy;
 }
 
+/**
+ * Perena USD* の単価 (USD、NAV)。APY と同じ非公開 API の `api/usdstar/price`
+ * (2026-10-05 確認: {"price":1.100805,...}。`/tvl` 等は 404)。Menu の TVL (供給 × 単価) に使う
+ */
+const PERENA_PRICE_URL = "https://api.perena.org/api/usdstar/price";
+const PERENA_PRICE_TTL_MS = 5 * 60_000;
+let perenaPriceCache: { at: number; price: number } | null = null;
+
+export async function fetchPerenaUsdStarPrice(): Promise<number> {
+  if (perenaPriceCache && Date.now() - perenaPriceCache.at < PERENA_PRICE_TTL_MS) {
+    return perenaPriceCache.price;
+  }
+  const res = await fetchWithTimeout(PERENA_PRICE_URL, { headers: { accept: "application/json" } });
+  if (!res.ok) throw new Error(`Perena usdstar/price HTTP ${res.status}`);
+  const json = (await res.json()) as { price?: unknown };
+  if (typeof json.price !== "number" || !Number.isFinite(json.price) || json.price <= 0) {
+    throw new Error("Perena usdstar/price: invalid price");
+  }
+  perenaPriceCache = { at: Date.now(), price: json.price };
+  return json.price;
+}
+
 /** test 用: cache クリア */
 export function _clearRatesCacheForTest(): void {
   sanctumCache = null;
+  sanctumTvlCache = null;
   jupRateCache.clear();
   lstApyCache = null;
   exponentCache = null;
   perenaApyCache = null;
+  perenaPriceCache = null;
 }

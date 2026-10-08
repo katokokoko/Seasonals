@@ -103,16 +103,22 @@ export const MAX_GLASS_RECTS = 6;
 /**
  * glass の種類 (Apple Liquid Glass の variant)。`data-water-glass` の値で指定し、空は regular。
  * - clear: 中央が透けて縁の屈折が強い (top bar / 選択しずく)
- * - regular: すりガラス寄り (Home の portal card)
+ * - regular: すりガラス寄り
+ * - droplet: 水の blob (Home の portal card)。透明なレンズで、輪郭がゆっくり揺らぎ、縁の光の線・
+ *   星のきらめき・砂の上の集光を shader が描く (CSS の rim / 影は使わない)
  */
 export const GLASS_VARIANTS = {
   clear: { lens: 1.5, frost: 0.3 },
   regular: { lens: 1, frost: 1 },
+  droplet: { lens: 1.2, frost: 0 },
 } as const;
 export type GlassVariant = keyof typeof GLASS_VARIANTS;
 
+/** droplet の輪郭の揺らぎ (CSS px)。文字の padding (24px) に対して十分小さい */
+export const DROPLET_WOBBLE_PX = 4;
+
 export function glassVariant(value: string | undefined): GlassVariant {
-  return value === "clear" ? "clear" : "regular";
+  return value === "clear" || value === "droplet" ? value : "regular";
 }
 
 /** 回転を持つ角丸矩形。device px、中心は bottom-left origin、angle は CSS rotate と同じ向き (rad、時計回り正) */
@@ -127,6 +133,12 @@ export interface GlassRect {
   lens: number;
   /** すりガラス度 (0 = 透明、1 = caustic がぼける) */
   frost: number;
+  /** droplet variant (水の blob) か */
+  droplet: boolean;
+  /** 輪郭の揺らぎの振幅 (device px、droplet 以外は 0) */
+  wobble: number;
+  /** 揺らぎの位相 (要素の順番から決まる、毎回同じ) */
+  seed: number;
 }
 
 /** computed transform ("matrix(...)" / "matrix3d(...)" / "none") → 2D 回転角 (rad) */
@@ -144,10 +156,18 @@ export function transformAngle(transform: string | null | undefined): number {
  * 回転している portal card は bounding box が膨らむので、中心だけ bbox から取り、
  * 大きさは layout size (offsetWidth / offsetHeight)、角度は computed transform から取る。
  */
-export function collectGlassRects(src: ParentNode | Iterable<HTMLElement>, frame: CanvasFrame): GlassRect[] {
+export function collectGlassRects(
+  src: ParentNode | Iterable<HTMLElement>,
+  frame: CanvasFrame,
+  opts: { dropletsOnly?: boolean } = {}
+): GlassRect[] {
   const out: GlassRect[] = [];
   const k = frame.scale;
+  let index = 0;
   for (const el of elementsOf(src, "[data-water-glass]")) {
+    const variant = glassVariant(el.dataset.waterGlass);
+    const seed = index++ * 2.39;
+    if (opts.dropletsOnly && variant !== "droplet") continue;
     const r = el.getBoundingClientRect();
     if (r.width <= 0 || r.height <= 0) continue;
     const cs = getComputedStyle(el);
@@ -157,7 +177,10 @@ export function collectGlassRects(src: ParentNode | Iterable<HTMLElement>, frame
     // 透明 (opacity 0) の面は shader にも出さない (例: active link が無い画面の選択しずく)
     if (Number.parseFloat(cs.opacity || "1") === 0) continue;
     out.push({
-      ...GLASS_VARIANTS[glassVariant(el.dataset.waterGlass)],
+      ...GLASS_VARIANTS[variant],
+      droplet: variant === "droplet",
+      wobble: variant === "droplet" ? DROPLET_WOBBLE_PX * k : 0,
+      seed,
       cx: (r.left + r.width / 2 - frame.left) * k,
       cy: (frame.bottom - (r.top + r.height / 2)) * k,
       w: w * k,
@@ -169,18 +192,65 @@ export function collectGlassRects(src: ParentNode | Iterable<HTMLElement>, frame
   return out.sort((a, b) => b.w * b.h - a.w * a.h).slice(0, MAX_GLASS_RECTS);
 }
 
-/** uGlassRects (vec4 × 6: cx, cy, w, h) / uGlassMeta (vec4 × 6: radius, angle, lens, frost) 用に詰める */
+/**
+ * uGlassRects (vec4 × 6: cx, cy, w, h) / uGlassMeta (vec4 × 6: radius, angle, lens, frost) /
+ * uGlassShape (vec4 × 6: wobble, droplet 0/1, seed, 0) 用に詰める
+ */
 export function packGlassRects(
   rects: readonly GlassRect[],
-  out = { rects: new Float32Array(MAX_GLASS_RECTS * 4), meta: new Float32Array(MAX_GLASS_RECTS * 4) }
-): { rects: Float32Array; meta: Float32Array } {
+  out = {
+    rects: new Float32Array(MAX_GLASS_RECTS * 4),
+    meta: new Float32Array(MAX_GLASS_RECTS * 4),
+    shape: new Float32Array(MAX_GLASS_RECTS * 4),
+  }
+): { rects: Float32Array; meta: Float32Array; shape: Float32Array } {
   out.rects.fill(0);
   out.meta.fill(0);
+  out.shape.fill(0);
   rects.slice(0, MAX_GLASS_RECTS).forEach((g, i) => {
     out.rects.set([g.cx, g.cy, g.w, g.h], i * 4);
     out.meta.set([g.radius, g.angle, g.lens, g.frost], i * 4);
+    out.shape.set([g.wobble, g.droplet ? 1 : 0, g.seed, 0], i * 4);
   });
   return out;
+}
+
+/**
+ * 発熱対策 4 (2026-10-06): glass layer の scissor 矩形 (device px、bottom-left origin、整数)。
+ * 詰めた uGlassRects / uGlassMeta / uGlassShape から、全 glass 面の回転込みの外接矩形の和を返す。
+ * shader の glass は輪郭の外 1px まで (smoothstep(-1, 1, sd)) と droplet の揺らぎの分だけはみ出すので、
+ * その分と 2px の余白を足す。canvas の外は切る。glass が無ければ null (何も描かない)
+ */
+export function glassScissor(
+  rects: Float32Array,
+  meta: Float32Array,
+  shape: Float32Array,
+  count: number,
+  width: number,
+  height: number
+): { x: number; y: number; w: number; h: number } | null {
+  let x0 = Infinity;
+  let y0 = Infinity;
+  let x1 = -Infinity;
+  let y1 = -Infinity;
+  for (let i = 0; i < Math.min(count, MAX_GLASS_RECTS); i++) {
+    const [cx, cy, w, h] = [rects[i * 4]!, rects[i * 4 + 1]!, rects[i * 4 + 2]!, rects[i * 4 + 3]!];
+    const angle = meta[i * 4 + 1]!;
+    const pad = Math.abs(shape[i * 4]!) + 3;
+    const c = Math.abs(Math.cos(angle));
+    const s = Math.abs(Math.sin(angle));
+    const ex = (c * w + s * h) / 2 + pad;
+    const ey = (s * w + c * h) / 2 + pad;
+    x0 = Math.min(x0, cx - ex);
+    y0 = Math.min(y0, cy - ey);
+    x1 = Math.max(x1, cx + ex);
+    y1 = Math.max(y1, cy + ey);
+  }
+  const x = Math.max(0, Math.floor(x0));
+  const y = Math.max(0, Math.floor(y0));
+  const r = Math.min(width, Math.ceil(x1));
+  const t = Math.min(height, Math.ceil(y1));
+  return r > x && t > y ? { x, y, w: r - x, h: t - y } : null;
 }
 
 /**

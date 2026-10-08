@@ -1,15 +1,20 @@
 /**
- * ActionPreview — 署名前の transaction preview (Ethereum v3 §11 D)。
- * BFF /eth/build-action が protocol ABI / Pendle Convert から組んだ unsigned plan を表示し、
- * mainnet に対する eth_call の結果 (送らずに確認) をそのまま見せる。
- * 実行はローカル Anvil fork のみ (FORK 表示、ユーザーの明示的な承認ボタン)。mainnet には送らない。
+ * ActionPreview — 詳細カードの action を開いたところ。chain で分ける:
+ * - Ethereum (v3 §11 D): BFF /eth/build-action の unsigned plan と mainnet eth_call の結果。実行はローカル Anvil fork のみ
+ * - Solana: Seeker と同じ BFF tx builder → wallet で署名 → mainnet に送信 (SolanaEventAction)
  */
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { TimelineAction, TimelineEvent } from "@workspace/lib/types";
 import { api, ApiError } from "../services/api";
 import { PlanView, TargetBadge } from "./PlanView";
+import { SolanaEventAction } from "./SolanaEventAction";
 
 export function ActionPreview({ event, action, onBack }: { event: TimelineEvent; action: TimelineAction; onBack: () => void }) {
+  if (event.chain === "solana") return <SolanaEventAction event={event} action={action} onBack={onBack} />;
+  return <EthActionPreview event={event} action={action} onBack={onBack} />;
+}
+
+function EthActionPreview({ event, action, onBack }: { event: TimelineEvent; action: TimelineAction; onBack: () => void }) {
   const owner = event.owner ?? "";
   const qc = useQueryClient();
   const q = useQuery({
@@ -32,7 +37,7 @@ export function ActionPreview({ event, action, onBack }: { event: TimelineEvent;
       </div>
       <h3>{action.label}</h3>
       {event.chain !== "ethereum" ? (
-        <p className="muted small">Transaction building for this chain runs in the Seeker app.</p>
+        <p className="muted small">Seasonals cannot build transactions for this chain yet.</p>
       ) : q.isPending ? (
         <p className="muted small" aria-busy="true">
           Building the transaction plan…

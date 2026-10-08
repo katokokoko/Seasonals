@@ -1,12 +1,14 @@
 /**
- * Approval deep-link route — `/approval/[planId]?token=<tokenId>`
+ * Approval deep-link route — `/approval/[planId]` (旧形式 `?token=<tokenId>` も受ける)
  *
  * Push notification tap → expo-router がこの screen に遷移。
- * useAgentPlan + useApprovalToken で BFF から状態取得 → MCPApprovalPushCard を render。
+ * useAgentPlan で BFF から plan を取得 → MCPApprovalPushCard を render。
  *
- * ナビゲーション仕様:
- *   - planId は dynamic segment (path)
- *   - token は query string で渡す (例: /approval/plan_003?token=tok_active_001)
+ * ナビゲーション仕様 (agent-plan 契約 2026-10):
+ *   - planId は dynamic segment (path)。BFF の push payload は `{ type, plan_id }` だけ
+ *   - approval token は approve の応答で発行される (TTL は card が応答から表示)。
+ *     旧 deep link の `?token=` があれば従来どおり fetch して TTL を出す
+ *   - 承認後の署名・送信は Seasonals web (Seeker は承認まで)
  *
  * @see CLAUDE.md §10 task #7
  * @see ../../components/action/MCPApprovalPushCard.tsx
@@ -37,13 +39,14 @@ export default function ApprovalScreen() {
   const tokenId = typeof params.token === "string" ? params.token : null;
 
   const planQuery = useAgentPlan(planId);
+  // token は任意。無ければ useApprovalToken(null) は disabled query (fetch しない)
   const tokenQuery = useApprovalToken(tokenId);
 
-  // Phase 8.37 (M2): token なし deep link では useApprovalToken(null) が
-  // disabled query となり isPending が永久 true → 無限 Loading だった。
-  // token がある時だけ token fetch の pending を待ち、無い時はリンク不正表示。
+  // Phase 8.37 (M2): disabled query の isPending は永久 true なので、
+  // token がある時だけ token fetch の pending / error を見る
   const tokenPending = tokenId !== null && tokenQuery.isPending;
-  const isPending = planQuery.isPending || tokenPending;
+  // planId 欠落は useAgentPlan(null) も disabled なので、pending を待たず invalid 表示
+  const isPending = planId !== null && (planQuery.isPending || tokenPending);
   const error =
     planQuery.error ?? (tokenId !== null ? tokenQuery.error : null);
 
@@ -58,11 +61,11 @@ export default function ApprovalScreen() {
         </View>
       )}
 
-      {!isPending && !error && tokenId === null && (
+      {planId === null && (
         <View style={styles.center} testID="approval-screen-invalid-link">
           <Text style={styles.errorTitle}>Invalid approval link</Text>
           <Text style={styles.errorBody}>
-            This link is missing its approval token. Open the approval from the
+            This link is missing its plan id. Open the approval from the
             notification again.
           </Text>
         </View>
@@ -75,16 +78,13 @@ export default function ApprovalScreen() {
         </View>
       )}
 
-      {!isPending &&
-        !error &&
-        planQuery.data &&
-        tokenQuery.data && (
-          <MCPApprovalPushCard
-            plan={planQuery.data}
-            token={tokenQuery.data}
-            testID="approval-screen-card"
-          />
-        )}
+      {!isPending && !error && planQuery.data && (
+        <MCPApprovalPushCard
+          plan={planQuery.data}
+          token={tokenId !== null ? tokenQuery.data : undefined}
+          testID="approval-screen-card"
+        />
+      )}
     </SafeAreaView>
   );
 }

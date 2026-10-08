@@ -22,6 +22,8 @@ for (const [path, url] of Object.entries(LOGOS)) {
 const ALIAS: Record<string, string> = {
   save: "savefi",
   "swap-earn": "jupiter",
+  // /positions/earn の protocol_id (Menu の icon_id は "jupiter")
+  jupiter_lend: "jupiter",
   cca: "uniswap",
   aqua: "1inch",
 };
