@@ -170,9 +170,9 @@ MUSTテストは次の10件にまとめる。入力パターンは同じfixture�
 
 共有型変更時は`pnpm -r test`と`pnpm -r typecheck`、Seeker実機確認を行う。既存失敗と新規失敗を分けて記録する。R1基盤やOracle、RFCの未完了をR0の不合格理由にしない。
 
-## 7. 実装状況と結果 (2026-10-05、実機確認 2026-10-08)
+## 7. 実装状況と結果 (2026-10-05、実機確認 2026-10-08、main 追従 2026-10-09)
 
-branch `worktree-skr-r0` (base: main `9a964eb`)。起動と実機確認の手順は [demo runbook](skr-r0-demo-runbook.md)。
+branch `worktree-skr-r0` (base: main `9a964eb`、2026-10-09 に main `f6c5590` を merge)。起動と実機確認の手順は [demo runbook](skr-r0-demo-runbook.md)。
 
 ### 完了ゲート
 
@@ -231,6 +231,17 @@ Seeker (Android 16、build `BP2A.260812.100.A3`)、APK `app.seasonals.onchain` 0
 - **MCP**: 「BFF を止めると SKR 0 件 + 補足」は SKR 口だけ失敗した時の挙動。BFF 全体停止は resource error (runbook §3-8 を修正)
 - **adb での再現**: `adb reverse --remove` 後は keep-alive が切れるまで約 72 秒待つ。cold start は `am kill` (force-stop は alarm を消す)
 - **urgency**: cooling_down は残り 24 時間以内で critical (droplet 赤)。既存 lockup_end と同じ規則で、ready は watch。意図どおりだが「赤 = 期限切れ」と読まれないかは試用で観察する
+
+### main 追従 (2026-10-09)
+
+main が PR #34 (web-water-shallows: web の Solana 実行、oracle gate の on-chain 移行、agent plan 承認契約、Seeker の Solana 経路の lib 化) で 39 commits 進んだため、`origin/main` (`f6c5590`) を branch に merge した (commit `03c20c9`、rebase ではなく merge)。
+
+- テキスト衝突は 2 件で、どちらも両側を残した: `lib/types/index.ts` (`solana-tx` と `cooldown-position` の `export *`)、`artifacts/seasonals-bff/src/server.ts` (`registerSkrStakingRoutes` の import と登録、main 側の `@solana/web3.js` import 削除と health block 更新)
+- 両側が触った 6 ファイル (MCP `server.ts`、mobile `app/_layout.tsx` / `app/index.tsx` / `services/api.ts` / `services/push.ts` / `services/queries.ts`) は自動 merge のまま。merge 前に結果を精査し、approval push と cooldown reminder の listener、`setupNotificationHandler` の `shouldPresentNotificationData`、events resource の SKR 投影 (`Promise.allSettled` + `#skr_staking` 補足)、`syntheticPlanFromEventAction` の lib 経由 import が共存することを確認した
+- main の rename (`amount-utils` / `event-action` / `oracle-gate` → `lib/derive/`) を SKR の新規ファイルは参照していない
+- 完了ゲート (merge 後、`03c20c9`): `pnpm -r typecheck` 全 workspace Done、`pnpm -r test` 全 pass — lib 380 / mobile 517 (47 suites) / BFF 684 / MCP 36 / web 151。main の増分 (lib 286→380、BFF 569→684、MCP 32→36、web 81→151) は main 側の test。mobile は main の 456 + SKR の 61
+- day modal fix (PR #36) は main 未 merge のため、この時点の branch には入っていない。#36 → #35 の順で merge すれば衝突しない (hunk が別)
+- Seeker 再確認 (merge 後 bundle、demo、両側が触った経路に絞る): 2026-10-09 (`03c20c9`、Seeker Android 16、demo、無人 adb) に項目 1 / 3 / 8 / 5 / 7 / 9 が pass、2 は skip (#36 未 merge)、4 / 6 は再実行せず。bundle は赤画面・native module 不足なし。通知は同じ event id で予定が置換され alarm 1 件、配送は予定 +77.8 秒、tap → 再取得 0.23 秒。cold start (`am kill`) は +83.2 秒で配送、launcher 非経由で起動し tap → 再取得 9.2 秒。MCP は id / triggerAt が BFF と一致 (`actions=[]`、`positionRef=null`)、`tools/list` は 15 tools (main の approval 系 `request_user_approval` / `execute_approved_action` / `wait_for_rebalance_decision` を含む)。logcat は FATAL / AndroidRuntime / ReactNativeJS error 0、SKR / cooldown / expo-notifications の E/W 0 (既存の `EGLConsumer` と cold start 時の Reanimated `synchronouslyUpdateUIProps` 警告は 10-08 と同じ)。気付き: 初回 load で Calendar が 2027 年 1 月を表示した (cold start / reload 後は再現せず、原因不明。別セッションの端末操作が残っていた可能性)、通知の small icon が空の輪 (icon 未設定、R1 で整える)。証拠は `~/Documents/Seasonals/evidence/skr-r0-2026-10-09/` (`REPORT.md`)
 
 ### 実装で確定した解釈
 
