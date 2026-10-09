@@ -162,6 +162,12 @@ describe("Solana menu card", () => {
     expect(screen.queryByRole("link", { name: /^Open / })).toBeNull();
   });
 
+  // Ethereum カードと同じく、Learn に解説がある protocol は右下に /learn#<protocol_id> への link
+  test("Learn link points at /learn#<protocol_id> when a guide exists", () => {
+    renderSol(pool(), SOL);
+    expect(screen.getByRole("link", { name: "Learn" }).getAttribute("href")).toBe("/learn#jupiter");
+  });
+
   test("未接続で Deposit を開くと接続を案内し、署名ボタンは出さない", () => {
     renderSol(pool(), null);
     fireEvent.click(btn("Deposit"));

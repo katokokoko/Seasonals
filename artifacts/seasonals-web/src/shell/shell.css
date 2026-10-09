@@ -517,6 +517,23 @@
   color: var(--c-textOnColor);
 }
 
+/* filter chip (Menu の chain / Deposited only、Learn の chain)。explore.css は Menu route の lazy chunk でしか
+   読まれないので、Learn を先に開いても効くよう global の shell.css に置く */
+.filter-chip {
+  height: 30px;
+  padding: 0 var(--sp-md);
+  border-radius: var(--r-pill);
+  border: 1px solid var(--c-borderStrong);
+  background: none;
+  font-weight: var(--w-semibold);
+  cursor: pointer;
+}
+.filter-chip[aria-pressed="true"] {
+  background: var(--c-textPrimary);
+  color: var(--c-textOnColor);
+  border-color: var(--c-textPrimary);
+}
+
 /* ── responsive (UI v2 §15) ──────────────────────────────────────────────── */
 @media (max-width: 1439px) {
   .nav-link--wide {

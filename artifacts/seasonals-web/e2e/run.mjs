@@ -486,7 +486,8 @@ if (process.env.SOL_E2E === "1") {
   await page.close();
 }
 
-// Learn: 横 3 枚のカード、/learn#pendle で詳細 dialog が開き見出しに focus、Esc で閉じる
+// Learn: 横 3 枚のカード、/learn#pendle で詳細 dialog が開き見出しに focus、Esc で閉じる。
+// chain chip (All chains / Solana / Ethereum) で絞り込み、絞り込みで隠れた guide への deep link は chip を切り替えて開く
 for (const vp of WIDTHS) {
   const page = await newPage(vp);
   await page.goto(BASE + "/learn", { waitUntil: "networkidle" });
@@ -501,11 +502,52 @@ for (const vp of WIDTHS) {
   await page.waitForTimeout(400);
   const focused = await page.evaluate(() => document.activeElement?.id);
   check("Learn deep link opens the guide and focuses its title", focused === "learn-pendle-title", String(focused));
-  const sites = await page.locator(".learn-card a", { hasText: "Open site" }).evaluateAll((as) => as.map((a) => a.getAttribute("href")));
-  check("Learn shows 6 cards, each with an https Open site link", sites.length === 6 && sites.every((h) => h?.startsWith("https://")), sites.join(" "));
   await page.keyboard.press("Escape");
   await page.waitForTimeout(400);
   check("Esc closes the Learn guide and clears the hash", (await page.getByRole("dialog").count()) === 0 && !page.url().includes("#"), page.url());
+
+  // chain chip (dialog が開いている間は chip を押せないので Esc の後)
+  const chips = page.getByRole("group", { name: "Chain", exact: true });
+  const chip = (name) => chips.getByRole("button", { name, exact: true });
+  const chipNames = (await chips.locator("button.filter-chip").allInnerTexts()).map((t) => t.trim());
+  check("Learn chain chips are All chains / Solana / Ethereum", chipNames.join(",") === "All chains,Solana,Ethereum", chipNames.join(","));
+  // chip を押した後、card の入れ替わりを待ってから数える
+  const cardCount = async () => {
+    await page.waitForTimeout(300);
+    return page.locator(".learn-card:visible").count();
+  };
+  const siteLinks = () => page.locator(".learn-card:visible a", { hasText: "Open site" }).evaluateAll((as) => as.map((a) => a.getAttribute("href")));
+  const allHttps = (hrefs, n) => hrefs.length === n && hrefs.every((h) => h?.startsWith("https://"));
+  const all = await cardCount();
+  // Esc で focus が Pendle の Details に戻り page が scroll している。浮遊ナビが full-page 画像の途中に写らないよう上端へ戻す
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await page.waitForTimeout(200);
+  await page.screenshot({ path: ".screenshots/learn-all-1440.png", fullPage: true });
+  // 12 / 6 は src/learn/content.ts の Solana / Ethereum の guide 数 (protocol を足したらここも更新する)
+  await chip("Solana").click();
+  const sol = await cardCount();
+  const solSites = await siteLinks();
+  check("Learn Solana chip shows 12 guides, each with an https Open site link", sol === 12 && allHttps(solSites, sol), `${sol} | ${solSites.join(" ")}`);
+  await page.screenshot({ path: ".screenshots/learn-solana-1440.png", fullPage: true });
+  await chip("Ethereum").click();
+  const eth = await cardCount();
+  const ethSites = await siteLinks();
+  check("Learn Ethereum chip shows 6 guides, each with an https Open site link", eth === 6 && allHttps(ethSites, eth), `${eth} | ${ethSites.join(" ")}`);
+  await page.screenshot({ path: ".screenshots/learn-ethereum-1440.png", fullPage: true });
+  // Ethereum で絞り込み中に Solana の guide へ deep link (Menu の「Learn」相当) → chip が Solana に切り替わって開く。
+  // hash の変更は popstate で router に届く
+  await page.evaluate(() => {
+    location.hash = "#jupiter";
+  });
+  const jupiter = page.getByRole("dialog", { name: "Jupiter" });
+  await jupiter.waitFor({ timeout: 5_000 }).catch(() => {});
+  const solPressed = await chip("Solana").getAttribute("aria-pressed");
+  check("Learn deep link to a filtered-out guide switches the chip and opens it", (await jupiter.count()) === 1 && solPressed === "true", `dialog=${await jupiter.count()} | Solana aria-pressed=${solPressed}`);
+  await page.keyboard.press("Escape");
+  await page.waitForTimeout(400);
+  await chip("All chains").click();
+  const back = await cardCount();
+  check("Learn All chains shows every guide (Solana + Ethereum)", all === sol + eth && back === all, `all=${all} sol=${sol} eth=${eth} back=${back}`);
   await page.close();
 }
 

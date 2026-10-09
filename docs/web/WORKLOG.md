@@ -427,6 +427,29 @@ Web 側 (`artifacts/seasonals-web`) は `BFF_URL` (Vite dev proxy 先、node 側
 - 未検証: 実 wallet で web から署名して送る (mainnet 少額、ユーザー)、Seeker 実機で承認画面が token 無しで開くこと
 - 範囲外: Seeker 上での agent plan 署名、`/agent-plans` の認証 (従来どおり無し)
 
+### Learn に Solana 12 protocol と chain filter (2026-10-08、未 commit、Fable 5.1 が文章 / Opus 5.5 subagent 3 本が code)
+- 背景: Learn は 2026-09-26 に Ethereum 6 件で作った初学者向けガイドで、Menu の Solana 12 protocol は載っていなかった。Menu の「Learn」link も Ethereum カードだけ。ユーザー指定で **Fable 5.1 = 文章、Opus 5.5 = 機能実装** に分担 (content.ts と WORKLOG は Fable、それ以外は Opus。同じファイルを両者が触らない)
+- 判断 (ユーザー決定 / 設計):
+  - 並び順は Menu と同じ config 順。chip は `["all", ...SUPPORTED_CHAINS]` から描いて **All chains / Solana / Ethereum**、カードは chain ごとにまとめて **Solana 12 → Ethereum 6** (`learn/filter.ts` の `CHAIN_ORDER`、逆にするなら 1 行)
+  - chip の見た目は Menu の `.filter-chip` を **shell.css に移して共有**。explore.css は Menu route の lazy chunk でしか読まれないので、Learn を先に開くと chip が無スタイルになる (実バグ回避)。`.segmented` (soda 塗り) は view 切替用なので使わない
+  - filter は `useState("all")`、URL には載せない。`/learn#<id>` の entry が filter で隠れていれば **その chain に切り替えてから** 次 render で scroll + 詳細を開く (依存配列 `[hash, chain]`)
+  - Learn の id = `menu-listings` の `protocol_id` (logo と `/learn#<id>` が解決する前提)。`content.test.ts` が `fixtureMenuListings` と突き合わせて契約として固定
+- 実装:
+  - `content.ts`: `LearnEntry.chain: ChainId` を追加 (Ethereum 6 件に `"ethereum"`)、Solana 12 件 (jupiter / kamino / solstice / sanctum / perena / savefi / marinade / meteora / jito / orca / hylo / exponent) を既存と同じ 13 field で追加。全文を 2026-10-08 に公式 docs で裏取りし `sources` に残した (計 40 URL、Jito の docs は bot 対策で WebFetch / curl が 403 のため Chrome で同日に読んだ)。`inSeasonals` / `onYourCalendar` は実装済みのことだけ: wallet 署名 → Seasonals server → mainnet、oracle gate (2% warning / 5% refuse / both stale refuse)、swap-earn 系の withdraw は protocol の unstake ではなく Jupiter swap、jitoSOL / mSOL / INF は fair-value guard (償還価値より 2% 超不利で拒否)、epoch イベントは jitoSOL / mSOL / INF / hyloSOL 保有時、health は借入のある Kamino obligation、claim は Orca / Meteora の未請求 fee、maturity は Exponent PT / YT、Exponent は満期 PT の Redeem のみ (買いは未実装)
+  - `learn/filter.ts` (新規): `LEARN_CHAINS` / `CHAIN_ORDER` / `chainLabel` / `learnEntries(chain)` (filter → stable sort、`LEARN` は不変)
+  - `LearnPage.tsx`: chip group (`role="group" aria-label="Chain"`、Menu と同じ markup)、grid は `learnEntries(chain)`、hash effect の chain 切替。`learn.css` に `.learn-chain`、grid の `margin-top` を `--sp-lg` に
+  - `shell.css` ← `explore.css`: `.filter-chip` 2 規則を move (copy ではない)
+  - `ExploreMenu.tsx`: Solana `MenuCard` の `.menu-item-bottom` 右下に `LEARN_IDS.has(protocol.protocol_id)` で「Learn」(`span.menu-links`、Ethereum カードと同じ位置)
+  - tests: `content.test.ts` を data-driven に (id 集合 = Ethereum 6 + fixture の Solana 12、`chain` は `SUPPORTED_CHAINS`、Solana の `inSeasonals` に "fork" 無し / Ethereum に "Solana wallet" 無し)。`LearnPage.test.tsx` に chip 由来 / 並び順 / Solana・Ethereum 絞り込み / 隠れた guide への deep link が chip を切り替える、の 4 本。`ExploreMenu.test.tsx` に Solana カードの Learn link。e2e `run.mjs` の Learn block は `=== 6` を chip 押下後の枚数 (All = Solana + Ethereum、12 / 6 は content.ts を指すコメント付き) に書き換え、`#jupiter` deep link の chip 切替、screenshot 3 枚
+- 検証: web vitest 158 / 158 (24 files、Learn 13 本含む)、`pnpm typecheck` (web) と `pnpm -r typecheck` (5 workspace) green。content.ts の全 URL (site / docs / sources) を curl で確認: jito.network 3 本が 403 (bot 対策、Chrome では閲覧可)、hylo.so が 429 (rate limit) 以外は 200
+  - e2e (Opus 5.5 統合 subagent、`SOL_E2E=1`): 自前の BFF (3031) + vite (5174) 相手に **120 / 120**。Learn の 10 check 全部 green (1440 / 1280 で 3 枚 1 行、`#pendle` deep link と focus、Esc で閉じて hash 消去、chip 文言、Solana 12 / Ethereum 6 と https link、Ethereum 絞り込み中の `#jupiter` で Solana chip に切替、All chains で 18)。既に動いていた BFF (3030) 相手の 1 回目は `Deposited only` 1 本だけ落ちた (その BFF の子 process が死んでいた。別セッションの BFF Ethereum 変更に起因、Learn とは無関係)。e2e の修正 1 点: `learn-all-1440.png` の前に `window.scrollTo(0, 0)` (Esc で Pendle の Details に focus が戻ってスクロールし、浮遊ナビが 3 行目に被っていた。check は落ちていない)
+  - screenshot (`.screenshots/learn-{all,solana,ethereum}-1440.png`、`menu-1440.png`): chip は pill で押下中が濃色、3 列、All chains の 1 行目は Jupiter / Kamino / Solstice、12 枚の後に Ethereum 6 枚、全カードに logo (monogram 無し)、はみ出し無し。Menu の chip は見た目不変、Solana カードの右下に Learn。気づき: Ethereum カードだけ brand 色の上辺 4px と bullet 色が付く (Solana は中立)、Jito の logo は左端が欠けて見える (Menu と同じ画像、既存)
+- 未検証: 1280 / 1100 幅の chip と 6 行 grid の目視 (e2e は 1440 と 1280 の WIDTHS で枚数だけ見る)、mobile 幅
+- 範囲外 / 気づき (lib の fixture なので今回は触っていない、別タスク):
+  - Menu の Jupiter「JupSOL」pool (`jupiter_jupsol`、asset SOL) は route 上 **Jupiter Lend の SOL market (jlWSOL)** に入る。JupSOL LST を買うのではないので、`menu-listings.ts` の表示名を見直す余地 (Learn の文章では事実どおりに書いた)
+  - Hylo は V2 (2026-07) で **sHYUSD を同じ mint のまま eHYUSD に改称** (`docs.hylo.so/security/onchain-addresses`: "eHYUSD (formerly sHYUSD)")。Menu の `hylo_shyusd` の表示名「sHYUSD Stability Pool」は旧称。Learn では「Menu は旧称のまま、同じ token」と明記した
+  - Solana の brand 色は `PROTOCOL_BRAND` に無いので Learn カードの上辺 accent は透明 (既存 test が中立表示を assert。今回は足していない)
+
 ### 実機確認の 4 点: 承認画面の期限と状態 / 戻れない / EST. OUT の実値化 + MCP の経路 / EGL ログ (2026-10-08、未 commit、Opus 5.5 subagent 3 本で実装)
 - 背景 (2026-10-08 の Seeker 実機確認): (1) 承認画面の「Expires in 4:57」は 5 分の approval token の残りで、web が token を再発行する新契約では意味が無い。card は `plan.status` も読まず、web で却下されても Approved のまま。(2) 承認画面から戻れない。原因は `MenuDrawer` の BackHandler が `visible` の間ずっと有効で、下に開いたままの Menu 詳細が戻る操作を飲み込んでいた。(3) agent plan の EST. OUT が 0。simulate は mock registry (kamino の 30 日 APY 見込み、他は全部 "0") で、単位も入力 asset 表示。MCP `simulate_action` は metadata を運べず、Agent の plan では kVault / Meteora / Orca の deposit と全 withdraw が `/execute` で 422。simulate の oracle gate は `jupiter` を正規化せず素通り。(4) logcat の `EGLConsumer is not attached`
 - 判断 (ユーザー決定): 期限は plan の `expires_at` を出し状態も反映 / EST. OUT は既存の見積り元で実値化 / MCP の metadata 経路も今回直す
