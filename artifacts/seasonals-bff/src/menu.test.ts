@@ -125,7 +125,7 @@ const KAMINO_SOL = KAMINO_MARKETS.find((m) => m.pool_id === "kamino_sol_main")!;
 const KVAULT = KAMINO_VAULTS[0]!;
 const SAVE_USDC = SAVE_MARKETS.find((m) => m.pool_id === "savefi_usdc_main")!;
 const SAVE_SOL = SAVE_MARKETS.find((m) => m.pool_id === "savefi_sol_main")!;
-const SHYUSD = SWAP_EARN_MARKETS.find((m) => m.share_symbol === "sHYUSD")!;
+const SHYUSD = SWAP_EARN_MARKETS.find((m) => m.share_symbol === "eHYUSD")!;
 const mockSanctumTvl = fetchSanctumTvls as jest.MockedFunction<typeof fetchSanctumTvls>;
 const mockSaveTotals = fetchSaveReserveTotals as jest.MockedFunction<
   typeof fetchSaveReserveTotals
@@ -255,7 +255,7 @@ beforeEach(async () => {
       [SAVE_SOL.reserve, { total: 185_000_000_000_000n, decimals: 9 }], // 185k SOL
     ])
   );
-  // 2026-10: sHYUSD 単価 (供給は getTokenSupplyUi mock の 40M)
+  // 2026-10: eHYUSD 単価 (供給は getTokenSupplyUi mock の 40M)
   mockJupPrice.mockResolvedValue(new Map([[SHYUSD.share_mint, 1.5]]));
   app = await buildServer({ logger: false });
 });
@@ -545,7 +545,7 @@ describe("GET /menu-listings — live overlay", () => {
     expect(pool(menu, "jito", "jito_jitosol").tvl_usd).toBeCloseTo(10_000_000 * 80, 2);
   });
 
-  it("2026-10: sHYUSD TVL = 供給 × Jupiter 単価", async () => {
+  it("2026-10: eHYUSD TVL = 供給 × Jupiter 単価", async () => {
     const menu = await getMenu();
     // getTokenSupplyUi の mock は全 mint で 40,000,000
     expect(pool(menu, "hylo", "hylo_shyusd").tvl_usd).toBeCloseTo(40_000_000 * 1.5, 2);
@@ -556,7 +556,7 @@ describe("GET /menu-listings — live overlay", () => {
     );
   });
 
-  it("2026-10: Jupiter 単価が取れなければ sHYUSD TVL は fixture", async () => {
+  it("2026-10: Jupiter 単価が取れなければ eHYUSD TVL は fixture", async () => {
     mockJupPrice.mockRejectedValue(new Error("jup down"));
     const menu = await getMenu();
     expect(pool(menu, "hylo", "hylo_shyusd").tvl_usd).toBe(

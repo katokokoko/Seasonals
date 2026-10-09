@@ -3,7 +3,7 @@
  *
  * `GET https://lite-api.jup.ag/price/v3?ids=<mint,...>` は mint キーの object を返す
  * (`{ "<mint>": { usdPrice: 1.495, decimals: 6, ... } }`、2026-10-06 確認)。
- * 用途は sHYUSD の menu TVL (供給 × 単価) — **表示専用 Number** (§3 display carve-out)。
+ * 用途は eHYUSD (旧 sHYUSD) の menu TVL (供給 × 単価) — **表示専用 Number** (§3 display carve-out)。
  * 金額計算 / tx には使わない。正の有限数以外は捨てる。1 件も取れなければ throw。
  */
 

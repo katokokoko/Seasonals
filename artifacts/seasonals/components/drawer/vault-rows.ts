@@ -185,7 +185,8 @@ export const STABLE_ASSETS = new Set([
   "jupUSD",
   "JupUSD",
   "hyUSD",
-  "sHYUSD",
+  "eHYUSD",
+  "sHYUSD", // 旧 symbol、V2 で eHYUSD に改称
 ]);
 
 const SOL_ASSETS = new Set(["SOL", "WSOL", "jitoSOL", "mSOL", "INF", "hyloSOL"]);

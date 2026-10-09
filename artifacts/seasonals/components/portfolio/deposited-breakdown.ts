@@ -3,7 +3,7 @@
  *
  * 8.55 の展開は「同じ量の通貨換算」(≈ 50.15 USDC · 0.2975 SOL) を出していたが、
  * ユーザーが知りたいのは **その通貨で何をどこに預けているか** だった。
- * USDC 行 → jlUSDC / sHYUSD / USD* …、SOL 行 → jitoSOL / mSOL / INF … を
+ * USDC 行 → jlUSDC / eHYUSD / USD* …、SOL 行 → jitoSOL / mSOL / INF … を
  * 「share symbol + underlying 換算量」で並べる。
  *
  * データ源: merge 済み Position[] (earn 行は asset_symbol = underlying、

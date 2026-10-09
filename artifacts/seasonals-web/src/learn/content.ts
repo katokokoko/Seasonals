@@ -36,7 +36,7 @@ export const LEARN: LearnEntry[] = [
     id: "lido",
     chain: "ethereum",
     name: "Lido",
-    tagline: "Stake ETH and keep a token you can still use.",
+    tagline: "Ethereum staking through Lido's validator set, with no validator of your own to run.",
     keyPoints: [
       "Stake ETH and get stETH, which earns staking rewards.",
       "Your staked ETH stays usable as a token.",
@@ -79,7 +79,7 @@ export const LEARN: LearnEntry[] = [
     id: "ethena",
     chain: "ethereum",
     name: "Ethena",
-    tagline: "A synthetic dollar (USDe) and a staked version that earns rewards (sUSDe).",
+    tagline: "A dollar token backed by hedged crypto positions instead of bank deposits.",
     keyPoints: [
       "Stake the USDe synthetic dollar to get sUSDe, which earns rewards.",
       "Rewards come from staked ETH and hedge funding.",
@@ -172,11 +172,11 @@ export const LEARN: LearnEntry[] = [
     id: "uniswap",
     chain: "ethereum",
     name: "Uniswap",
-    tagline: "Swap tokens against shared liquidity, and join token auctions (CCA).",
+    tagline: "A decentralized exchange for token swaps, plus Continuous Clearing Auctions (CCA) for new tokens.",
     keyPoints: [
       "Swap tokens against shared liquidity pools.",
       "Bid in token auctions where everyone pays the same price per block.",
-      "Check slippage, and check an auction's settings before bidding.",
+      "Set a slippage limit on swaps, and read an auction's settings before bidding.",
     ],
     whatItIs:
       "Uniswap lets you swap one token for another against pools of liquidity that other people provide, instead of matching with a single seller. It also offers Continuous Clearing Auctions (CCA), where a new token is sold over time and everyone in the same block pays the same price.",
@@ -216,7 +216,7 @@ export const LEARN: LearnEntry[] = [
     id: "aqua",
     chain: "ethereum",
     name: "1inch Aqua",
-    tagline: "Provide liquidity while your tokens stay in your own wallet.",
+    tagline: "1inch's shared liquidity layer: strategies that trade tokens you still hold.",
     keyPoints: [
       "Provide liquidity without moving tokens out of your wallet.",
       "One balance can back several strategies.",
@@ -251,7 +251,7 @@ export const LEARN: LearnEntry[] = [
     id: "aave",
     chain: "ethereum",
     name: "Aave",
-    tagline: "Lend your tokens for interest, or borrow against them.",
+    tagline: "Overcollateralized lending on Ethereum, now organized as Aave V4 Hubs and Spokes.",
     keyPoints: [
       "Lend tokens for interest, or borrow against them.",
       "Borrow without selling what you hold.",
@@ -322,7 +322,7 @@ export const LEARN: LearnEntry[] = [
       "Jupiter Lend positions have no fixed dates, so they do not create calendar events. Seasonals shows them as context on the Dashboard instead.",
     ],
     inSeasonals:
-      "From the Menu you can Deposit into and Withdraw from Jupiter Lend's USDC and SOL markets. Seasonals routes your USDC or SOL into the matching jlToken through Jupiter's swap and routes it back when you withdraw. The card named JupSOL is the Jupiter Lend SOL market: it lends SOL and does not buy the JupSOL staking token. Transactions are signed in your Solana wallet and sent to mainnet through the Seasonals server. Before building one, Seasonals checks the asset's price on the Pyth and RedStone on-chain feeds: it warns when they differ by more than 2% and refuses when they differ by more than 5% or both are stale. Jupiter's swap routing is also how Seasonals moves SOL or USDC into the staking and stable tokens of the other Solana protocols listed here.",
+      "From the Menu you can Deposit into and Withdraw from Jupiter Lend's USDC and SOL markets. Seasonals routes your USDC or SOL into the matching jlToken through Jupiter's swap and routes it back when you withdraw. Both cards are lending markets; neither buys a staking token. Transactions are signed in your Solana wallet and sent to mainnet through the Seasonals server. Before building one, Seasonals checks the asset's price on the Pyth and RedStone on-chain feeds: it warns when they differ by more than 2% and refuses when they differ by more than 5% or both are stale. Jupiter's swap routing is also how Seasonals moves SOL or USDC into the staking and stable tokens of the other Solana protocols listed here.",
     site: "https://jup.ag/",
     docs: "https://docs.jup.ag/",
     sources: [
@@ -737,7 +737,7 @@ export const LEARN: LearnEntry[] = [
       "eHYUSD has no fixed dates and shows as Dashboard context.",
     ],
     inSeasonals:
-      "From the Menu you can Deposit SOL into hyloSOL and USDC into eHYUSD, and Withdraw back, all as swaps routed through Jupiter. The Menu still labels the second pool with its earlier name, sHYUSD Stability Pool; it is the same token Hylo now calls eHYUSD. Transactions are signed in your Solana wallet and sent to mainnet through the Seasonals server after the Pyth and RedStone check on SOL or USDC (warning above 2% divergence, refusal above 5% or when both feeds are stale). hyloSOL and eHYUSD have no price feed that Seasonals trusts, so the check covers the SOL or USDC side only.",
+      "From the Menu you can Deposit SOL into hyloSOL and USDC into eHYUSD, and Withdraw back, all as swaps routed through Jupiter. The Menu lists it as the eHYUSD Earn Pool; it is the token Hylo called sHYUSD before V2, at the same mint. Transactions are signed in your Solana wallet and sent to mainnet through the Seasonals server after the Pyth and RedStone check on SOL or USDC (warning above 2% divergence, refusal above 5% or when both feeds are stale). hyloSOL and eHYUSD have no price feed that Seasonals trusts, so the check covers the SOL or USDC side only.",
     site: "https://hylo.so/",
     docs: "https://docs.hylo.so/",
     sources: [

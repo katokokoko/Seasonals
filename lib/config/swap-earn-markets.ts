@@ -72,8 +72,8 @@ export const SWAP_EARN_MARKETS: SwapEarnMarket[] = [
   { protocol_id: "solstice", underlying_symbol: "USDC", underlying_mint: USDC, underlying_decimals: 6, share_symbol: "eUSX", share_mint: "3ThdFZQKM6kRyVGLG48kaPg5TRMhYMKY1iCRa9xop1WC", share_decimals: 6 },
   // Hylo (Phase 8.27): hyloSOL = LST (1 SOL → 0.9397、impact 0、Exponent underlyingApy 有)
   { protocol_id: "hylo", underlying_symbol: "SOL", underlying_mint: SOL, underlying_decimals: 9, share_symbol: "hyloSOL", share_mint: "hy1oXYgrBW6PVcJ4s6s2FKavRdwgWTXdfE69AxT7kPT", share_decimals: 9 },
-  // Hylo: sHYUSD = staked hyUSD (100 USDC → 68.22、impact ~0。APY 実値ソース未発見 → menu は fixture)
-  { protocol_id: "hylo", underlying_symbol: "USDC", underlying_mint: USDC, underlying_decimals: 6, share_symbol: "sHYUSD", share_mint: "HnnGv3HrSqjRpgdFmx7vQGjntNEoex1SU4e9Lxcxuihz", share_decimals: 6 },
+  // Hylo: eHYUSD (V2 で sHYUSD から改称、同 mint) = Earn Pool の hyUSD (100 USDC → 68.22、impact ~0。APY 実値ソース未発見 → menu は fixture)
+  { protocol_id: "hylo", underlying_symbol: "USDC", underlying_mint: USDC, underlying_decimals: 6, share_symbol: "eHYUSD", share_mint: "HnnGv3HrSqjRpgdFmx7vQGjntNEoex1SU4e9Lxcxuihz", share_decimals: 6 },
 ];
 
 /** share token mint → market (withdraw / 既知 share の解決) */

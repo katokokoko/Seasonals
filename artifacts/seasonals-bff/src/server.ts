@@ -2781,6 +2781,12 @@ export function buildExponentMenuPools(
 // ── Phase 8.22: /menu-listings (live APY/TVL overlay) ────────────────────────
 
 /**
+ * Hylo eHYUSD の share mint (V2 で sHYUSD から改称・同 mint)。
+ * symbol で引くと改称に引きずられるので mint で引く。
+ */
+const EHYUSD_MINT = "HnnGv3HrSqjRpgdFmx7vQGjntNEoex1SU4e9Lxcxuihz";
+
+/**
  * /menu-listings の live ソース束。undefined のソースは fixture 値のまま
  * (graceful degrade — 呼び手が allSettled で詰める)。
  */
@@ -2811,7 +2817,7 @@ export interface MenuLiveSources {
   lstTvlLamports?: Map<string, bigint>;
   /** 2026-10: Save reserve address → 供給総量 (smallest unit、on-chain reserve decode) */
   saveReserveTotals?: Map<string, SaveReserveTotal>;
-  /** 2026-10: sHYUSD 総供給 × Jupiter Price v3 単価 (表示専用 USD) */
+  /** 2026-10: eHYUSD (旧 sHYUSD) 総供給 × Jupiter Price v3 単価 (表示専用 USD) */
   shyusdTvlUsd?: number;
   /**
    * Phase 8.33: Exponent PT markets (live)。undefined = fetch 失敗 → lib registry
@@ -2838,7 +2844,7 @@ export const LST_POOL_SYMBOLS: Record<string, string> = {
   solstice_eusx: "eUSX", // Exponent underlyingApy (8.24)
   perena_usd_star: "USD*", // Perena app の非公開 endpoint (8.25)
   hylo_hylosol: "hyloSOL", // Exponent underlyingApy (8.27)
-  // hylo_shyusd は対象外: Exponent markets に sHYUSD の underlying が無い (2026-10-06 確認)
+  // hylo_shyusd は対象外: Exponent markets に eHYUSD (旧 sHYUSD) の underlying が無い (2026-10-06 確認)
 };
 
 /**
@@ -3023,7 +3029,7 @@ export function applyMenuLiveOverlays(
           const tvl = finite((Number(lamports) / 1e9) * s.solPriceUsd);
           if (tvl !== null && tvl > 0) out.tvl_usd = tvl;
         }
-        // 2026-10: sHYUSD = 総供給 × Jupiter 単価
+        // 2026-10: eHYUSD = 総供給 × Jupiter 単価
         if (
           pool.pool_id === "hylo_shyusd" &&
           s.shyusdTvlUsd !== undefined &&
@@ -3368,16 +3374,16 @@ export async function buildServer(
         fetchSanctumTvls(LST_TVL_SYMBOLS),
         // 2026-10: Save reserve の供給総量 (on-chain、getMultipleAccounts 1 回)
         fetchSaveReserveTotals(SAVE_MARKETS.map((m) => m.reserve)),
-        // 2026-10: sHYUSD TVL = 総供給 × Jupiter Price v3 単価 (eUSX / USD* と同じ型)
+        // 2026-10: eHYUSD TVL = 総供給 × Jupiter Price v3 単価 (eUSX / USD* と同じ型)
         (async () => {
-          const shy = SWAP_EARN_MARKETS.find((m) => m.share_symbol === "sHYUSD");
-          if (!shy) throw new Error("sHYUSD market not registered");
+          const shy = findMarketByShareMint(EHYUSD_MINT);
+          if (!shy) throw new Error("eHYUSD market not registered");
           const [supply, prices] = await Promise.all([
             getTokenSupplyUi(shy.share_mint),
             fetchJupiterUsdPrices([shy.share_mint]),
           ]);
           const price = prices.get(shy.share_mint);
-          if (price === undefined) throw new Error("no sHYUSD usdPrice");
+          if (price === undefined) throw new Error("no eHYUSD usdPrice");
           return supply * price;
         })(),
       ]);
@@ -3395,7 +3401,7 @@ export async function buildServer(
       [perenaTriTvlR, "perena tri-stable tvl"],
       [lstTvlR, "sanctum lst tvl"],
       [saveTotalsR, "save reserve totals"],
-      [shyusdTvlR, "shyusd tvl"],
+      [shyusdTvlR, "ehyusd tvl"],
       [expMktR, "exponent pt markets"],
       [solPriceR, "sol oracle price"],
     ] as const) {
@@ -3565,7 +3571,7 @@ export async function buildServer(
         (m) =>
           m.protocol_id === "perena" ||
           m.protocol_id === "solstice" ||
-          m.protocol_id === "hylo" // 8.27: hyloSOL / sHYUSD とも quote 換算
+          m.protocol_id === "hylo" // 8.27: hyloSOL / eHYUSD とも quote 換算
       );
       const quoteRatesPromise = Promise.allSettled(
         quoteRateMarkets.map(async (m) => {
