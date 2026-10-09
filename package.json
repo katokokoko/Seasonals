@@ -1,12 +1,14 @@
 {
   "name": "seasonals-monorepo",
+  "license": "Apache-2.0",
   "version": "0.0.0",
   "private": true,
   "description": "Seasonals — Solana DeFi time primitive (monorepo root)",
   "scripts": {
     "test": "pnpm -r test",
     "typecheck": "pnpm -r typecheck",
-    "dev:device": "bash scripts/adb-reverse-keepalive.sh"
+    "dev:device": "bash scripts/adb-reverse-keepalive.sh",
+    "deploy:bff": "fly deploy . --config artifacts/seasonals-bff/fly.toml --dockerfile artifacts/seasonals-bff/Dockerfile --ignorefile artifacts/seasonals-bff/.dockerignore --remote-only --build-arg GIT_SHA=$(git rev-parse --short HEAD) --app seasonals-bff"
   },
   "packageManager": "pnpm@10.33.4",
   "//overrides": {
