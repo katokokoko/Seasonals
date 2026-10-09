@@ -110,7 +110,8 @@ Uniswap developer feedback is in [`FEEDBACK.md`](FEEDBACK.md).
 pnpm -r test                      # lib, BFF, MCP Server, mobile, web
 bash scripts/typecheck-baseline.sh
 pnpm --filter @seasonals/web build
-node artifacts/seasonals-web/e2e/run.mjs   # needs the web dev server; uses the system Chrome
+node artifacts/seasonals-web/e2e/run.mjs   # needs the web dev server + BFF (exit 2 if the BFF is unreachable); uses the system Chrome
+pnpm --filter @seasonals/web e2e:local     # starts its own BFF + vite on free ports, runs the e2e, stops them
 ```
 
 ## Not built (yet)

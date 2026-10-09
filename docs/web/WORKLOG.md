@@ -446,8 +446,8 @@ Web 側 (`artifacts/seasonals-web`) は `BFF_URL` (Vite dev proxy 先、node 側
   - screenshot (`.screenshots/learn-{all,solana,ethereum}-1440.png`、`menu-1440.png`): chip は pill で押下中が濃色、3 列、All chains の 1 行目は Jupiter / Kamino / Solstice、12 枚の後に Ethereum 6 枚、全カードに logo (monogram 無し)、はみ出し無し。Menu の chip は見た目不変、Solana カードの右下に Learn。気づき: Ethereum カードだけ brand 色の上辺 4px と bullet 色が付く (Solana は中立)、Jito の logo は左端が欠けて見える (Menu と同じ画像、既存)
 - 未検証: 1280 / 1100 幅の chip と 6 行 grid の目視 (e2e は 1440 と 1280 の WIDTHS で枚数だけ見る)、mobile 幅
 - 範囲外 / 気づき (lib の fixture なので今回は触っていない、別タスク):
-  - Menu の Jupiter「JupSOL」pool (`jupiter_jupsol`、asset SOL) は route 上 **Jupiter Lend の SOL market (jlWSOL)** に入る。JupSOL LST を買うのではないので、`menu-listings.ts` の表示名を見直す余地 (Learn の文章では事実どおりに書いた)
-  - Hylo は V2 (2026-07) で **sHYUSD を同じ mint のまま eHYUSD に改称** (`docs.hylo.so/security/onchain-addresses`: "eHYUSD (formerly sHYUSD)")。Menu の `hylo_shyusd` の表示名「sHYUSD Stability Pool」は旧称。Learn では「Menu は旧称のまま、同じ token」と明記した
+  - Menu の Jupiter「JupSOL」pool (`jupiter_jupsol`、asset SOL) は route 上 **Jupiter Lend の SOL market (jlWSOL)** に入る。JupSOL LST を買うのではないので、`menu-listings.ts` の表示名を見直す余地 (Learn の文章では事実どおりに書いた) → 2026-10-10 に「SOL Main」へ改名 (下の section)
+  - Hylo は V2 (2026-07) で **sHYUSD を同じ mint のまま eHYUSD に改称** (`docs.hylo.so/security/onchain-addresses`: "eHYUSD (formerly sHYUSD)")。Menu の `hylo_shyusd` の表示名「sHYUSD Stability Pool」は旧称。Learn では「Menu は旧称のまま、同じ token」と明記した → 2026-10-10 に eHYUSD へ改称 (下の section)
   - Solana の brand 色は `PROTOCOL_BRAND` に無いので Learn カードの上辺 accent は透明 (既存 test が中立表示を assert。今回は足していない)
 
 ### 実機確認の 4 点: 承認画面の期限と状態 / 戻れない / EST. OUT の実値化 + MCP の経路 / EGL ログ (2026-10-08、未 commit、Opus 5.5 subagent 3 本で実装)
@@ -467,6 +467,22 @@ Web 側 (`artifacts/seasonals-web`) は `BFF_URL` (Vite dev proxy 先、node 側
   - Metro (watchman の root が `~/Documents` 全体) が起動後に作られた lib の新 file を拾わず、bundle の build に失敗して端末は古い bundle のまま動いていた。古い card は fee の無い新形式 plan で Render Error。Metro の再起動で解消 (ユーザー)。lib に新 file を足した時は Metro の再起動が要る
   - EGL ログは水面の描画中ずっと出る定常的なもの (再読込直後の素の Home でも 30 秒で 10 行前後)。今回の修正でアプリが裏にある間は 0 行・描画停止。前面での発生は Skia の TextureView の挙動 (Skia 自身が「無視してよい」と出す) なので範囲外
 - 範囲外 / 既知: Exponent PT の換算値 (JS Number の rate、式未検証)、fee の見積り、Save の交換レートが上流から取れない時に client が「1」で代用する既存の問題 (cToken 見積りが過大になり得る)、mainnet での署名・送金 (ユーザー)
+
+### Learn follow-up: Menu 表示名 (JupSOL → SOL Main / sHYUSD → eHYUSD)、Ethereum guide の tagline、e2e の BFF preflight と e2e:local (2026-10-10、plan と文章は Fable 5.1 / code は Opus 5.5 subagent 2 本)
+- 背景: 10-08 の Learn 拡張 (commit 3be9a50) の最終報告で挙げた 4 件。(1) Menu の Jupiter「JupSOL」は route も live overlay も Jupiter Lend の SOL market (jlWSOL) で JupSOL LST ではない。(2) Hylo は V2 (2026-07) で sHYUSD を同じ mint のまま eHYUSD に改称 (公式 onchain-addresses: "eHYUSD (formerly sHYUSD)") だが repo は `share_symbol: "sHYUSD"` で BFF の TVL overlay / test が symbol 引き。(3) Ethereum 6 件の Learn copy で tagline と keyPoints[0] がほぼ同文。(4) e2e は BFF が死んでいても Chrome を起動して後段で count 不一致 (`all=63 shown=0 held=0`) として落ち、環境障害とアプリ不具合の区別が付かない
+- 判断:
+  - pool_id (`jupiter_jupsol` / `hylo_shyusd`)、mint、icon file、変数名は据え置き (MCP の catalog と agent plan に出る id を変えない)。表示名と `share_symbol` だけ改める
+  - BFF の eHYUSD TVL overlay は symbol ではなく **mint で引く** (`findMarketByShareMint`)。symbol 改称で overlay が黙って fixture に fallback する事故を二度と起こさない
+  - Learn の差し替え文は Fable が plan に全文を書き、Opus は機械的に置換 (content.test の規則で担保)
+  - e2e: `/api/health` の preflight で BFF 不達は **exit 2** (check 失敗の exit 1 と区別、stdout には何も出さない)。`pnpm e2e:local` は空き port で自前の BFF + vite を立てて回し、終了時に process group ごと止める。他 session の 3030 / 5173 には触らない。`pnpm e2e` の挙動は preflight 以外そのまま
+  - 先に Learn 本体を 3be9a50 として commit (WORKLOG は自分の hunk だけを一時 index で stage)。follow-up は別 commit
+- 実装:
+  - (A) `menu-listings.ts`: `jupiter_jupsol` の name を「SOL Main」に (pool_id 据え置き、理由コメント)、`hylo_shyusd` を「eHYUSD Earn Pool」に。`swap-earn-markets.ts`: `share_symbol` を eHYUSD に (mint 不変)。BFF `server.ts`: eHYUSD の TVL overlay を `EHYUSD_MINT` 定数 + `findMarketByShareMint` で引く (symbol 引きを廃止)、error 文字列 / log label / コメントを eHYUSD に。`menu.test.ts` / mobile `deposited-breakdown.test.ts` の期待値、`vault-rows.ts` の `STABLE_ASSETS` に eHYUSD 追加 (sHYUSD は旧 symbol として残す)、`verify-tx-routes.mjs` の label、`fair-value.ts` / `jupiter-price.ts` / `deposited-breakdown.ts` のコメント。Learn `content.ts`: Jupiter / Hylo の `inSeasonals` 各 1 文と Ethereum 5 件の tagline + Uniswap の keyPoints[2] を plan の文で置換 (Fable 作、Opus が機械的に適用)
+  - (B) `e2e/run.mjs`: `chromium.launch` の前に `${WEB_URL}/api/health` の preflight (5 秒 timeout × 3 回)。不達なら stderr 1 行 (vite は居て BFF が居ない = `HTTP 500`、vite も居ない = `ECONNREFUSED`) で **exit 2**、Chrome は起動せず stdout にも出さない。成功時は `heliusConfigured` を表示、`SOL_E2E=1` で key 無しなら警告。Deposited only は失敗時だけ `.deposited-toggle` の「Could not check: …」と `.notice-warning` を detail に足す。`e2e/local.mjs` (新規、`pnpm e2e:local`): 空き port 2 つ (`net` の listen(0))、root の `node_modules/.bin/{tsx,vite}` を直接 detached で起動 (BFF は `cwd=artifacts/seasonals-bff` で `.env` / `.data/` を共有、vite は `--host 127.0.0.1 --strictPort` + `BFF_URL`)、`/health` と `/` を poll、`run.mjs` を `WEB_URL` 付きで子 process (detached にしない)、終了時 / throw / SIGINT / SIGTERM で process group ごと SIGTERM → 3 秒で SIGKILL。log は `e2e/.out/{bff,vite}.log`。`package.json` に `e2e:local`、README の e2e 行を 2 行に
+- 検証:
+  - (A) `pnpm -r test`: lib 308 / BFF 668 / mobile 495 / MCP 29 / web 162 green (BFF と mobile は並列だと timeout 4 本 (autonomous / agent-plan-lifecycle / queries の 30 秒・5 秒待ち) → workspace 単独で再実行して全 green、触った file とは無関係)。`pnpm -r typecheck` 5 workspace green。`verify:tx`: `OK swap-earn dep eHYUSD tx1 CU128197`、合計 23 経路 / simulate 成功 14 / 想定内の失敗 9 / 要調査 0、429 なし。`sHYUSD` の残りは pool_id / 変数名 / icon file / 「旧 symbol」コメント / Learn の履歴文だけ (grep で確認)
+  - (B) `node --check` 2 file OK。BFF 不達: 使い捨て vite (5199、`BFF_URL=http://127.0.0.1:1`) 相手の `pnpm e2e` が exit 2 + `(HTTP 500)` の 1 行、何も listen していない 5198 相手は exit 2 + `(ECONNREFUSED)`、stdout に JSON 無し、Chrome 起動なし、`.screenshots/` の mtime 不変。`pnpm e2e:local`: `SOL_E2E=1` で **120 / 120** (exit 0)、無しで 114 / 114 (Solana block 6 本は opt-in)。毎回 lsof で両 port が空、tsx / vite / headless Chrome の残りなし、他 session の 3030 / 5173 は無傷。Ctrl-C: `vite:` の後に `kill -INT` → `stopping servers…`、exit 130、server と run.mjs が全部消える。web vitest 162 / 162、typecheck green
+- 未検証: `e2e:local` を `SOL_E2E` 無しで回した初期の 2 回は headless Chrome が途中で死んだ (`Target page, context or browser has been closed`、L341 の Settings wallet block と L821 の reduced-motion block。同時刻にユーザーの Chrome が再起動していた、原因未特定、その後の 3 回は完走)、1 回は `glass follows the droplet mid-animation` が timing で落ちた (次の 2 回は pass)。`heliusConfigured=false` の警告行は key のある BFF では踏めない (stderr print のみ)。web `/menu` で「SOL Main」「eHYUSD Earn Pool」が出る目視は e2e の menu screenshot (`.screenshots/menu-1440.png`) で確認できるが、本 session では見ていない
 
 ## 最終状態 (2026-09-26 05:30 JST 時点)
 

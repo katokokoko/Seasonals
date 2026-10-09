@@ -2,6 +2,8 @@
  * e2e/run.mjs — 画面の操作検証 + screenshot (system Chrome, headless)。
  *   WEB_URL (既定 http://localhost:5173) で起動済みの dev / preview server に対して実行する。
  *   結果は stdout に JSON、失敗があれば exit 1。screenshot は .screenshots/ (gitignore)。
+ *   起動前に ${WEB_URL}/api/health を叩き、BFF に届かなければ Chrome を起動せず exit 2 (環境の問題)。
+ *   BFF + vite を自前で立てて回すなら `pnpm e2e:local` (e2e/local.mjs)。
  */
 import { mkdirSync } from "node:fs";
 import { chromium } from "playwright-core";
@@ -55,6 +57,39 @@ async function glassDrift(page) {
 }
 const results = [];
 const check = (name, ok, detail = "") => results.push({ name, ok: Boolean(ok), detail: String(detail) });
+
+// preflight: vite の /api proxy 越しに BFF の /health を叩く。BFF が落ちていると後段の check が
+// 「all=63 shown=0」のような data 由来の失敗になり app の bug と区別できないので、ここで止める。
+// vite は居て BFF が居ない = proxy が HTTP 500、vite も居ない = ECONNREFUSED。
+// exit code: 0 全 pass / 1 check 失敗 / 2 環境 (stdout には何も出さない)
+{
+  let health = null;
+  let reason = "";
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const res = await fetch(BASE + "/api/health", { signal: AbortSignal.timeout(5_000) });
+      if (res.ok) {
+        health = await res.json();
+        break;
+      }
+      reason = `HTTP ${res.status}`;
+    } catch (err) {
+      reason = err.cause?.code ?? err.message;
+    }
+    if (attempt < 2) await new Promise((r) => setTimeout(r, 1_000));
+  }
+  if (!health) {
+    console.error(
+      `e2e preflight: BFF unreachable through ${BASE}/api/health (${reason}). Start it with \`pnpm --filter @seasonals/bff dev\` (or run \`pnpm e2e:local\` for a self-contained BFF + vite).`
+    );
+    process.exit(2);
+  }
+  const heliusConfigured = health.solana?.heliusConfigured;
+  console.error(`e2e preflight ok: ${BASE}/api/health heliusConfigured=${heliusConfigured}`);
+  if (process.env.SOL_E2E === "1" && !heliusConfigured) {
+    console.error("e2e preflight: SOL_E2E=1 but the BFF has no Helius key (heliusConfigured=false); the Solana deposit block will fail.");
+  }
+}
 
 const args = ["--use-angle=metal", "--enable-webgl", "--ignore-gpu-blocklist"];
 const browser = await chromium.launch({ channel: "chrome", headless: true, args });
@@ -198,7 +233,15 @@ for (const vp of WIDTHS) {
   await page.locator(".menu-holding").first().waitFor({ timeout: 60_000 }).catch(() => {});
   const shown = await page.locator(".menu-item").count();
   const heldShown = await page.locator(".menu-item .menu-holding").count();
-  check("Deposited only narrows the menu to held products", shown > 0 && shown < all && heldShown === shown, `all=${all} shown=${shown} held=${heldShown}`);
+  const narrowed = shown > 0 && shown < all && heldShown === shown;
+  let narrowDetail = `all=${all} shown=${shown} held=${heldShown}`;
+  if (!narrowed) {
+    // 失敗時は画面の「Could not check: …」を detail に足して原因 (holdings 取得失敗) を名指しする
+    const toggle = (await page.locator(".deposited-toggle").innerText().catch(() => "")).replace(/\s+/g, " ").trim();
+    const notices = await page.locator(".notice-warning").allInnerTexts().catch(() => []);
+    narrowDetail += ` | toggle: ${toggle} | notices: ${notices.map((t) => t.replace(/\s+/g, " ").trim()).join(" / ")}`;
+  }
+  check("Deposited only narrows the menu to held products", narrowed, narrowDetail);
   // 絞り込みを外してから sUSDe を選ぶ (watch している address の保有は mainnet 次第で変わる)
   await page.getByRole("button", { name: "Deposited only" }).click();
   const card = page.locator(".menu-item", { hasText: "sUSDe" }).first();
