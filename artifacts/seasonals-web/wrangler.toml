@@ -1,0 +1,24 @@
+# Cloudflare Pages project config for https://seasonals.cafe
+# (Pages root directory = artifacts/seasonals-web, production branch = main).
+#
+# With `pages_build_output_dir` set, this file is the source of truth for the project's
+# environment variables: the dashboard shows them read-only. Edit them here.
+#
+# BFF_PROXY_SECRET is deliberately NOT here. It is an encrypted secret shared with the BFF
+# (x-seasonals-proxy-key, see proxy/upstream.ts); set it in the Pages dashboard
+# (Settings > Variables and Secrets, type "Secret") or with
+#   npx wrangler@4 pages secret put BFF_PROXY_SECRET --project-name seasonals-web
+name = "seasonals-web"
+pages_build_output_dir = "dist"
+compatibility_date = "2026-09-01"
+
+[vars]
+# Pages Function functions/api/[[path]].ts proxies /api/* here.
+BFF_ORIGIN = "https://api.seasonals.cafe"
+# Build environment (non-secret). Cloudflare's build-image docs route these "via Wrangler"
+# when the dashboard variables are managed by this file.
+# The root directory has a package.json with `workspace:*` deps and no lockfile, so the
+# automatic install is skipped; the build command installs from the monorepo root instead.
+SKIP_DEPENDENCY_INSTALL = "1"
+NODE_VERSION = "24"
+PNPM_VERSION = "10.33.4"

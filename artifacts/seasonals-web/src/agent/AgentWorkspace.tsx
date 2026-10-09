@@ -110,7 +110,7 @@ export default function AgentWorkspace() {
     "seasonals": {
       "command": "npx",
       "args": ["tsx", "artifacts/seasonals-mcp-server/src/index.ts"],
-      "env": { "BFF_URL": "http://127.0.0.1:3030" }
+      "env": { "BFF_URL": "https://api.seasonals.cafe" }
     }
   }
 }`}

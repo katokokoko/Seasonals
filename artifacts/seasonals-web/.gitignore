@@ -1,2 +1,4 @@
 .screenshots/
 e2e/.out/
+# wrangler pages dev の local state (Cloudflare Pages Function の手元確認)
+.wrangler/
