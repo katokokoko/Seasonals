@@ -2,8 +2,12 @@
  * Mobile runtime config — BFF base URL の解決 (CLAUDE.md §10 task #5)
  *
  * 優先順位:
- *   1. `app.json` の `extra.bffBaseUrl` (build-time / EAS で env 別に override、
- *      production では実 BFF URL を必ず指定する)
+ *   1. `app.config.ts` の `extra.bffBaseUrl` (build-time の `BFF_BASE_URL` env)
+ *      - 配布 build は eas.json の `preview-onchain` / `production-onchain` profile が
+ *        `BFF_BASE_URL=https://api.seasonals.cafe` (+ `APP_VARIANT=onchain`) を渡し、
+ *        Gradle build 中に expo-constants が extra として APK に焼き込む。
+ *        profile env に無いと localhost + fixture fallback の APK が黙ってできる
+ *        (docs/external-release-api-handling.md §7)
  *      - dev で別ポートの BFF と並走する時は Metro 起動時に `BFF_BASE_URL=http://localhost:3031`
  *        を渡す (app.config.ts が extra に入れる。docs/skr-r0-demo-runbook.md §2)
  *   2. dev default: `http://localhost:3030`
@@ -37,11 +41,14 @@ export const BFF_BASE_URL: string = resolveBffBaseUrl();
  * Local APK / device preview safety net.
  *
  * `assembleRelease` で作った端末用 APK は `__DEV__ === false` だが、未指定時の
- * BFF URL は `localhost:3030` のままになる。Android 実機で localhost は端末自身を
- * 指すため、BFF 未起動時に Menu / Calendar / Portfolio が空になってしまう。
+ * BFF URL は `localhost:3030` のままになる (local の `./gradlew assembleRelease` は
+ * EAS の keystore が無いので unsigned。android/app/build.gradle の signingConfigs 参照)。
+ * Android 実機で localhost は端末自身を指すため、BFF 未起動時に Menu / Calendar /
+ * Portfolio が空になってしまう。
  *
- * 実 BFF URL (`https://...` 等) が `extra.bffBaseUrl` で指定された production build
- * では false になり、HTTP error をそのまま surface する。
+ * 実 BFF URL (`https://...` 等) が `extra.bffBaseUrl` で指定された配布 build
+ * (`preview-onchain` / `production-onchain`) では false になり、HTTP error をそのまま
+ * surface する (公開 BFF の失敗を fixture で隠さない)。
  */
 export const SHOULD_FALLBACK_TO_FIXTURES: boolean =
   /^https?:\/\/(localhost|127\.0\.0\.1|10\.0\.2\.2)(:\d+)?$/i.test(
@@ -75,3 +82,22 @@ export const SKR_SOURCE: CooldownSource =
  * production bundle からは消える。
  */
 export const IS_TEST_ENV: boolean = typeof jest !== "undefined";
+
+/**
+ * 公開 site (docs/external-release-api-handling.md §7)。MWA dapp identity の uri
+ * (services/mwa.ts DEFAULT_IDENTITY) もここを指す。wallet が dapp を検証できるよう、
+ * この origin が `/.well-known/assetlinks.json` と `/icon.png` を host する。
+ */
+export const PUBLIC_SITE_URL = "https://seasonals.cafe";
+
+/** privacy policy (dApp Store Publisher Policy の必須項目)。Settings > About から開く */
+export const PRIVACY_POLICY_URL = `${PUBLIC_SITE_URL}/privacy`;
+
+/** source repository。Settings > About から開く */
+export const SOURCE_REPO_URL = "https://github.com/katokokoko/Seasonals";
+
+/**
+ * app.config.ts の `version` (Settings footer 表示用)。
+ * versionCode は eas.json の remote autoIncrement が別管理する。
+ */
+export const APP_VERSION: string = Constants.expoConfig?.version ?? "0.0.0";

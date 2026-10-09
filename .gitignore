@@ -59,3 +59,9 @@ pnpm-debug.log*
 
 # web 背景の参照画像 — local-only (docs/web/WORKLOG.md の参照 PNG と同じ扱い)
 docs/web/reference/*.png
+
+# Android release signing is EAS-managed (docs/mobile-runbook.md). Never commit keystores or EAS credentials.
+*.keystore
+*.jks
+credentials.json
+!artifacts/seasonals/android/app/debug.keystore

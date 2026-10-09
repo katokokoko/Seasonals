@@ -13,7 +13,24 @@
  * 両 variant とも同じ JS bundle / native module を使うため、`pnpm android` と
  * `pnpm android:onchain` で 2 つの APK を Seeker に並べて install できる。
  *
- * @see eas.json `onchain` profile
+ * 配布用 EAS profile (eas.json はコメントを書けないのでここに残す。
+ * docs/external-release-api-handling.md §7):
+ *   - `preview-onchain` (`pnpm build:preview:onchain`) — tester に配る release 署名 APK
+ *   - `production-onchain` (`pnpm build:prod:onchain`) — dApp Store 提出用 release 署名 APK
+ *   - 両 profile とも env に `APP_VARIANT=onchain` と `BFF_BASE_URL=https://api.seasonals.cafe`
+ *     を持つ。expo-constants は Gradle build の度に本 file を再評価して `extra` を APK に
+ *     焼き込むため、env に無いと `useOnchain=false` / `bffBaseUrl` 未指定 (= localhost +
+ *     fixture fallback) の APK が黙ってできる。`APP_ENV` も profile ごとに繰り返す
+ *     (既存 profile と同じく extends の env deep-merge に頼らない)
+ *   - `gradleCommand` の `-PreactNativeArchitectures=arm64-v8a` で配布 APK を Seeker の
+ *     ABI だけに絞る (8 月の debug APK は x86 / x86_64 / armeabi-v7a 同梱で 334MB)。
+ *     android/gradle.properties は local emulator build 用に 4 ABI のまま変えない
+ *   - `preview-onchain` も `autoIncrement` する。versionCode が毎回上がるので tester は
+ *     uninstall せずに上書き install できる (eas.json `appVersionSource: "remote"`)
+ *   - release 署名は EAS 管理の keystore (android/app/build.gradle の
+ *     `signingConfigs.release` コメント参照)
+ *
+ * @see eas.json `onchain` / `preview-onchain` / `production-onchain` profile
  * @see services/config.ts USE_ONCHAIN
  */
 

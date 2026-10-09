@@ -28,6 +28,8 @@ import {
   type VersionedTransaction,
 } from "@solana/web3.js";
 
+import { PUBLIC_SITE_URL } from "./config";
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Public types
 // ─────────────────────────────────────────────────────────────────────────────
@@ -43,14 +45,24 @@ export interface MwaIdentity {
   name: string;
   /** dApp の origin URI (universal link / web URL) */
   uri: string;
-  /** favicon path (relative to uri) */
+  /** icon path (relative to uri。例: "icon.png" → https://seasonals.cafe/icon.png) */
   icon: string;
 }
 
+/**
+ * MWA dapp identity (docs/external-release-api-handling.md §7)。
+ *
+ * `uri` は自前 domain (PUBLIC_SITE_URL = https://seasonals.cafe) を指す。wallet は
+ * `uri` の `/.well-known/assetlinks.json` (package name `app.seasonals.onchain` /
+ * `app.seasonals.mobile` + release 証明書 SHA-256) で dapp identity を検証し、
+ * 検証できない dapp の authorization を拒否してよい (MWA 仕様)。そのため site 側が
+ * assetlinks.json と `/icon.png` (`icon` は `uri` 相対) を host している必要がある。
+ * 旧値 `https://seasonals.app` は他人の domain なので使わない。
+ */
 export const DEFAULT_IDENTITY: MwaIdentity = {
   name: "Seasonals",
-  uri: "https://seasonals.app",
-  icon: "favicon.ico",
+  uri: PUBLIC_SITE_URL,
+  icon: "icon.png",
 };
 
 /** authorize / reauthorize 結果を Mobile UI が扱いやすい形に正規化したもの */
