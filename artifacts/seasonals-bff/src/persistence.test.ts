@@ -6,13 +6,18 @@
  * autonomous log が「再起動相当 (reset → load)」で復元されることも確認。
  */
 
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { fixtureAutonomousLog } from "@workspace/lib/__fixtures__";
 
-import { isPersistenceEnabled, loadJson, saveJson } from "./persistence";
+import {
+  ensureWritableDataDir,
+  isPersistenceEnabled,
+  loadJson,
+  saveJson,
+} from "./persistence";
 import {
   _resetPolicyForTest,
   getCurrentPolicy,
@@ -87,5 +92,20 @@ describe("autonomous log 永続化", () => {
     expect(restored[0]!.record_id).toBe(
       fixtureAutonomousLog[fixtureAutonomousLog.length - 1]!.record_id
     );
+  });
+});
+
+describe("ensureWritableDataDir (起動時の書込確認)", () => {
+  it("書ける dir は true、無ければ作り、probe file を残さない", () => {
+    const nested = join(dir, "nested", "data");
+    expect(ensureWritableDataDir(nested)).toBe(true);
+    expect(existsSync(nested)).toBe(true);
+    expect(readdirSync(nested)).toEqual([]);
+  });
+
+  it("書けない path (通常 file の下) は false で、throw しない", () => {
+    const file = join(dir, "not-a-dir");
+    writeFileSync(file, "x");
+    expect(ensureWritableDataDir(join(file, "data"))).toBe(false);
   });
 });

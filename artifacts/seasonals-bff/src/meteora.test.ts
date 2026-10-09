@@ -76,7 +76,7 @@ const mockPositions = fetchMeteoraPositions as jest.MockedFunction<
 >;
 const mockOracle = getOracleResult as jest.MockedFunction<typeof getOracleResult>;
 
-const VALID_USER = "8sN5e1Qm9bYz2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7r";
+const VALID_USER = "8sN5e1Qm9bYz2c3d4e5f6g7h8i9jAk1L2m3n4o5p6q7r";
 const USDC_USDT = METEORA_MARKETS.find((m) => m.pool_id === "meteora_usdc_usdt_dlmm")!;
 const SOL_USDC = METEORA_MARKETS.find((m) => m.pool_id === "meteora_sol_usdc_dlmm")!;
 const POSITION = "PoS1t1on111111111111111111111111111111111111";

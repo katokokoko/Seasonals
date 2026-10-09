@@ -56,7 +56,7 @@ jest.mock("./clients/helius");
 jest.mock("./clients/jupiter-lend");
 jest.mock("./clients/helius-tx");
 
-const WALLET = "8sN5e1Qm9bYz2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7r";
+const WALLET = "8sN5e1Qm9bYz2c3d4e5f6g7h8i9jAk1L2m3n4o5p6q7r";
 const MAIN_UPSTREAMS = [
   fetchEarnPositions,
   fetchAssetsByOwner,

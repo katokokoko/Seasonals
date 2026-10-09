@@ -1,0 +1,59 @@
+# Seasonals BFF on Fly.io — https://api.seasonals.cafe
+# (docs/external-release-api-handling.md §3、env の意味は src/flags.ts の header)
+#
+# deploy は repo root から (build context = repo root。dockerfile / ignorefile は
+# この fly.toml からの相対 path として解決される):
+#   fly deploy --config artifacts/seasonals-bff/fly.toml --build-arg GIT_SHA=$(git rev-parse --short HEAD)
+#
+# 秘密は [env] に書かず `fly secrets set` で入れる:
+#   HELIUS_API_KEY, ADMIN_TOKEN, BFF_PROXY_SECRET (Cloudflare Pages Function と同じ値)
+# 公開 BFF に **置かない** (NODE_ENV=production では起動を拒否する、src/flags.ts):
+#   AUTONOMOUS_DELEGATE_SECRET, FEATURE_APPROVAL_MODE_AUTO=true, AUTONOMOUS_LOOP_MS>0
+
+app = "seasonals-bff"
+primary_region = "nrt"
+
+[build]
+  dockerfile = "Dockerfile"
+  ignorefile = ".dockerignore"
+
+[env]
+  NODE_ENV = "production"
+  HOST = "0.0.0.0"
+  PORT = "3030"
+  SEASONALS_DATA_DIR = "/data"
+  # autonomous の devnet ハードガード判定にだけ使う (mainnet の読み書きは全部 Helius)。devnet のまま
+  SOLANA_RPC_URL = "https://api.devnet.solana.com"
+  # Ethereum は plans-only: /eth/fork/* と fork 実行 route は 409 になる
+  ETH_EXECUTION_TARGET = "mainnet"
+  # テスト期間を simulate / plan だけで配るなら有効化 (tx build / submit / execute が 409)
+  # SOLANA_EXECUTION_TARGET = "disabled"
+  # web は Pages Function 経由の same-origin、APK は Origin を送らないので保険として絞れる
+  # CORS_ALLOWED_ORIGINS = "https://seasonals.cafe"
+
+[http_service]
+  internal_port = 3030
+  force_https = true
+  # plan / 承認 token は in-memory + volume。止めると pending な承認が切れるので常駐させる
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    grace_period = "20s"
+    interval = "30s"
+    method = "GET"
+    timeout = "5s"
+    path = "/health"
+
+# volume は 1 machine にしか attach できない = BFF は単一 machine 前提
+# (plan-store / policy / rate limit の counter が process 内にあるため、scale out しない)
+[mounts]
+  source = "seasonals_data"
+  destination = "/data"
+  initial_size = "1gb"
+
+[[vm]]
+  memory = "1gb"
+  cpu_kind = "shared"
+  cpus = 1

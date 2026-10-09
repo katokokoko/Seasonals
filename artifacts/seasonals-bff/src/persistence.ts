@@ -21,6 +21,7 @@ import {
   mkdirSync,
   readFileSync,
   renameSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
@@ -71,5 +72,23 @@ export function saveJson(name: string, value: unknown): void {
     renameSync(tmp, file);
   } catch {
     // best-effort: 永続化失敗はサイクル/リクエストを壊さない
+  }
+}
+
+/**
+ * 起動時の書込確認: `dir` を作り (recursive)、probe file を書いて消す。
+ * saveJson は失敗を握りつぶすので、volume の mount 漏れ / 権限不足で plan・承認
+ * token・監査ログが **黙って** 消える事故を起動時に検出するために使う (index.ts)。
+ * 例外は投げない (false を返す)。
+ */
+export function ensureWritableDataDir(dir: string): boolean {
+  try {
+    mkdirSync(dir, { recursive: true });
+    const probe = join(dir, `.write-probe-${process.pid}-${Date.now()}`);
+    writeFileSync(probe, "ok");
+    unlinkSync(probe);
+    return true;
+  } catch {
+    return false;
   }
 }

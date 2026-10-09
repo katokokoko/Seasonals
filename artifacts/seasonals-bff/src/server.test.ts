@@ -216,6 +216,16 @@ describe("GET /approval-tokens/:tokenId", () => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe("POST /push-tokens", () => {
+  // EXPO_PUSH_ENABLED=true の時だけ受け付ける (未設定の 503 は public-guards.test.ts)
+  const savedPush = process.env.EXPO_PUSH_ENABLED;
+  beforeEach(() => {
+    process.env.EXPO_PUSH_ENABLED = "true";
+  });
+  afterEach(() => {
+    if (savedPush === undefined) delete process.env.EXPO_PUSH_ENABLED;
+    else process.env.EXPO_PUSH_ENABLED = savedPush;
+  });
+
   it("有効な token は 200 + registered_at", async () => {
     const res = await app.inject({
       method: "POST",

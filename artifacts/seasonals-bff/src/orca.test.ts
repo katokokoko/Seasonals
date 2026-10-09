@@ -84,7 +84,7 @@ const mockStats = fetchOrcaPoolStats as jest.MockedFunction<
 >;
 const mockOracle = getOracleResult as jest.MockedFunction<typeof getOracleResult>;
 
-const VALID_USER = "8sN5e1Qm9bYz2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7r";
+const VALID_USER = "8sN5e1Qm9bYz2c3d4e5f6g7h8i9jAk1L2m3n4o5p6q7r";
 const USDC_USDT = ORCA_MARKETS.find((m) => m.pool_id === "orca_usdc_usdt_whirlpool")!;
 const SOL_USDC = ORCA_MARKETS.find((m) => m.pool_id === "orca_sol_usdc_whirlpool")!;
 const POSITION_MINT = "M1ntPoS1t1on11111111111111111111111111111111";

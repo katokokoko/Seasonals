@@ -72,7 +72,7 @@ const mockVaultPositions = fetchKaminoVaultUserPositions as jest.MockedFunction<
   typeof fetchKaminoVaultUserPositions
 >;
 
-const VALID_USER = "8sN5e1Qm9bYz2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7r";
+const VALID_USER = "8sN5e1Qm9bYz2c3d4e5f6g7h8i9jAk1L2m3n4o5p6q7r";
 const USDC = KAMINO_MARKETS.find((m) => m.underlying_symbol === "USDC")!;
 const SOL = KAMINO_MARKETS.find((m) => m.underlying_symbol === "SOL")!;
 // 8.52: USDC は deposit_blocked_reason 付きになったので、6 decimals の変換確認は
