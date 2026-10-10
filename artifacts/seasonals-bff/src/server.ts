@@ -21,6 +21,7 @@ import Fastify, {
   type FastifyRequest,
 } from "fastify";
 import cors from "@fastify/cors";
+import rateLimit from "@fastify/rate-limit";
 import { registerEthRoutes } from "./routes/eth";
 import { registerSkrStakingRoutes } from "./routes/skr-staking";
 
@@ -265,6 +266,21 @@ import {
 import { buildPlanTransactions } from "./agent-plan-executor";
 import { resolveSolanaRoute } from "@workspace/lib/derive/solana-action";
 import { fetchPerenaTriStableTvlUsd } from "./clients/perena";
+import {
+  adminToken,
+  corsOrigins,
+  gitSha,
+  proxySecret,
+  pushEnabled,
+  rateLimitConfig,
+  solanaExecutionTarget,
+} from "./flags";
+import {
+  EXECUTION_DISABLED,
+  isAdminAuthorized,
+  isWalletAddress,
+  rateLimitKey,
+} from "./public-guards";
 
 /**
  * Phase 8.1: Helius DAS asset 配列を Position[] に正規化する。
@@ -3110,6 +3126,29 @@ export function applyMenuLiveOverlays(
 export interface ServerOptions {
   /** Fastify logger config (test では false にして noise を抑制) */
   logger?: boolean;
+  /**
+   * IP 単位の rate limit。既定は env (`RATE_LIMIT_MAX`、flags.ts rateLimitConfig)。
+   * `false` / `null` で plugin を登録しない (route の `config.rateLimit` は無視される)。
+   */
+  rateLimit?: { max: number; timeWindowMs: number } | false | null;
+}
+
+/** 上流 credit を消費する wallet 読み取り route の per-IP 上限 (docs/external-release-api-handling.md §3.3) */
+const WALLET_READ_LIMIT = { config: { rateLimit: { max: 60, timeWindow: "1 minute" } } };
+/** 署名済み tx の broadcast (Helius sendTransaction は 1 rps 枠) */
+const TX_SUBMIT_LIMIT = { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } };
+
+/**
+ * plans-only サーバ (SOLANA_EXECUTION_TARGET=disabled) で 409 にする POST route。
+ * builder (`/protocols/<p>/<x>-tx`) も含める: tester が Seed Vault を開く **前に** 断る。
+ */
+const PROTOCOL_TX_BUILDER_RE = /^\/protocols\/[a-z-]+\/[a-z-]+-tx$/;
+function isSolanaExecutionRoute(url: string): boolean {
+  return (
+    url === "/tx/submit" ||
+    url === "/agent-plans/:planId/execute" ||
+    PROTOCOL_TX_BUILDER_RE.test(url)
+  );
 }
 
 /**
@@ -3121,9 +3160,44 @@ export async function buildServer(
 ): Promise<FastifyInstance> {
   const app = Fastify({ logger: opts.logger ?? false });
 
+  // ── 公開 BFF の入口 guard (docs/external-release-api-handling.md §3.3) ──────
+  // rate limit は **全 route より先に** 登録する (onRoute hook なので後続 route にだけ効く)。
+  // key は public-guards.ts rateLimitKey: proxy 鍵が一致した時だけ proxy の client IP、
+  // 次に Fly の fly-client-ip、最後に socket。trustProxy / x-forwarded-for は使わない。
+  const limit = opts.rateLimit === undefined ? rateLimitConfig() : opts.rateLimit;
+  if (limit) {
+    const secret = proxySecret();
+    await app.register(rateLimit, {
+      global: true,
+      max: limit.max,
+      timeWindow: limit.timeWindowMs,
+      keyGenerator: (req) => rateLimitKey(req, secret),
+      // CLAUDE.md の snake_case error code に揃える (Fastify 既定は "Too Many Requests")
+      errorResponseBuilder: (_req, ctx) => ({
+        statusCode: ctx.statusCode,
+        error: "rate_limited",
+        message: `Rate limit exceeded, retry in ${ctx.after}`,
+      }),
+    });
+  }
+
   await app.register(cors, {
-    // dev は any origin で OK (Mobile emulator は IP/host 多様)
-    origin: true,
+    // CORS_ALLOWED_ORIGINS 未設定は any origin (dev: Mobile emulator / LAN IP が多様)。
+    // 公開時は https://seasonals.cafe に絞る。ただし web は Cloudflare Pages Function が
+    // same-origin で proxy するので、これは保険 (belt-and-braces)。Mobile (RN fetch) は
+    // Origin を送らないので allowlist の影響を受けない。
+    origin: corsOrigins(),
+  });
+
+  // plans-only サーバ: Solana の tx build / broadcast route を route 解決直後に 409。
+  // body 解析 / Helius / Jupiter に触れる前に止める (fail-closed、CLAUDE.md §4)。
+  // /autonomous/tick は body の dry_run を見るので handler 側で判定する。
+  app.addHook("onRequest", async (req, reply) => {
+    if (req.method !== "POST" || solanaExecutionTarget() !== "disabled") return;
+    const url = req.routeOptions.url ?? "";
+    if (isSolanaExecutionRoute(url)) {
+      return reply.code(409).send(EXECUTION_DISABLED);
+    }
   });
 
   // ── Ethereum (docs/web/WORKLOG.md Stage B、読み取り + unsigned plan のみ) ──
@@ -3134,10 +3208,16 @@ export async function buildServer(
 
   // ── health ────────────────────────────────────────────────────────────
   // solana.heliusConfigured: Web Settings が Solana 実行可否を出すための boolean のみ (key / URL は返さない)
-  app.get("/health", async () => ({
+  // solana.executionTarget: "disabled" なら client は実行 CTA を出さない (plans-only)
+  // version: build の commit (GIT_SHA)。Fly の health check が叩くので rate limit 対象外
+  app.get("/health", { config: { rateLimit: false } }, async () => ({
     status: "ok",
     timestamp: new Date().toISOString(),
-    solana: { heliusConfigured: Boolean(process.env.HELIUS_API_KEY) },
+    version: gitSha(),
+    solana: {
+      heliusConfigured: Boolean(process.env.HELIUS_API_KEY),
+      executionTarget: solanaExecutionTarget(),
+    },
   }));
 
   // ── time events / positions / wallets / protocols / user policy ──────
@@ -3151,15 +3231,16 @@ export async function buildServer(
    */
   app.get<{ Querystring: { wallet?: string } }>(
     "/positions",
+    WALLET_READ_LIMIT,
     async (req, reply) => {
       const wallet = req.query?.wallet?.trim();
       // Phase 8.4: production cleanup — wallet 無指定なら空配列を返す。
       // 接続済 wallet があれば Helius DAS 経由で実 positions を返す path に行く。
       if (!wallet) return [] as Position[];
 
-      // 簡易 base58 validation (44 chars max、空白なし)。詳細は @solana/web3.js
-      // PublicKey の方が確実だが BFF deps を増やしたくないので長さで guard。
-      if (wallet.length < 32 || wallet.length > 44 || /\s/.test(wallet)) {
+      // base58 32..44 文字 (lib/config/chains.ts isSolanaAddress)。不正値で Helius
+      // credit を消費しない (docs/external-release-api-handling.md §3.3)。
+      if (!isWalletAddress(wallet)) {
         reply.code(400);
         return { error: "invalid_wallet_address", wallet };
       }
@@ -3197,9 +3278,14 @@ export async function buildServer(
   app.get("/user-policy", async () => getCurrentPolicy());
 
   /** Phase 8.29: policy 編集 (auto 設定 / caps)。§6.4 の editable フィールドのみ。 */
+  // policy は単一 tenant (全 client 共有) なので、公開 BFF では ADMIN_TOKEN 保持者だけが編集できる
   app.patch<{ Body: Record<string, unknown> }>(
     "/user-policy",
     async (req, reply) => {
+      if (!isAdminAuthorized(req, adminToken())) {
+        reply.code(403);
+        return { error: "admin_token_required" };
+      }
       try {
         return patchCurrentPolicy(req.body ?? {});
       } catch (err) {
@@ -3219,13 +3305,14 @@ export async function buildServer(
    */
   app.get<{ Querystring: { wallet?: string } }>(
     "/time-events/wallet",
+    WALLET_READ_LIMIT,
     async (req, reply) => {
       const wallet = req.query?.wallet?.trim();
       if (!wallet) {
         reply.code(400);
         return { error: "wallet_required" };
       }
-      if (wallet.length < 32 || wallet.length > 44 || /\s/.test(wallet)) {
+      if (!isWalletAddress(wallet)) {
         reply.code(400);
         return { error: "invalid_wallet_address", wallet };
       }
@@ -3517,13 +3604,14 @@ export async function buildServer(
    */
   app.get<{ Querystring: { wallet?: string } }>(
     "/positions/earn",
+    WALLET_READ_LIMIT,
     async (req, reply) => {
       const wallet = req.query?.wallet?.trim();
       if (!wallet) {
         reply.code(400);
         return { error: "wallet_required" };
       }
-      if (wallet.length < 32 || wallet.length > 44 || /\s/.test(wallet)) {
+      if (!isWalletAddress(wallet)) {
         reply.code(400);
         return { error: "invalid_wallet_address", wallet };
       }
@@ -3870,8 +3958,12 @@ export async function buildServer(
   /** base58 の tx signature (ed25519 64 byte = 87〜88 文字、短い表現も許容) */
   const SIGNATURE_RE = /^[1-9A-HJ-NP-Za-km-z]{64,88}$/;
 
-  app.get<{ Querystring: { wallet?: string } }>("/agent-plans", async (req) => {
+  app.get<{ Querystring: { wallet?: string } }>("/agent-plans", async (req, reply) => {
     const wallet = req.query?.wallet;
+    if (typeof wallet === "string" && wallet.length > 0 && !isWalletAddress(wallet)) {
+      reply.code(400);
+      return { error: "invalid_wallet_address", wallet };
+    }
     const stored = listStoredPlans();
     const filtered =
       typeof wallet === "string" && wallet.length > 0
@@ -4421,11 +4513,16 @@ export async function buildServer(
    */
   app.get<{ Querystring: { wallet?: string; days?: string } }>(
     "/portfolio/history",
+    WALLET_READ_LIMIT,
     async (req, reply) => {
       const wallet = req.query?.wallet?.trim();
       if (!wallet) {
         reply.code(400);
         return { error: "wallet_required" };
+      }
+      if (!isWalletAddress(wallet)) {
+        reply.code(400);
+        return { error: "invalid_wallet_address", wallet };
       }
       const requested = Number(req.query?.days ?? "30");
       const days = Number.isFinite(requested)
@@ -4454,14 +4551,15 @@ export async function buildServer(
    */
   app.get<{ Querystring: { wallet?: string } }>(
     "/portfolio/holdings",
+    WALLET_READ_LIMIT,
     async (req, reply) => {
       const wallet = req.query?.wallet?.trim();
       if (!wallet) {
         reply.code(400);
         return { error: "wallet_required" };
       }
-      // /positions と同じ簡易 base58 guard (不正 address で上流を叩かない)
-      if (wallet.length < 32 || wallet.length > 44 || /\s/.test(wallet)) {
+      // /positions と同じ base58 guard (不正 address で上流を叩かない)
+      if (!isWalletAddress(wallet)) {
         reply.code(400);
         return { error: "invalid_wallet_address", wallet };
       }
@@ -4547,6 +4645,7 @@ export async function buildServer(
    */
   app.post<{ Body: { signedTx?: string; skipPreflight?: boolean } }>(
     "/tx/submit",
+    TX_SUBMIT_LIMIT,
     async (req, reply) => {
       const { signedTx, skipPreflight } = req.body ?? {};
       if (!signedTx || typeof signedTx !== "string") {
@@ -4615,7 +4714,7 @@ export async function buildServer(
         required: ["user", "jlMint", "amount"],
       };
     }
-    if (user.length < 32 || user.length > 44 || /\s/.test(user)) {
+    if (!isWalletAddress(user)) {
       reply.code(400);
       return { error: "invalid_wallet_address", user };
     }
@@ -4667,7 +4766,7 @@ export async function buildServer(
         required: ["user", "inputMint", "amount"],
       };
     }
-    if (user.length < 32 || user.length > 44 || /\s/.test(user)) {
+    if (!isWalletAddress(user)) {
       reply.code(400);
       return { error: "invalid_wallet_address", user };
     }
@@ -4713,7 +4812,7 @@ export async function buildServer(
         required: ["user", "shareMint", "amount"],
       };
     }
-    if (user.length < 32 || user.length > 44 || /\s/.test(user)) {
+    if (!isWalletAddress(user)) {
       reply.code(400);
       return { error: "invalid_wallet_address", user };
     }
@@ -4760,7 +4859,7 @@ export async function buildServer(
         required: ["user", "shareMint", "amount"],
       };
     }
-    if (user.length < 32 || user.length > 44 || /\s/.test(user)) {
+    if (!isWalletAddress(user)) {
       reply.code(400);
       return { error: "invalid_wallet_address", user };
     }
@@ -4802,7 +4901,7 @@ export async function buildServer(
         required: ["user", "reserve", "amount"],
       };
     }
-    if (user.length < 32 || user.length > 44 || /\s/.test(user)) {
+    if (!isWalletAddress(user)) {
       reply.code(400);
       return { error: "invalid_wallet_address", user };
     }
@@ -4824,7 +4923,7 @@ export async function buildServer(
         required: ["user", "reserve", "amount"],
       };
     }
-    if (user.length < 32 || user.length > 44 || /\s/.test(user)) {
+    if (!isWalletAddress(user)) {
       reply.code(400);
       return { error: "invalid_wallet_address", user };
     }
@@ -4846,7 +4945,7 @@ export async function buildServer(
         required: ["user", "vault", "amount"],
       };
     }
-    if (user.length < 32 || user.length > 44 || /\s/.test(user)) {
+    if (!isWalletAddress(user)) {
       reply.code(400);
       return { error: "invalid_wallet_address", user };
     }
@@ -4868,7 +4967,7 @@ export async function buildServer(
         required: ["user", "vault", "amount"],
       };
     }
-    if (user.length < 32 || user.length > 44 || /\s/.test(user)) {
+    if (!isWalletAddress(user)) {
       reply.code(400);
       return { error: "invalid_wallet_address", user };
     }
@@ -4892,7 +4991,7 @@ export async function buildServer(
         required: ["user", "reserve", "amount"],
       };
     }
-    if (user.length < 32 || user.length > 44 || /\s/.test(user)) {
+    if (!isWalletAddress(user)) {
       reply.code(400);
       return { error: "invalid_wallet_address", user };
     }
@@ -4923,7 +5022,7 @@ export async function buildServer(
         required: ["user", "ctokenMint", "amount"],
       };
     }
-    if (user.length < 32 || user.length > 44 || /\s/.test(user)) {
+    if (!isWalletAddress(user)) {
       reply.code(400);
       return { error: "invalid_wallet_address", user };
     }
@@ -4956,7 +5055,7 @@ export async function buildServer(
         required: ["user", "ptMint", "amount"],
       };
     }
-    if (user.length < 32 || user.length > 44 || /\s/.test(user)) {
+    if (!isWalletAddress(user)) {
       reply.code(400);
       return { error: "invalid_wallet_address", user };
     }
@@ -5041,7 +5140,7 @@ export async function buildServer(
         required: ["user", "poolKey", "amount"],
       };
     }
-    if (user.length < 32 || user.length > 44 || /\s/.test(user)) {
+    if (!isWalletAddress(user)) {
       reply.code(400);
       return { error: "invalid_wallet_address", user };
     }
@@ -5096,7 +5195,7 @@ export async function buildServer(
         required: ["user", "position", "amount"],
       };
     }
-    if (user.length < 32 || user.length > 44 || /\s/.test(user)) {
+    if (!isWalletAddress(user)) {
       reply.code(400);
       return { error: "invalid_wallet_address", user };
     }
@@ -5163,7 +5262,7 @@ export async function buildServer(
         required: ["user", "poolKey", "amount"],
       };
     }
-    if (user.length < 32 || user.length > 44 || /\s/.test(user)) {
+    if (!isWalletAddress(user)) {
       reply.code(400);
       return { error: "invalid_wallet_address", user };
     }
@@ -5218,7 +5317,7 @@ export async function buildServer(
         required: ["user", "position", "amount"],
       };
     }
-    if (user.length < 32 || user.length > 44 || /\s/.test(user)) {
+    if (!isWalletAddress(user)) {
       reply.code(400);
       return { error: "invalid_wallet_address", user };
     }
@@ -5488,6 +5587,11 @@ export async function buildServer(
   app.post<{ Body: { token: string; device_id?: string } }>(
     "/push-tokens",
     async (req, reply) => {
+      // EXPO_PUSH_ENABLED=true の時だけ受け付ける (FCM 未設定の配布物で token を溜めない)
+      if (!pushEnabled()) {
+        reply.code(503);
+        return { error: "push_not_configured" };
+      }
       const body = req.body ?? {};
       if (!body.token || typeof body.token !== "string") {
         reply.code(400);
@@ -5505,6 +5609,11 @@ export async function buildServer(
     "/autonomous/tick",
     async (req, reply) => {
       const body = req.body ?? {};
+      // plans-only サーバでは dry_run (決定のみ、署名しない) 以外を断る
+      if (solanaExecutionTarget() === "disabled" && body.dry_run !== true) {
+        reply.code(409);
+        return EXECUTION_DISABLED;
+      }
       if (!isObjective(body.objective)) {
         reply.code(400);
         return { error: "invalid_objective", objective: body.objective };
@@ -5536,11 +5645,28 @@ export async function buildServer(
 
   app.get("/autonomous/log", async () => listExecutionRecords());
   app.get("/autonomous/status", async () => getAutonomousStatus());
-  app.post("/autonomous/kill", async () => {
+  // kill / resume は自律機能が有効な BFF でだけ、かつ管理者だけが触れる
+  // (公開 BFF で誰でも kill switch を切り替えられないように)
+  const autonomousAdminGuard = (req: FastifyRequest, reply: FastifyReply) => {
+    if (!isAutonomousFeatureEnabled()) {
+      reply.code(403);
+      return { error: "autonomous_disabled", reason: "feature_flag_off" };
+    }
+    if (!isAdminAuthorized(req, adminToken())) {
+      reply.code(403);
+      return { error: "admin_token_required" };
+    }
+    return null;
+  };
+  app.post("/autonomous/kill", async (req, reply) => {
+    const denied = autonomousAdminGuard(req, reply);
+    if (denied) return denied;
     killAutonomous();
     return getAutonomousStatus();
   });
-  app.post("/autonomous/resume", async () => {
+  app.post("/autonomous/resume", async (req, reply) => {
+    const denied = autonomousAdminGuard(req, reply);
+    if (denied) return denied;
     resumeAutonomous();
     return getAutonomousStatus();
   });

@@ -3,7 +3,7 @@
 **DeFi, on a calendar.** Seasonals turns time-sensitive DeFi state (maturities, cooldowns, withdrawal queues, auction blocks) into one calendar that people can read and an agent can query. *Humans read the calendar. Agents read the API. Same source of truth.*
 
 This monorepo has four parts:
-- the Solana Seeker app (Expo)
+- the Solana Seeker app (Expo) — see [`docs/mobile-runbook.md`](docs/mobile-runbook.md)
 - a BFF (Fastify)
 - an MCP Server
 - a **desktop Web app with an Ethereum time layer**, added during ETHGlobal Tokyo 2026 (branch `ethglobal-tokyo-web`)
@@ -38,7 +38,7 @@ Rules the code enforces:
 
 ## Run it locally
 
-Requirements: Node 20+ (tested on Node 25), pnpm 10, and optionally Foundry for the fork demo.
+Requirements: Node 20+ (`.nvmrc` pins 24, the Docker image uses 24, development machines run 25), pnpm 10.33.4, and optionally Foundry for the fork demo. For the Seeker app add JDK 17 and the Android SDK (see the mobile runbook).
 
 ```bash
 pnpm install
@@ -58,15 +58,21 @@ bash scripts/eth-fork.sh                  # 127.0.0.1:8545 (key never on argv or
 npx tsx artifacts/seasonals-mcp-server/src/index.ts
 ```
 
-Environment variables (server side only, `artifacts/seasonals-bff/.env`; names are in `.env.example`):
+Environment variables (server side only, `artifacts/seasonals-bff/.env`; names and comments are in `.env.example`). Clients never see any key: the mobile app, the web app and the MCP Server only know the BFF URL.
 
 | Variable | Needed for |
 |---|---|
+| `HELIUS_API_KEY` | All Solana mainnet reads (positions, time events, tx history) and `/tx/submit`. Without it the fixture variant still works. |
+| `SOLANA_RPC_URL` | Devnet guard for the (off by default) autonomous loop. Leave on devnet. |
+| `SEASONALS_DATA_DIR` | JSON persistence for plans / approval tokens / policy. Default `.data`; `/data` (volume) on Fly. |
 | `INFURA_API_KEY` (or `ETHEREUM_RPC_URL`) | All Ethereum reads |
+| `ETHERSCAN_API_KEY` | Ethereum tx deltas and CCA bid scan logs |
 | `UNISWAP_API_KEY` | Trading API quotes |
 | `ETH_EXECUTION_TARGET` | `fork` (default). `mainnet` refuses to execute and returns plans only. |
 | `ETH_FORK_RPC_URL` | Anvil endpoint. Default `http://127.0.0.1:8545`. |
 | `ANTHROPIC_API_KEY` | Optional. Without it, proposals are rule-based. |
+
+Public deployment only (`docs/external-release-api-handling.md`): `SOLANA_EXECUTION_TARGET` (`mainnet` default, `disabled` = plans only), `CORS_ALLOWED_ORIGINS`, `RATE_LIMIT_MAX`, `ADMIN_TOKEN`, `BFF_PROXY_SECRET`, `EXPO_PUSH_ENABLED`, `GIT_SHA`. **Never set on a public BFF**: `AUTONOMOUS_DELEGATE_SECRET`, `FEATURE_APPROVAL_MODE_AUTO=true`, `AUTONOMOUS_LOOP_MS` — with `NODE_ENV=production` the server refuses to start.
 
 The web app has no secret environment variables. It only uses `BFF_URL` in the Vite dev proxy.
 
@@ -83,6 +89,28 @@ In the web app, open **Connect wallet → Watch an address** and add any of thes
 | `0x840b0Dea6E596e1a4DebF7F5BfD39086e01651b5` | Uniswap CCA bids |
 
 State changes over time, so these addresses may not show the same events later.
+
+## Solana / Seeker app
+
+The Seeker app is the base client: a calendar of Solana time events (Kamino, Jito, Exponent, Orca, Meteora, Save, Jupiter Lend, SKR staking cooldowns) with one-tap simulate → approve → execute, signing through Mobile Wallet Adapter (Seed Vault, Phantom or Solflare). Seasonals never holds a private key.
+
+```bash
+# BFF with HELIUS_API_KEY in artifacts/seasonals-bff/.env
+pnpm --filter @seasonals/bff dev                                   # :3030
+
+# first time: debug APK with the dev client on a USB-connected device
+pnpm --filter @seasonals/mobile android:onchain
+
+# Metro — APP_VARIANT=onchain is required (without it the app runs in devnet/fixture mode)
+cd artifacts/seasonals && APP_VARIANT=onchain EXPO_PUBLIC_USE_ONCHAIN=true pnpm exec expo start --dev-client --port 8081
+adb reverse tcp:3030 tcp:3030 && adb reverse tcp:8081 tcp:8081   # or: pnpm dev:device
+```
+
+- Two variants: `Seasonals` (`app.seasonals.mobile`, fixture data, no key needed) and `Seasonals (onchain)` (`app.seasonals.onchain`, real mainnet positions).
+- Shareable release APKs are built on EAS with the `preview-onchain` / `production-onchain` profiles and talk to `https://api.seasonals.cafe`. The signing key is EAS-managed. Full steps, the assetlinks update after the first build and adb QA tips: [`docs/mobile-runbook.md`](docs/mobile-runbook.md).
+- Public hosting: web at `https://seasonals.cafe` (Cloudflare Pages; `/api/*` is proxied to the BFF by a Pages Function), BFF at `https://api.seasonals.cafe` (Fly.io). Operator steps and the key-handling policy: [`docs/external-release-api-handling.md`](docs/external-release-api-handling.md).
+- MCP against the public BFF: set `"BFF_URL": "https://api.seasonals.cafe"` in `.mcp.json` (the committed file points at `127.0.0.1:3030` for local work).
+- Push approvals are disabled in v1 (no FCM credentials). A public BFF may run with `SOLANA_EXECUTION_TARGET=disabled`, in which case deposit / withdraw return "Execution is disabled" before the wallet opens.
 
 ## Where the protocol calls are
 
@@ -108,9 +136,14 @@ Uniswap developer feedback is in [`FEEDBACK.md`](FEEDBACK.md).
 
 ```bash
 pnpm -r test                      # lib, BFF, MCP Server, mobile, web
+pnpm -r typecheck
+pnpm --filter @seasonals/bff verify:tx     # 23 Solana tx routes simulated on mainnet, no signing (needs HELIUS_API_KEY)
 bash scripts/typecheck-baseline.sh
 pnpm --filter @seasonals/web build
 node artifacts/seasonals-web/e2e/run.mjs   # needs the web dev server; uses the system Chrome
+# production build through the Pages Function proxy (BFF on :3035):
+#   cd artifacts/seasonals-web && pnpm build && npx wrangler@4 pages dev dist --binding BFF_ORIGIN=http://127.0.0.1:3035 --port 8788
+#   WEB_URL=http://127.0.0.1:8788 node e2e/run.mjs
 ```
 
 ## Not built (yet)
@@ -137,3 +170,9 @@ The desktop Web app and the Ethereum time layer were implemented with **Claude C
 - a product plan, not committed
 
 The agent made every commit on this branch with a `Co-Authored-By` trailer. Design decisions and conflicts between the specs are recorded in `docs/web/WORKLOG.md`.
+
+The Solana / Seeker app, the BFF and the MCP Server were likewise built with Claude Code from a human-written requirements spec (`docs/spec.md`, kept private): prose, specs and review by Claude Fable 5.1, implementation by Claude Opus 5.5 subagents, each commit carrying a `Co-Authored-By` trailer. Humans decided the product, the protocol set, the fail-closed oracle rules and every deployment or signing step.
+
+## License
+
+Apache-2.0. See [`LICENSE`](LICENSE). "Seasonals" as a name and brand is not licensed.

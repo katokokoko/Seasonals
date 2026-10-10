@@ -53,7 +53,7 @@ function fairOut(inAmount: string, inputMint: string): string {
     : ((amount * 1_000_000_000n) / JITO_SOL_VALUE).toString();
 }
 
-const VALID_USER = "8sN5e1Qm9bYz2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7r";
+const VALID_USER = "8sN5e1Qm9bYz2c3d4e5f6g7h8i9jAk1L2m3n4o5p6q7r";
 
 function okOracle(symbol = "SOL"): OracleResult {
   return {

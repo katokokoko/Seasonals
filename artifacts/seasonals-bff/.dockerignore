@@ -1,0 +1,30 @@
+# Seasonals BFF image の build context 除外 (Dockerfile / fly.toml の [build] ignorefile)。
+# context は repo root なので pattern も repo root 基準。
+# 秘密 (.env) と実行時 state (.data) を image / builder に送らないのが第一の目的。
+
+**/node_modules
+**/.git
+.claude
+.screenshots
+**/.env
+**/.env.*
+!**/.env.example
+**/.data
+**/dist
+**/build
+**/.expo
+**/android/build
+**/android/.gradle
+**/*.test.ts
+**/*.test.tsx
+docs/web/reference
+
+# BFF image が使わない workspace は package.json だけ残す (frozen install に要る)。
+# mobile / web の source・asset・android/ を remote builder に upload しない
+artifacts/seasonals/*
+!artifacts/seasonals/package.json
+artifacts/seasonals-web/*
+!artifacts/seasonals-web/package.json
+artifacts/seasonals-mcp-server/*
+!artifacts/seasonals-mcp-server/package.json
+docs

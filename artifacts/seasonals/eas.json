@@ -39,6 +39,31 @@
       "env": {
         "APP_ENV": "production"
       }
+    },
+    "preview-onchain": {
+      "extends": "preview",
+      "autoIncrement": true,
+      "android": {
+        "buildType": "apk",
+        "gradleCommand": ":app:assembleRelease -PreactNativeArchitectures=arm64-v8a"
+      },
+      "env": {
+        "APP_ENV": "preview",
+        "APP_VARIANT": "onchain",
+        "BFF_BASE_URL": "https://api.seasonals.cafe"
+      }
+    },
+    "production-onchain": {
+      "extends": "production",
+      "android": {
+        "buildType": "apk",
+        "gradleCommand": ":app:assembleRelease -PreactNativeArchitectures=arm64-v8a"
+      },
+      "env": {
+        "APP_ENV": "production",
+        "APP_VARIANT": "onchain",
+        "BFF_BASE_URL": "https://api.seasonals.cafe"
+      }
     }
   }
 }
