@@ -79,6 +79,8 @@ import { buildSolanaTxs } from "../../services/solana-tx";
 // 8.74: BFF の拒否 code を判別するため (失敗と拒否を見分ける)
 import { BffError } from "../../services/api";
 import { useQueryClient } from "@tanstack/react-query";
+// §4.0 / Phase A-3: tx 後は署名した wallet の key だけ取り直す
+import { invalidateWalletAfterTx } from "../../services/wallet-query-sync";
 import {
   JUPITER_MINTS,
   JUPITER_TOKEN_DECIMALS,
@@ -257,6 +259,8 @@ export function ActionModal({
       const txs = base64Txs.map((b64) =>
         VersionedTransaction.deserialize(Buffer.from(b64, "base64"))
       );
+      // 署名した wallet (5 秒後の invalidate 対象。その間に切替えられても取り違えない)
+      const signerAddress = authorization!.address;
       const signedTxs = await signTransactions(authorization!, txs);
       if (signedTxs.length !== txs.length || signedTxs.some((t) => !t)) {
         throw new Error("Wallet did not return all signed transactions.");
@@ -274,10 +278,10 @@ export function ActionModal({
       setSignature(lastSignature);
       setPhase("success");
       // Phase 8.8.2: 成功後に portfolio / earn / wallet tx を refetch (cache 反映待ち)。
+      // Phase A-3: prefix 一括ではなく **署名した wallet の key だけ** (他 wallet の
+      // 保持 cache と fixture key は触らない)。8.8.2 で漏れていた portfolio-history も含める
       setTimeout(() => {
-        queryClient.invalidateQueries({ queryKey: ["positions"] });
-        queryClient.invalidateQueries({ queryKey: ["earn-positions"] });
-        queryClient.invalidateQueries({ queryKey: ["wallet-time-events"] });
+        void invalidateWalletAfterTx(queryClient, signerAddress);
       }, 5000);
     };
 
@@ -609,7 +613,8 @@ function ReviewBody({
 
   // Kamino reserve metadata (lending action 時のみ表示)
   const isKamino = action?.protocol === "kamino";
-  const { data: reserves } = useKaminoReserves();
+  // Phase A-1: Kamino 以外の review では reserves を取得しない
+  const { data: reserves } = useKaminoReserves({ enabled: isKamino });
   const matchedReserve = isKamino && action?.asset
     ? reserves?.find((r) => r.asset_symbol === action.asset)
     : undefined;

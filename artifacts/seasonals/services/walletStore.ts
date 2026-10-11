@@ -9,7 +9,10 @@
  * authToken は厳密には秘密鍵ではないが「再認可をスキップする証」であり機微度が高い
  * ため、`expo-secure-store` (iOS Keychain / Android Keystore 経由) で保存する。
  *
- * persist は authorization のみ partialize。status / error は session-only。
+ * persist は authorization と recentWallets を partialize。status / error は session-only。
+ * recentWallets (API 効率化計画 §4.0) は「端末に cache を残す wallet」の MRU 5 件で、
+ * 中身は公開 address と最終接続時刻だけ (秘密は増やさない)。外れた wallet の
+ * query cache の削除は QueryClient を持つ useWalletQuerySync が行う。
  *
  * @see ./mwa.ts (MWA wrapper、connect / reauthorize / disconnect の実装)
  */
@@ -30,6 +33,10 @@ import {
   type ConnectedAuthorization,
 } from "./mwa";
 import { USE_ONCHAIN } from "./config";
+// 純関数のみ (wallet-query-sync は walletStore を型でしか参照しない = 循環 require なし)
+import { touchRecentWallets, type RecentWallet } from "./wallet-query-sync";
+
+export type { RecentWallet };
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Storage 層 — expo-secure-store の StateStorage adapter
@@ -57,6 +64,8 @@ export interface WalletStoreState {
   authorization: ConnectedAuthorization | null;
   status: WalletStatus;
   error: string | null;
+  /** §4.0: cache を保持する wallet (MRU、先頭が最新、最大 5 件)。切断では消さない */
+  recentWallets: RecentWallet[];
 }
 
 export interface WalletStoreActions {
@@ -82,6 +91,7 @@ export const useWalletStore = create<WalletStore>()(
       authorization: null,
       status: "idle",
       error: null,
+      recentWallets: [],
 
       connect: async (opts) => {
         set({ status: "connecting", error: null });
@@ -95,7 +105,16 @@ export const useWalletStore = create<WalletStore>()(
             opts?.chain ??
             (USE_ONCHAIN ? "solana:mainnet" : "solana:devnet");
           const authorization = await connectWallet({ ...opts, chain });
-          set({ authorization, status: "connected", error: null });
+          set({
+            authorization,
+            status: "connected",
+            error: null,
+            recentWallets: touchRecentWallets(
+              get().recentWallets,
+              authorization.address,
+              Date.now()
+            ),
+          });
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           set({ status: "error", error: message });
@@ -126,13 +145,22 @@ export const useWalletStore = create<WalletStore>()(
         }
       },
 
-      reset: () => set({ authorization: null, status: "idle", error: null }),
+      reset: () =>
+        set({
+          authorization: null,
+          status: "idle",
+          error: null,
+          recentWallets: [],
+        }),
     }),
     {
       name: SECURE_STORE_KEY,
       storage: createJSONStorage(() => secureStorage),
-      // persist 対象は authorization のみ。status / error は session-only。
-      partialize: (state) => ({ authorization: state.authorization }),
+      // persist 対象は authorization と recentWallets。status / error は session-only。
+      partialize: (state) => ({
+        authorization: state.authorization,
+        recentWallets: state.recentWallets,
+      }),
       /**
        * 8.67: 復元後に status を戻す。
        *
@@ -147,12 +175,32 @@ export const useWalletStore = create<WalletStore>()(
        * まで有効なので「token を保持している = connected」で意味が通る。
        * 起動時の `reauthorize()` は採らない — transact() 経由で wallet アプリ
        * が毎回立ち上がるため。revoke 済だった場合は次の署名で失敗する。
+       *
+       * §4.0: 8.67 は onRehydrateStorage で 2 回目の setState を打っていたため、
+       * subscriber からは「address だけ戻った (idle)」→「connected」の 2 遷移に見え、
+       * wallet 系クエリの再取得が二重に走り得た。merge で **authorization と
+       * status を 1 回の set** にまとめる (復元した wallet は recentWallets の先頭へ)。
        */
-      onRehydrateStorage: () => (state) => {
-        // state を直接書き換えず setState (subscriber に通知させる)
-        if (state?.authorization) {
-          useWalletStore.setState({ status: "connected" });
-        }
+      merge: (persisted, current) => {
+        const p = (persisted ?? {}) as Partial<WalletStoreState>;
+        // 既定の merge (`{ ...current, ...persisted }`) と同じく、保存に無い項目は現値を残す
+        const authorization =
+          p.authorization !== undefined ? p.authorization : current.authorization;
+        const recent = Array.isArray(p.recentWallets)
+          ? p.recentWallets.filter(
+              (w): w is RecentWallet =>
+                typeof w?.address === "string" &&
+                typeof w?.lastConnectedAt === "number"
+            )
+          : current.recentWallets;
+        return {
+          ...current,
+          authorization,
+          recentWallets: authorization
+            ? touchRecentWallets(recent, authorization.address, Date.now())
+            : recent,
+          status: authorization ? "connected" : current.status,
+        };
       },
     }
   )
