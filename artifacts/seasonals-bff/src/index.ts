@@ -57,6 +57,15 @@ async function main(): Promise<void> {
   loadPersistedRecords();
 
   const app = await buildServer({ logger: true });
+  // review #40: 停止 signal で app.close() → onClose hook (history 入力の flush 等) を走らせてから終了する。
+  // close が詰まっても platform の強制 kill (Fly 既定 5s) より前に抜ける
+  for (const signal of ["SIGINT", "SIGTERM"] as const) {
+    process.once(signal, () => {
+      const force = setTimeout(() => process.exit(0), 4_000);
+      force.unref();
+      void app.close().finally(() => process.exit(0));
+    });
+  }
   try {
     await app.listen({ port: PORT, host: HOST });
     const executionTarget = solanaExecutionTarget();

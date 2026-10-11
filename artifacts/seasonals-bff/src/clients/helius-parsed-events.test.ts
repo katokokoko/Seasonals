@@ -1,6 +1,6 @@
 /**
  * Phase C: Parsed Events adapter — quote-before-parse、body、toWalletTx、
- * そして **録画 fixture での Enhanced との parity** (scripts/record-tx-history-fixtures.mjs)。
+ * そして **録画 fixture での Enhanced との parity** (scripts/record-tx-history-fixtures.ts)。
  *
  * parity の比較規則 (2026-10-12 の録画 6QGJNXnC…、14 tx 全件で一致):
  *   - tokenBalanceChanges: (account, mint, userAccount, rawTokenAmount.tokenAmount) の集合が一致
@@ -114,6 +114,23 @@ describe("quoteLargeNumbers (§4.5)", () => {
     expect(tx.accountData!.find((a) => a.account === "W")!.nativeBalanceChange).toBeUndefined();
   });
 
+  it("rawTokenAmount is quoted only inside tokenTransfers (logMessages / other sections untouched)", () => {
+    const big = "9007199254740993";
+    const log = `Program log: {\\"rawTokenAmount\\":${big}} amount ${big}`;
+    const text = `{"data":[{"signature":"s","parserStatus":"OK","parsed":{"blockTime":1,
+      "tokenTransfers":[{"fromTokenAccount":"XA","toTokenAccount":"WA","rawTokenAmount":${big},"decimals":6,"mint":"M"}],
+      "summary":{"type":"transfer","parsedData":{"rawTokenAmount":7}},"instructions":[]},
+      "rawTransaction":{"meta":{"logMessages":["${log}"],"innerRawTokenAmount":{"rawTokenAmount":8}}}}]}`;
+    const quoted = quoteLargeNumbers(text);
+    const out = JSON.parse(quoted);
+    expect(out.data[0].parsed.tokenTransfers[0].rawTokenAmount).toBe(big);
+    expect(out.data[0].parsed.summary.parsedData.rawTokenAmount).toBe(7);
+    expect(out.data[0].rawTransaction.meta.innerRawTokenAmount.rawTokenAmount).toBe(8);
+    expect(out.data[0].rawTransaction.meta.logMessages[0]).toBe(JSON.parse(`"${log}"`));
+    // log の本文は 1 文字も変わらない
+    expect(quoted).toContain(`"logMessages":["${log}"]`);
+  });
+
   it("source A token delta keeps full precision", () => {
     const item: ParsedTxItem = {
       signature: "s",
@@ -149,9 +166,12 @@ describe("quoteLargeNumbers (§4.5)", () => {
 });
 
 describe("toWalletTx drops", () => {
-  beforeEach(() => _resetParsedEventsDropStatsForTest());
-  const warn = jest.spyOn(console, "warn").mockImplementation(() => undefined);
-  afterAll(() => warn.mockRestore());
+  let warn: jest.SpyInstance;
+  beforeEach(() => {
+    _resetParsedEventsDropStatsForTest();
+    warn = jest.spyOn(console, "warn").mockImplementation(() => undefined);
+  });
+  afterEach(() => warn.mockRestore());
 
   it("parserStatus ERROR and null blockTime → null, counted", () => {
     expect(toWalletTx({ signature: "a", parserStatus: "ERROR", parserError: "x" })).toBeNull();

@@ -41,8 +41,10 @@ Seeker 版に関係するもの。web 版だけが使う Infura / Etherscan / Un
 - Free 100 万 credit で支えられる cold open は **1 日 約 74 回 → 約 122 回 (enhanced) → 約 362 回 (parsed)**。全部 cold open と仮定した保守的な値で、1 人 1 日 10 回なら **約 7 人 → 12 人 → 36 人**。Developer ($49、1,000 万) で 10 倍。実際は復帰の多くが 60s 以内 (1 credit) なので余裕はこれより大きい
 - DAS / 履歴 API の **2 rps** は `clients/helius-limiter.ts` の `heliusDataFetch` (2 in flight / 500ms) で直列化し、429 / 5xx は retry (従来 DAS / Enhanced は retry 無し)。Seeker 側も cold start 12 → 9 GET、復帰 60s 以内 8 → 2 GET (SKR / agent-plans のみ、Helius 消費なし)
 - 残る対策:
-  1. **Parsed Events への flip** (`HELIUS_TX_HISTORY_API=parsed`): adapter / parity test / 増分同期 / 永続化は実装済み (`clients/helius-parsed-events.ts`、`clients/tx-history.ts`、`portfolio/inputs-store.ts`)。Orca / Meteora の LP position を持つ wallet 3 つで `node scripts/record-tx-history-fixtures.mjs --wallet <w>` → `pnpm test -- helius-parsed-events` の parity が通ったら既定を parsed に (別 PR)
-  2. デモ日 / 審査期間は Developer plan (月 1,000 万 credit) に一時昇格### 3.2 鍵の保護
+  1. **Parsed Events への flip** (`HELIUS_TX_HISTORY_API=parsed`): adapter / parity test / 増分同期 / 永続化は実装済み (`clients/helius-parsed-events.ts`、`clients/tx-history.ts`、`portfolio/inputs-store.ts`)。Orca / Meteora の LP position を持つ wallet 3 つで `pnpm --filter @seasonals/bff record:tx-fixtures -- --wallet <w>` → `pnpm test -- helius-parsed-events` の parity が通ったら既定を parsed に (別 PR)
+  2. デモ日 / 審査期間は Developer plan (月 1,000 万 credit) に一時昇格
+
+### 3.2 鍵の保護
 
 - prod 用の Helius 鍵を **dev と分けて** 発行する (Helius 推奨)。漏洩時は dashboard で rotate、BFF の env だけ差し替え
 - Helius Access Control: ホストが固定 egress IP を出せるなら **Allowed IPs**。Allowed Domains は Origin/Referer ベースで偽装可能なので server 用途には使わない

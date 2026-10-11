@@ -54,6 +54,7 @@ import {
 import { fetchPriceSeries } from "./clients/pyth-history";
 import { fetchLlamaPriceSeries } from "./clients/llama-history";
 import { heliusTxHistoryApi } from "./flags";
+import { HeliusRpcError } from "./clients/helius-limiter";
 import { _resetUsageForTest, recordUpstreamCall, usageSnapshot, type HeliusApi } from "./usage";
 import {
   fetchStakeAccounts,
@@ -429,7 +430,11 @@ describe("Phase C: /portfolio/history (parsed) — window 打ち切り / 増分 
     expect(stale.json()).toEqual(first.json()); // SWR: 旧値を即返し
     for (let i = 0; i < 20 && page.mock.calls.length < 3; i++) await flush();
     expect(page).toHaveBeenCalledTimes(3);
-    expect(page.mock.calls[2]![1]).toEqual({ limit: 100, afterSignature: "S2" });
+    // review #40: 増分も window 先頭 (time.gte) で打ち切る — 前回の cursor と window 先頭の間の tx を
+    // page に載せて (10 credit / page) から捨てない
+    expect(page.mock.calls[2]![1]).toEqual({ limit: 100, afterSignature: "S2", timeGte: expect.any(Number) });
+    const refreshNow = Math.floor((realNow() + 6 * 60_000) / 1000);
+    expect(Math.abs(page.mock.calls[2]![1].timeGte - (refreshNow - 30 * 86_400))).toBeLessThanOrEqual(5);
     for (let i = 0; i < 5; i++) await flush();
     // 増分 refresh = 現在残高の DAS 1 回 (10) + 履歴 Parsed Events 1 page (10)。snapshot は起こさない (review #39)。
     // enhanced なら全 page の取り直し (100 × page 数) + DAS
@@ -449,5 +454,85 @@ describe("Phase C: /portfolio/history (parsed) — window 打ち切り / 増分 
       (p: { at: number }) => p.at > now - 2 * 86_400 + 3600 && p.at < now - 3600
     );
     for (const p of afterS2) expect(p.usd).toBe("135.00000000");
+  });
+
+  /** 1 回目の load (S1 だけ、1 page で終端) → engine / snapshot の TTL 越え */
+  async function loadOnceThenExpire(): Promise<{ page: jest.Mock; realNow: () => number }> {
+    const now = Math.floor(Date.now() / 1000);
+    const page = fetchWalletTxPage as jest.Mock;
+    page.mockImplementationOnce(async () => {
+      charge([txHistoryCall()]);
+      return { txs: [walletTx("S1", now - 5 * 86_400, 2_000_000_000)], scanned: 1 };
+    });
+    const first = await app.inject({ method: "GET", url: `/portfolio/history?wallet=${WALLET}&days=30` });
+    expect(first.statusCode).toBe(200);
+    expect(page).toHaveBeenCalledTimes(1);
+    const realNow = Date.now;
+    jest.spyOn(Date, "now").mockImplementation(() => realNow() + 6 * 60_000);
+    return { page, realNow };
+  }
+
+  it("増分が 429 (retry 後) で落ちたら全件取り直しを重ねず 503 (review #40)", async () => {
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => undefined);
+    const { page } = await loadOnceThenExpire();
+    page.mockImplementationOnce(async () => {
+      throw new HeliusRpcError("Helius parsed-events HTTP 429 (rate limited)", "http", 429);
+    });
+    // days=7 は応答 cache が無い → 入力の増分 (prev = 30 日分) を待つ
+    const res = await app.inject({ method: "GET", url: `/portfolio/history?wallet=${WALLET}&days=7` });
+    expect(res.statusCode).toBe(503);
+    expect(res.json().error).toBe("portfolio_history_unavailable");
+    expect(page).toHaveBeenCalledTimes(2); // 増分 1 回だけ (全件の timeGte page は投げない)
+    expect(page.mock.calls[1]![1]).toMatchObject({ afterSignature: "S1" });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("not refetching"));
+  });
+
+  it("増分が cursor / shape の失敗なら全件を取り直す (review #40)", async () => {
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => undefined);
+    const { page } = await loadOnceThenExpire();
+    page.mockImplementationOnce(async () => {
+      throw new Error("Helius parsed-events unexpected shape (data is not an array)");
+    });
+    const res = await app.inject({ method: "GET", url: `/portfolio/history?wallet=${WALLET}&days=7` });
+    expect(res.statusCode).toBe(200);
+    expect(page).toHaveBeenCalledTimes(3);
+    expect(page.mock.calls[1]![1]).toMatchObject({ afterSignature: "S1" });
+    expect(page.mock.calls[2]![1]).toEqual({ limit: 100, timeGte: expect.any(Number) });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("refetching the full window"));
+  });
+
+  it("page 上限で complete=false になっても、window が oldestSeen を越えた増分で complete に戻る (review #40)", async () => {
+    const now = Math.floor(Date.now() / 1000);
+    const page = fetchWalletTxPage as jest.Mock;
+    // 1 page 目: 20 日前に 2 SOL 入金 (S1)、25 日前に残高の動かない tx (S0)。以降 9 page は続きありのまま上限
+    page.mockImplementationOnce(async () => {
+      charge([txHistoryCall()]);
+      return {
+        txs: [walletTx("S1", now - 20 * 86_400, 2_000_000_000), walletTx("S0", now - 25 * 86_400, 0)],
+        scanned: 2,
+        nextCursor: { limit: 100, paginationToken: "t1" },
+      };
+    });
+    for (let i = 0; i < 9; i++) {
+      page.mockImplementationOnce(async () => {
+        charge([txHistoryCall()]);
+        return { txs: [], scanned: 0, nextCursor: { limit: 100, paginationToken: `t${i + 2}` } };
+      });
+    }
+    const first = await app.inject({ method: "GET", url: `/portfolio/history?wallet=${WALLET}&days=30` });
+    expect(page).toHaveBeenCalledTimes(10);
+    expect(first.json().starts_at_funding).toBe(false); // 上限で打ち切り = それ以前は不明
+
+    // 6 日後: window 先頭 (now − 24 日) が oldestSeen (now − 25 日) を越える → 差分は window 内で揃っている
+    const realNow = Date.now;
+    jest.spyOn(Date, "now").mockImplementation(() => realNow() + 6 * 86_400_000);
+    await app.inject({ method: "GET", url: `/portfolio/history?wallet=${WALLET}&days=30` }); // SWR
+    for (let i = 0; i < 20 && page.mock.calls.length < 11; i++) await flush();
+    expect(page).toHaveBeenCalledTimes(11);
+    expect(page.mock.calls[10]![1]).toMatchObject({ afterSignature: "S1" });
+    for (let i = 0; i < 5; i++) await flush();
+    const refreshed = (await app.inject({ method: "GET", url: `/portfolio/history?wallet=${WALLET}&days=30` })).json();
+    // 旧: prev.complete (false) を写し続け、starts_at_funding が永久に false
+    expect(refreshed.starts_at_funding).toBe(true);
   });
 });

@@ -2,11 +2,7 @@
  * Phase C: tx-history facade — backend 選択 (HELIUS_TX_HISTORY_API)、cursor、直近 cache、invalidate
  */
 import { heliusTxHistoryApi } from "../flags";
-import {
-  fetchEnhancedTransactions,
-  fetchEnhancedTransactionsPage,
-  invalidateEnhancedTxCacheForWallet,
-} from "./helius-tx";
+import { fetchEnhancedTransactions, fetchEnhancedTransactionsPage } from "./helius-tx";
 import { fetchParsedTxHistoryPage, type ParsedTxItem } from "./helius-parsed-events";
 import {
   _clearWalletTxCacheForTest,
@@ -19,7 +15,6 @@ import {
 jest.mock("./helius-tx", () => ({
   fetchEnhancedTransactions: jest.fn(),
   fetchEnhancedTransactionsPage: jest.fn(),
-  invalidateEnhancedTxCacheForWallet: jest.fn(),
 }));
 jest.mock("./helius-parsed-events", () => ({
   ...jest.requireActual("./helius-parsed-events"),
@@ -61,15 +56,20 @@ describe("tx-history facade", () => {
   });
 
   describe("enhanced (default)", () => {
-    it("fetchWalletTxs delegates to the Enhanced client and caches the default limit", async () => {
-      (fetchEnhancedTransactions as jest.Mock).mockResolvedValue([enhancedTx("A")]);
+    it("fetchWalletTxs delegates to the Enhanced client and caches per wallet:limit", async () => {
+      (fetchEnhancedTransactions as jest.Mock)
+        .mockResolvedValueOnce([enhancedTx("A"), enhancedTx("B")])
+        .mockResolvedValueOnce([enhancedTx("A")]);
       expect(walletTxBackend()).toBe("enhanced");
-      await expect(fetchWalletTxs(W)).resolves.toEqual([enhancedTx("A")]);
+      await expect(fetchWalletTxs(W)).resolves.toEqual([enhancedTx("A"), enhancedTx("B")]);
       await fetchWalletTxs(W);
       expect(fetchEnhancedTransactions).toHaveBeenCalledTimes(1);
       expect(fetchEnhancedTransactions).toHaveBeenCalledWith(W, 50);
-      await fetchWalletTxs(W, 10); // 既定以外の limit は cache しない
+      // 別 limit は 50 件の cache を受け取らず自分の分を取る (それも cache される)
+      await expect(fetchWalletTxs(W, 1)).resolves.toEqual([enhancedTx("A")]);
+      await fetchWalletTxs(W, 1);
       expect(fetchEnhancedTransactions).toHaveBeenCalledTimes(2);
+      expect(fetchEnhancedTransactions).toHaveBeenLastCalledWith(W, 1);
     });
 
     it("fetchWalletTxPage pages with `before` and ends on an empty page", async () => {
@@ -141,18 +141,25 @@ describe("tx-history facade", () => {
     });
   });
 
-  it("invalidateWalletTxCacheForWallet clears both backends' entries and the Enhanced client cache", async () => {
+  it("invalidateWalletTxCacheForWallet clears every backend / limit entry of that wallet only", async () => {
+    const OTHER = "7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU";
     (fetchEnhancedTransactions as jest.Mock).mockResolvedValue([]);
     (fetchParsedTxHistoryPage as jest.Mock).mockResolvedValue({ items: [] });
     await fetchWalletTxs(W);
+    await fetchWalletTxs(W, 10);
+    await fetchWalletTxs(OTHER);
     process.env.HELIUS_TX_HISTORY_API = "parsed";
     await fetchWalletTxs(W);
+    expect(fetchEnhancedTransactions).toHaveBeenCalledTimes(3);
+    expect(fetchParsedTxHistoryPage).toHaveBeenCalledTimes(1);
+
     invalidateWalletTxCacheForWallet(W);
-    expect(invalidateEnhancedTxCacheForWallet).toHaveBeenCalledWith(W);
-    await fetchWalletTxs(W);
-    delete process.env.HELIUS_TX_HISTORY_API;
     await fetchWalletTxs(W);
     expect(fetchParsedTxHistoryPage).toHaveBeenCalledTimes(2);
-    expect(fetchEnhancedTransactions).toHaveBeenCalledTimes(2);
+    delete process.env.HELIUS_TX_HISTORY_API;
+    await fetchWalletTxs(W);
+    await fetchWalletTxs(W, 10);
+    await fetchWalletTxs(OTHER); // 他 wallet の cache は残る
+    expect(fetchEnhancedTransactions).toHaveBeenCalledTimes(5);
   });
 });

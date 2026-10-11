@@ -61,6 +61,8 @@ import {
 import {
   fromBigInt,
   isValidTokenAmount,
+  SIGNED_TOKEN_AMOUNT_REGEX,
+  signedToBigInt,
   toBigInt,
   toHumanReadable,
   toSmallestUnit,
@@ -125,6 +127,7 @@ import {
 import { anchorSeries, fetchLlamaPriceSeries } from "./clients/llama-history";
 // 8.78: 上流 timeout を「ユーザーが中断した」と読める生文言のまま出さない
 import { readableUpstreamError } from "./clients/http";
+import { HeliusRpcError } from "./clients/helius-limiter";
 import { isDepositedMint } from "@workspace/lib/config/deposited-mints";
 import {
   type BalanceDelta,
@@ -456,11 +459,18 @@ function walletDeltasOfTx(tx: WalletTx, wallet: string): BalanceDelta[] {
     for (const change of account.tokenBalanceChanges ?? []) {
       if (change.userAccount !== wallet) continue;
       const raw = change.rawTokenAmount?.tokenAmount;
-      if (typeof raw !== "string" || !/^-?[0-9]+$/.test(raw)) continue;
-      out.push({ timestamp: tx.timestamp, mint: change.mint, amount: BigInt(raw) });
+      if (typeof raw !== "string" || !SIGNED_TOKEN_AMOUNT_REGEX.test(raw)) continue;
+      out.push({ timestamp: tx.timestamp, mint: change.mint, amount: signedToBigInt(raw) });
     }
   }
   return out;
+}
+
+/** 再試行しても通らなかった上流の混雑 / 障害 (429 / 5xx / network)。cursor 不正の 4xx や parse は含めない */
+function isTransientHeliusError(err: unknown): boolean {
+  if (!(err instanceof HeliusRpcError)) return false;
+  if (err.kind === "network") return true;
+  return err.kind === "http" && (err.status === undefined || err.status === 429 || err.status >= 500);
 }
 
 interface CollectedDeltas {
@@ -516,18 +526,25 @@ async function collectWalletDeltasFull(
 }
 
 /**
- * Phase C (parsed のみ): 前回分 `prev` より新しい tx だけを `afterSignature` で取り、差分を merge する
- * (新しい tx が無ければ空 page 1 回 = 10 credit)。signature で重複を除き、`oldestSeen / complete /
- * fetchedDays` は前回のまま。window より古い差分は捨てる (replay / funding 判定は window 内しか見ない)。
- * 増分が page 上限を越えたら null (呼び手が全件取り直す)
+ * Phase C (parsed のみ): 前回分 `prev` より新しい tx だけを `afterSignature` + `time.gte = window 先頭` で
+ * 取り、差分を merge する (新しい tx が無ければ空 page 1 回 = 10 credit。window より前の tx は server 側で
+ * 打ち切るので page に載らない)。signature で重複を除き、`fetchedDays` は前回のまま。window より古い差分は
+ * 捨てる (replay / funding 判定は window 内しか見ない)。`complete` は前回の flag を写さず merge 時に決め直す
+ * (review #40: page 上限 / 保存時の切り詰めで一度 false になると、window が `oldestSeen` を越えた後も
+ * false のままだった)。増分が page 上限を越えたら null (呼び手が全件取り直す)
  */
 async function collectWalletDeltasSince(
   wallet: string,
   prev: HistoryInputsCursor & { newestSignature: string },
   nowSeconds: number
 ): Promise<CollectedDeltas | null> {
+  const keepAfter = nowSeconds - prev.fetchedDays * 86_400;
   const fresh: WalletTx[] = [];
-  let cursor: WalletTxCursor | undefined = { limit: 100, afterSignature: prev.newestSignature };
+  let cursor: WalletTxCursor | undefined = {
+    limit: 100,
+    afterSignature: prev.newestSignature,
+    timeGte: keepAfter,
+  };
   for (let page = 0; cursor; page++) {
     if (page >= HISTORY_MAX_TX_PAGES) return null;
     const res = await fetchWalletTxPage(wallet, cursor);
@@ -543,11 +560,12 @@ async function collectWalletDeltasSince(
     oldestSeen = Math.min(oldestSeen, tx.timestamp);
     added.push(...walletDeltasOfTx(tx, wallet));
   }
-  const keepAfter = nowSeconds - prev.fetchedDays * 86_400;
   return {
     deltas: [...added, ...prev.deltas.filter((d) => d.timestamp > keepAfter)],
     oldestSeen,
-    complete: prev.complete,
+    // window の先頭まで差分が揃っていれば (= 前回の時点で取り切れていた、または前回の最古が window の
+    // 外に出た) complete
+    complete: prev.complete || prev.oldestSeen <= keepAfter,
     fetchedDays: prev.fetchedDays,
     // afterSignature + 新しい順: 先頭 page の先頭が最新
     newestSignature: fresh[0]?.signature ?? prev.newestSignature,
@@ -634,15 +652,28 @@ async function loadSolanaHistoryInputs(
     }
   })();
 
-  // 2. tx の符号付き差分。parsed + 前回分ありなら増分 (失敗 / 上限超過は全件取り直し)
+  // 2. tx の符号付き差分。parsed + 前回分ありなら増分。上限超過 / cursor・shape の失敗は全件取り直し。
+  // review #40: 429 / 5xx / network (retry 後) は取り直さずに throw — 同じ rate limit に最大 10 page を
+  // 重ねない。route は従来どおり 503 portfolio_history_unavailable (SWR の裏の再計算なら旧値が残る)
   const collectDeltas = async (): Promise<CollectedDeltas> => {
     const since = prev?.newestSignature;
     if (prev && since && prev.fetchedDays >= days && walletTxBackend() === "parsed") {
-      const merged = await collectWalletDeltasSince(
-        wallet,
-        { ...prev, newestSignature: since },
-        nowSeconds
-      ).catch(() => null);
+      let merged: CollectedDeltas | null = null;
+      try {
+        merged = await collectWalletDeltasSince(
+          wallet,
+          { ...prev, newestSignature: since },
+          nowSeconds
+        );
+      } catch (err) {
+        const transient = isTransientHeliusError(err);
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[portfolio-history] incremental tx sync failed (${(err as Error)?.message ?? String(err)}); ` +
+            (transient ? "not refetching the full window" : "refetching the full window")
+        );
+        if (transient) throw err;
+      }
       if (merged) return merged;
     }
     return collectWalletDeltasFull(wallet, days, nowSeconds);
@@ -744,6 +775,11 @@ const solanaHistoryEngine = createHistoryEngine(
 
 export function _clearPortfolioHistoryCacheForTest(): void {
   solanaHistoryEngine.clear();
+}
+
+/** test 専用: history 入力の永続化 store (onClose で flush されることの確認用) */
+export function _solanaHistoryInputsStoreForTest(): typeof solanaHistoryInputsStore {
+  return solanaHistoryInputsStore;
 }
 
 /**
@@ -3303,6 +3339,12 @@ export async function buildServer(
   opts: ServerOptions = {}
 ): Promise<FastifyInstance> {
   const app = Fastify({ logger: opts.logger ?? false });
+
+  // Phase C / review #40: 間引きで保留中の history 入力と進行中の async 書き込みを shutdown 前に書き切る
+  // (index.ts の SIGTERM / SIGINT → app.close())。store は module 単位なので複数 instance でも害は無い
+  app.addHook("onClose", async () => {
+    await solanaHistoryInputsStore.flush();
+  });
 
   // ── 公開 BFF の入口 guard (docs/external-release-api-handling.md §3.3) ──────
   // rate limit は **全 route より先に** 登録する (onRoute hook なので後続 route にだけ効く)。

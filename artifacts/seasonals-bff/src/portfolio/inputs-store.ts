@@ -15,18 +15,23 @@
  * - wallet あたり 1,000 delta (新しい方を残す)。切った時は `oldestSeen` を残した最古の delta の
  *   時刻に上げ、`complete = false`、`fetchedDays` もそこまでに縮める (それより前は「不明」になる =
  *   誤った残高は出さない)
- * - 200 wallet (書いた時に mtime の古い file から消す = LRU)
+ * - 200 wallet (**新しい wallet の file を作った時だけ** mtime の古い file から消す = LRU)
  * - 書き込みは wallet ごと 30 秒に 1 回 (間引いた分は次の persist 時に最新だけ書く。落ちても
  *   増分取得が古い cursor から取り直すだけ)
+ * - 書き込みは async (review #40: engine の `.then` = request path で同期 I/O をしない)。wallet ごとに
+ *   直列化し、`flush()` は保留分を書いて進行中の書き込みを全部待つ (server の onClose から呼ぶ)
  *
  * `SEASONALS_DATA_DIR` 未設定 (jest / CI) では no-op。保存失敗は握りつぶす (best-effort)。
  */
+import { SIGNED_TOKEN_AMOUNT_REGEX, signedToBigInt } from "@workspace/lib/utils/numeric";
+
 import {
   isPersistenceEnabled,
-  deleteJson,
-  listJson,
+  deleteJsonAsync,
+  jsonExistsAsync,
+  listJsonAsync,
   loadJson,
-  saveJson,
+  saveJsonAsync,
 } from "../persistence";
 import type { BalanceDelta } from "../portfolio-history";
 import type { HistoryInputs, HistoryInputsCursor } from "./engine";
@@ -36,7 +41,6 @@ const DAY = 86_400;
 
 /** file 名に使うので base58 の Solana address だけ受け付ける (path traversal 防止) */
 const ADDRESS_RE = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
-const AMOUNT_RE = /^-?[0-9]+$/;
 
 interface PersistedDelta {
   mint: string;
@@ -69,8 +73,10 @@ export interface InputsStoreOptions {
 export interface InputsStore {
   hydrate(address: string): HistoryInputsCursor | null;
   persist(address: string, inputs: HistoryInputs): void;
-  /** 間引きで保留中の書き込みを全部書く (shutdown / test 用) */
-  flush(): void;
+  /** 間引きで保留中の書き込みを全部書き、進行中の書き込みを待つ (shutdown 用) */
+  flush(): Promise<void>;
+  /** test 専用: 進行中の書き込みを全部待つ (保留分は書かない) */
+  _awaitWritesForTest(): Promise<void>;
 }
 
 function fileName(address: string): string {
@@ -126,11 +132,11 @@ export function deserializeInputs(raw: unknown): HistoryInputsCursor | null {
       typeof d.mint !== "string" ||
       typeof d.timestamp !== "number" ||
       typeof d.amount !== "string" ||
-      !AMOUNT_RE.test(d.amount)
+      !SIGNED_TOKEN_AMOUNT_REGEX.test(d.amount)
     ) {
       return null;
     }
-    deltas.push({ mint: d.mint, timestamp: d.timestamp, amount: BigInt(d.amount) });
+    deltas.push({ mint: d.mint, timestamp: d.timestamp, amount: signedToBigInt(d.amount) });
   }
   return {
     deltas,
@@ -148,15 +154,39 @@ export function createInputsStore(opts: InputsStoreOptions = {}): InputsStore {
   const now = opts.now ?? (() => Date.now());
   const lastWrite = new Map<string, number>();
   const pending = new Map<string, HistoryInputs>();
+  /** wallet ごとの書き込み列の末尾 (同じ file の tmp + rename を重ねない) */
+  const chains = new Map<string, Promise<void>>();
+  /** この process で file が在ると分かっている wallet (2 回目以降は存在確認も prune もしない) */
+  const known = new Set<string>();
 
-  function prune(): void {
-    const files = listJson(INPUTS_FILE_PREFIX);
-    for (let i = 0; i < files.length - maxWallets; i++) deleteJson(files[i]!.name);
+  async function prune(): Promise<void> {
+    const files = await listJsonAsync(INPUTS_FILE_PREFIX);
+    for (let i = 0; i < files.length - maxWallets; i++) {
+      const name = files[i]!.name;
+      known.delete(name.slice(INPUTS_FILE_PREFIX.length));
+      await deleteJsonAsync(name);
+    }
+  }
+
+  async function writeFile(address: string, data: ReturnType<typeof serializeInputs>): Promise<void> {
+    const name = fileName(address);
+    const isNew = !known.has(address) && !(await jsonExistsAsync(name));
+    await saveJsonAsync(name, data);
+    known.add(address);
+    if (isNew) await prune();
   }
 
   function write(address: string, inputs: HistoryInputs): void {
     const at = now();
-    saveJson(fileName(address), serializeInputs(inputs, at, maxDeltas));
+    // 保存形式への変換はここで (呼ばれた時点の内容を固定する)。I/O は列に並べて後で
+    const data = serializeInputs(inputs, at, maxDeltas);
+    const next = (chains.get(address) ?? Promise.resolve())
+      .then(() => writeFile(address, data))
+      .catch(() => undefined); // best-effort
+    chains.set(address, next);
+    void next.then(() => {
+      if (chains.get(address) === next) chains.delete(address);
+    });
     lastWrite.delete(address); // 再挿入で挿入順を最新に
     lastWrite.set(address, at);
     pending.delete(address);
@@ -166,7 +196,10 @@ export function createInputsStore(opts: InputsStoreOptions = {}): InputsStore {
       if (oldest === undefined) break;
       lastWrite.delete(oldest);
     }
-    prune();
+  }
+
+  async function awaitWrites(): Promise<void> {
+    while (chains.size > 0) await Promise.all([...chains.values()]);
   }
 
   function flushDue(): void {
@@ -179,7 +212,9 @@ export function createInputsStore(opts: InputsStoreOptions = {}): InputsStore {
   return {
     hydrate(address) {
       if (!isPersistenceEnabled() || !ADDRESS_RE.test(address)) return null;
-      return deserializeInputs(loadJson<unknown>(fileName(address)));
+      const raw = loadJson<unknown>(fileName(address));
+      if (raw !== null) known.add(address);
+      return deserializeInputs(raw);
     },
 
     persist(address, inputs) {
@@ -197,8 +232,15 @@ export function createInputsStore(opts: InputsStoreOptions = {}): InputsStore {
       }
     },
 
-    flush() {
-      for (const [address, inputs] of [...pending]) write(address, inputs);
+    async flush() {
+      try {
+        for (const [address, inputs] of [...pending]) write(address, inputs);
+      } catch {
+        // best-effort
+      }
+      await awaitWrites();
     },
+
+    _awaitWritesForTest: awaitWrites,
   };
 }

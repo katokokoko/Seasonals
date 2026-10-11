@@ -35,6 +35,8 @@
  *
  * 秘密: api-key は URL の query にだけ載せ、error message は fetchJsonWithRetry が redact する。
  */
+import { SIGNED_TOKEN_AMOUNT_REGEX, signedToBigInt } from "@workspace/lib/utils/numeric";
+
 import { fetchJsonWithRetry, heliusDataFetch } from "./helius-limiter";
 import type {
   HeliusAccountData,
@@ -148,18 +150,26 @@ const RAW_TOKEN_AMOUNT_RE = new RegExp(
   "g"
 );
 const AMOUNT_RE = new RegExp(String.raw`("amount"\s*:\s*)(-?\d+)` + NUM_END, "g");
-/** nativeTransfers の要素は flat な object なので `]` までが配列本体 */
+/**
+ * tokenTransfers / nativeTransfers の要素は flat な object なので `]` までが配列本体。
+ * 3 つとも section に閉じて置換する (`rawTransaction.meta.logMessages` などの文字列中の数字は触らない)
+ */
+const TOKEN_TRANSFERS_RE = /("tokenTransfers"\s*:\s*\[)([^\]]*)(\])/g;
 const NATIVE_TRANSFERS_RE = /("nativeTransfers"\s*:\s*\[)([^\]]*)(\])/g;
 const LAMPORT_ARRAYS_RE = /("(?:preBalances|postBalances)"\s*:\s*\[)([^\]]*)(\])/g;
 
 /**
  * 金融値の JSON number を `JSON.parse` 前に string にする (§4.5)。
- * 対象: `rawTokenAmount`、`nativeTransfers[].amount`、`pre/postBalances[]`。
+ * 対象: `tokenTransfers[].rawTokenAmount`、`nativeTransfers[].amount`、`pre/postBalances[]`。
  * 小数 / 指数の値は触らない (精度の問題が無い = smallest unit ではない値)。
  */
 export function quoteLargeNumbers(text: string): string {
   return text
-    .replace(RAW_TOKEN_AMOUNT_RE, '$1"$2"')
+    .replace(
+      TOKEN_TRANSFERS_RE,
+      (_m, open: string, body: string, close: string) =>
+        open + body.replace(RAW_TOKEN_AMOUNT_RE, '$1"$2"') + close
+    )
     .replace(
       NATIVE_TRANSFERS_RE,
       (_m, open: string, body: string, close: string) =>
@@ -265,7 +275,7 @@ export function _resetParsedEventsDropStatsForTest(): void {
 function toBig(v: string | number | null | undefined): bigint | null {
   if (v === null || v === undefined) return null;
   const s = typeof v === "number" ? (Number.isInteger(v) ? String(v) : "") : v;
-  return /^-?[0-9]+$/.test(s) ? BigInt(s) : null;
+  return SIGNED_TOKEN_AMOUNT_REGEX.test(s) ? signedToBigInt(s) : null;
 }
 
 const MAX_SAFE = BigInt(Number.MAX_SAFE_INTEGER);

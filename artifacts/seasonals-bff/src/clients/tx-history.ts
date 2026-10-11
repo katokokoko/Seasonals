@@ -17,7 +17,8 @@
  * - parsed: `paginationToken` で続きを取る。token は最終の短い page でも返るので、終端は
  *   「空 page」か「token 無し」(2026-10-12 実測)。filter (`afterSignature` / `timeGte`) は token と一緒に送り直す
  *
- * cache: `fetchWalletTxs` (直近 N 件、wallet snapshot 用) だけ `TtlCache("txhistory.recent", 60s)`。
+ * cache: `fetchWalletTxs` (直近 N 件、wallet snapshot 用) だけ `TtlCache("txhistory.recent", 60s)`、
+ * key は `backend|wallet|limit`。**tx 履歴の cache はこれ 1 つ** (helius-tx.ts は cache を持たない)。
  * page 取得は cache しない (history loader が cursor 連鎖で読むため)。
  */
 import { TtlCache } from "../cache/ttl-cache";
@@ -25,7 +26,6 @@ import { heliusTxHistoryApi, type HeliusTxHistoryApi } from "../flags";
 import {
   fetchEnhancedTransactions,
   fetchEnhancedTransactionsPage,
-  invalidateEnhancedTxCacheForWallet,
   type HeliusEnhancedTx,
 } from "./helius-tx";
 import { fetchParsedTxHistoryPage, toWalletTx } from "./helius-parsed-events";
@@ -54,8 +54,8 @@ export function walletTxBackend(): HeliusTxHistoryApi {
   return heliusTxHistoryApi();
 }
 
-function recentKey(api: HeliusTxHistoryApi, wallet: string): string {
-  return `${api}|${wallet}`;
+function recentKey(api: HeliusTxHistoryApi, wallet: string, limit: number): string {
+  return `${api}|${wallet}|${limit}`;
 }
 
 async function loadRecent(
@@ -71,16 +71,15 @@ async function loadRecent(
 }
 
 /**
- * 直近 `limit` 件 (既定 50、新しい順)。既定 limit は 60s cache + in-flight dedupe、
- * それ以外の limit は cache しない。
+ * 直近 `limit` 件 (既定 50、新しい順)。`backend|wallet|limit` ごとに 60s cache + in-flight dedupe
+ * (limit の違う呼び出しが別 limit の cache 済み list を受け取らない)。
  */
 export async function fetchWalletTxs(
   wallet: string,
   limit = RECENT_TXS_DEFAULT_LIMIT
 ): Promise<WalletTx[]> {
   const api = walletTxBackend();
-  if (limit !== RECENT_TXS_DEFAULT_LIMIT) return loadRecent(api, wallet, limit);
-  return recent.getOrLoad(recentKey(api, wallet), () => loadRecent(api, wallet, limit));
+  return recent.getOrLoad(recentKey(api, wallet, limit), () => loadRecent(api, wallet, limit));
 }
 
 export interface WalletTxCursor {
@@ -151,11 +150,9 @@ export async function fetchWalletTxPage(
   return { txs, scanned: page.items.length, ...(next ? { nextCursor: next } : {}) };
 }
 
-/** tx 送信後 (wallet-snapshot.ts の invalidate から): facade と Enhanced client の wallet cache を捨てる */
+/** tx 送信後 (wallet-snapshot.ts の invalidate から): その wallet の全 backend / 全 limit の entry を捨てる */
 export function invalidateWalletTxCacheForWallet(wallet: string): void {
-  recent.delete(recentKey("enhanced", wallet));
-  recent.delete(recentKey("parsed", wallet));
-  invalidateEnhancedTxCacheForWallet(wallet);
+  recent.deleteWhere((key) => key.split("|")[1] === wallet);
 }
 
 export function _clearWalletTxCacheForTest(): void {

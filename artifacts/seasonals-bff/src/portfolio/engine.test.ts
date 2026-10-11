@@ -128,28 +128,63 @@ describe("createHistoryEngine.history", () => {
 });
 
 describe("Phase C: incremental prev / hydrate / persist", () => {
-  it("passes the expired entry as prev when it covers the requested range", async () => {
+  it("passes the expired entry as prev; reuse is judged by data.fetchedDays, not the requested range", async () => {
     let clock = NOW * 1000;
-    const first = inputs({ newestSignature: "SIG1" });
+    const first = inputs({ newestSignature: "SIG1" }); // fetchedDays 30
     const src = source(first);
     const engine = createHistoryEngine(src, { now: () => clock, cacheTtlMs: 1000 });
-    await engine.holdings("0xabc"); // days = 1 → prev は渡らない (cold)
+    await engine.holdings("0xabc"); // days = 1 → cold (prev 無し)
     expect(src.loadInputs).toHaveBeenLastCalledWith("0xabc", 1, NOW);
-    await engine.history("0xabc", 30, NOW); // 1 日分の cache では足りない → prev 無し
-    expect(src.loadInputs.mock.calls[1]).toHaveLength(3);
+    // review #40: holdings の load は 30 日分を遡れている → history?days=30 は同じ入力を使う
+    // (旧: cache の days=1 で判定して 30 日分を全件取り直していた)
+    await engine.history("0xabc", 30, NOW);
+    expect(src.loadInputs).toHaveBeenCalledTimes(1);
     clock += 5000; // 期限切れ
     await engine.holdings("0xabc");
-    expect(src.loadInputs.mock.calls[2]![3]).toBe(first);
+    expect(src.loadInputs.mock.calls[1]![3]).toBe(first);
   });
 
-  it("does not pass prev when the cached range is shorter than requested", async () => {
+  it("passes prev even when the cached range is shorter than requested (the source decides)", async () => {
     let clock = NOW * 1000;
-    const src = source(inputs({ fetchedDays: 1 }));
+    const short = inputs({ fetchedDays: 1 });
+    const src = source(short);
     const engine = createHistoryEngine(src, { now: () => clock, cacheTtlMs: 1000 });
     await engine.holdings("0xabc");
+    await engine.history("0xabc", 30, NOW); // 1 日分しか遡れていない → TTL 内でも取り直す
+    expect(src.loadInputs).toHaveBeenCalledTimes(2);
+    expect(src.loadInputs).toHaveBeenLastCalledWith("0xabc", 30, NOW, short);
+  });
+
+  it("hydrate (30-day cursor) → holdings (days=1) → history (days=30) stays incremental", async () => {
+    let clock = NOW * 1000;
+    const saved = { deltas: [], oldestSeen: NOW - 40 * DAY, fetchedDays: 30, complete: true, newestSignature: "OLD" };
+    const hydrate = jest.fn().mockReturnValue(saved);
+    const loaded = inputs({ newestSignature: "NEW" }); // 増分 load の結果 (fetchedDays 30 を引き継ぐ)
+    const src = source(loaded);
+    const engine = createHistoryEngine(src, { now: () => clock, cacheTtlMs: 1000, hydrate });
+    await engine.holdings("0xabc");
+    expect(src.loadInputs).toHaveBeenLastCalledWith("0xabc", 1, NOW, saved);
+    await engine.history("0xabc", 30, NOW); // 旧: cache days=1 < 30 で prev 無しの全件取り直し
+    expect(src.loadInputs).toHaveBeenCalledTimes(1);
     clock += 5000;
+    await engine.history("0xabc", 30, NOW); // SWR: 古い応答を返しつつ裏で増分
+    await new Promise((r) => setImmediate(r));
+    expect(src.loadInputs).toHaveBeenCalledTimes(2);
+    expect(src.loadInputs).toHaveBeenLastCalledWith("0xabc", 30, NOW + 5, loaded); // SWR は now() で再計算
+    expect(src.loadInputs.mock.calls.every((c) => c.length === 4)).toBe(true); // 全件取り直しは 0 回
+    expect(hydrate).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the hydrated cursor until a load succeeds with it", async () => {
+    const saved = { deltas: [], oldestSeen: NOW - 40 * DAY, fetchedDays: 30, complete: true, newestSignature: "OLD" };
+    const hydrate = jest.fn().mockReturnValue(saved);
+    const src = source(inputs());
+    src.loadInputs.mockRejectedValueOnce(new Error("upstream 503"));
+    const engine = createHistoryEngine(src, { now: () => NOW * 1000, hydrate });
+    await expect(engine.history("0xabc", 30, NOW)).rejects.toThrow("upstream 503");
     await engine.history("0xabc", 30, NOW);
-    expect(src.loadInputs.mock.calls[1]).toHaveLength(3);
+    expect(src.loadInputs.mock.calls.map((c) => c[3])).toEqual([saved, saved]);
+    expect(hydrate).toHaveBeenCalledTimes(1);
   });
 
   it("hydrates once per address (as stale prev), persists loaded inputs, ignores hook failures", async () => {
@@ -171,12 +206,13 @@ describe("Phase C: incremental prev / hydrate / persist", () => {
     expect(hydrate.mock.calls.map((c) => c[0])).toEqual(["0xabc", "0xdef"]);
   });
 
-  it("a hydrated cursor shorter than the requested range is not used as prev", async () => {
-    const hydrate = jest.fn().mockResolvedValue({ deltas: [], oldestSeen: NOW, fetchedDays: 7, complete: true });
+  it("a hydrated cursor shorter than the requested range is still handed to the source (it decides)", async () => {
+    const short = { deltas: [], oldestSeen: NOW, fetchedDays: 7, complete: true };
+    const hydrate = jest.fn().mockResolvedValue(short);
     const src = source(inputs());
     const engine = createHistoryEngine(src, { now: () => NOW * 1000, hydrate });
     await engine.history("0xabc", 30, NOW);
-    expect(src.loadInputs.mock.calls[0]).toHaveLength(3);
+    expect(src.loadInputs).toHaveBeenCalledWith("0xabc", 30, NOW, short);
   });
 
   it("does not persist a wallet with nothing held", async () => {
