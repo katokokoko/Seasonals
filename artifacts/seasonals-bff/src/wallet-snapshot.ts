@@ -25,11 +25,17 @@
 import { KAMINO_MAIN_MARKET } from "@workspace/lib/config/kamino-markets";
 
 import { TtlCache, type TtlCacheStats } from "./cache/ttl-cache";
-import { fetchAssetsByOwner } from "./clients/helius";
-import { fetchEnhancedTransactions } from "./clients/helius-tx";
+import { fetchAssetsByOwner, invalidateAssetsCacheForWallet } from "./clients/helius";
+import {
+  fetchEnhancedTransactions,
+  invalidateEnhancedTxCacheForWallet,
+} from "./clients/helius-tx";
 import { fetchStakeAccounts } from "./clients/helius-rpc";
 import { redactKey } from "./clients/helius-limiter";
-import { fetchEarnPositions } from "./clients/jupiter-lend";
+import {
+  fetchEarnPositions,
+  invalidateEarnPositionsCacheForWallet,
+} from "./clients/jupiter-lend";
 import {
   fetchKaminoObligations,
   fetchKaminoVaultUserPositions,
@@ -279,6 +285,12 @@ export function loadWalletSnapshot(
 /** tx 送信後に呼ぶ: entry を消し、20 秒間は新 entry を短命 (5s) にする */
 export function invalidateWalletSnapshot(wallet: string): void {
   cache.invalidate(wallet);
+  // snapshot を捨てても source 側の per-wallet cache (DAS 30s / Enhanced 60s / Jupiter Lend 30s) が
+  // 残ると、直後の再読みが tx 前の保有を返す。表示用 cache は wallet 単位でまとめて捨てる
+  // (§4.0: tx 後の必要な更新)。wallet 非依存の共有 cache は触らない
+  invalidateAssetsCacheForWallet(wallet);
+  invalidateEnhancedTxCacheForWallet(wallet);
+  invalidateEarnPositionsCacheForWallet(wallet);
 }
 
 /** `X-Seasonals-Data-Age-Ms` 用: snapshot の経過時間 (ms、負にしない) */

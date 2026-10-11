@@ -97,6 +97,14 @@ function buildUrl(): string {
  * - NFT は filter で除外 (mapping 側で interface check)
  * - pagination 1 page (limit 1000) のみ対応。それ以上保有する wallet は稀。
  */
+/**
+ * B3 follow-up: wallet の tx 送信後に snapshot と一緒に捨てる (30s cache が tx 前の保有を返さないように)。
+ * wallet-snapshot.ts の invalidateWalletSnapshot から呼ばれる
+ */
+export function invalidateAssetsCacheForWallet(address: string): void {
+  cache.delete(address);
+}
+
 export async function fetchAssetsByOwner(
   address: string
 ): Promise<HeliusAsset[]> {

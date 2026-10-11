@@ -184,6 +184,13 @@ async function loadEarnMarkets(): Promise<JupiterLendMarket[]> {
  * 指定 wallet の Jupiter Lend positions を取得。
  * zero balance エントリも含まれるので、呼び出し側で `shares > "0"` filter する。
  */
+/**
+ * B3 follow-up: tx 送信後に wallet の positions cache (30s) を捨てる (wallet-snapshot.ts の invalidateWalletSnapshot から)
+ */
+export function invalidateEarnPositionsCacheForWallet(walletAddress: string): void {
+  positionsCache.delete(walletAddress);
+}
+
 export async function fetchEarnPositions(
   walletAddress: string
 ): Promise<JupiterLendPositionRaw[]> {

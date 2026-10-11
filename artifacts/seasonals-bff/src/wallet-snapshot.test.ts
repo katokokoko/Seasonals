@@ -3,10 +3,16 @@
  * client は module mock (softfail.test.ts と同じ流儀、ただし SDK を読まない factory mock)。
  * 時計は `_setWalletSnapshotClockForTest` で注入 (timer を使わない)。
  */
-import { fetchAssetsByOwner } from "./clients/helius";
-import { fetchEnhancedTransactions } from "./clients/helius-tx";
+import { fetchAssetsByOwner, invalidateAssetsCacheForWallet } from "./clients/helius";
+import {
+  fetchEnhancedTransactions,
+  invalidateEnhancedTxCacheForWallet,
+} from "./clients/helius-tx";
 import { fetchStakeAccounts } from "./clients/helius-rpc";
-import { fetchEarnPositions } from "./clients/jupiter-lend";
+import {
+  fetchEarnPositions,
+  invalidateEarnPositionsCacheForWallet,
+} from "./clients/jupiter-lend";
 import {
   fetchKaminoObligations,
   fetchKaminoVaultUserPositions,
@@ -27,10 +33,19 @@ import {
   snapshotAgeMs,
 } from "./wallet-snapshot";
 
-jest.mock("./clients/helius", () => ({ fetchAssetsByOwner: jest.fn() }));
-jest.mock("./clients/helius-tx", () => ({ fetchEnhancedTransactions: jest.fn() }));
+jest.mock("./clients/helius", () => ({
+  fetchAssetsByOwner: jest.fn(),
+  invalidateAssetsCacheForWallet: jest.fn(),
+}));
+jest.mock("./clients/helius-tx", () => ({
+  fetchEnhancedTransactions: jest.fn(),
+  invalidateEnhancedTxCacheForWallet: jest.fn(),
+}));
 jest.mock("./clients/helius-rpc", () => ({ fetchStakeAccounts: jest.fn() }));
-jest.mock("./clients/jupiter-lend", () => ({ fetchEarnPositions: jest.fn() }));
+jest.mock("./clients/jupiter-lend", () => ({
+  fetchEarnPositions: jest.fn(),
+  invalidateEarnPositionsCacheForWallet: jest.fn(),
+}));
 jest.mock("./clients/kamino-tx", () => ({
   fetchKaminoObligations: jest.fn(),
   fetchKaminoVaultUserPositions: jest.fn(),
@@ -171,6 +186,18 @@ describe("loadWalletSnapshot — stale-while-revalidate", () => {
 });
 
 describe("invalidateWalletSnapshot", () => {
+  it("source 側の per-wallet cache (DAS / Enhanced / Jupiter Lend) も同じ wallet だけ捨てる", async () => {
+    const a = loadWalletSnapshot(WALLET);
+    await a.settled;
+    await flush();
+    invalidateWalletSnapshot(WALLET);
+    expect(invalidateAssetsCacheForWallet).toHaveBeenCalledTimes(1);
+    expect(invalidateAssetsCacheForWallet).toHaveBeenCalledWith(WALLET);
+    expect(invalidateEnhancedTxCacheForWallet).toHaveBeenCalledWith(WALLET);
+    expect(invalidateEarnPositionsCacheForWallet).toHaveBeenCalledWith(WALLET);
+    expect(invalidateAssetsCacheForWallet).not.toHaveBeenCalledWith(OTHER);
+  });
+
   it("invalidate 後の load は読み直し、他 wallet の snapshot は残る", async () => {
     const a = loadWalletSnapshot(WALLET);
     const o = loadWalletSnapshot(OTHER);

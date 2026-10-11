@@ -115,6 +115,13 @@ function getEnhancedJson(url: string): Promise<HeliusEnhancedTx[]> {
  * 遡る。cache は使わない (呼び手が cutoff まで繰り返すため、ページ単位で持つと
  * 意味が薄い)。実測: limit=100 / before で 2 ページ目以降も同 shape で返る。
  */
+/**
+ * B3 follow-up: tx 送信後に wallet の 60s cache を捨てる (wallet-snapshot.ts の invalidateWalletSnapshot から)
+ */
+export function invalidateEnhancedTxCacheForWallet(walletAddress: string): void {
+  cache.delete(walletAddress);
+}
+
 export async function fetchEnhancedTransactionsPage(
   walletAddress: string,
   opts: { limit?: number; before?: string } = {}
