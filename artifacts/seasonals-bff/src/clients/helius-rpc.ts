@@ -12,6 +12,8 @@
 
 import type { TxStatusResponse } from "@workspace/lib/types";
 import { fetchWithTimeout } from "./http"; // Phase 8.38 (B9): 共通 timeout
+import { fetchJsonWithRetry, HeliusRpcError, heliusRpcFetch, redactKey } from "./helius-limiter";
+import { recordUpstreamCall } from "../usage";
 const HELIUS_MAINNET_URL = "https://mainnet.helius-rpc.com";
 
 /**
@@ -28,54 +30,14 @@ export function buildUrl(): string {
 
 // ── read-only RPC の retry (Helius 429 対策) ────────────────────────────────
 //
-// Helius は混雑時に `429 Too Many Requests` (本文は plain text) を返す。読み取り
-// 専用の RPC は冪等なので、429 / 5xx / network・timeout を指数 backoff で
-// 再試行する (最大 3 attempt。attempt 間の待ちは 500ms → 1000ms、表の 2000ms は
-// attempt を増やした時の次段。`Retry-After` (秒、上限 10s) が backoff より長ければ
-// そちらを使う)。
-// - 429 以外の 4xx と JSON-RPC `error` は即 throw (再試行しても結果は同じ)
+// retry 本体 (429 / 5xx / network を backoff 再試行、Retry-After 尊重、error に URL を
+// 出さない) は helius-limiter.ts の fetchJsonWithRetry に抽出した。ここは JSON-RPC の
+// 薄い wrapper で、request は heliusRpcFetch の列に並ぶ (同時実行数 / 間隔の制限 + 計数)。
+// - JSON-RPC `error` は即 throw (再試行しても結果は同じ)
 // - **sendTransactionViaHelius には使わない** — broadcast の自動再送は二重送信の
-//   余地を作る (再送は Helius 側の maxRetries に任せる)
-// - error message に URL / api-key を含めない
+//   余地を作る (再送は Helius 側の maxRetries に任せる)。列にも並べない (計数のみ)
 
-const RPC_MAX_ATTEMPTS = 3;
-const RPC_BACKOFF_MS = [500, 1000, 2000] as const;
-/** Retry-After が異常に長い時に handler を長く塞がない上限 */
-const RPC_RETRY_AFTER_CAP_MS = 10_000;
-
-type SleepFn = (ms: number) => Promise<void>;
-/** backoff の待ち。RPC 失敗を流す test は _setSleepForTest で差し替える (fake timer と組み合わせると解決しないため) */
-const defaultSleep: SleepFn = (ms) => new Promise((r) => setTimeout(r, ms));
-let sleep: SleepFn = defaultSleep;
-
-/** test 専用: backoff の待ちを差し替える (null で既定に戻す) */
-export function _setSleepForTest(fn: SleepFn | null): void {
-  sleep = fn ?? defaultSleep;
-}
-
-type RpcErrorKind = "http" | "rpc" | "network" | "parse";
-
-/** rpcReadWithRetry の失敗。message に URL / api-key を含めない */
-export class HeliusRpcError extends Error {
-  constructor(
-    message: string,
-    readonly kind: RpcErrorKind,
-    readonly status?: number
-  ) {
-    super(message);
-    this.name = "HeliusRpcError";
-  }
-}
-
-const redactKey = (s: string): string => s.replace(/api-key=[^&\s"']+/g, "api-key=***");
-
-function parseRetryAfterMs(res: Response): number | null {
-  const raw = res.headers.get("retry-after");
-  if (!raw) return null;
-  const sec = Number(raw.trim()); // 秒数 (小整数、§4.5 適用外)
-  if (!Number.isFinite(sec) || sec < 0) return null;
-  return Math.min(sec * 1000, RPC_RETRY_AFTER_CAP_MS);
-}
+export { HeliusRpcError, _setSleepForTest, fetchJsonWithRetry } from "./helius-limiter";
 
 interface RpcReadOptions {
   /** JSON-RPC id (ログ・テストでの識別用) */
@@ -96,57 +58,19 @@ async function rpcReadWithRetry<T>(
   opts: RpcReadOptions = {}
 ): Promise<T | undefined> {
   const label = opts.label ?? method;
-  const retryNetwork = opts.retryNetworkErrors ?? true;
-  const url = buildUrl();
   const body = JSON.stringify({ jsonrpc: "2.0", id: opts.id ?? `seasonals-${method}`, method, params });
-  let lastErr: HeliusRpcError | null = null;
-
-  for (let attempt = 0; attempt < RPC_MAX_ATTEMPTS; attempt++) {
-    let waitFloorMs: number | null = null;
-    let res: Response;
-    try {
-      res = await fetchWithTimeout(url, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body,
-      });
-    } catch (e) {
-      const msg = redactKey(e instanceof Error ? `${e.name}: ${e.message}` : String(e));
-      lastErr = new HeliusRpcError(`Helius ${label} network error: ${msg}`, "network");
-      if (!retryNetwork) throw lastErr;
-      if (attempt + 1 < RPC_MAX_ATTEMPTS) await sleep(RPC_BACKOFF_MS[attempt]!);
-      continue;
-    }
-
-    if (!res.ok) {
-      const retryable = res.status === 429 || res.status >= 500;
-      const hint = res.status === 429 ? " (rate limited)" : "";
-      lastErr = new HeliusRpcError(`Helius ${label} HTTP ${res.status}${hint}`, "http", res.status);
-      if (!retryable) throw lastErr;
-      waitFloorMs = parseRetryAfterMs(res);
-      // body は読まずに捨てる (接続を解放)
-      await res.body?.cancel().catch(() => undefined);
-      if (attempt + 1 < RPC_MAX_ATTEMPTS) {
-        await sleep(Math.max(RPC_BACKOFF_MS[attempt]!, waitFloorMs ?? 0));
-      }
-      continue;
-    }
-
-    let json: { result?: T; error?: { code?: number; message?: string } };
-    try {
-      json = (await res.json()) as typeof json;
-    } catch {
-      throw new HeliusRpcError(`Helius ${label}: response is not JSON`, "parse", res.status);
-    }
-    if (json.error) {
-      throw new HeliusRpcError(
-        `Helius ${label} RPC error ${json.error.code ?? "?"}: ${redactKey(String(json.error.message ?? ""))}`,
-        "rpc"
-      );
-    }
-    return json.result;
+  const json = await fetchJsonWithRetry<{ result?: T; error?: { code?: number; message?: string } } | null>(
+    buildUrl(),
+    { method: "POST", headers: { "content-type": "application/json" }, body },
+    { label, fetchImpl: heliusRpcFetch.timed(), retryNetworkErrors: opts.retryNetworkErrors ?? true }
+  );
+  if (json?.error) {
+    throw new HeliusRpcError(
+      `Helius ${label} RPC error ${json.error.code ?? "?"}: ${redactKey(String(json.error.message ?? ""))}`,
+      "rpc"
+    );
   }
-  throw lastErr ?? new HeliusRpcError(`Helius ${label}: retries exhausted`, "network");
+  return json?.result;
 }
 
 /**
@@ -161,24 +85,32 @@ export async function sendTransactionViaHelius(
   } = {}
 ): Promise<string> {
   const url = buildUrl();
-  const res = await fetchWithTimeout(url, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      jsonrpc: "2.0",
-      id: "seasonals-submit",
-      method: "sendTransaction",
-      params: [
-        signedTxBase64,
-        {
-          encoding: "base64",
-          skipPreflight: opts.skipPreflight ?? false,
-          maxRetries: opts.maxRetries ?? 3,
-          preflightCommitment: "confirmed",
-        },
-      ],
-    }),
-  });
+  // 列に並べず retry もしない (broadcast は即時・1 回)。usage には数える
+  let res: Response;
+  try {
+    res = await fetchWithTimeout(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: "seasonals-submit",
+        method: "sendTransaction",
+        params: [
+          signedTxBase64,
+          {
+            encoding: "base64",
+            skipPreflight: opts.skipPreflight ?? false,
+            maxRetries: opts.maxRetries ?? 3,
+            preflightCommitment: "confirmed",
+          },
+        ],
+      }),
+    });
+  } catch (e) {
+    recordUpstreamCall({ api: "rpc", method: "sendTransaction", status: null });
+    throw e;
+  }
+  recordUpstreamCall({ api: "rpc", method: "sendTransaction", status: res.status });
   if (!res.ok) {
     throw new Error(
       `Helius sendTransaction HTTP ${res.status}: ${await res.text().catch(() => "")}`
@@ -294,7 +226,7 @@ export async function getWalletBalanceSmallest(
 ): Promise<bigint | null> {
   try {
     if (mint === WSOL_MINT) {
-      const res = await fetchWithTimeout(buildUrl(), {
+      const res = await heliusRpcFetch.timed()(buildUrl(), {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
@@ -314,7 +246,7 @@ export async function getWalletBalanceSmallest(
       // (>9M SOL の wallet は対象外の規模)
       return BigInt(Math.floor(lamports));
     }
-    const res = await fetchWithTimeout(buildUrl(), {
+    const res = await heliusRpcFetch.timed()(buildUrl(), {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({

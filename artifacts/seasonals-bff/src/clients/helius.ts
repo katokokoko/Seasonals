@@ -21,7 +21,8 @@
  * @see https://docs.helius.dev/compression-and-das-api/digital-asset-standard-das-api/get-assets-by-owner
  */
 
-import { fetchWithTimeout } from "./http"; // Phase 8.38 (B9): 共通 timeout
+// B1: DAS は heliusDataFetch の列 (2 in flight / 500ms) に並べ、429 / 5xx は backoff 再試行
+import { fetchJsonWithRetry, heliusDataFetch } from "./helius-limiter";
 const HELIUS_MAINNET_URL = "https://mainnet.helius-rpc.com";
 
 const CACHE_TTL_MS = 30_000;
@@ -106,49 +107,46 @@ export async function fetchAssetsByOwner(
   }
 
   const url = buildUrl();
-  const res = await fetchWithTimeout(url, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      jsonrpc: "2.0",
-      id: "seasonals-bff",
-      method: "getAssetsByOwner",
-      params: {
-        ownerAddress: address,
-        page: 1,
-        limit: 1000,
-        displayOptions: {
-          showFungible: true,
-          showNativeBalance: true,
-        },
-      },
-    }),
-  });
-
-  if (!res.ok) {
-    throw new Error(
-      `Helius HTTP ${res.status} ${res.statusText}: ${await res.text().catch(() => "")}`
-    );
-  }
-
-  const json = (await res.json()) as {
+  // error message に URL (api-key) を出さない (HeliusRpcError)
+  const json = await fetchJsonWithRetry<{
     jsonrpc?: string;
     result?: { items?: HeliusAsset[]; nativeBalance?: { lamports?: number } };
     error?: { code: number; message: string };
-  };
+  }>(
+    url,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: "seasonals-bff",
+        method: "getAssetsByOwner",
+        params: {
+          ownerAddress: address,
+          page: 1,
+          limit: 1000,
+          displayOptions: {
+            showFungible: true,
+            showNativeBalance: true,
+          },
+        },
+      }),
+    },
+    { label: "getAssetsByOwner", fetchImpl: heliusDataFetch.timed() }
+  );
 
-  if (json.error) {
+  if (json?.error) {
     throw new Error(
       `Helius RPC error ${json.error.code}: ${json.error.message}`
     );
   }
 
-  const items = json.result?.items ?? [];
+  const items = json?.result?.items ?? [];
 
   // ── native SOL を synthetic asset として追加 ──
   // showNativeBalance: true で `result.nativeBalance.lamports` が返る。
   // wallet 表示で SOL 残高を欠落させないよう WSOL mint で entry を追加。
-  const nativeLamports = json.result?.nativeBalance?.lamports;
+  const nativeLamports = json?.result?.nativeBalance?.lamports;
   if (typeof nativeLamports === "number" && nativeLamports > 0) {
     const hasWrappedSolEntry = items.some(
       (a) => a.id === "So11111111111111111111111111111111111111112"

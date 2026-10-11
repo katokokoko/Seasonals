@@ -34,6 +34,7 @@ import {
 } from "@workspace/lib/config/orca-markets";
 import { fetchSwapQuote, fetchSwapTransaction } from "./jupiter-swap";
 import { toV0Base64 } from "./tx-utils";
+import { heliusRpcFetch } from "./helius-limiter";
 
 const HELIUS_MAINNET_URL = "https://mainnet.helius-rpc.com";
 const ORCA_STATS_URL = "https://api.mainnet.orca.so/v1/whirlpool/list";
@@ -78,7 +79,8 @@ function bn(value: string | number | bigint): BN {
 function getConnection(): Connection {
   const apiKey = process.env.HELIUS_API_KEY;
   if (!apiKey) throw new Error("HELIUS_API_KEY is not set");
-  return new Connection(`${HELIUS_MAINNET_URL}/?api-key=${apiKey}`, "confirmed");
+  // B1: SDK の RPC read も Helius の列 (同時実行数 / 間隔) に並べ、usage に数える
+  return new Connection(`${HELIUS_MAINNET_URL}/?api-key=${apiKey}`, { commitment: "confirmed", fetch: heliusRpcFetch });
 }
 
 /** 1% slippage (increase / decrease quote 共通、boot 検証値) */

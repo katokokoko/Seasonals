@@ -24,6 +24,7 @@ import cors from "@fastify/cors";
 import rateLimit from "@fastify/rate-limit";
 import { registerEthRoutes } from "./routes/eth";
 import { registerSkrStakingRoutes } from "./routes/skr-staking";
+import { registerAdminRoutes } from "./routes/admin";
 
 import {
   fixtureUnifiedTimeEvents,
@@ -3202,6 +3203,7 @@ export async function buildServer(
 
   // ── Ethereum (docs/web/WORKLOG.md Stage B、読み取り + unsigned plan のみ) ──
   await registerEthRoutes(app);
+  await registerAdminRoutes(app); // B1: GET /admin/helius-usage (ADMIN_TOKEN 必須)
 
   // ── SKR staking cooldown の読取 (docs/skr-r0-implementation.md §3、read-only) ──
   await registerSkrStakingRoutes(app);

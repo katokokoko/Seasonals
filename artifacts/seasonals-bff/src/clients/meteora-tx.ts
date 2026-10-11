@@ -28,6 +28,7 @@ import {
   type MeteoraDlmmMarket,
 } from "@workspace/lib/config/meteora-markets";
 import { toV0Base64 } from "./tx-utils";
+import { heliusRpcFetch } from "./helius-limiter";
 
 const HELIUS_MAINNET_URL = "https://mainnet.helius-rpc.com";
 /** active bin から片側に取る bin 数 (Spot strategy、range UI を出さない preset) */
@@ -62,7 +63,8 @@ function bn(value: string | number): DlmmBN {
 function getConnection(): Connection {
   const apiKey = process.env.HELIUS_API_KEY;
   if (!apiKey) throw new Error("HELIUS_API_KEY is not set");
-  return new Connection(`${HELIUS_MAINNET_URL}/?api-key=${apiKey}`, "confirmed");
+  // B1: SDK の RPC read も Helius の列 (同時実行数 / 間隔) に並べ、usage に数える
+  return new Connection(`${HELIUS_MAINNET_URL}/?api-key=${apiKey}`, { commitment: "confirmed", fetch: heliusRpcFetch });
 }
 
 // pool instance cache (60s — activeBin/state は build 時に SDK が再読するため軽め)

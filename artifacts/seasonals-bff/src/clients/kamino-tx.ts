@@ -20,6 +20,7 @@
 import { fetchWithTimeout } from "./http"; // Phase 8.38 (B9): 共通 timeout
 // 8.51: 署名前の tx 検証 / 8.52: mainnet RPC の URL 組み立ては helius-rpc に集約
 import { buildUrl as heliusMainnetUrl, simulateUnsignedTx } from "./helius-rpc";
+import { fetchJsonWithRetry, heliusRpcFetch } from "./helius-limiter";
 const KAMINO_BASE = "https://api.kamino.finance";
 
 /** reserves/metrics の 1 reserve 分 (raw)。APY 系は fraction string。 */
@@ -401,20 +402,24 @@ async function fetchDepositCapsUncached(
 ): Promise<KaminoDepositCap[]> {
   const apiKey = process.env.HELIUS_API_KEY;
   if (!apiKey) return [];
-  const res = await fetchWithTimeout(heliusMainnetUrl(), {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      jsonrpc: "2.0",
-      id: "seasonals-kamino-caps",
-      method: "getMultipleAccounts",
-      params: [reserves, { encoding: "base64" }],
-    }),
-  }).catch(() => null);
-  if (!res || !res.ok) return [];
-  const json = (await res.json().catch(() => null)) as {
+  // B1: Helius RPC の列 (heliusRpcFetch) + 429 / 5xx の backoff 再試行。network 失敗は
+  // 再試行せず即「上限不明」に倒す (menu 経路を待たせない)。失敗は従来どおり空配列
+  const json = await fetchJsonWithRetry<{
     result?: { value?: ({ data?: [string, string] } | null)[] };
-  } | null;
+  } | null>(
+    heliusMainnetUrl(),
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: "seasonals-kamino-caps",
+        method: "getMultipleAccounts",
+        params: [reserves, { encoding: "base64" }],
+      }),
+    },
+    { label: "getMultipleAccounts(kamino caps)", fetchImpl: heliusRpcFetch.timed(), retryNetworkErrors: false }
+  ).catch(() => null);
   const values = json?.result?.value;
   if (!Array.isArray(values)) return [];
   const out: KaminoDepositCap[] = [];
