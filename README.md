@@ -64,7 +64,8 @@ Environment variables (server side only, `artifacts/seasonals-bff/.env`; names a
 |---|---|
 | `HELIUS_API_KEY` | All Solana mainnet reads (positions, time events, tx history) and `/tx/submit`. Without it the fixture variant still works. |
 | `SOLANA_RPC_URL` | Devnet guard for the (off by default) autonomous loop. Leave on devnet. |
-| `SEASONALS_DATA_DIR` | JSON persistence for plans / approval tokens / policy. Default `.data`; `/data` (volume) on Fly. |
+| `SEASONALS_DATA_DIR` | JSON persistence for plans / approval tokens / policy and the per-wallet portfolio-history inputs cache (`history-inputs.<wallet>.json`). Default `.data`; `/data` (volume) on Fly. |
+| `HELIUS_TX_HISTORY_API` | `enhanced` (default, Enhanced Transactions, 100 credits per request) or `parsed` (Helius Parsed Events, 10 credits per request, incremental history refresh). Switch to `parsed` only after the LP-wallet parity check described in `docs/external-release-api-handling.md` §3.1. |
 | `INFURA_API_KEY` (or `ETHEREUM_RPC_URL`) | All Ethereum reads |
 | `ETHERSCAN_API_KEY` | Ethereum tx deltas and CCA bid scan logs |
 | `UNISWAP_API_KEY` | Trading API quotes |
@@ -72,7 +73,7 @@ Environment variables (server side only, `artifacts/seasonals-bff/.env`; names a
 | `ETH_FORK_RPC_URL` | Anvil endpoint. Default `http://127.0.0.1:8545`. |
 | `ANTHROPIC_API_KEY` | Optional. Without it, proposals are rule-based. |
 
-Public deployment only (`docs/external-release-api-handling.md`): `SOLANA_EXECUTION_TARGET` (`mainnet` default, `disabled` = plans only), `CORS_ALLOWED_ORIGINS`, `RATE_LIMIT_MAX`, `ADMIN_TOKEN`, `BFF_PROXY_SECRET`, `EXPO_PUSH_ENABLED`, `GIT_SHA`. **Never set on a public BFF**: `AUTONOMOUS_DELEGATE_SECRET`, `FEATURE_APPROVAL_MODE_AUTO=true`, `AUTONOMOUS_LOOP_MS` — with `NODE_ENV=production` the server refuses to start.
+Public deployment only (`docs/external-release-api-handling.md`): `SOLANA_EXECUTION_TARGET` (`mainnet` default, `disabled` = plans only), `CORS_ALLOWED_ORIGINS`, `RATE_LIMIT_MAX`, `ADMIN_TOKEN`, `BFF_PROXY_SECRET`, `EXPO_PUSH_ENABLED`, `GIT_SHA`. `GET /admin/helius-usage` (header `x-seasonals-admin-token`) reports Helius calls per method, estimated credits, 429s and cache hit rates since start; `node artifacts/seasonals-bff/scripts/measure-usage.mjs --base <bff> --token <ADMIN_TOKEN> --wallet <address>` prints the delta for one cold open. **Never set on a public BFF**: `AUTONOMOUS_DELEGATE_SECRET`, `FEATURE_APPROVAL_MODE_AUTO=true`, `AUTONOMOUS_LOOP_MS` — with `NODE_ENV=production` the server refuses to start.
 
 The web app has no secret environment variables. It only uses `BFF_URL` in the Vite dev proxy.
 

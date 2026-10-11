@@ -126,6 +126,22 @@ test("delete は進行中の load を切り離す (結果は返すが cache に�
   expect(cache.get("k")).toBe("fresh");
 });
 
+test("deleteWhere は合う key の entry と進行中の load だけを消す", async () => {
+  const cache = new TtlCache<string>({ name: "t.deleteWhere", ttlMs: 1000, now: clock().now });
+  await cache.getOrLoad("a|1", async () => "a1");
+  await cache.getOrLoad("a|2", async () => "a2");
+  await cache.getOrLoad("b|1", async () => "b1");
+  const d = deferred<string>();
+  const p = cache.getOrLoad("a|3", () => d.promise);
+  cache.deleteWhere((k) => k.startsWith("a|"));
+  expect(cache.get("a|1")).toBeUndefined();
+  expect(cache.get("a|2")).toBeUndefined();
+  expect(cache.get("b|1")).toBe("b1");
+  d.resolve("stale");
+  expect(await p).toBe("stale");
+  expect(cache.get("a|3")).toBeUndefined(); // 切り離した load は書かない
+});
+
 test("registry: allCacheStats と _clearAllCachesForTest", async () => {
   const cache = new TtlCache<number>({ name: "t.registry", ttlMs: 1000, now: clock().now });
   await cache.getOrLoad("k", async () => 1);

@@ -55,17 +55,37 @@ export interface HistoryInputs {
   excludedFromHistory?: string[];
   /** 価格以外の理由で近似の asset (例: rebase で過去残高を追えない stETH) */
   approximatedSymbols?: string[];
+  /**
+   * Phase C: 差分に含めた最も新しい tx の signature (Solana / Parsed Events)。次回はこれより
+   * 新しい tx だけを取れば足りる (`afterSignature`)。無ければ増分にできない (全件取り直し)
+   */
+  newestSignature?: string;
 }
+
+/**
+ * Phase C: 増分更新と永続化で引き継ぐ部分。`current` / `assets` (現在残高と単価) は毎回
+ * 読み直すので含めない — 永続化から戻した entry はこれだけを持つ
+ */
+export type HistoryInputsCursor = Pick<
+  HistoryInputs,
+  "deltas" | "oldestSeen" | "fetchedDays" | "complete" | "newestSignature"
+>;
 
 export interface ChainHistorySource {
   chain: ChainId;
   /** native 建て換算に使う asset key (Solana = WSOL mint、Ethereum = "ETH") */
   nativePriceKey: string | undefined;
-  /** 現在残高 + tx 差分。保有ゼロなら null */
+  /**
+   * 現在残高 + tx 差分。保有ゼロなら null。
+   * Phase C: `prev` は期限切れの前回分 / 永続化から戻した分 (あれば range に関係なく渡る)。使える source は
+   * `prev.fetchedDays >= days` の時にそれより新しい tx だけ取って merge してよく (Solana / Parsed Events)、
+   * range が足りなければ全件取り直す。無視してもよい (Ethereum)
+   */
   loadInputs(
     address: string,
     days: number,
-    nowSeconds: number
+    nowSeconds: number,
+    prev?: HistoryInputsCursor
   ): Promise<HistoryInputs | null>;
   /** asset key → 過去価格系列。取れない asset は Map に入れない (近似に落ちる) */
   priceSeries(
@@ -80,6 +100,16 @@ export interface HistoryEngineOptions {
   /** 応答 / 入力 cache の TTL (8.58: 5 分) */
   cacheTtlMs?: number;
   now?: () => number;
+  /**
+   * Phase C: 再起動後、memory に entry が無い address の前回分を戻す (portfolio/inputs-store.ts)。
+   * 戻した entry は **期限切れ扱い** — そのまま応答には使わず、次の load の `prev` (増分) になる。
+   * address ごとに 1 process で 1 回だけ呼ぶ (戻した cursor は load が成功するまで保持する)
+   */
+  hydrate?: (
+    address: string
+  ) => HistoryInputsCursor | null | undefined | Promise<HistoryInputsCursor | null | undefined>;
+  /** Phase C: load できた入力を保存する (失敗しても load は成功扱い。間引きは呼ばれる側) */
+  persist?: (address: string, inputs: HistoryInputs) => void;
 }
 
 export interface HistoryEngine {
@@ -105,6 +135,7 @@ export function createHistoryEngine(
     string,
     { at: number; data: PortfolioHistoryResponse }
   >();
+  /** `days` は **遡れている** 日数 (= max(要求 range, data.fetchedDays))。要求 range ではない */
   const inputsCache = new Map<
     string,
     { at: number; data: HistoryInputs | null; days: number }
@@ -116,10 +147,30 @@ export function createHistoryEngine(
   >();
   /** 8.83: SWR の背景再計算が同一 key で多重に走らないためのガード */
   const refreshing = new Set<string>();
+  /** Phase C: hydrate を試した address (無かった address も 2 回目は読まない) */
+  const hydrateTried = new Set<string>();
+  /** Phase C: 戻したがまだ load に使い切っていない cursor (load が失敗したら次の load でも使う) */
+  const hydratedPending = new Map<string, HistoryInputsCursor>();
+
+  async function hydrated(address: string): Promise<HistoryInputsCursor | undefined> {
+    const pending = hydratedPending.get(address);
+    if (pending) return pending;
+    if (!opts.hydrate || hydrateTried.has(address)) return undefined;
+    hydrateTried.add(address);
+    try {
+      const h = (await opts.hydrate(address)) ?? undefined;
+      if (h) hydratedPending.set(address, h);
+      return h;
+    } catch {
+      return undefined;
+    }
+  }
 
   /**
    * 8.60: 「現在残高 + tx 差分」は range をまたいで同じなので address 単位で
    * cache する。要求 range より短い期間しか遡っていない cache は取り直す。
+   * review #40: 「遡れている期間」は要求 range ではなく `data.fetchedDays` で測る (holdings の
+   * days=1 が 30 日分を読んでも、次の history?days=30 が cold にならない)
    */
   async function loadInputs(
     address: string,
@@ -132,13 +183,28 @@ export function createHistoryEngine(
     }
     const running = inflight.get(address);
     if (running && running.days >= days) return running.promise;
-    const promise = source
-      .loadInputs(address, days, nowSeconds)
+    const promise = (async () => {
+      // Phase C: 期限切れの前回分は「増分の起点」として渡す (range が足りるかは source が決める —
+      // 足りなければ全件取り直す)。memory に無ければ永続化から (hydrate、期限切れ扱い)
+      const prev: HistoryInputsCursor | undefined = cached?.data ?? (await hydrated(address));
+      return prev
+        ? source.loadInputs(address, days, nowSeconds, prev)
+        : source.loadInputs(address, days, nowSeconds);
+    })()
       .then((data) => {
+        hydratedPending.delete(address); // load が成功した = 戻した cursor は使い切った
+        const coveredDays = Math.max(days, data?.fetchedDays ?? 0);
         // 並走した長い range の結果を、後から終わった短い range で潰さない
         const existing = inputsCache.get(address);
-        if (!existing || now() - existing.at >= ttl || existing.days <= days) {
-          inputsCache.set(address, { at: now(), data, days });
+        if (!existing || now() - existing.at >= ttl || existing.days <= coveredDays) {
+          inputsCache.set(address, { at: now(), data, days: coveredDays });
+          if (data && opts.persist) {
+            try {
+              opts.persist(address, data);
+            } catch {
+              // best-effort: 保存失敗で応答を壊さない
+            }
+          }
         }
         return data;
       })
@@ -264,6 +330,8 @@ export function createHistoryEngine(
       historyCache.clear();
       inputsCache.clear();
       inflight.clear();
+      hydrateTried.clear();
+      hydratedPending.clear();
     },
   };
 }

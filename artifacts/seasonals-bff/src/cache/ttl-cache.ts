@@ -110,6 +110,12 @@ export class TtlCache<V> {
     this.inflight.delete(key);
   }
 
+  /** key が `match` に合う entry を全部消す (進行中の load も delete と同じく切り離す) */
+  deleteWhere(match: (key: string) => boolean): void {
+    for (const key of [...this.entries.keys()]) if (match(key)) this.entries.delete(key);
+    for (const key of [...this.inflight.keys()]) if (match(key)) this.inflight.delete(key);
+  }
+
   clear(): void {
     this.entries.clear();
     this.inflight.clear();

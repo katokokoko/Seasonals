@@ -20,6 +20,7 @@
  * | BFF_PROXY_SECRET          | 未設定            | Pages Function → BFF の共有鍵。一致した時だけ `x-seasonals-client-ip` を信じる |
  * | EXPO_PUSH_ENABLED         | off               | `"true"` で push token 登録を受け付ける |
  * | GIT_SHA                   | 未設定            | `/health.version` に出す build の commit |
+ * | HELIUS_TX_HISTORY_API     | `enhanced`        | tx 履歴の取得元。`parsed` で Parsed Events (10 credit/req)。未知の値は enhanced |
  * | NODE_ENV=production       | -                 | `assertProductionEnvSafe` が秘密鍵経路の env を拒否する |
  */
 
@@ -33,6 +34,20 @@ export function solanaExecutionTarget(
   if (raw === "" || raw === "mainnet") return "mainnet";
   // `disabled` と、typo を含む知らない値はすべて disabled
   return "disabled";
+}
+
+/**
+ * Phase C: wallet tx 履歴の取得元 (clients/tx-history.ts)。
+ * - `enhanced` (既定): Helius Enhanced Transactions (100 credit / req)
+ * - `parsed`: Helius Parsed Events (10 credit / req、`afterSignature` / `time.gte` で増分取得)
+ * 未設定 / 未知の値 (typo) は **enhanced** (parity 確認済みの既存経路に倒す)。
+ */
+export type HeliusTxHistoryApi = "enhanced" | "parsed";
+
+export function heliusTxHistoryApi(
+  env: NodeJS.ProcessEnv = process.env
+): HeliusTxHistoryApi {
+  return env.HELIUS_TX_HISTORY_API?.trim().toLowerCase() === "parsed" ? "parsed" : "enhanced";
 }
 
 /**

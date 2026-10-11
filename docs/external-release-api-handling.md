@@ -18,7 +18,7 @@ Seeker 版に関係するもの。web 版だけが使う Infura / Etherscan / Un
 
 | API | 鍵 | 無料枠 / 単価 | 使い方 (BFF) | 備考 |
 |---|---|---|---|---|
-| Helius mainnet RPC / DAS / Enhanced Tx | **必須** `HELIUS_API_KEY` | Free: 月 100 万 credit、RPC 10 rps、DAS と Enhanced 2 rps、sendTransaction 1 rps。単価: RPC 1、`getProgramAccounts` 10、DAS 10、**Enhanced Transactions 100** | `helius-rpc.ts` `buildUrl()` が唯一の組み立て口。`getMultipleAccounts` 37 箇所、tx 履歴は `helius-tx.ts` が 1 ページ 100 tx = 100 credit、in-memory cache 200 entry | Enhanced Transactions は Helius 自身が legacy / maintenance mode。後継 **Parsed Events は 10 credit** (10 分の 1) |
+| Helius mainnet RPC / DAS / Enhanced Tx | **必須** `HELIUS_API_KEY` | Free: 月 100 万 credit、RPC 10 rps、DAS と Enhanced 2 rps、sendTransaction 1 rps。単価: RPC 1、`getProgramAccounts` 10、DAS 10、**Enhanced Transactions 100** | `helius-rpc.ts` `buildUrl()` が唯一の組み立て口。2026-10-12 から全 Helius 呼び出しが `clients/helius-limiter.ts` (RPC 4 in flight / DAS・履歴 2 in flight、429 / 5xx retry、usage 計数) を通り、wallet 読みは `wallet-snapshot.ts` (60s + stale-while-revalidate 60s、`/tx/submit` で bust) を 3 route が共有。tx 履歴は `clients/tx-history.ts` facade が `HELIUS_TX_HISTORY_API` で Enhanced (100 credit / page) か Parsed Events (10) を選ぶ | Enhanced Transactions は Helius 自身が legacy / maintenance mode。後継 **Parsed Events (10 credit)** の adapter は実装済み、既定の flip は §3.1 の parity 後 |
 | Jupiter `lite-api.jup.ag` (price v3 / lend v1) | 不要 | 2026-10-09 時点で鍵なし 200 | `jupiter-price.ts` (5 分 cache)、`jupiter-lend.ts` | 新 portal は `api.jup.ag`: 鍵なし 0.5 rps、無料鍵 1 rps、Developer $25 で 10 rps。lite-api は旧世代で停止時期の公式明記なし → 無料鍵を取っておき、`x-api-key` 対応を入れる余地を残す |
 | RedStone gateway、Pyth push feed (Helius 経由)、DefiLlama、Sanctum、Kamino、Exponent、Orca、Meteora、Save、Marinade、Perena | 不要 | 公開 API | `rates.ts` 等に 1〜10 分 cache | 429 時は fixture / degrade に落ちる |
 | Anthropic | 任意 `ANTHROPIC_API_KEY` | 従量 | 無ければ rule-based 提案 | 公開 BFF では外すか §3.3 の rate limit 必須 |
@@ -27,15 +27,22 @@ Seeker 版に関係するもの。web 版だけが使う Infura / Etherscan / Un
 
 ## 3. モデル A: 自分がホストする BFF をテスターが使う
 
-### 3.1 quota の見積り
+### 3.1 quota の見積り (2026-10-12 に実測で更新)
 
-- 新規 wallet 1 回の読み込み ≈ DAS 10 + RPC 数十 + 履歴 100 × ページ数。tx 300 件の wallet で約 350 credit
-- Free 100 万 credit = **月およそ 3,000 回の fresh load**。テスター 20 人 × 1 日 10 回 × 30 日 = 6,000 回で不足
-- DAS / Enhanced の **2 rps** は複数人が同時に開くと 429 (読み取り RPC は `helius-rpc.ts` の 3 attempt backoff があるが、Enhanced 側は別)
-- 対策の優先順:
-  1. `helius-tx.ts` を Enhanced Transactions → **Parsed Events** (`POST /v1/parsed-events/transaction-history`) に移行 (単価 10 分の 1、legacy 回避)
+- 2026-10-09 の机上見積り (fresh load ≈ 350 credit) に対し、コードを読み切った実コストは **cold open ≈ 335 credit + 履歴 100〜1,000** だった (3 つの wallet route が同時に飛び DAS ×3〜4 / Enhanced ×2〜3、foreground 復帰のたびに再取得)。branch `perf/api-usage` (+ `perf/api-usage-parsed`) で以下に下がった (wallet 1 つ、`scripts/measure-usage.mjs` の実測、詳細は `docs/web/WORKLOG.md` 2026-10-12):
+
+| 場面 | before | after (`HELIUS_TX_HISTORY_API=enhanced`、既定) | after (`parsed`、flip 後) |
+|---|---|---|---|
+| cold open (positions + earn + events + history 30 日) | 52 req / 448 credit | 29 req / 272 credit | 29 req / **92** credit |
+| foreground 復帰 60s 以内 (positions + earn + events) | 29 req / 92 credit | **1 req / 1 credit** (oracle のみ) | 同 |
+| 復帰 60〜120s | 同上 | 旧値を即返し (9 req / 27) + 裏で 1 回再構築 ≈ 170 | 裏 ≈ 80 |
+| deploy 直後の再訪 (history) | 100〜1,000 | 同 | **10** (volume から hydrate + `afterSignature` 増分 1 page) |
+
+- Free 100 万 credit で支えられる cold open は **1 日 約 74 回 → 約 122 回 (enhanced) → 約 362 回 (parsed)**。全部 cold open と仮定した保守的な値で、1 人 1 日 10 回なら **約 7 人 → 12 人 → 36 人**。Developer ($49、1,000 万) で 10 倍。実際は復帰の多くが 60s 以内 (1 credit) なので余裕はこれより大きい
+- DAS / 履歴 API の **2 rps** は `clients/helius-limiter.ts` の `heliusDataFetch` (2 in flight / 500ms) で直列化し、429 / 5xx は retry (従来 DAS / Enhanced は retry 無し)。Seeker 側も cold start 12 → 9 GET、復帰 60s 以内 8 → 2 GET (SKR / agent-plans のみ、Helius 消費なし)
+- 残る対策:
+  1. **Parsed Events への flip** (`HELIUS_TX_HISTORY_API=parsed`): adapter / parity test / 増分同期 / 永続化は実装済み (`clients/helius-parsed-events.ts`、`clients/tx-history.ts`、`portfolio/inputs-store.ts`)。Orca / Meteora の LP position を持つ wallet 3 つで `pnpm --filter @seasonals/bff record:tx-fixtures -- --wallet <w>` → `pnpm test -- helius-parsed-events` の parity が通ったら既定を parsed に (別 PR)
   2. デモ日 / 審査期間は Developer plan (月 1,000 万 credit) に一時昇格
-  3. 履歴 cache を in-memory 200 entry から `.data/` 永続に (再起動で消えない)
 
 ### 3.2 鍵の保護
 
@@ -57,7 +64,8 @@ Seeker 版に関係するもの。web 版だけが使う Infura / Etherscan / Un
 
 - plan / approval token は `.data/agent-plans.json` (`SEASONALS_DATA_DIR`)。volume を付けるか、再起動で消えることを許容するかを決める
 - 公開 BFF の env 最小セット: `PORT` `HOST` `HELIUS_API_KEY` `SEASONALS_DATA_DIR`。置かないもの: `AUTONOMOUS_*` `FEATURE_APPROVAL_MODE_AUTO` `ETH_*` (Seeker 版だけなら)
-- 監視: Helius dashboard の usage と BFF ログの 429 件数。無料枠 80% で通知
+- 監視: Helius dashboard の usage と BFF ログの 429 件数。無料枠 80% で通知。`GET /admin/helius-usage` (header `x-seasonals-admin-token`) が起動からの method 別 count / 推定 credit / 429 / cache hit を返す。`scripts/measure-usage.mjs --base https://api.seasonals.cafe --token <ADMIN_TOKEN> --wallet <w>` で 1 回の cold open の差分
+- `SEASONALS_DATA_DIR` には plan / policy に加えて `history-inputs.<wallet>.json` (portfolio history の入力、200 wallet × 1,000 delta で LRU) が入る。消えても次の読みで再構築される (parsed なら 10 credit、enhanced なら 100 × page)
 
 ## 4. モデル B: 第三者が自分の鍵で repo を動かす
 
@@ -149,6 +157,7 @@ fly certs add api.seasonals.cafe --app seasonals-bff && fly ips list --app seaso
 ### 9.1 公開後に見るもの
 
 - Helius dashboard の credit 消費 (無料枠 80% で通知)、BFF ログの 429
+- `curl -H "x-seasonals-admin-token: $ADMIN_TOKEN" https://api.seasonals.cafe/admin/helius-usage` を deploy 直後と 1 日後に見て、`approxCredits` の伸びと `rateLimited`、`caches.wallet.snapshot` の hit / miss を記録する
 - `fly logs` に起動ガード / data dir のエラーが無い
 - rate limit smoke: `/tx/submit` に 15 連投 → 400 の後 429 (disabled なら 409)
 - `curl -X POST https://api.seasonals.cafe/autonomous/kill` → 403
