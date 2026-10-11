@@ -393,10 +393,11 @@ describe("Phase C: /portfolio/history (parsed) — window 打ち切り / 増分 
     const calls = (fetchWalletTxPage as jest.Mock).mock.calls;
     expect(calls).toHaveLength(1);
     expect(calls[0]![1]).toEqual({ limit: 100, timeGte: expect.any(Number) });
-    // cold history = wallet snapshot (現在残高の DAS を読むと 8 source が同じ tick で読まれる: 52 + 直近 tx 10)
-    //   + 履歴 Parsed Events 1 page 10 (window 内 0 件 → token 無しで終端)
-    expect(usageSnapshot().approxCredits).toBe(72);
-    expect(usageSnapshot().byApi.parsed).toBe(2);
+    // cold history = 現在残高の DAS 1 回 (10) + 履歴 Parsed Events 1 page (10、window 内 0 件 → token 無しで終端)。
+    // review #39: history 単独の呼び出しは wallet snapshot (8 source、52 + 直近 tx 10) を起こさない
+    expect(usageSnapshot().approxCredits).toBe(20);
+    expect(usageSnapshot().byApi.parsed).toBe(1);
+    expect(usageSnapshot().byApi.das).toBe(1);
   });
 
   it("期限切れ後の再計算は afterSignature の増分 1 page、差分は signature で重複排除して merge", async () => {
@@ -430,10 +431,11 @@ describe("Phase C: /portfolio/history (parsed) — window 打ち切り / 増分 
     expect(page).toHaveBeenCalledTimes(3);
     expect(page.mock.calls[2]![1]).toEqual({ limit: 100, afterSignature: "S2" });
     for (let i = 0; i < 5; i++) await flush();
-    // 増分 refresh = 履歴 Parsed Events 1 page (10) + 期限切れ snapshot の読み直し (62、3 display route と共有)。
-    // enhanced なら全 page の取り直し (100 × page 数) + snapshot (152)
-    expect(usageSnapshot().byApi.parsed).toBe(2);
-    expect(usageSnapshot().approxCredits).toBe(72);
+    // 増分 refresh = 現在残高の DAS 1 回 (10) + 履歴 Parsed Events 1 page (10)。snapshot は起こさない (review #39)。
+    // enhanced なら全 page の取り直し (100 × page 数) + DAS
+    expect(usageSnapshot().byApi.parsed).toBe(1);
+    expect(usageSnapshot().byApi.das).toBe(1);
+    expect(usageSnapshot().approxCredits).toBe(20);
 
     // merge の結果: 現在 2 SOL − S3 (+0.5) = 1.5 (S2 以降)、さらに − S2 (−1) = 2.5 (S1〜S2 の間)。
     // S2 を二重に数えると 3.5 になる。単価は過去価格が無いので現在値 90 (近似)

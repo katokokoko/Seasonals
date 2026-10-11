@@ -73,7 +73,7 @@ import {
 import { toDTO as timeEventToDTO } from "@workspace/lib/types";
 import { getRegistry } from "@workspace/lib/adapters";
 
-import { type HeliusAsset } from "./clients/helius";
+import { fetchAssetsByOwner, type HeliusAsset } from "./clients/helius";
 import {
   fetchEarnMarkets,
   fetchEarnPositions,
@@ -568,13 +568,14 @@ async function loadSolanaHistoryInputs(
   // 1. 現在残高 (DAS)。native SOL は WSOL mint の synthetic entry で入る。
   // 8.70: jlToken の単価は DAS ではなく protocol の交換レートを使う (取得失敗は
   // DAS に degrade)。ここを直さないと 8.64 のアンカーが誤差を系列全体に広げる
-  // B3: DAS は /positions 等と共有の wallet snapshot から (表示用途。失敗は従来どおり throw)
-  const [assetsR, jupiterMarketsForPrice] = await Promise.all([
-    loadWalletSnapshot(wallet).assets,
+  // review #39: history は DAS だけ要るので wallet snapshot を起こさない (snapshot 経由だと
+  // 単独の history 呼び出しが Meteora / Orca / Kamino / stake まで読み、最大 2 分古い残高に
+  // anchor していた)。fetchAssetsByOwner は 30s cache + in-flight dedupe + tx 後の invalidate を
+  // snapshot の assets source と共有するので、同時に走っても DAS は 1 回。失敗は従来どおり throw
+  const [assets, jupiterMarketsForPrice] = await Promise.all([
+    fetchAssetsByOwner(wallet),
     fetchEarnMarkets().catch(() => [] as JupiterLendMarket[]),
   ]);
-  if (assetsR.status === "rejected") throw new Error(assetsR.reason);
-  const assets = assetsR.value;
   const priceOverrides = jlSharePriceOverrides(jupiterMarketsForPrice);
   const current = new Map<string, bigint>();
   const historyAssets: HistoryAsset[] = [];
