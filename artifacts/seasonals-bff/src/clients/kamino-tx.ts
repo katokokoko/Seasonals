@@ -21,6 +21,7 @@ import { fetchWithTimeout } from "./http"; // Phase 8.38 (B9): 共通 timeout
 // 8.51: 署名前の tx 検証 / 8.52: mainnet RPC の URL 組み立ては helius-rpc に集約
 import { buildUrl as heliusMainnetUrl, simulateUnsignedTx } from "./helius-rpc";
 import { fetchJsonWithRetry, heliusRpcFetch } from "./helius-limiter";
+import { TtlCache } from "../cache/ttl-cache";
 const KAMINO_BASE = "https://api.kamino.finance";
 
 /** reserves/metrics の 1 reserve 分 (raw)。APY 系は fraction string。 */
@@ -52,14 +53,29 @@ async function kaminoGet<T>(path: string): Promise<T> {
   return (await res.json()) as T;
 }
 
+/**
+ * B2: wallet に依らない market / vault metrics は全 user で共有する (120 秒、同時 miss は 1 回の取得に合流)。
+ * earn / menu / reserves / simulate が同じ値を読むので、request ごとの上流呼び出しを O(1) にする。
+ * 失敗は cache しない (次の呼び手が再取得)
+ */
+const METRICS_TTL_MS = 120_000;
+const reserveMetricsCache = new TtlCache<KaminoReserveMetric[]>({
+  name: "kamino.reserves",
+  ttlMs: METRICS_TTL_MS,
+  maxEntries: 20,
+  now: () => Date.now(),
+});
+
 /** market の全 reserve metrics (58 件規模)。server 側で supported reserve を抽出。 */
 export async function fetchKaminoReserveMetrics(
   market: string
 ): Promise<KaminoReserveMetric[]> {
-  const raw = await kaminoGet<unknown>(
-    `/kamino-market/${market}/reserves/metrics`
-  );
-  return (Array.isArray(raw) ? raw : []) as KaminoReserveMetric[];
+  return reserveMetricsCache.getOrLoad(market, async () => {
+    const raw = await kaminoGet<unknown>(
+      `/kamino-market/${market}/reserves/metrics`
+    );
+    return (Array.isArray(raw) ? raw : []) as KaminoReserveMetric[];
+  });
 }
 
 /** market × wallet の obligation 群 (保有 position、空なら [])。 */
@@ -254,9 +270,20 @@ export interface KaminoVaultMetrics {
   tokensAvailableUsd?: string;
 }
 
+const vaultMetricsCache = new TtlCache<KaminoVaultMetrics>({
+  name: "kamino.vaultMetrics",
+  ttlMs: METRICS_TTL_MS,
+  maxEntries: 50,
+  now: () => Date.now(),
+});
+
 export async function fetchKaminoVaultMetrics(
   vault: string
 ): Promise<KaminoVaultMetrics> {
+  return vaultMetricsCache.getOrLoad(vault, () => loadKaminoVaultMetrics(vault));
+}
+
+async function loadKaminoVaultMetrics(vault: string): Promise<KaminoVaultMetrics> {
   const raw = await kaminoGet<{
     apy?: string;
     tokensPerShare?: string;

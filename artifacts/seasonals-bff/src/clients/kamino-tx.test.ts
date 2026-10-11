@@ -11,8 +11,11 @@ import {
   KaminoDoomedTxError,
   fetchKaminoDepositCaps,
   fetchKaminoDepositTx,
+  fetchKaminoReserveMetrics,
+  fetchKaminoVaultMetrics,
   fetchKaminoWithdrawTx,
 } from "./kamino-tx";
+import { _clearAllCachesForTest } from "../cache/ttl-cache";
 
 jest.mock("./http");
 jest.mock("./helius-rpc");
@@ -47,6 +50,7 @@ const nextReserve = () => `Reserve${(seq += 1)}`;
 
 beforeEach(() => {
   jest.clearAllMocks();
+  _clearAllCachesForTest();
   process.env.HELIUS_API_KEY = "test-key";
   mockSimulate.mockResolvedValue({ ok: true });
 });
@@ -129,5 +133,35 @@ describe("署名前の simulate ガード", () => {
     mockFetch.mockResolvedValue(txReply);
     mockSimulate.mockRejectedValue(new Error("rpc down"));
     expect(await fetchKaminoDepositTx(body)).toEqual({ transaction: "TX_BASE64" });
+  });
+});
+
+describe("B2: market / vault metrics の共有 cache (120 秒)", () => {
+  const okJson = (body: unknown) => ({ ok: true, status: 200, json: async () => body }) as unknown as Response;
+  afterEach(() => jest.useRealTimers());
+
+  it("reserve metrics は market ごとに共有、同時の呼び手は 1 回の GET に合流、120 秒で再取得", async () => {
+    jest.useFakeTimers({ now: 1_800_000_000_000, doNotFake: ["nextTick", "setImmediate"] });
+    mockFetch.mockResolvedValue(okJson([{ reserve: "R1" }]));
+    const [a, b] = await Promise.all([fetchKaminoReserveMetrics("M1"), fetchKaminoReserveMetrics("M1")]);
+    expect(a).toBe(b);
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    await fetchKaminoReserveMetrics("M2"); // 別 market は別 key
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    jest.advanceTimersByTime(119_000);
+    await fetchKaminoReserveMetrics("M1");
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    jest.advanceTimersByTime(1_000);
+    await fetchKaminoReserveMetrics("M1");
+    expect(mockFetch).toHaveBeenCalledTimes(3);
+  });
+
+  it("vault metrics も vault ごとに共有、HTTP 失敗は cache しない", async () => {
+    mockFetch.mockResolvedValueOnce({ ok: false, status: 503, text: async () => "" } as unknown as Response);
+    await expect(fetchKaminoVaultMetrics("V1")).rejects.toThrow(/HTTP 503/);
+    mockFetch.mockResolvedValue(okJson({ apy: "0.05", tokensPerShare: "1.01", tokenPrice: "1" }));
+    expect(await fetchKaminoVaultMetrics("V1")).toMatchObject({ apy: "0.05", tokensPerShare: "1.01" });
+    await fetchKaminoVaultMetrics("V1");
+    expect(mockFetch).toHaveBeenCalledTimes(2);
   });
 });

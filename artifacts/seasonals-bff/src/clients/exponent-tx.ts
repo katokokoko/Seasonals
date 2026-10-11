@@ -34,6 +34,7 @@ import {
   createAssociatedTokenAccountIdempotentInstruction,
   getAssociatedTokenAddressSync,
 } from "@solana/spl-token";
+import { heliusRpcFetch } from "./helius-limiter";
 
 export const EXPONENT_PROGRAM_ID =
   "ExponentnaRg3CQbW6dqQNZKXp7gtZ9DGMp1cwC4HAS7";
@@ -152,7 +153,8 @@ export function substituteUserAccounts(
 function getConnection(): Connection {
   const apiKey = process.env.HELIUS_API_KEY;
   if (!apiKey) throw new Error("HELIUS_API_KEY is not set");
-  return new Connection(`${HELIUS_MAINNET_URL}/?api-key=${apiKey}`, "confirmed");
+  // B2: SDK の RPC read も Helius の列 (同時実行数 / 間隔) に並べ、usage に数える
+  return new Connection(`${HELIUS_MAINNET_URL}/?api-key=${apiKey}`, { commitment: "confirmed", fetch: heliusRpcFetch });
 }
 
 const templateCache = new Map<string, { at: number; tpl: RedeemTemplate }>();

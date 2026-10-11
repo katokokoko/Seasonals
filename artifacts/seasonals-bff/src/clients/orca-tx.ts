@@ -35,6 +35,7 @@ import {
 import { fetchSwapQuote, fetchSwapTransaction } from "./jupiter-swap";
 import { toV0Base64 } from "./tx-utils";
 import { heliusRpcFetch } from "./helius-limiter";
+import { TtlCache } from "../cache/ttl-cache";
 
 const HELIUS_MAINNET_URL = "https://mainnet.helius-rpc.com";
 const ORCA_STATS_URL = "https://api.mainnet.orca.so/v1/whirlpool/list";
@@ -108,6 +109,40 @@ function ctxAndClient(user: PublicKey) {
     orca.ORCA_WHIRLPOOL_PROGRAM_ID
   );
   return { ctx, client: orca.buildWhirlpoolClient(ctx) };
+}
+
+/**
+ * B2: 読み取り専用 (positions) の context は module で 1 つ。wallet stub は default owner/funder の
+ * 解決にしか使われず、positions の owner は getAllPositionAccountsByOwner に明示で渡すので user に依らない。
+ * HELIUS_API_KEY が変わったら作り直す (test / key rotation)。deposit / withdraw は従来どおり user ごと
+ */
+let readCtx: { apiKey: string; value: ReturnType<typeof ctxAndClient> } | null = null;
+function readOnlyCtxAndClient(): ReturnType<typeof ctxAndClient> {
+  const apiKey = process.env.HELIUS_API_KEY ?? "";
+  if (!readCtx || readCtx.apiKey !== apiKey) {
+    readCtx = { apiKey, value: ctxAndClient(PublicKey.default) };
+  }
+  return readCtx.value;
+}
+
+type OrcaWhirlpool = Awaited<ReturnType<ReturnType<typeof ctxAndClient>["client"]["getPool"]>>;
+
+/**
+ * B2: positions 表示用の pool (sqrtPrice 等) を全 user で共有 (30 秒、同時 miss は 1 回の取得に合流)。
+ * 我々の miss では SDK 側 fetcher cache を使わず読む (IGNORE_CACHE — cache を二重にしない)。
+ * deposit / withdraw の tx build は live の getPool のまま
+ */
+const readPoolCache = new TtlCache<OrcaWhirlpool>({
+  name: "orca.pool",
+  ttlMs: 30_000,
+  maxEntries: 20,
+  now: () => Date.now(),
+});
+
+function getReadPool(poolAddress: string): Promise<OrcaWhirlpool> {
+  return readPoolCache.getOrLoad(poolAddress, () =>
+    readOnlyCtxAndClient().client.getPool(poolAddress, getOrca().IGNORE_CACHE)
+  );
 }
 
 // ── deposit (zap-in) ─────────────────────────────────────────────────────────
@@ -212,7 +247,7 @@ export async function fetchOrcaPositions(
 ): Promise<OrcaRawPosition[]> {
   const orca = getOrca();
   const user = new PublicKey(wallet);
-  const { ctx, client } = ctxAndClient(user);
+  const { ctx } = readOnlyCtxAndClient();
   const map = await orca.getAllPositionAccountsByOwner({
     ctx,
     owner: user,
@@ -230,7 +265,7 @@ export async function fetchOrcaPositions(
       ([, pos]) => pos.whirlpool.toBase58() === market.pool_address
     );
     if (hits.length === 0) continue;
-    const pool = await client.getPool(market.pool_address);
+    const pool = await getReadPool(market.pool_address);
     const data = pool.getData();
     for (const [address, pos] of hits) {
       const amounts = orca.PoolUtil.getTokenAmountsFromLiquidity(

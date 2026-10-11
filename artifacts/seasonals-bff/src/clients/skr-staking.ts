@@ -45,7 +45,7 @@ import {
 } from "@workspace/lib/types";
 import { fromBigInt, isValidTokenAmount } from "@workspace/lib/utils/numeric";
 import { buildUrl } from "./helius-rpc";
-import { fetchWithTimeout } from "./http";
+import { heliusRpcFetch } from "./helius-limiter";
 
 /** read 1 本あたりの上限 (§3: read 全体 10 秒、retry なし) */
 export const SKR_READ_TIMEOUT_MS = 10_000;
@@ -75,15 +75,14 @@ export class SkrRpcError extends Error {
 }
 
 async function heliusCall<T>(method: string, params: unknown[]): Promise<T> {
-  const res = await fetchWithTimeout(
-    buildUrl(),
-    {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ jsonrpc: "2.0", id: `seasonals-skr-${method}`, method, params }),
-    },
-    SKR_READ_TIMEOUT_MS
-  );
+  // B2: Helius の列 (同時実行数 / 間隔) に並べて usage に数えるだけ。cache / retry は足さない (§3)。
+  // timeout の signal は列に並ぶ前に作る — 待ち時間も含めて 1 RPC 10 秒の契約を保つ
+  const res = await heliusRpcFetch(buildUrl(), {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ jsonrpc: "2.0", id: `seasonals-skr-${method}`, method, params }),
+    signal: AbortSignal.timeout(SKR_READ_TIMEOUT_MS),
+  });
   if (!res.ok) throw new SkrRpcError(`${method} HTTP ${res.status}`);
   const body = (await res.json()) as { result?: T; error?: { code?: number; message?: string } };
   if (body.error) throw new SkrRpcError(`${method} RPC error ${body.error.code ?? ""}`.trim());

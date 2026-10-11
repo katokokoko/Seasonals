@@ -5,10 +5,19 @@
  * 評価額とフェアバリューガードの両方が静かに狂う (8.72 で実際にそうなった)。
  */
 import {
+  fetchLstSolValues,
   parseInfPoolRate,
   parseMarinadePriceSol,
   parseStakePoolRate,
 } from "./lst-rates";
+import { _clearAllCachesForTest } from "../cache/ttl-cache";
+import { _setSleepForTest } from "./helius-limiter";
+import { _resetUsageForTest, usageSnapshot } from "../usage";
+
+jest.mock("./helius-rpc", () => ({
+  ...jest.requireActual("./helius-rpc"),
+  getEpochInfo: jest.fn(async () => ({ epoch: 1011 })),
+}));
 
 const SPL_STAKE_POOL_PROGRAM = "SPoo1Ku8WFXoNDMHPsrGSTSG1Y47rzgn41SLUNakuHy";
 const SANCTUM_S_CONTROLLER = "5ocnV1qiCgaQR8Jb8xWnVbApfaygJ8tNoZfgPwsgx9kx";
@@ -142,5 +151,56 @@ describe("parseMarinadePriceSol (mSOL)", () => {
     for (const bad of ["", "abc", "-1.2", "0.5", "9.9", "<html>"]) {
       expect(parseMarinadePriceSol(bad)).toBeNull();
     }
+  });
+});
+
+describe("fetchLstSolValues — B2: limiter 経由 + 共有 cache", () => {
+  const savedKey = process.env.HELIUS_API_KEY;
+  beforeEach(() => {
+    process.env.HELIUS_API_KEY = "test-key";
+    _clearAllCachesForTest();
+    _resetUsageForTest();
+    _setSleepForTest(async () => undefined);
+  });
+  afterEach(() => {
+    jest.restoreAllMocks();
+    _setSleepForTest(null);
+    if (savedKey === undefined) delete process.env.HELIUS_API_KEY;
+    else process.env.HELIUS_API_KEY = savedKey;
+  });
+
+  function upstream(opts: { supply429Once?: boolean } = {}) {
+    const methods: string[] = [];
+    let supply429 = opts.supply429Once ?? false;
+    const spy = jest.spyOn(global, "fetch").mockImplementation(async (url, init) => {
+      if (String(url).includes("marinade")) return new Response("1.3977423886", { status: 200 });
+      const method = JSON.parse(String((init as RequestInit).body)).method as string;
+      methods.push(method);
+      if (method === "getTokenSupply" && supply429) {
+        supply429 = false;
+        return new Response("Too Many Requests", { status: 429 });
+      }
+      const result = method === "getMultipleAccounts" ? { value: [null, null] } : { value: { amount: "0" } };
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: "x", result }), { status: 200 });
+    });
+    return { spy, methods };
+  }
+
+  it("同時の呼び手は 1 回の取得に合流し、Helius 呼び出しは usage に数えられる", async () => {
+    const { spy, methods } = upstream();
+    const [a, b] = await Promise.all([fetchLstSolValues(), fetchLstSolValues()]);
+    expect(a).toBe(b);
+    expect(a.get("mSOL")).toBe(1_397_742_388n);
+    expect(methods.sort()).toEqual(["getMultipleAccounts", "getTokenSupply"]);
+    expect(spy).toHaveBeenCalledTimes(3); // RPC 2 + Marinade 1
+    await fetchLstSolValues();
+    expect(spy).toHaveBeenCalledTimes(3); // 60 秒 cache
+    expect(usageSnapshot().byMethod).toMatchObject({ "rpc:getMultipleAccounts": 1, "rpc:getTokenSupply": 1 });
+  });
+
+  it("Helius の 429 は backoff 再試行する (冪等な読み取り)", async () => {
+    const { methods } = upstream({ supply429Once: true });
+    await fetchLstSolValues();
+    expect(methods.filter((m) => m === "getTokenSupply")).toHaveLength(2);
   });
 });

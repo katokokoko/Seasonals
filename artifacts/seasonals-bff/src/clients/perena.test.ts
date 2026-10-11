@@ -10,6 +10,7 @@ import type { RawAccount } from "./helius-rpc";
 jest.mock("./helius-rpc", () => ({ getMultipleAccountsBase64: jest.fn() }));
 import { getMultipleAccountsBase64 } from "./helius-rpc";
 import { decodeVaultAmount, fetchPerenaTriStableTvlUsd } from "./perena";
+import { _clearAllCachesForTest } from "../cache/ttl-cache";
 
 const fx = JSON.parse(readFileSync(join(__dirname, "../__fixtures__/perena/tri-stable-vaults.json"), "utf8")) as {
   accounts: Array<{ address: string; owner: string; data: string }>;
@@ -17,6 +18,7 @@ const fx = JSON.parse(readFileSync(join(__dirname, "../__fixtures__/perena/tri-s
 const accounts: RawAccount[] = fx.accounts.map((a) => ({ owner: a.owner, data: Buffer.from(a.data, "base64") }));
 const mocked = getMultipleAccountsBase64 as jest.MockedFunction<typeof getMultipleAccountsBase64>;
 
+beforeEach(() => _clearAllCachesForTest());
 afterEach(() => mocked.mockReset());
 
 test("3 vault (USDC / USDT / PYUSD、PYUSD は Token-2022) を decode して残高を返す", () => {
@@ -44,4 +46,14 @@ test("mint / owner / program が違う account は数えずに throw する", ()
 test("vault が欠けていたら throw (fixture 値のまま表示させる)", async () => {
   mocked.mockResolvedValue([accounts[0]!, null, accounts[2]!]);
   await expect(fetchPerenaTriStableTvlUsd()).rejects.toThrow(/not found/);
+});
+
+test("B2: TVL は 300 秒共有 cache、同時の呼び手は 1 回の読みに合流、失敗は cache しない", async () => {
+  mocked.mockResolvedValueOnce([accounts[0]!, null, accounts[2]!]);
+  await expect(fetchPerenaTriStableTvlUsd()).rejects.toThrow(/not found/);
+  mocked.mockResolvedValue(accounts);
+  const [a, b] = await Promise.all([fetchPerenaTriStableTvlUsd(), fetchPerenaTriStableTvlUsd()]);
+  expect(a).toBe(b);
+  await fetchPerenaTriStableTvlUsd();
+  expect(mocked).toHaveBeenCalledTimes(2); // 失敗 1 + 成功 1 (以降は cache)
 });

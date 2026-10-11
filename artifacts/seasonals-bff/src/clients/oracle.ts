@@ -38,7 +38,8 @@ import {
   REDSTONE_PUSH_MAX_AGE_S,
   type OracleFeedConfig,
 } from "@workspace/lib/config/oracle-feeds";
-import { getMultipleAccountsBase64 } from "./helius-rpc";
+import { TtlCache } from "../cache/ttl-cache";
+import { getMultipleAccountsBase64, type RawAccount } from "./helius-rpc";
 import {
   decodePythPriceUpdate,
   decodeRedstonePriceData,
@@ -103,35 +104,75 @@ function lastGoodStatus(account: string, maxAgeS: number): OracleSourceStatus {
 }
 
 /**
+ * B2: 複数 mint の push account を 1 回の getMultipleAccounts で読んだ結果。
+ * `ok: false` は RPC 自体の失敗 (→ source ごとに last-good)、`ok: true` で key が無い / null は
+ * account 不在 (→ decode 失敗で unavailable、last-good は使わない)。fetchSources 単体呼び出しと同じ意味
+ */
+export type PrefetchedAccounts = { ok: true; accounts: Map<string, RawAccount | null> } | { ok: false };
+
+/** Helius の getMultipleAccounts は 1 request 100 key まで */
+const GMA_MAX_KEYS = 100;
+
+/** config が読む push account (Pyth / RedStone push) */
+function pushAccountsOf(config: OracleFeedConfig): { pythAcct: string | null; rsAcct: string | null } {
+  return {
+    pythAcct: config.pythFeedId ? pythPushAccount(config.pythFeedId) : null,
+    rsAcct: config.redstoneFeedId ? redstonePriceAccount(config.redstoneFeedId) : null,
+  };
+}
+
+function pushKeysOf(config: OracleFeedConfig): string[] {
+  const { pythAcct, rsAcct } = pushAccountsOf(config);
+  return [pythAcct, rsAcct].filter((k): k is string => k !== null);
+}
+
+/** push account をまとめて読む (重複 key は 1 回、100 key ごとに分割)。どれか 1 chunk でも失敗したら全体を `ok: false` */
+async function readPushAccounts(keys: string[]): Promise<PrefetchedAccounts> {
+  const unique = [...new Set(keys)];
+  if (unique.length === 0) return { ok: true, accounts: new Map() };
+  try {
+    const chunks: string[][] = [];
+    for (let i = 0; i < unique.length; i += GMA_MAX_KEYS) chunks.push(unique.slice(i, i + GMA_MAX_KEYS));
+    const results = await Promise.all(chunks.map((c) => getMultipleAccountsBase64(c)));
+    const accounts = new Map<string, RawAccount | null>();
+    chunks.forEach((c, ci) => c.forEach((k, ki) => accounts.set(k, results[ci]![ki] ?? null)));
+    return { ok: true, accounts };
+  } catch {
+    return { ok: false };
+  }
+}
+
+/**
  * asset の source を読む。Pyth / RedStone push は 1 回の getMultipleAccounts、tier B の gateway は並列で取得。
+ * `prefetched` を渡すと push account は読まずにそれを使う (getOracleResults の batch 用)。
  * RPC / gateway 自体の失敗は source ごとに last-good (閾値以内) → 無ければ unavailable。
  * データはあるが検証を通らない (owner / feed id 不一致、未検証、価格 0、signer quorum 不足) は unavailable
  * (last-good も使わない)
  */
 export async function fetchSources(
-  config: OracleFeedConfig
+  config: OracleFeedConfig,
+  prefetched?: PrefetchedAccounts
 ): Promise<{ pyth: OracleSourceStatus; secondary: OracleSecondaryStatus }> {
-  const pythAcct = config.pythFeedId ? pythPushAccount(config.pythFeedId) : null;
-  const rsAcct = config.redstoneFeedId ? redstonePriceAccount(config.redstoneFeedId) : null;
-  const keys = [pythAcct, rsAcct].filter((k): k is string => k !== null);
+  const { pythAcct, rsAcct } = pushAccountsOf(config);
+  const keys = pushKeysOf(config);
   const pythMaxAge = config.pythMaxAgeS ?? MAX_AGE_S.pyth;
 
-  const [raw, gateway] = await Promise.all([
-    keys.length > 0 ? getMultipleAccountsBase64(keys).catch(() => null) : Promise.resolve(null),
+  const [pushed, gateway] = await Promise.all([
+    prefetched ?? readPushAccounts(keys),
     config.redstoneGatewayFeedId ? readGateway(config.redstoneGatewayFeedId) : Promise.resolve(null),
   ]);
-  const at = (k: string | null) => (k && raw ? (raw[keys.indexOf(k)] ?? null) : null);
+  const at = (k: string): RawAccount | null => (pushed.ok ? (pushed.accounts.get(k) ?? null) : null);
 
   const pyth: OracleSourceStatus = !pythAcct
     ? UNAVAILABLE
-    : raw
+    : pushed.ok
       ? toStatus(decodePythPriceUpdate(at(pythAcct), config.pythFeedId!), pythAcct)
       : lastGoodStatus(pythAcct, pythMaxAge);
   let secondary: OracleSecondaryStatus = NO_SECONDARY;
   if (rsAcct) {
     secondary = {
       source: "redstone",
-      ...(raw
+      ...(pushed.ok
         ? toStatus(decodeRedstonePriceData(at(rsAcct), config.redstoneFeedId!), rsAcct)
         : lastGoodStatus(rsAcct, MAX_AGE_S.redstone)),
     };
@@ -236,52 +277,109 @@ export function evaluateOracle(input: {
   };
 }
 
-interface CacheEntry {
-  data: OracleResult;
-  ts: number;
-}
-const cache = new Map<string, CacheEntry>();
+/**
+ * B2: 判定結果の cache。TTL は従来どおり ok/warning 12 秒 / blocked 3 秒、**SWR 無し**
+ * (期限切れの判定は返さない = fail-closed)。getOrLoad で同じ mint の同時 cold request は 1 回の読みに合流する。
+ * `now` は呼び出し時に Date.now を引く (test の fake timer を効かせる)
+ */
+const resultCache = new TtlCache<OracleResult>({
+  name: "oracle.results",
+  ttlMs: CACHE_TTL_OK_MS,
+  maxEntries: 500,
+  staleWhileRevalidateMs: 0,
+  now: () => Date.now(),
+});
+const ttlFor = (r: OracleResult): number => (r.status === "blocked" ? CACHE_TTL_BLOCKED_MS : CACHE_TTL_OK_MS);
 
 export function _clearOracleCacheForTest(): void {
-  cache.clear();
+  resultCache.clear();
+  resultCache.resetStats();
   // 8.78: last-good もテスト間で持ち越さない
   lastGood.clear();
   _clearGatewayCacheForTest();
 }
 
+function notConfigured(config: OracleFeedConfig | undefined): OracleResult {
+  return {
+    asset_symbol: config?.symbol ?? "UNKNOWN",
+    status: "ok",
+    primary: null,
+    price_usd: null,
+    pyth: UNAVAILABLE,
+    secondary: NO_SECONDARY,
+    tier: "D",
+    divergence_pct: null,
+    warnings: [],
+    block_reason: null,
+    not_configured: true,
+    reason: config?.reason ?? "Not in the oracle registry.",
+  };
+}
+
+async function evaluateMint(config: OracleFeedConfig, prefetched?: PrefetchedAccounts): Promise<OracleResult> {
+  const { pyth, secondary } = await fetchSources(config, prefetched);
+  return evaluateOracle({ symbol: config.symbol, tier: config.tier, pyth, secondary, pythMaxAgeS: config.pythMaxAgeS });
+}
+
+/**
+ * 複数の underlying mint の oracle 判定をまとめて返す (B2)。
+ * - tier D / registry 外は RPC 無しで not_configured (理由付き)
+ * - fresh な cache はそのまま、同じ mint の読みが進行中ならそれに合流
+ * - 残りの mint の Pyth + RedStone push account は **1 回の getMultipleAccounts** でまとめて読み、
+ *   mint ごとに decode・評価・cache する (1 account が decode 不能でもその mint の source だけが unavailable)
+ * - tier B の gateway snapshot は oracle-redstone-gateway.ts 側で共有 (10 秒 cache + in-flight dedupe)
+ * 判定 (fail-closed の決定表 / TTL / last-good) は getOracleResult 単体と同じ。
+ * 1 mint の評価が throw した場合はその mint の promise だけが reject し、本関数は reject する
+ * (従来の getOracleResult と同じく呼び手が catch する)
+ */
+export async function getOracleResults(mints: string[]): Promise<Map<string, OracleResult>> {
+  const unique = [...new Set(mints)];
+  const pending = new Map<string, Promise<OracleResult>>();
+  const batchMints: Array<[string, OracleFeedConfig]> = [];
+  let batch: Promise<PrefetchedAccounts> | null = null;
+  // 全 mint の loader 登録が済んでから 1 回だけ読む (getOrLoad は miss 時に loader を同期で呼ぶ)
+  const readBatch = (): Promise<PrefetchedAccounts> =>
+    (batch ??= Promise.resolve().then(() =>
+      readPushAccounts(
+        batchMints.flatMap(([, c]) => pushKeysOf(c))
+      )
+    ));
+
+  for (const mint of unique) {
+    const config = ORACLE_FEEDS[mint];
+    if (!config || config.tier === "D") {
+      pending.set(mint, Promise.resolve(notConfigured(config)));
+      continue;
+    }
+    pending.set(
+      mint,
+      resultCache.getOrLoad(
+        mint,
+        () => {
+          batchMints.push([mint, config]);
+          return readBatch().then((pre) =>
+            // 保険: batch 開始後に登録された mint (現実装では起きない) は自前で読む
+            pre.ok && !pushKeysOf(config).every((k) => pre.accounts.has(k)) ? evaluateMint(config) : evaluateMint(config, pre)
+          );
+        },
+        { ttlMs: ttlFor }
+      )
+    );
+  }
+
+  const out = new Map<string, OracleResult>();
+  const settled = await Promise.all([...pending].map(async ([mint, p]) => [mint, await p] as const));
+  for (const [mint, r] of settled) out.set(mint, r);
+  return out;
+}
+
 /**
  * underlying mint の oracle 判定を返す。tier D / registry 外の asset は not_configured で通す
- * (oracle gate 対象外、理由付き)。tier A / C は on-chain の source を読んで評価する。
+ * (oracle gate 対象外、理由付き)。tier A / B / C は on-chain の source を読んで評価する。
+ * = getOracleResults([mint]).get(mint)
  */
 export async function getOracleResult(mint: string): Promise<OracleResult> {
-  const config = ORACLE_FEEDS[mint];
-
-  if (!config || config.tier === "D") {
-    return {
-      asset_symbol: config?.symbol ?? "UNKNOWN",
-      status: "ok",
-      primary: null,
-      price_usd: null,
-      pyth: UNAVAILABLE,
-      secondary: NO_SECONDARY,
-      tier: "D",
-      divergence_pct: null,
-      warnings: [],
-      block_reason: null,
-      not_configured: true,
-      reason: config?.reason ?? "Not in the oracle registry.",
-    };
-  }
-
-  // 8.78: blocked は短い TTL で早く再判定に行く (瞬断を増幅しない)
-  const cached = cache.get(mint);
-  if (cached) {
-    const ttl = cached.data.status === "blocked" ? CACHE_TTL_BLOCKED_MS : CACHE_TTL_OK_MS;
-    if (Date.now() - cached.ts < ttl) return cached.data;
-  }
-
-  const { pyth, secondary } = await fetchSources(config);
-  const result = evaluateOracle({ symbol: config.symbol, tier: config.tier, pyth, secondary, pythMaxAgeS: config.pythMaxAgeS });
-  cache.set(mint, { data: result, ts: Date.now() });
-  return result;
+  const r = (await getOracleResults([mint])).get(mint);
+  if (!r) throw new Error("oracle: result missing");
+  return r;
 }

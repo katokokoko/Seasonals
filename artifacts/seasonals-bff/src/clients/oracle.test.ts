@@ -8,7 +8,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { OracleSecondaryStatus, OracleSourceStatus } from "@workspace/lib/types";
 import { ORACLE_FEEDS, PYTH_PUSH_MAX_AGE_S, REDSTONE_GATEWAY_MAX_AGE_S, REDSTONE_PUSH_MAX_AGE_S } from "@workspace/lib/config/oracle-feeds";
-import { _clearOracleCacheForTest, evaluateOracle, getOracleResult } from "./oracle";
+import { _clearOracleCacheForTest, evaluateOracle, getOracleResult, getOracleResults } from "./oracle";
 import { decodePythPriceUpdate, decodeRedstonePriceData, pythPushAccount, redstonePriceAccount, toUsd8 } from "./oracle-onchain";
 import { _setSleepForTest, type RawAccount } from "./helius-rpc";
 
@@ -272,6 +272,154 @@ describe("getOracleResult", () => {
   it("registry 外の mint も not_configured (理由付き)", async () => {
     const r = await getOracleResult("Unknown11111111111111111111111111111111111");
     expect(r).toMatchObject({ tier: "D", not_configured: true, reason: "Not in the oracle registry." });
+  });
+});
+
+// ── B2: getOracleResults (複数 mint を 1 回の getMultipleAccounts で) + in-flight dedupe ──
+
+describe("getOracleResults — batch + dedupe (B2)", () => {
+  const USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+  const JUPUSD_MINT = "JuprjznTrTSp2UFa3ZBUFgwdAmtZCq4MQCwysN55USD";
+  const savedKey = process.env.HELIUS_API_KEY;
+  let gmaBodies: string[][] = [];
+  let gatewayCalls = 0;
+
+  /** address → account の表で答える RPC mock (表に無い address は null)。gateway は fixture を返す */
+  function rpcByAddress(table: Record<string, RawAccount | null>) {
+    return jest.spyOn(global, "fetch").mockImplementation(async (url, init) => {
+      if (String(url).includes("redstone.finance")) {
+        gatewayCalls++;
+        const gwFx = JSON.parse(readFileSync(join(__dirname, "../__fixtures__/oracle/redstone-gateway.json"), "utf8"));
+        return new Response(JSON.stringify({ USDT: gwFx.USDT }), { status: 200 });
+      }
+      const body = JSON.parse(String((init as RequestInit).body));
+      const keys = body.params[0] as string[];
+      gmaBodies.push(keys);
+      const value = keys.map((k) => {
+        const a = table[k] ?? null;
+        return a ? { owner: a.owner, data: [a.data.toString("base64"), "base64"] } : null;
+      });
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: "x", result: { value } }), { status: 200 });
+    });
+  }
+  const validTable = (): Record<string, RawAccount | null> => {
+    const t: Record<string, RawAccount | null> = {};
+    for (const n of ["pyth-sol", "redstone-sol", "pyth-usdc", "redstone-usdc"]) {
+      const f = fixture(n);
+      t[f.address] = f;
+    }
+    return t;
+  };
+
+  beforeEach(() => {
+    process.env.HELIUS_API_KEY = "test-key";
+    _clearOracleCacheForTest();
+    _setSleepForTest(async () => undefined);
+    jest.useFakeTimers({ now: 1791209482 * 1000, doNotFake: ["nextTick", "setImmediate"] });
+    gmaBodies = [];
+    gatewayCalls = 0;
+  });
+  afterEach(() => {
+    jest.useRealTimers();
+    jest.restoreAllMocks();
+    _setSleepForTest(null);
+    if (savedKey === undefined) delete process.env.HELIUS_API_KEY;
+    else process.env.HELIUS_API_KEY = savedKey;
+  });
+
+  it("tier A の 3 mint → getMultipleAccounts は 1 回 (6 account)、mint ごとに判定", async () => {
+    const spy = rpcByAddress(validTable()); // JupUSD の account は無い (null)
+    const res = await getOracleResults([SOL_MINT, USDC_MINT, JUPUSD_MINT]);
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(gmaBodies[0]).toHaveLength(6);
+    expect(new Set(gmaBodies[0])).toEqual(
+      new Set([
+        fixture("pyth-sol").address,
+        fixture("redstone-sol").address,
+        fixture("pyth-usdc").address,
+        fixture("redstone-usdc").address,
+        pythPushAccount(ORACLE_FEEDS[JUPUSD_MINT]!.pythFeedId!),
+        redstonePriceAccount("JupUSD"),
+      ])
+    );
+    expect(res.get(SOL_MINT)).toMatchObject({ status: "ok", primary: "pyth", price_usd: "120.98446203" });
+    expect(res.get(USDC_MINT)).toMatchObject({ status: "ok", primary: "pyth", price_usd: "0.99993292" });
+    // account が無い mint だけ fail-closed、他の mint は巻き込まない
+    expect(res.get(JUPUSD_MINT)).toMatchObject({ status: "blocked", block_reason: "oracle_unavailable" });
+  });
+
+  it("decode できない account はその mint だけを block する", async () => {
+    const t = validTable();
+    const garbage = (a: RawAccount): RawAccount => ({ owner: a.owner, data: Buffer.alloc(a.data.length, 7) });
+    t[fixture("pyth-sol").address] = garbage(fixture("pyth-sol"));
+    t[fixture("redstone-sol").address] = garbage(fixture("redstone-sol"));
+    rpcByAddress(t);
+    const res = await getOracleResults([SOL_MINT, USDC_MINT]);
+    expect(gmaBodies).toHaveLength(1);
+    expect(res.get(SOL_MINT)).toMatchObject({ status: "blocked", block_reason: "oracle_unavailable" });
+    expect(res.get(USDC_MINT)).toMatchObject({ status: "ok", primary: "pyth" });
+  });
+
+  it("tier A + tier B: push account は 1 回の getMultipleAccounts、gateway snapshot も 1 回", async () => {
+    const gwFx = JSON.parse(readFileSync(join(__dirname, "../__fixtures__/oracle/redstone-gateway.json"), "utf8"));
+    jest.setSystemTime(gwFx.USDT[0].timestampMilliseconds + 20_000);
+    rpcByAddress(validTable());
+    const res = await getOracleResults([SOL_MINT, USDT_MINT, USDC_MINT]);
+    expect(gmaBodies).toHaveLength(1);
+    expect(gmaBodies[0]).toHaveLength(5); // SOL 2 + USDC 2 + USDT (Pyth のみ) 1
+    expect(gatewayCalls).toBe(1);
+    expect(res.get(USDT_MINT)!.secondary).toEqual({ source: "redstone_gateway", available: true, price_usd: "0.99965000", age_seconds: 20 });
+  });
+
+  it("blocked の TTL は 3 秒のまま (2.9 秒は cache、3 秒で再判定)", async () => {
+    rpcByAddress({}); // 全 account 不在 → blocked
+    expect(await getOracleResult(SOL_MINT)).toMatchObject({ status: "blocked" });
+    jest.advanceTimersByTime(2_900);
+    expect(await getOracleResult(SOL_MINT)).toMatchObject({ status: "blocked" });
+    expect(gmaBodies).toHaveLength(1);
+    jest.advanceTimersByTime(100);
+    await getOracleResult(SOL_MINT);
+    expect(gmaBodies).toHaveLength(2);
+  });
+
+  it("ok の TTL は 12 秒のまま、期限切れの ok は返さない。cache 済みの mint は batch から外れる", async () => {
+    rpcByAddress(validTable());
+    await getOracleResult(SOL_MINT);
+    jest.advanceTimersByTime(11_900);
+    await getOracleResults([SOL_MINT, USDC_MINT]);
+    expect(gmaBodies).toHaveLength(2);
+    expect(gmaBodies[1]).toEqual([fixture("pyth-usdc").address, fixture("redstone-usdc").address]);
+    jest.advanceTimersByTime(100); // SOL は 12 秒経過 → 再取得
+    await getOracleResult(SOL_MINT);
+    expect(gmaBodies).toHaveLength(3);
+    expect(gmaBodies[2]).toEqual([fixture("pyth-sol").address, fixture("redstone-sol").address]);
+  });
+
+  it("同じ mint への同時 cold request は 1 回の読みに合流する", async () => {
+    const spy = rpcByAddress(validTable());
+    const [a, b, many] = await Promise.all([
+      getOracleResult(SOL_MINT),
+      getOracleResult(SOL_MINT),
+      getOracleResults([SOL_MINT, SOL_MINT]),
+    ]);
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(a).toBe(b);
+    expect(many.get(SOL_MINT)).toBe(a);
+    expect(a).toMatchObject({ status: "ok", primary: "pyth" });
+  });
+
+  it("tier D / registry 外は RPC 無しで not_configured (混在しても batch に入れない)", async () => {
+    rpcByAddress(validTable());
+    const res = await getOracleResults([USDS_MINT, SOL_MINT, "Unknown11111111111111111111111111111111111"]);
+    expect(gmaBodies).toEqual([[fixture("pyth-sol").address, fixture("redstone-sol").address]]);
+    expect(res.get(USDS_MINT)).toMatchObject({ tier: "D", not_configured: true });
+    expect(res.get("Unknown11111111111111111111111111111111111")).toMatchObject({ tier: "D", reason: "Not in the oracle registry." });
+  });
+
+  it("空配列は何も読まない", async () => {
+    const spy = jest.spyOn(global, "fetch");
+    expect((await getOracleResults([])).size).toBe(0);
+    expect(spy).not.toHaveBeenCalled();
   });
 });
 
