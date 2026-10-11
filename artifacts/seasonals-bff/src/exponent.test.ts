@@ -24,7 +24,7 @@ import {
 } from "./server";
 import type { HeliusAsset } from "./clients/helius";
 import { buildExponentRedeemTx } from "./clients/exponent-tx";
-import { getOracleResult } from "./clients/oracle";
+import { getOracleResult, getOracleResults } from "./clients/oracle";
 
 // Phase 8.34: /protocols/exponent/redeem-tx 用 mock (pure function テストには影響なし)
 jest.mock("./clients/rates");
@@ -295,6 +295,10 @@ describe("POST /protocols/exponent/redeem-tx", () => {
   let app: FastifyInstance;
   beforeEach(async () => {
     jest.clearAllMocks();
+    // B3: routes は getOracleResults (batch) を使う — 既存の getOracleResult stub から組み立てる
+    (getOracleResults as jest.Mock).mockImplementation(async (mints: string[]) =>
+      new Map(await Promise.all(mints.map(async (m) => [m, await getOracleResult(m)] as const)))
+    );
     mockMarkets.mockResolvedValue([MATURED, NOT_MATURED]);
     mockOracle.mockResolvedValue({ status: "ok" } as Awaited<
       ReturnType<typeof getOracleResult>

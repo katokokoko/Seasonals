@@ -25,6 +25,15 @@ import rateLimit from "@fastify/rate-limit";
 import { registerEthRoutes } from "./routes/eth";
 import { registerSkrStakingRoutes } from "./routes/skr-staking";
 import { registerAdminRoutes } from "./routes/admin";
+import { VersionedTransaction } from "@solana/web3.js";
+import { TtlCache } from "./cache/ttl-cache";
+import {
+  invalidateWalletSnapshot,
+  loadWalletSnapshot,
+  snapshotAgeMs,
+  type Settled,
+  type WalletSnapshot,
+} from "./wallet-snapshot";
 
 import {
   fixtureUnifiedTimeEvents,
@@ -64,14 +73,13 @@ import {
 import { toDTO as timeEventToDTO } from "@workspace/lib/types";
 import { getRegistry } from "@workspace/lib/adapters";
 
-import { fetchAssetsByOwner, type HeliusAsset } from "./clients/helius";
+import { type HeliusAsset } from "./clients/helius";
 import {
   fetchEarnMarkets,
   fetchEarnPositions,
   type JupiterLendMarket,
 } from "./clients/jupiter-lend";
 import {
-  fetchEnhancedTransactions,
   fetchEnhancedTransactionsPage,
   type HeliusEnhancedTx,
   type HeliusTokenBalanceChange,
@@ -81,7 +89,6 @@ import {
   fetchSwapTransaction,
 } from "./clients/jupiter-swap";
 import {
-  fetchStakeAccounts,
   getEpochInfo,
   getTokenSupplyUi,
   getWalletBalanceSmallest,
@@ -91,6 +98,7 @@ import {
 } from "./clients/helius-rpc";
 import {
   getOracleResult,
+  getOracleResults,
   oracleMintForSymbol,
   pythFeedIdForSymbol,
 } from "./clients/oracle";
@@ -139,12 +147,10 @@ import {
   fetchKaminoDepositCaps,
   fetchKaminoDepositTx,
   fetchKaminoObligationPnl,
-  fetchKaminoObligations,
   fetchKaminoReserveMetrics,
   fetchKaminoVaultDepositTx,
   fetchKaminoVaultMetrics,
   fetchKaminoVaultPnl,
-  fetchKaminoVaultUserPositions,
   fetchKaminoVaultWithdrawTx,
   fetchKaminoWithdrawTx,
   type KaminoObligationPnl,
@@ -394,6 +400,39 @@ const protocolCategoryById = new Map(
   fixtureProtocols.map((p) => [p.protocol_id, p.category] as const)
 );
 
+type OracleLookup = Awaited<ReturnType<typeof getOracleResult>>;
+
+/**
+ * B3: 複数 mint の oracle 判定を 1 回の getOracleResults (Pyth + RedStone を 1 回の
+ * getMultipleAccounts) で引く。batch が throw したら従来の per-mint 読み (失敗した mint は null)
+ * に戻す。判定 (fail-closed / TTL) は oracle.ts 側で不変 — ここは呼び方をまとめるだけ
+ */
+async function oracleResultsOrNull(
+  mints: string[]
+): Promise<Map<string, OracleLookup | null>> {
+  const unique = [...new Set(mints)];
+  try {
+    const batch = await getOracleResults(unique);
+    return new Map(unique.map((m) => [m, batch.get(m) ?? null] as const));
+  } catch {
+    const each = await Promise.all(
+      unique.map(async (m) => [m, await getOracleResult(m).catch(() => null)] as const)
+    );
+    return new Map(each);
+  }
+}
+
+/** B3: snapshot 由来 route の鮮度ヘッダー (ms) */
+function setDataAgeHeader(reply: FastifyReply, snap: WalletSnapshot): void {
+  reply.header("X-Seasonals-Data-Age-Ms", String(snapshotAgeMs(snap)));
+}
+
+/** B3: Settled / PromiseSettledResult の失敗理由を log 用 message に揃える */
+function settledReason(r: Settled<unknown> | PromiseSettledResult<unknown>): string | undefined {
+  if (r.status !== "rejected") return undefined;
+  return typeof r.reason === "string" ? r.reason : (r.reason as Error | undefined)?.message;
+}
+
 /**
  * 8.60: 「現在残高 + tx 差分」を取得する (cache は engine 側)。
  */
@@ -405,10 +444,13 @@ async function loadSolanaHistoryInputs(
   // 1. 現在残高 (DAS)。native SOL は WSOL mint の synthetic entry で入る。
   // 8.70: jlToken の単価は DAS ではなく protocol の交換レートを使う (取得失敗は
   // DAS に degrade)。ここを直さないと 8.64 のアンカーが誤差を系列全体に広げる
-  const [assets, jupiterMarketsForPrice] = await Promise.all([
-    fetchAssetsByOwner(wallet),
+  // B3: DAS は /positions 等と共有の wallet snapshot から (表示用途。失敗は従来どおり throw)
+  const [assetsR, jupiterMarketsForPrice] = await Promise.all([
+    loadWalletSnapshot(wallet).assets,
     fetchEarnMarkets().catch(() => [] as JupiterLendMarket[]),
   ]);
+  if (assetsR.status === "rejected") throw new Error(assetsR.reason);
+  const assets = assetsR.value;
   const priceOverrides = jlSharePriceOverrides(jupiterMarketsForPrice);
   const current = new Map<string, bigint>();
   const historyAssets: HistoryAsset[] = [];
@@ -451,18 +493,21 @@ async function loadSolanaHistoryInputs(
   // oracle の現在価格を currentUsd8 に入れておく (/prices と同じ出所)。
   // 8.83: pagination の入力には不要なので、tx 遡りと並走させる (直列だと
   // oracle round-trip の分だけ cold start が延びる)
-  const fillOraclePrices = Promise.all(
-    historyAssets
+  // B3: 必要な mint をまとめて 1 回の getOracleResults で読む (失敗した mint は null)
+  const fillOraclePrices = (async () => {
+    const targets = historyAssets
       .filter((a) => !a.currentUsd8 && a.feedId)
-      .map(async (a) => {
-        const mint = oracleMintForSymbol(a.symbol);
-        if (!mint) return;
-        const result = await getOracleResult(mint).catch(() => null);
-        if (result && result.status !== "blocked" && result.price_usd) {
-          a.currentUsd8 = result.price_usd;
-        }
-      })
-  );
+      .map((a) => [a, oracleMintForSymbol(a.symbol)] as const)
+      .filter((t): t is readonly [HistoryAsset, string] => Boolean(t[1]));
+    if (targets.length === 0) return;
+    const results = await oracleResultsOrNull(targets.map(([, mint]) => mint));
+    for (const [a, mint] of targets) {
+      const result = results.get(mint);
+      if (result && result.status !== "blocked" && result.price_usd) {
+        a.currentUsd8 = result.price_usd;
+      }
+    }
+  })();
 
   // 2. tx を cutoff まで遡って符号付き差分を集める (cursor 連鎖なので直列)
   const cutoff = nowSeconds - days * 86_400;
@@ -3248,15 +3293,20 @@ export async function buildServer(
       }
 
       try {
+        // B3: DAS は wallet snapshot (3 route 共有、60s + SWR 60s) から。assets だけ待つので
+        // Meteora / Orca 等の読みは同じ snapshot の中で続く。DAS 失敗は従来どおり 502
+        const snap = loadWalletSnapshot(wallet);
         // 8.70: jlToken は DAS 価格ではなく protocol 自身の交換レートで評価する。
         // markets は 30s cache 済で追加の上流コストはほぼ無い。取得に失敗しても
         // DAS 価格に degrade するだけ (positions 自体は返す)
-        const [assets, markets] = await Promise.all([
-          fetchAssetsByOwner(wallet),
+        const [assetsR, markets] = await Promise.all([
+          snap.assets,
           fetchEarnMarkets().catch(() => [] as JupiterLendMarket[]),
         ]);
+        if (assetsR.status === "rejected") throw new Error(assetsR.reason);
+        setDataAgeHeader(reply, snap);
         return mapAssetsToPositions(
-          assets,
+          assetsR.value,
           wallet,
           jlSharePriceOverrides(markets)
         );
@@ -3321,17 +3371,22 @@ export async function buildServer(
       // Phase 8.16: tx 履歴 (入出金イベント) + epoch (LST 保有時) + Kamino health を
       // 並列取得。source 単位で graceful degrade (全滅でも 200 + 部分結果)。
       // Phase 8.20: LP fee (claim) + native stake (lockup_end) を追加。
-      const [txsR, assetsR, epochR, obligR, orcaR, meteoraR, stakeR, expMktR] =
-        await Promise.allSettled([
-          fetchEnhancedTransactions(wallet),
-          fetchAssetsByOwner(wallet),
-          getEpochInfo(),
-          fetchKaminoObligations(KAMINO_MAIN_MARKET, wallet),
-          fetchOrcaPositions(wallet),
-          fetchMeteoraPositions(wallet),
-          fetchStakeAccounts(wallet),
-          // Phase 8.33: PT maturity 解決用 (失敗しても registry backstop がある)
-          fetchExponentFullMarkets(),
+      // B3: wallet 由来の 6 source は wallet snapshot (3 route 共有) から、wallet 非依存の
+      // epoch / Exponent markets はここで読む。source 単位の degrade は従来どおり
+      const snap = loadWalletSnapshot(wallet);
+      const [[epochR, expMktR], txsR, assetsR, obligR, orcaR, meteoraR, stakeR] =
+        await Promise.all([
+          Promise.allSettled([
+            getEpochInfo(),
+            // Phase 8.33: PT maturity 解決用 (失敗しても registry backstop がある)
+            fetchExponentFullMarkets(),
+          ]),
+          snap.txs,
+          snap.assets,
+          snap.kaminoObligations,
+          snap.orca,
+          snap.meteora,
+          snap.stake,
         ]);
       for (const [r, label] of [
         [txsR, "helius tx"],
@@ -3345,11 +3400,12 @@ export async function buildServer(
       ] as const) {
         if (r.status === "rejected") {
           req.log.warn(
-            { err: (r.reason as Error).message, wallet },
+            { err: settledReason(r), wallet },
             `${label} fetch failed (wallet events degrade)`
           );
         }
       }
+      setDataAgeHeader(reply, snap);
 
       const events: UnifiedTimeEventDTO[] =
         txsR.status === "fulfilled"
@@ -3430,13 +3486,16 @@ export async function buildServer(
    * mobile は getMenuListings → useMenuListings (staleTime 60s) で既に配線済み。
    * 全ソース allSettled — 失敗した protocol は fixture 値のまま 200 を返す。
    * 組み立て結果は 60s cache (buildServer instance 単位 — テスト間で漏れない)。
+   * B3: TtlCache 化 — 同時の cold request は 1 回の組み立てに合流し、期限後 60s は
+   * 旧値を返しつつ裏で 1 回だけ組み直す (SWR。表示専用で実行系は読まない)
    */
-  let menuCache: { at: number; data: ProtocolMenuEntry[] } | null = null;
-  const MENU_CACHE_TTL_MS = 60_000;
-  app.get("/menu-listings", async (req) => {
-    if (menuCache && Date.now() - menuCache.at < MENU_CACHE_TTL_MS) {
-      return menuCache.data;
-    }
+  const menuCache = new TtlCache<ProtocolMenuEntry[]>({
+    name: "menu.listings",
+    ttlMs: 60_000,
+    staleWhileRevalidateMs: 60_000,
+    maxEntries: 1,
+  });
+  const buildMenuListings = async (req: FastifyRequest): Promise<ProtocolMenuEntry[]> => {
     const [
       jupR,
       kaminoR,
@@ -3594,9 +3653,11 @@ export async function buildServer(
           ? Number(solPriceR.value.price_usd) // §3 display carve-out (menu TVL 換算のみ)
           : undefined,
     });
-    menuCache = { at: Date.now(), data };
     return data;
-  });
+  };
+  app.get("/menu-listings", async (req) =>
+    menuCache.getOrLoad("all", () => buildMenuListings(req))
+  );
 
   /**
    * Phase 8.2: 接続済 wallet の Jupiter Lend / Kamino earn positions を返す。
@@ -3623,12 +3684,13 @@ export async function buildServer(
       // 全 position が accrued_yield_sign:"unknown" に graceful degrade (フェイク 0 を出さない)。
       // Phase 8.15d: kVault 保有 + 登録 vault の metrics (main の allSettled と並走)。
       // 失敗は graceful degrade (positions → 空、metrics → shares のみ表示)。
+      // B3: wallet 由来の読み (DAS / tx 履歴 / Jupiter Lend / Kamino obligation / kVault /
+      // Meteora / Orca) は wallet snapshot (3 route 共有、60s + SWR 60s) から。degrade 規則は不変
+      const snap = loadWalletSnapshot(wallet);
       const kvaultPosPromise: Promise<KaminoVaultUserPosition[]> =
-        fetchKaminoVaultUserPositions(wallet).catch((err) => {
-          req.log.warn(
-            { err: (err as Error).message },
-            "kvault positions fetch failed"
-          );
+        snap.kvaultPositions.then((r) => {
+          if (r.status === "fulfilled") return r.value;
+          req.log.warn({ err: r.reason }, "kvault positions fetch failed");
           return [];
         });
       const kvaultMetricsPromise = Promise.allSettled(
@@ -3636,21 +3698,15 @@ export async function buildServer(
       );
 
       // Phase 8.17: Meteora DLMM positions (SDK read、失敗は空)
-      const meteoraPositionsPromise = fetchMeteoraPositions(wallet).catch(
-        (err) => {
-          req.log.warn(
-            { err: (err as Error).message },
-            "meteora positions fetch failed"
-          );
-          return [] as MeteoraRawPosition[];
-        }
-      );
+      const meteoraPositionsPromise = snap.meteora.then((r) => {
+        if (r.status === "fulfilled") return r.value;
+        req.log.warn({ err: r.reason }, "meteora positions fetch failed");
+        return [] as MeteoraRawPosition[];
+      });
       // Phase 8.18: Orca Whirlpool positions + pool stats (実 APY。失敗は空)
-      const orcaPositionsPromise = fetchOrcaPositions(wallet).catch((err) => {
-        req.log.warn(
-          { err: (err as Error).message },
-          "orca positions fetch failed"
-        );
+      const orcaPositionsPromise = snap.orca.then((r) => {
+        if (r.status === "fulfilled") return r.value;
+        req.log.warn({ err: r.reason }, "orca positions fetch failed");
         return [] as OrcaRawPosition[];
       });
       const orcaStatsPromise = fetchOrcaPoolStats().catch((err) => {
@@ -3719,22 +3775,24 @@ export async function buildServer(
       const saveRatesPromise = fetchSaveReserveRates(
         SAVE_MARKETS.map((m) => m.reserve)
       ).catch(() => [] as Awaited<ReturnType<typeof fetchSaveReserveRates>>);
-      const solPricePromise = getOracleResult(SOL_MINT).catch(() => null);
-      const usdcPricePromise = getOracleResult(USDC_MINT).catch(() => null);
+      // B3: SOL / USDC を 1 回の getOracleResults で (失敗は null = 従来どおり)
+      const earnOraclePromise = oracleResultsOrNull([SOL_MINT, USDC_MINT]);
+      const solPricePromise = earnOraclePromise.then((m) => m.get(SOL_MINT) ?? null);
+      const usdcPricePromise = earnOraclePromise.then((m) => m.get(USDC_MINT) ?? null);
       // Phase 8.33: Exponent PT markets (失敗は undefined → registry backstop)。
       // Promise.resolve 包みは test automock (非 Promise 戻り) への防御
       const exponentMarketsPromise = Promise.resolve()
         .then(() => fetchExponentFullMarkets())
         .catch(() => undefined);
 
-      const [jupRes, heliusRes, txRes, kaminoObRes, kaminoResRes] =
-        await Promise.allSettled([
-          fetchEarnPositions(wallet),
-          fetchAssetsByOwner(wallet),
-          fetchEnhancedTransactions(wallet),
+      const [jupRes, heliusRes, txRes, kaminoObRes, [kaminoResRes]] =
+        await Promise.all([
+          snap.jupiterLend,
+          snap.assets,
+          snap.txs,
           // Phase 8.15b: 実 Kamino obligation + reserve APY
-          fetchKaminoObligations(KAMINO_MAIN_MARKET, wallet),
-          fetchKaminoReserveMetrics(KAMINO_MAIN_MARKET),
+          snap.kaminoObligations,
+          Promise.allSettled([fetchKaminoReserveMetrics(KAMINO_MAIN_MARKET)]),
         ]);
 
       // 8.95: 主要 5 upstream が**全滅**なら 503 — 200 全空は「真に空の wallet」と
@@ -3744,9 +3802,7 @@ export async function buildServer(
       if (mainResults.every((r) => r.status === "rejected")) {
         req.log.warn(
           {
-            errors: mainResults.map((r) =>
-              r.status === "rejected" ? String(r.reason) : ""
-            ),
+            errors: mainResults.map((r) => settledReason(r) ?? ""),
             wallet,
           },
           "earn positions: all upstreams failed"
@@ -3906,25 +3962,25 @@ export async function buildServer(
 
       if (jupRes.status === "rejected") {
         req.log.warn(
-          { err: (jupRes.reason as Error).message },
+          { err: settledReason(jupRes) },
           "jupiter lend fetch failed"
         );
       }
       if (heliusRes.status === "rejected") {
         req.log.warn(
-          { err: (heliusRes.reason as Error).message },
+          { err: settledReason(heliusRes) },
           "helius fetch failed (kamino detection skipped)"
         );
       }
       if (kaminoObRes.status === "rejected") {
         req.log.warn(
-          { err: (kaminoObRes.reason as Error).message },
+          { err: settledReason(kaminoObRes) },
           "kamino obligations fetch failed (falling back to best-effort)"
         );
       }
       if (txRes.status === "rejected") {
         req.log.warn(
-          { err: (txRes.reason as Error).message },
+          { err: settledReason(txRes) },
           "helius tx fetch failed (cost-basis unknown, earnings fall back to estimate)"
         );
       }
@@ -3938,6 +3994,7 @@ export async function buildServer(
         meteora,
         orca,
       };
+      setDataAgeHeader(reply, snap);
       return response;
     }
   );
@@ -4387,6 +4444,11 @@ export async function buildServer(
       reply.code(409);
       return { error: "invalid_signature_format" };
     }
+    // B3: broadcast 済み → その wallet の表示 snapshot を bust (chain 反映後に読み直させる)
+    const planWallet = plan.selected_action?.wallet_id;
+    if (typeof planWallet === "string" && isWalletAddress(planWallet)) {
+      invalidateWalletSnapshot(planWallet);
+    }
     return updatePlan(planId, {
       status: AgentPlanStatus.Broadcasted,
       execution: {
@@ -4609,12 +4671,29 @@ export async function buildServer(
         .slice(0, 20); // 上限 (registry は 4 asset なので実質十分)
       const prices: Record<string, string> = {};
       let thrown = 0;
+      // B3: 全 symbol の mint を 1 回の getOracleResults で読む (Pyth + RedStone を 1 回の
+      // getMultipleAccounts)。batch が throw したら従来の per-symbol 読みに戻す (1 mint の失敗を
+      // 他 symbol に波及させず、thrown の数え方も従来どおり)。判定 (fail-closed / TTL) は不変
+      const mintBySymbol = new Map<string, string>();
+      for (const symbol of symbols) {
+        const mint = oracleMintForSymbol(symbol);
+        if (mint) mintBySymbol.set(symbol, mint);
+      }
+      let batch: Map<string, Awaited<ReturnType<typeof getOracleResult>>> | null = null;
+      if (mintBySymbol.size > 0) {
+        try {
+          const r = await getOracleResults([...new Set(mintBySymbol.values())]);
+          batch = r instanceof Map ? r : null;
+        } catch {
+          batch = null;
+        }
+      }
       await Promise.all(
         symbols.map(async (symbol) => {
-          const mint = oracleMintForSymbol(symbol);
+          const mint = mintBySymbol.get(symbol);
           if (!mint) return;
           try {
-            const result = await getOracleResult(mint);
+            const result = batch?.get(mint) ?? (await getOracleResult(mint));
             if (result.status !== "blocked" && result.price_usd) {
               prices[symbol] = result.price_usd;
             }
@@ -4658,6 +4737,16 @@ export async function buildServer(
         const signature = await sendTransactionViaHelius(signedTx, {
           skipPreflight: Boolean(skipPreflight),
         });
+        // B3: 送った wallet (fee payer = static account key 0、legacy / v0 共通) の表示 snapshot を
+        // bust する。best effort — 失敗しても route は成功を返す。tx 本体は log に出さない
+        try {
+          const feePayer = VersionedTransaction.deserialize(
+            Buffer.from(signedTx, "base64")
+          ).message.staticAccountKeys[0]?.toBase58();
+          if (feePayer) invalidateWalletSnapshot(feePayer);
+        } catch {
+          // deserialize 不能 (送信は成功済み) → snapshot は TTL で自然に更新される
+        }
         return { signature };
       } catch (err) {
         req.log.error(

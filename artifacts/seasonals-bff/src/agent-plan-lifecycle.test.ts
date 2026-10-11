@@ -27,7 +27,7 @@ import { _resetPolicyForTest } from "./policy-store";
 import { _resetAutonomousForTest, getDailyCount } from "./autonomous";
 import { txBuildRequestFor } from "./agent-plan-executor";
 import { fetchSwapQuote, fetchSwapTransaction } from "./clients/jupiter-swap";
-import { getOracleResult } from "./clients/oracle";
+import { getOracleResult, getOracleResults } from "./clients/oracle";
 import { fetchLstSolValues } from "./clients/lst-rates";
 import { getWalletBalanceSmallest } from "./clients/helius-rpc";
 import {
@@ -132,6 +132,10 @@ let app: FastifyInstance;
 
 beforeEach(async () => {
   jest.clearAllMocks();
+  // B3: routes は getOracleResults (batch) を使う — 既存の getOracleResult stub から組み立てる
+  (getOracleResults as jest.Mock).mockImplementation(async (mints: string[]) =>
+    new Map(await Promise.all(mints.map(async (m) => [m, await getOracleResult(m)] as const)))
+  );
   _clearPlanStoreForTest();
   _resetPolicyForTest();
   _resetAutonomousForTest();
