@@ -76,9 +76,16 @@ function evictOldest(m: Map<string, unknown>): void {
 }
 
 
+/**
+ * 進行中の読み (wallet ごとに 1 本)。同じ wallet の同時要求は 1 回の DAS 呼び出し (10 credit) に合流する。
+ * wallet snapshot の assets source と /portfolio/history が同時に cold で走る場面で効く
+ */
+const inflight = new Map<string, Promise<HeliusAsset[]>>();
+
 /** test 用 cache クリア (本番では使われない) */
 export function _clearHeliusCacheForTest(): void {
   cache.clear();
+  inflight.clear();
 }
 
 function buildUrl(): string {
@@ -103,6 +110,8 @@ function buildUrl(): string {
  */
 export function invalidateAssetsCacheForWallet(address: string): void {
   cache.delete(address);
+  // 進行中の読みは tx 前の保有を返しうるので、完了しても cache に書かせない (呼び手には返る)
+  inflight.delete(address);
 }
 
 export async function fetchAssetsByOwner(
@@ -114,6 +123,30 @@ export async function fetchAssetsByOwner(
     return cached.data;
   }
 
+  // ── in-flight dedupe ──
+  const pending = inflight.get(address);
+  if (pending) return pending;
+
+  const load = loadAssetsByOwner(address).then(
+    (items) => {
+      // invalidate で切り離された読み (inflight に別物が入っている / 無い) は cache に書かない
+      if (inflight.get(address) === load) {
+        cache.set(address, { data: items, ts: Date.now() });
+        evictOldest(cache);
+      }
+      return items;
+    }
+  );
+  inflight.set(address, load);
+  load.finally(() => {
+    if (inflight.get(address) === load) inflight.delete(address);
+  }).catch(() => {
+    /* 失敗は呼び手に伝わる。ここでは inflight の掃除だけ */
+  });
+  return load;
+}
+
+async function loadAssetsByOwner(address: string): Promise<HeliusAsset[]> {
   const url = buildUrl();
   // error message に URL (api-key) を出さない (HeliusRpcError)
   const json = await fetchJsonWithRetry<{
@@ -173,7 +206,5 @@ export async function fetchAssetsByOwner(
     }
   }
 
-  cache.set(address, { data: items, ts: Date.now() });
-  evictOldest(cache);
   return items;
 }

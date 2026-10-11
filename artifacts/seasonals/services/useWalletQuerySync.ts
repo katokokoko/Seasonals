@@ -20,7 +20,11 @@
 import { useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 
-import { useWalletStore } from "./walletStore";
+import {
+  isWalletStoreHydrated,
+  onWalletStoreHydrated,
+  useWalletStore,
+} from "./walletStore";
 import {
   evictedAddresses,
   isWalletKeyOf,
@@ -33,18 +37,17 @@ import { usePortfolioHistoryStore } from "../stores/portfolioHistory";
 
 export { WALLET_SCOPED_QUERY_KEYS, resyncTargets };
 
-/** walletStore の SecureStore 復元が終わったか (終わる前の状態は遷移の基準にしない) */
+/**
+ * walletStore の SecureStore 復元が終わったか (終わる前の状態は遷移の基準にしない)。
+ * 復元の失敗も「終わった」に数える — 数えないと以後の接続で一度も取り直さなくなる
+ */
 function useWalletStoreHydrated(): boolean {
-  const [hydrated, setHydrated] = useState(() =>
-    useWalletStore.persist.hasHydrated()
-  );
+  const [hydrated, setHydrated] = useState(() => isWalletStoreHydrated());
   useEffect(() => {
     if (hydrated) return;
-    const unsub = useWalletStore.persist.onFinishHydration(() =>
-      setHydrated(true)
-    );
+    const unsub = onWalletStoreHydrated(() => setHydrated(true));
     // subscribe 前に終わっていた場合
-    if (useWalletStore.persist.hasHydrated()) setHydrated(true);
+    if (isWalletStoreHydrated()) setHydrated(true);
     return unsub;
   }, [hydrated]);
   return hydrated;

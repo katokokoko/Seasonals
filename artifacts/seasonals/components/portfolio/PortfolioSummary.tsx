@@ -110,7 +110,10 @@ import {
 import { usePortfolioHistoryStore } from "../../stores/portfolioHistory";
 import { dayKeyToDate } from "./history";
 // §4.0: cache から先に出した値を「最新」に見せない鮮度ラベル (純関数)
-import { describeDataFreshness } from "@workspace/lib/derive/data-freshness";
+import {
+  describeDataFreshness,
+  type QueryFreshnessStatus,
+} from "@workspace/lib/derive/data-freshness";
 import { WALLET_QUERY_STALE_MS } from "../../services/queries";
 
 const RANGE_KEYS: RangeKey[] = ["1W", "1M", "3M", "1Y", "ALL"];
@@ -149,14 +152,8 @@ export interface PortfolioSummaryProps {
    * §4.0: wallet 系 query (positions / earn / wallet events) を合成した取得状態。
    * 鮮度ラベル ("Updated 14:21 · awaiting update") に使う。未接続は null (出さない)
    */
-  walletDataStatus?: WalletDataStatus | null;
+  walletDataStatus?: QueryFreshnessStatus | null;
   testID?: string;
-}
-
-export interface WalletDataStatus {
-  dataUpdatedAt: number;
-  isFetching: boolean;
-  isError: boolean;
 }
 
 /**
@@ -931,7 +928,7 @@ function WalletFreshnessLabel({
   status,
   testID,
 }: {
-  status: WalletDataStatus;
+  status: QueryFreshnessStatus;
   testID?: string;
 }) {
   const styles = useThemedStyles(makeStyles);

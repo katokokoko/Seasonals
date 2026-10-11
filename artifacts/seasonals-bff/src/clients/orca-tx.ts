@@ -112,9 +112,15 @@ function ctxAndClient(user: PublicKey) {
 }
 
 /**
- * B2: 読み取り専用 (positions) の context は module で 1 つ。wallet stub は default owner/funder の
- * 解決にしか使われず、positions の owner は getAllPositionAccountsByOwner に明示で渡すので user に依らない。
- * HELIUS_API_KEY が変わったら作り直す (test / key rotation)。deposit / withdraw は従来どおり user ごと
+ * B2: 共有 pool cache (下の readPoolCache) の miss を読む read-only context は module で 1 つ。
+ * wallet stub は default owner/funder の解決にしか使われないので user に依らない。
+ * HELIUS_API_KEY が変わったら作り直す (test / key rotation)。
+ *
+ * **positions の読みには使わない**: SDK の SimpleAccountFetcher (common-sdk 0.7) の cache は
+ * set のみで evict しない Map で、getAllPositionAccountsByOwner は IGNORE_CACHE でも候補 position
+ * PDA を全部書き込む。共有すると問い合わせた全 wallet の口座が process 寿命で溜まる (multi-user BFF)。
+ * pool の読みが書くのは ORCA_MARKETS の pool と付随口座だけなので有界。
+ * positions / deposit / withdraw は呼び出しごとの context (= 呼び出し後に GC される fetcher)
  */
 let readCtx: { apiKey: string; value: ReturnType<typeof ctxAndClient> } | null = null;
 function readOnlyCtxAndClient(): ReturnType<typeof ctxAndClient> {
@@ -247,7 +253,9 @@ export async function fetchOrcaPositions(
 ): Promise<OrcaRawPosition[]> {
   const orca = getOrca();
   const user = new PublicKey(wallet);
-  const { ctx } = readOnlyCtxAndClient();
+  // 呼び出しごとの context: fetcher cache に溜まる position 口座を呼び出しと一緒に捨てる
+  // (共有 context だと wallet ごとの口座が evict されず残る — readOnlyCtxAndClient の注記)
+  const { ctx } = ctxAndClient(user);
   const map = await orca.getAllPositionAccountsByOwner({
     ctx,
     owner: user,

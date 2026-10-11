@@ -1,5 +1,6 @@
 /**
- * orca-tx — B2: positions 用の read-only context (module で 1 つ) と pool の共有 cache (30 秒)。
+ * orca-tx — B2: pool の共有 cache (30 秒、miss は module で 1 つの read-only context で読む) と、
+ * positions の読みは呼び出しごとの context (SDK fetcher cache が evict しないため共有しない)。
  * SDK は mock。我々の miss では SDK 側 cache を使わない (IGNORE_CACHE)。
  */
 import { PublicKey } from "@solana/web3.js";
@@ -55,10 +56,22 @@ test("pool は wallet を跨いで 30 秒共有、miss は IGNORE_CACHE で読�
   expect(mockGetPool).toHaveBeenCalledWith(market.pool_address, IGNORE);
   // positions の読みは wallet ごと (owner 明示)
   expect(mockGetAll.mock.calls.map((c) => (c[0] as { owner: PublicKey }).owner.toBase58()).sort()).toEqual([WALLET_A, WALLET_B].sort());
-  // read-only context は 1 つ
-  expect(mockFrom).toHaveBeenCalledTimes(1);
+  // context: positions は wallet ごとに 1 つずつ + pool 用の共有 1 つ
+  expect(mockFrom).toHaveBeenCalledTimes(3);
   jest.advanceTimersByTime(30_000);
   await fetchOrcaPositions(WALLET_A);
   expect(mockGetPool).toHaveBeenCalledTimes(2);
-  expect(mockFrom).toHaveBeenCalledTimes(1);
+  // pool の読み直しは共有 context のまま (増えるのは positions 用の 1 つだけ)
+  expect(mockFrom).toHaveBeenCalledTimes(4);
+});
+
+test("positions の読みは wallet ごとに別 context — 前の wallet の口座を共有 fetcher に残さない", async () => {
+  await fetchOrcaPositions(WALLET_A);
+  await fetchOrcaPositions(WALLET_B);
+  const ctxOf = (i: number) => (mockGetAll.mock.calls[i]![0] as { ctx: unknown }).ctx;
+  expect(ctxOf(0)).not.toBe(ctxOf(1));
+  // どちらもこの呼び出しで新しく作られた context (module で共有している pool 用 context ではない)
+  const created = mockFrom.mock.results.map((r) => r.value as unknown);
+  expect(created).toContain(ctxOf(0));
+  expect(created).toContain(ctxOf(1));
 });

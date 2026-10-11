@@ -16,6 +16,7 @@ import {
   fetchKaminoWithdrawTx,
 } from "./kamino-tx";
 import { _clearAllCachesForTest } from "../cache/ttl-cache";
+import { _setSleepForTest } from "./helius-limiter";
 
 jest.mock("./http");
 jest.mock("./helius-rpc");
@@ -85,6 +86,29 @@ describe("fetchKaminoDepositCaps", () => {
     mockFetch.mockRejectedValue(new Error("network"));
     expect(await fetchKaminoDepositCaps([nextReserve()])).toEqual([]);
     expect(await fetchKaminoDepositCaps([])).toEqual([]); // 空入力で RPC を打たない
+  });
+
+  it("429 / 5xx は backoff を待たず 1 回で空配列 (menu 経路を待たせない)", async () => {
+    const sleeps: number[] = [];
+    _setSleepForTest(async (ms) => {
+      sleeps.push(ms);
+    });
+    try {
+      for (const status of [429, 503]) {
+        mockFetch.mockClear();
+        mockFetch.mockResolvedValue({
+          ok: false,
+          status,
+          headers: new Headers({ "retry-after": "5" }),
+          body: null,
+        } as unknown as Response);
+        expect(await fetchKaminoDepositCaps([nextReserve()])).toEqual([]);
+        expect(mockFetch).toHaveBeenCalledTimes(1);
+      }
+      expect(sleeps).toEqual([]);
+    } finally {
+      _setSleepForTest(null);
+    }
   });
 
   it("60s キャッシュ: 2 回目は RPC を打たない (menu と deposit 経路で共有)", async () => {

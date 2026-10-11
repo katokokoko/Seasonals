@@ -61,14 +61,20 @@ export function createThrottledFetch(opts: ThrottleOptions): ThrottledFetch {
   let timer: ReturnType<typeof setTimeout> | null = null;
 
   const pump = (): void => {
-    timer = null;
+    // gap 待ちの timer が残っている間は、その timer が pump する (enqueue / 完了からの呼び出しで
+    // timer を作り直すと、1 gap 内の到着数だけ timer が並ぶ)。timer が止まっている間は last が
+    // 動かないので、予約済みの発火時刻はそのまま正しい
+    if (timer !== null) return;
     while (inFlight < opts.maxInFlight && queue.length > 0) {
       const now = Date.now();
       // 時計が戻った (fake timer / NTP 補正) 時に gap が負の無限待ちにならないよう clamp
       if (last > now) last = now;
       const gap = minGapMs > 0 ? Math.max(0, last + minGapMs - now) : 0;
       if (gap > 0) {
-        timer ??= setTimeout(pump, gap);
+        timer = setTimeout(() => {
+          timer = null;
+          pump();
+        }, gap);
         return;
       }
       const next = queue.shift()!;
@@ -252,10 +258,11 @@ export async function fetchJsonWithRetry<T = unknown>(
       const retryable = res.status === 429 || res.status >= 500;
       const hint = res.status === 429 ? " (rate limited)" : "";
       lastErr = new HeliusRpcError(`Helius ${label} HTTP ${res.status}${hint}`, "http", res.status);
-      if (!retryable) throw lastErr;
       const waitFloorMs = parseRetryAfterMs(res);
-      // body は読まずに捨てる (接続を解放)
+      // body は読まずに捨てる (接続を解放)。再試行しない失敗でも捨てる — undici は未消費の body が
+      // GC されるまで socket を返さない
       await res.body?.cancel().catch(() => undefined);
+      if (!retryable) throw lastErr;
       if (attempt + 1 < maxAttempts) {
         await sleep(Math.max(backoff(attempt), waitFloorMs ?? 0));
       }

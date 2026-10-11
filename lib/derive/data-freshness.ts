@@ -21,12 +21,19 @@
 
 export type DataFreshnessKind = "fresh" | "refreshing" | "stale" | "failed";
 
-export interface DataFreshnessInput {
+/**
+ * query 1 本 (または combineQueryFreshness で合成した複数本) の取得状態。
+ * TanStack Query の同名 field をそのまま写す。Mobile の props 型もこれを使う (§1: ローカル定義しない)
+ */
+export interface QueryFreshnessStatus {
   /** 表示中の値を受け取った時刻 (ms)。0 以下 = まだ一度も取得していない */
   dataUpdatedAt: number;
   isFetching: boolean;
   /** 直近の取得が失敗した (TanStack は旧値を残したまま error にする) */
   isError: boolean;
+}
+
+export interface DataFreshnessInput extends QueryFreshnessStatus {
   /** app が foreground に戻った時刻 (ms)。無ければ null / undefined */
   resumedAt?: number | null;
   /** 判定時刻 (ms) */
@@ -87,8 +94,8 @@ export function describeDataFreshness(input: DataFreshnessInput): DataFreshness 
  * 最も古い dataUpdatedAt (未取得の query は除外)、どれか取得中、どれか失敗。
  */
 export function combineQueryFreshness(
-  queries: readonly { dataUpdatedAt: number; isFetching: boolean; isError: boolean }[]
-): { dataUpdatedAt: number; isFetching: boolean; isError: boolean } {
+  queries: readonly QueryFreshnessStatus[]
+): QueryFreshnessStatus {
   let oldest = 0;
   let isFetching = false;
   let isError = false;

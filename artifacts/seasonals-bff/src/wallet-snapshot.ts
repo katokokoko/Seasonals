@@ -12,7 +12,8 @@
  *   snapshot 自体は throw しない (route ごとの degrade 規則は呼び手がそのまま適用する)
  * - 未 settle の snapshot は pending Map で共有 (in-flight dedupe)。全 source が settle したら
  *   cache に入れる: 全成功 60s / 1 つでも rejected 5s (429 の瞬断で空データを 1 分固定しない)
- * - SWR 60s: 期限切れ後 60s 以内は旧 snapshot を返し、裏で 1 回だけ読み直す (settle 後に差し替え)
+ * - SWR 60s: 期限切れ後 60s 以内は旧 snapshot を返し、裏で 1 回だけ読み直す (settle 後に差し替え)。
+ *   短命 (5s) entry は SWR を使わず hard に期限切れにする (失敗を含む snapshot を延命しない)
  * - `invalidateWalletSnapshot` (tx 送信後): entry を消し、進行中の読みも切り離し、20 秒間は
  *   新 entry の TTL を 5s にし SWR も使わない (chain 反映が送信の 1-2 秒後のため)。timer は持たない
  * - **cache は権限ではない / 実行系は使わない**: tx builder (`/protocols/*-tx`、withdraw の
@@ -190,7 +191,10 @@ class WalletSnapshotCache extends TtlCache<WalletSnapshot> {
     if (!forceRefresh) {
       const held = this.peek(wallet);
       const ttl = held ? (this.ttlOf.get(held.value) ?? SNAPSHOT_TTL_MS) : 0;
-      if (held && held.ageMs < ttl + SNAPSHOT_SWR_MS && !this.inBustWindow(wallet)) {
+      // 短命 entry (source が rejected / bust window 中に作った) は SWR で延命しない — 5s で
+      // hard に切らないと、失敗を含む snapshot が裏の読み直しが settle するまで返り続ける
+      const swrEligible = ttl >= SNAPSHOT_TTL_MS;
+      if (held && swrEligible && held.ageMs < ttl + SNAPSHOT_SWR_MS && !this.inBustWindow(wallet)) {
         // SWR: 旧値を返し、裏の読み直しは 1 本だけ
         this.counts.staleHits++;
         if (!inflight) this.start(wallet);

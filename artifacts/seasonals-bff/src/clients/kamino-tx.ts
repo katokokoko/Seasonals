@@ -429,8 +429,8 @@ async function fetchDepositCapsUncached(
 ): Promise<KaminoDepositCap[]> {
   const apiKey = process.env.HELIUS_API_KEY;
   if (!apiKey) return [];
-  // B1: Helius RPC の列 (heliusRpcFetch) + 429 / 5xx の backoff 再試行。network 失敗は
-  // 再試行せず即「上限不明」に倒す (menu 経路を待たせない)。失敗は従来どおり空配列
+  // B1: Helius RPC の列 (heliusRpcFetch) は通すが再試行はしない (maxAttempts 1): 429 / 5xx /
+  // network は backoff を待たず即「上限不明」に倒す (menu 経路を待たせない)。失敗は従来どおり空配列
   const json = await fetchJsonWithRetry<{
     result?: { value?: ({ data?: [string, string] } | null)[] };
   } | null>(
@@ -445,7 +445,12 @@ async function fetchDepositCapsUncached(
         params: [reserves, { encoding: "base64" }],
       }),
     },
-    { label: "getMultipleAccounts(kamino caps)", fetchImpl: heliusRpcFetch.timed(), retryNetworkErrors: false }
+    {
+      label: "getMultipleAccounts(kamino caps)",
+      fetchImpl: heliusRpcFetch.timed(),
+      maxAttempts: 1,
+      retryNetworkErrors: false,
+    }
   ).catch(() => null);
   const values = json?.result?.value;
   if (!Array.isArray(values)) return [];

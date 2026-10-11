@@ -75,6 +75,47 @@ describe("createThrottledFetch", () => {
     expect(seen).toEqual([429, null]);
   });
 
+  test("1 gap 内の N 回の enqueue / 完了でも gap timer は 1 本だけ (順序 / 同時実行数も保つ)", async () => {
+    // fake timer (Date も) で gap を決定的に進め、生きている timer 数を直接数える
+    jest.useFakeTimers({ doNotFake: ["setImmediate", "nextTick"] });
+    try {
+      let inFlight = 0;
+      let maxSeen = 0;
+      const order: string[] = [];
+      fetchSpy = jest.spyOn(global, "fetch").mockImplementation(async (input) => {
+        inFlight++;
+        maxSeen = Math.max(maxSeen, inFlight);
+        order.push(String(input));
+        await new Promise((r) => setImmediate(r)); // 完了は gap の途中 (timer 待ちの間) に来る
+        inFlight--;
+        return new Response("{}");
+      });
+      const f = createThrottledFetch({ maxInFlight: 2, minGapMs: 20 });
+      const urls = ["a", "b", "c", "d", "e", "f"];
+      let done = false;
+      const all = Promise.all(urls.map((u) => f(u))).then(() => {
+        done = true;
+      });
+      // 1 本目だけ即 dispatch、残り 5 本の enqueue は同じ gap 内 → timer は 1 本
+      expect(jest.getTimerCount()).toBe(1);
+      let maxTimers = 1;
+      for (let i = 0; i < 50 && !done; i++) {
+        await new Promise((r) => setImmediate(r)); // 完了 → pump (timer 待ち中は増やさない)
+        maxTimers = Math.max(maxTimers, jest.getTimerCount());
+        await jest.advanceTimersByTimeAsync(20);
+        maxTimers = Math.max(maxTimers, jest.getTimerCount());
+      }
+      await all;
+      expect(maxTimers).toBe(1);
+      expect(order).toEqual(urls);
+      expect(maxSeen).toBeLessThanOrEqual(2);
+      expect(f.state()).toEqual({ inFlight: 0, queued: 0 });
+      expect(jest.getTimerCount()).toBe(0);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   test("timed() は dispatch 時に AbortSignal を付ける (呼び手の signal があればそちら)", async () => {
     fetchSpy = jest.spyOn(global, "fetch").mockResolvedValue(new Response("{}"));
     const f = createThrottledFetch({ maxInFlight: 1, minGapMs: 1 });
@@ -154,6 +195,16 @@ describe("fetchJsonWithRetry", () => {
     expect(err).toBeInstanceOf(HeliusRpcError);
     expect(err.message).toBe("Helius x HTTP 400");
     expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  test("再試行しない HTTP 失敗 (400) でも body を cancel してから throw する (socket を返す)", async () => {
+    const cancel = jest.fn(() => Promise.resolve());
+    const res = { ok: false, status: 400, headers: new Headers(), body: { cancel } } as unknown as Response;
+    fetchSpy.mockResolvedValue(res);
+    await expect(fetchJsonWithRetry(RPC_URL, init, { label: "x" })).rejects.toThrow("HTTP 400");
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(sleeps).toEqual([]);
   });
 
   test("network 失敗: retryNetworkErrors=false なら 1 回で reject、key は伏せる", async () => {

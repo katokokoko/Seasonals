@@ -137,3 +137,15 @@ test("registry: allCacheStats と _clearAllCachesForTest", async () => {
   unlisted.set("k", 1);
   expect(allCacheStats()["t.unlisted"]).toBeUndefined();
 });
+
+test("loader の同期 throw: 1 回目は reject、in-flight に残らず 2 回目は loader を呼び直す", async () => {
+  const cache = new TtlCache<string>({ name: "t.syncthrow", ttlMs: 1000, now: clock().now });
+  const loader = jest.fn((): Promise<string> => {
+    throw new Error("sync boom");
+  });
+  await expect(cache.getOrLoad("k", loader)).rejects.toThrow("sync boom");
+  loader.mockImplementationOnce(async () => "ok");
+  expect(await cache.getOrLoad("k", loader)).toBe("ok");
+  expect(loader).toHaveBeenCalledTimes(2);
+  expect(cache.stats()).toMatchObject({ misses: 2, inflightJoins: 0, size: 1 });
+});

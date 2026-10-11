@@ -102,7 +102,10 @@ import { mergeEarnPositions } from "../services/earn-to-position";
 import { usePortfolioHistoryStore } from "../stores/portfolioHistory";
 import { totalSolValue } from "../components/portfolio/portfolioTimeSeries";
 // §4.0: wallet 由来データの鮮度ラベル (純関数)
-import { combineQueryFreshness } from "@workspace/lib/derive/data-freshness";
+import {
+  combineQueryFreshness,
+  type QueryFreshnessStatus,
+} from "@workspace/lib/derive/data-freshness";
 
 function localDayKey(day: Date): string {
   return `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, "0")}-${String(day.getDate()).padStart(2, "0")}`;
@@ -149,7 +152,7 @@ export default function HomeScreen() {
   // §4.0: 鮮度ラベル用に wallet 系 3 query の状態を保守的に合成 (最古の取得時刻 /
   // どれか取得中 / どれか失敗)。PortfolioSummary (React.memo) の identity を保つため
   // primitive で memo する。未接続は null (ラベルを出さない)
-  const walletDataStatus = useMemo(
+  const walletDataStatus = useMemo<QueryFreshnessStatus | null>(
     () =>
       onchainAddress
         ? combineQueryFreshness([

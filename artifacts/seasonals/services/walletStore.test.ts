@@ -7,7 +7,11 @@
 
 import * as SecureStore from "expo-secure-store";
 
-import { useWalletStore } from "./walletStore";
+import {
+  isWalletStoreHydrated,
+  onWalletStoreHydrated,
+  useWalletStore,
+} from "./walletStore";
 import * as mwa from "./mwa";
 import type { ConnectedAuthorization } from "./mwa";
 
@@ -221,6 +225,47 @@ describe("rehydrate — 再起動後の復元 (8.67)", () => {
     const s = useWalletStore.getState();
     expect(s.authorization).toBeNull();
     expect(s.status).toBe("idle");
+  });
+});
+
+describe("rehydrate — storage の失敗でも復元は「終わる」 (resync を止めない)", () => {
+  let warnSpy: jest.SpyInstance;
+  beforeEach(() => {
+    warnSpy = jest.spyOn(console, "warn").mockImplementation(() => undefined);
+  });
+  afterEach(() => warnSpy.mockRestore());
+
+  it("SecureStore の読みが reject しても throw せず、hydrated になる (保存無しとして始める)", async () => {
+    (SecureStore.getItemAsync as jest.Mock).mockRejectedValueOnce(
+      new Error("keystore unavailable")
+    );
+    const finished = jest.fn();
+    const unsub = onWalletStoreHydrated(finished);
+    await expect(useWalletStore.persist.rehydrate()).resolves.toBeUndefined();
+    unsub();
+    expect(useWalletStore.persist.hasHydrated()).toBe(true);
+    expect(isWalletStoreHydrated()).toBe(true);
+    expect(finished).toHaveBeenCalledTimes(1);
+    const s = useWalletStore.getState();
+    expect(s.authorization).toBeNull();
+    expect(s.status).toBe("idle");
+  });
+
+  it("読み以外の失敗 (保存値が壊れていて parse できない) でも isWalletStoreHydrated は true、待ち手に知らせる", async () => {
+    await SecureStore.setItemAsync("seasonals.wallet.v1", "{not json");
+    const finished = jest.fn();
+    const unsub = onWalletStoreHydrated(finished);
+    await expect(useWalletStore.persist.rehydrate()).resolves.toBeUndefined();
+    unsub();
+    // zustand persist 自体は成功時しか hasHydrated を立てない
+    expect(useWalletStore.persist.hasHydrated()).toBe(false);
+    expect(isWalletStoreHydrated()).toBe(true);
+    expect(finished).toHaveBeenCalledTimes(1);
+    // 次の成功した復元で通常の判定に戻る
+    await SecureStore.deleteItemAsync("seasonals.wallet.v1");
+    await useWalletStore.persist.rehydrate();
+    expect(useWalletStore.persist.hasHydrated()).toBe(true);
+    expect(isWalletStoreHydrated()).toBe(true);
   });
 });
 

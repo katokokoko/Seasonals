@@ -146,13 +146,17 @@ describe("loadWalletSnapshot — 共有と dedupe", () => {
     t += 4_000;
     expect(loadWalletSnapshot(WALLET)).toBe(s); // 5s 以内は保持
     expect(fetchAssetsByOwner).toHaveBeenCalledTimes(1);
-    t += 2_000; // 6s: 期限切れ → SWR (旧値 + 裏で 1 回読み直し)
-    expect(loadWalletSnapshot(WALLET)).toBe(s);
-    expect(fetchAssetsByOwner).toHaveBeenCalledTimes(2);
-    await flush();
+    t += 2_000; // 6s: 短命 entry は SWR を使わず hard に期限切れ → 新しい読みを待たせる
     const next = loadWalletSnapshot(WALLET);
-    expect(next).not.toBe(s);
+    expect(next).not.toBe(s); // 失敗を含む旧 snapshot は返さない
+    expect(fetchAssetsByOwner).toHaveBeenCalledTimes(2);
+    expect(loadWalletSnapshot(WALLET)).toBe(next); // 同時の呼び手は進行中の読みに合流
+    expect(fetchAssetsByOwner).toHaveBeenCalledTimes(2);
+    expect(_walletSnapshotStatsForTest()).toMatchObject({ staleHits: 0, inflightJoins: 1 });
     expect((await next.assets).status).toBe("fulfilled");
+    await next.settled;
+    await flush();
+    expect(loadWalletSnapshot(WALLET)).toBe(next);
     expect(_peekWalletSnapshotForTest(WALLET)?.ttlMs).toBe(SNAPSHOT_TTL_MS);
   });
 });

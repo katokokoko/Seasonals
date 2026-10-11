@@ -67,7 +67,11 @@ import { ComingSoonToast } from "../components/feedback/ComingSoonToast";
 import { usePrefsStore } from "../stores/prefs";
 // §4.0: 永続化の対象判定 (純関数) と、その入力の recentWallets
 import { shouldPersistQuery } from "../services/persist-filter";
-import { useWalletStore } from "../services/walletStore";
+import {
+  isWalletStoreHydrated,
+  useWalletStore,
+  walletStoreHydrationFailed,
+} from "../services/walletStore";
 import { WALLET_QUERY_GC_MS } from "../services/queries";
 import { isDarkBackground, useActiveTheme } from "../stores/theme";
 
@@ -124,7 +128,9 @@ export default function RootLayout() {
       }) =>
         shouldPersistQuery(
           query,
-          useWalletStore.persist.hasHydrated()
+          // 復元前と復元失敗は null = wallet 系を全部残す (recentWallets が空のまま
+          // 書き込むと、繋ぎ直していない wallet の cache が一過性の失敗で消える)
+          isWalletStoreHydrated() && !walletStoreHydrationFailed()
             ? useWalletStore.getState().recentWallets.map((w) => w.address)
             : null
         ),

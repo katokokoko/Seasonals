@@ -162,7 +162,15 @@ export class TtlCache<V> {
     const token = {};
     const promise = (async () => {
       try {
-        const value = await loader();
+        // loader の同期 throw は rejection に寄せる — そのまま throw させると下の finally が
+        // inflight.set より先に走り、reject 済み promise が key の in-flight として残り続ける
+        let loading: Promise<V>;
+        try {
+          loading = loader();
+        } catch (err) {
+          loading = Promise.reject(err);
+        }
+        const value = await loading;
         if (this.inflight.get(key)?.token === token) {
           this.set(key, value, opts.ttlMs ? { ttlMs: opts.ttlMs(value) } : {});
         }

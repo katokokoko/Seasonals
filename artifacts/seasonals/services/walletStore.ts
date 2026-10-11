@@ -45,7 +45,17 @@ export type { RecentWallet };
 const SECURE_STORE_KEY = "seasonals.wallet.v1";
 
 const secureStorage: StateStorage = {
-  getItem: async (key) => (await SecureStore.getItemAsync(key)) ?? null,
+  // 読めない (Keystore の一時エラー等) は「保存無し」として扱う。reject させると zustand persist は
+  // hasHydrated を立てず onFinishHydration も呼ばないので、復元待ちの側 (useWalletQuerySync /
+  // _layout の persist filter) が永久に待つ
+  getItem: async (key) => {
+    try {
+      return (await SecureStore.getItemAsync(key)) ?? null;
+    } catch (err) {
+      console.warn("[walletStore] SecureStore read failed; starting without saved wallet", err);
+      return null;
+    }
+  },
   setItem: async (key, value) => {
     await SecureStore.setItemAsync(key, value);
   },
@@ -53,6 +63,39 @@ const secureStorage: StateStorage = {
     await SecureStore.deleteItemAsync(key);
   },
 };
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 復元完了の判定 — persist.hasHydrated() は復元が**成功**した時しか true にならない
+// (getItem 以外の失敗、例えば復元直後の setItem の reject でも false のまま)。
+// 失敗も「復元は終わった (保存無しで始める)」として扱い、待っている側を止めない
+// ─────────────────────────────────────────────────────────────────────────────
+
+let hydrationFailed = false;
+const hydrationFailureListeners = new Set<() => void>();
+
+/** walletStore の復元が終わったか (成功 / 失敗のどちらでも true) */
+export function isWalletStoreHydrated(): boolean {
+  return useWalletStore.persist.hasHydrated() || hydrationFailed;
+}
+
+/**
+ * 直近の復元が失敗で終わったか。失敗時は recentWallets が空 (初期値) なので、
+ * 永続化フィルタ (app/_layout.tsx) はこれを見て「wallet 系 cache を全部残す」に倒す —
+ * 一過性の SecureStore 失敗で取得済みデータまで消さない (§4.0)
+ */
+export function walletStoreHydrationFailed(): boolean {
+  return hydrationFailed;
+}
+
+/** 復元が終わったら (成功 / 失敗のどちらでも) cb を呼ぶ。戻り値は解除関数 */
+export function onWalletStoreHydrated(cb: () => void): () => void {
+  const unsub = useWalletStore.persist.onFinishHydration(() => cb());
+  hydrationFailureListeners.add(cb);
+  return () => {
+    unsub();
+    hydrationFailureListeners.delete(cb);
+  };
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Store 型
@@ -181,6 +224,17 @@ export const useWalletStore = create<WalletStore>()(
        * wallet 系クエリの再取得が二重に走り得た。merge で **authorization と
        * status を 1 回の set** にまとめる (復元した wallet は recentWallets の先頭へ)。
        */
+      // 復元の開始で失敗フラグを戻し、失敗で終わったら isWalletStoreHydrated を true にする
+      // (成功時は persist.hasHydrated / onFinishHydration がそのまま知らせる)
+      onRehydrateStorage: () => {
+        hydrationFailed = false;
+        return (_state, error) => {
+          if (!error) return;
+          console.warn("[walletStore] rehydrate failed; continuing without saved wallet", error);
+          hydrationFailed = true;
+          for (const cb of [...hydrationFailureListeners]) cb();
+        };
+      },
       merge: (persisted, current) => {
         const p = (persisted ?? {}) as Partial<WalletStoreState>;
         // 既定の merge (`{ ...current, ...persisted }`) と同じく、保存に無い項目は現値を残す
