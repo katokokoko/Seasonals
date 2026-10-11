@@ -13,8 +13,10 @@ import { join } from "node:path";
 import { fixtureAutonomousLog } from "@workspace/lib/__fixtures__";
 
 import {
+  deleteJson,
   ensureWritableDataDir,
   isPersistenceEnabled,
+  listJson,
   loadJson,
   saveJson,
 } from "./persistence";
@@ -47,6 +49,28 @@ afterEach(() => {
 });
 
 describe("persistence module", () => {
+  it("Phase C: listJson (prefix、古い順、tmp 除外) と deleteJson", () => {
+    saveJson("history-inputs.A", { n: 1 });
+    saveJson("history-inputs.B", { n: 2 });
+    saveJson("other", { n: 3 });
+    writeFileSync(join(dir, "history-inputs.C.json.tmp"), "{");
+    const names = listJson("history-inputs.").map((e) => e.name);
+    expect(names.sort()).toEqual(["history-inputs.A", "history-inputs.B"]);
+    deleteJson("history-inputs.A");
+    deleteJson("history-inputs.missing"); // 不在は no-op
+    expect(listJson("history-inputs.").map((e) => e.name)).toEqual(["history-inputs.B"]);
+    expect(loadJson("history-inputs.A")).toBeNull();
+  });
+
+  it("Phase C: listJson / deleteJson は SEASONALS_DATA_DIR 未設定なら no-op", () => {
+    saveJson("history-inputs.A", { n: 1 });
+    delete process.env.SEASONALS_DATA_DIR;
+    expect(listJson("history-inputs.")).toEqual([]);
+    deleteJson("history-inputs.A");
+    process.env.SEASONALS_DATA_DIR = dir;
+    expect(loadJson("history-inputs.A")).toEqual({ n: 1 });
+  });
+
   it("saveJson → loadJson round-trip", () => {
     expect(isPersistenceEnabled()).toBe(true);
     saveJson("thing", { a: 1, b: "x" });

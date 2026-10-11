@@ -6,8 +6,11 @@
  * (cold 実測 DAS ×4、Enhanced ×3、Meteora GPA ×6)。wallet snapshot で「wallet ごとに 1 回」に束ねたことを
  * client mock の呼び出し回数で固定する。
  *
- * `usageSnapshot()` (src/usage.ts) は limiter の onDispatch から供給されるので mock client では動かない。
- * TODO(Phase D): fetch spy + DAS / tx-history fixture で `approxCredits ≤ N` (N = 導入時実測 + 10%) を足す。
+ * Phase D: `usageSnapshot().approxCredits` の上限。`usage.ts` は本来 limiter の onDispatch から供給
+ * されるので、mock client が **実 client と同じ上流 request** を `recordUpstreamCall` で計上する
+ * (`UPSTREAM_COST`、2026-10-12 の live 計測 `scripts/measure-usage.mjs` の byMethod から per-wallet 分を割り当て)。
+ * wallet 非依存の読み (oracle / pool / reserve、live で ≈ 22 RPC credit) は全 user で共有され、ここでは
+ * mock なので数えない。
  *
  * mock は softfail.test.ts の流儀 (SDK を掴む client は requireActual + 個別 jest.fn)。
  */
@@ -43,7 +46,15 @@ import {
 } from "./clients/rates";
 import { fetchAssetsByOwner } from "./clients/helius";
 import { fetchEarnMarkets, fetchEarnPositions } from "./clients/jupiter-lend";
-import { fetchEnhancedTransactions } from "./clients/helius-tx";
+import {
+  fetchWalletTxPage,
+  fetchWalletTxs,
+  walletTxBackend,
+} from "./clients/tx-history";
+import { fetchPriceSeries } from "./clients/pyth-history";
+import { fetchLlamaPriceSeries } from "./clients/llama-history";
+import { heliusTxHistoryApi } from "./flags";
+import { _resetUsageForTest, recordUpstreamCall, usageSnapshot, type HeliusApi } from "./usage";
 import {
   fetchStakeAccounts,
   getEpochInfo,
@@ -52,6 +63,7 @@ import {
 import { fetchLstSolValues } from "./clients/lst-rates";
 import { getOracleResult, getOracleResults } from "./clients/oracle";
 import { _clearWalletSnapshotForTest } from "./wallet-snapshot";
+import { _clearPortfolioHistoryCacheForTest } from "./server";
 
 jest.mock("./clients/meteora-tx", () => ({
   ...jest.requireActual("./clients/meteora-tx"),
@@ -75,13 +87,51 @@ jest.mock("./clients/save-tx");
 jest.mock("./clients/rates");
 jest.mock("./clients/helius");
 jest.mock("./clients/jupiter-lend");
-jest.mock("./clients/helius-tx");
+jest.mock("./clients/tx-history");
 jest.mock("./clients/lst-rates");
+jest.mock("./clients/pyth-history", () => ({
+  ...jest.requireActual("./clients/pyth-history"),
+  fetchPriceSeries: jest.fn(),
+}));
+jest.mock("./clients/llama-history", () => ({
+  ...jest.requireActual("./clients/llama-history"),
+  fetchLlamaPriceSeries: jest.fn(),
+}));
+
+/**
+ * Phase D: mock client 1 回の呼び出しが上流に出す Helius request (credit: RPC 1 / GPA 10 / DAS 10 /
+ * Enhanced 100 / Parsed 10)。live cold (positions + earn + events + history、2026-10-12、enhanced) の
+ * byMethod = DAS 1、Enhanced 2 (snapshot 1 + history 1 page)、getProgramAccounts 4、getTokenAccountsByOwner 2、
+ * 他 RPC 20 (oracle / pool / reserve / epoch — wallet 非依存、ここでは数えない) のうち per-wallet 分:
+ */
+const UPSTREAM_COST: Record<string, Array<{ api: HeliusApi; method: string }>> = {
+  das: [{ api: "das", method: "getAssetsByOwner" }],
+  meteora: [{ api: "rpc", method: "getProgramAccounts" }],
+  orca: [
+    { api: "rpc", method: "getTokenAccountsByOwner" },
+    { api: "rpc", method: "getTokenAccountsByOwner" },
+  ],
+  kaminoObligations: [{ api: "rpc", method: "getProgramAccounts" }],
+  kvault: [{ api: "rpc", method: "getProgramAccounts" }],
+  jupiterLend: [], // Jupiter の REST (Helius ではない)
+  stake: [{ api: "rpc", method: "getProgramAccounts" }],
+};
+
+/** tx 履歴 1 request (backend は HELIUS_TX_HISTORY_API) */
+function txHistoryCall(): { api: HeliusApi; method: string } {
+  return heliusTxHistoryApi() === "parsed"
+    ? { api: "parsed", method: "parsed-events" }
+    : { api: "enhanced", method: "addresses.transactions" };
+}
+
+function charge(calls: Array<{ api: HeliusApi; method: string }>): void {
+  for (const c of calls) recordUpstreamCall({ ...c, status: 200 });
+}
 
 /** wallet ごとに 1 回だけ読まれるべき per-wallet client (snapshot の 8 source) */
 const PER_WALLET = {
   das: fetchAssetsByOwner,
-  enhanced: fetchEnhancedTransactions,
+  enhanced: fetchWalletTxs,
   meteora: fetchMeteoraPositions,
   orca: fetchOrcaPositions,
   kaminoObligations: fetchKaminoObligations,
@@ -126,7 +176,21 @@ let app: FastifyInstance;
 beforeEach(async () => {
   jest.clearAllMocks();
   _clearWalletSnapshotForTest();
-  for (const fn of Object.values(PER_WALLET)) fn.mockResolvedValue([]);
+  _clearPortfolioHistoryCacheForTest();
+  _resetUsageForTest();
+  for (const [name, fn] of Object.entries(PER_WALLET)) {
+    fn.mockImplementation(async () => {
+      charge(name === "enhanced" ? [txHistoryCall()] : UPSTREAM_COST[name]!);
+      return [];
+    });
+  }
+  (walletTxBackend as jest.Mock).mockImplementation(() => heliusTxHistoryApi());
+  (fetchWalletTxPage as jest.Mock).mockImplementation(async () => {
+    charge([txHistoryCall()]);
+    return { txs: [], scanned: 0 };
+  });
+  (fetchPriceSeries as jest.Mock).mockResolvedValue({ t: [], usd8: [] });
+  (fetchLlamaPriceSeries as jest.Mock).mockResolvedValue(new Map());
   (fetchKaminoReserveMetrics as jest.Mock).mockResolvedValue([]);
   (fetchEarnMarkets as jest.Mock).mockResolvedValue([]);
   (getEpochInfo as jest.Mock).mockRejectedValue(new Error("off"));
@@ -149,6 +213,8 @@ beforeEach(async () => {
 
 afterEach(async () => {
   await app.close();
+  delete process.env.HELIUS_TX_HISTORY_API;
+  jest.restoreAllMocks();
 });
 
 function openWallet(wallet: string) {
@@ -262,5 +328,124 @@ describe("B3: snapshot 経由でも route ごとの degrade 規則は不変", ()
     const res = await app.inject({ method: "GET", url: `/time-events/wallet?wallet=${WALLET}` });
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual([]);
+  });
+});
+
+/**
+ * Phase D: cold open (3 route 並列) の Helius credit 上限。N = 下の内訳 + 10% (切り上げ)。
+ * 内訳 (wallet 1 つ、per-wallet 分のみ):
+ *   DAS getAssetsByOwner 10 + tx 履歴 1 request + Meteora GPA 10 + Orca getTokenAccountsByOwner ×2 = 2
+ *   + Kamino obligations GPA 10 + kVault GPA 10 + stake GPA 10 = 52 + tx 履歴 (直近 50 件) 1 request
+ *   - enhanced (既定): 52 + 100 = 152 → N = 168
+ *   - parsed: 52 + 10 = 62 → N = 69
+ * 2 回目 (snapshot の fresh TTL 内) は +0。
+ */
+describe("Phase D: approxCredits budget (cold 3 route)", () => {
+  it.each([
+    ["enhanced", 152, 168],
+    ["parsed", 62, 69],
+  ] as const)("%s: cold ≤ N, 2 回目 +0", async (backend, expected, budget) => {
+    process.env.HELIUS_TX_HISTORY_API = backend;
+    await openWallet(WALLET);
+    const cold = usageSnapshot().approxCredits;
+    expect(cold).toBe(expected);
+    expect(cold).toBeLessThanOrEqual(budget);
+    expect(usageSnapshot().byApi[backend === "parsed" ? "parsed" : "enhanced"]).toBe(1);
+
+    await flush();
+    await openWallet(WALLET);
+    expect(usageSnapshot().approxCredits).toBe(cold);
+  });
+});
+
+describe("Phase C: /portfolio/history (parsed) — window 打ち切り / 増分 / 予算", () => {
+  const WSOL = "So11111111111111111111111111111111111111112";
+  const HOLDING = [
+    {
+      id: WSOL,
+      interface: "FungibleToken",
+      token_info: { balance: 2_000_000_000, decimals: 9, symbol: "SOL", price_info: { price_per_token: 90 } },
+    },
+  ];
+
+  function walletTx(signature: string, timestamp: number, lamports: number) {
+    return {
+      signature,
+      timestamp,
+      type: "TRANSFER",
+      fee: 5000,
+      accountData: [{ account: WALLET, nativeBalanceChange: lamports, tokenBalanceChanges: [] }],
+    };
+  }
+
+  beforeEach(() => {
+    process.env.HELIUS_TX_HISTORY_API = "parsed";
+    (fetchAssetsByOwner as jest.Mock).mockImplementation(async () => {
+      charge(UPSTREAM_COST.das!);
+      return HOLDING;
+    });
+  });
+
+  it("window 内に tx が無い wallet でも点が出る (time.gte で取り切った = cutoff まで遡れている)", async () => {
+    const res = await app.inject({ method: "GET", url: `/portfolio/history?wallet=${WALLET}&days=30` });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().points.length).toBeGreaterThan(10);
+    const calls = (fetchWalletTxPage as jest.Mock).mock.calls;
+    expect(calls).toHaveLength(1);
+    expect(calls[0]![1]).toEqual({ limit: 100, timeGte: expect.any(Number) });
+    // cold history = wallet snapshot (現在残高の DAS を読むと 8 source が同じ tick で読まれる: 52 + 直近 tx 10)
+    //   + 履歴 Parsed Events 1 page 10 (window 内 0 件 → token 無しで終端)
+    expect(usageSnapshot().approxCredits).toBe(72);
+    expect(usageSnapshot().byApi.parsed).toBe(2);
+  });
+
+  it("期限切れ後の再計算は afterSignature の増分 1 page、差分は signature で重複排除して merge", async () => {
+    const now = Math.floor(Date.now() / 1000);
+    const page = fetchWalletTxPage as jest.Mock;
+    page.mockImplementationOnce(async () => {
+      charge([txHistoryCall()]);
+      return {
+        txs: [walletTx("S2", now - 2 * 86_400, -1_000_000_000), walletTx("S1", now - 5 * 86_400, 3_000_000_000)],
+        scanned: 2,
+        nextCursor: { limit: 100, paginationToken: "t1", timeGte: now - 30 * 86_400 },
+      };
+    });
+    const first = await app.inject({ method: "GET", url: `/portfolio/history?wallet=${WALLET}&days=30` });
+    expect(first.statusCode).toBe(200);
+    expect(page).toHaveBeenCalledTimes(2); // 2 page 目 (空) で終端
+    expect(page.mock.calls[1]![1]).toMatchObject({ paginationToken: "t1" });
+
+    // engine の TTL (5 分) と snapshot の TTL を越える
+    const realNow = Date.now;
+    jest.spyOn(Date, "now").mockImplementation(() => realNow() + 6 * 60_000);
+    page.mockImplementationOnce(async () => {
+      charge([txHistoryCall()]);
+      // S2 (前回の最新) は afterSignature で排他のはずだが、重なっても二重計上しない
+      return { txs: [walletTx("S3", now - 60, 500_000_000), walletTx("S2", now - 2 * 86_400, -1_000_000_000)], scanned: 2 };
+    });
+    _resetUsageForTest();
+    const stale = await app.inject({ method: "GET", url: `/portfolio/history?wallet=${WALLET}&days=30` });
+    expect(stale.json()).toEqual(first.json()); // SWR: 旧値を即返し
+    for (let i = 0; i < 20 && page.mock.calls.length < 3; i++) await flush();
+    expect(page).toHaveBeenCalledTimes(3);
+    expect(page.mock.calls[2]![1]).toEqual({ limit: 100, afterSignature: "S2" });
+    for (let i = 0; i < 5; i++) await flush();
+    // 増分 refresh = 履歴 Parsed Events 1 page (10) + 期限切れ snapshot の読み直し (62、3 display route と共有)。
+    // enhanced なら全 page の取り直し (100 × page 数) + snapshot (152)
+    expect(usageSnapshot().byApi.parsed).toBe(2);
+    expect(usageSnapshot().approxCredits).toBe(72);
+
+    // merge の結果: 現在 2 SOL − S3 (+0.5) = 1.5 (S2 以降)、さらに − S2 (−1) = 2.5 (S1〜S2 の間)。
+    // S2 を二重に数えると 3.5 になる。単価は過去価格が無いので現在値 90 (近似)
+    const refreshed = (await app.inject({ method: "GET", url: `/portfolio/history?wallet=${WALLET}&days=30` })).json();
+    const between = refreshed.points.filter(
+      (p: { at: number }) => p.at > now - 5 * 86_400 + 3600 && p.at < now - 2 * 86_400 - 3600
+    );
+    expect(between.length).toBeGreaterThan(0);
+    for (const p of between) expect(p.usd).toBe("225.00000000");
+    const afterS2 = refreshed.points.filter(
+      (p: { at: number }) => p.at > now - 2 * 86_400 + 3600 && p.at < now - 3600
+    );
+    for (const p of afterS2) expect(p.usd).toBe("135.00000000");
   });
 });

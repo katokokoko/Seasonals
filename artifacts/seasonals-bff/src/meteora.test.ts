@@ -16,7 +16,7 @@ import {
   mapMeteoraPositionsToEarnPositions,
   meteoraTotalsInDepositTerms,
 } from "./server";
-import type { HeliusEnhancedTx } from "./clients/helius-tx";
+import type { HeliusEnhancedTx } from "./clients/tx-history";
 import {
   buildMeteoraDepositTxns,
   buildMeteoraWithdrawTxns,
@@ -40,7 +40,7 @@ import {
 } from "./clients/rates";
 import { fetchAssetsByOwner } from "./clients/helius";
 import { fetchEarnPositions } from "./clients/jupiter-lend";
-import { fetchEnhancedTransactions } from "./clients/helius-tx";
+import { fetchWalletTxs } from "./clients/tx-history";
 import { getOracleResult, getOracleResults } from "./clients/oracle";
 import { _clearWalletSnapshotForTest } from "./wallet-snapshot";
 
@@ -64,7 +64,7 @@ jest.mock("./clients/save-tx");
 jest.mock("./clients/rates");
 jest.mock("./clients/helius");
 jest.mock("./clients/jupiter-lend");
-jest.mock("./clients/helius-tx");
+jest.mock("./clients/tx-history");
 // B3: wallet snapshot は stake account も読む — 実 RPC を掴まないよう空で固定
 jest.mock("./clients/helius-rpc", () => ({
   ...jest.requireActual("./clients/helius-rpc"),
@@ -155,7 +155,7 @@ beforeEach(async () => {
   (fetchEarnPositions as jest.Mock).mockResolvedValue([]);
   for (const fn of [
     fetchAssetsByOwner,
-    fetchEnhancedTransactions,
+    fetchWalletTxs,
     fetchKaminoObligations,
     fetchKaminoReserveMetrics,
     fetchKaminoVaultMetrics,

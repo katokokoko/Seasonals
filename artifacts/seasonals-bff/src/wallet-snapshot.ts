@@ -28,9 +28,9 @@ import { KAMINO_MAIN_MARKET } from "@workspace/lib/config/kamino-markets";
 import { TtlCache, type TtlCacheStats } from "./cache/ttl-cache";
 import { fetchAssetsByOwner, invalidateAssetsCacheForWallet } from "./clients/helius";
 import {
-  fetchEnhancedTransactions,
-  invalidateEnhancedTxCacheForWallet,
-} from "./clients/helius-tx";
+  fetchWalletTxs,
+  invalidateWalletTxCacheForWallet,
+} from "./clients/tx-history";
 import { fetchStakeAccounts } from "./clients/helius-rpc";
 import { redactKey } from "./clients/helius-limiter";
 import {
@@ -56,8 +56,8 @@ export interface WalletSnapshot {
   createdAt: number;
   /** Helius DAS getAssetsByOwner */
   assets: Promise<Settled<ValueOf<typeof fetchAssetsByOwner>>>;
-  /** Helius Enhanced tx 履歴 (直近 50 件 = fetchEnhancedTransactions の既定) */
-  txs: Promise<Settled<ValueOf<typeof fetchEnhancedTransactions>>>;
+  /** wallet tx 履歴 (直近 50 件 = fetchWalletTxs の既定。Enhanced / Parsed Events は flag で選ぶ) */
+  txs: Promise<Settled<ValueOf<typeof fetchWalletTxs>>>;
   meteora: Promise<Settled<ValueOf<typeof fetchMeteoraPositions>>>;
   orca: Promise<Settled<ValueOf<typeof fetchOrcaPositions>>>;
   /** Kamino main market の obligation */
@@ -111,7 +111,7 @@ function settle<T>(fn: () => T | Promise<T>): Promise<Settled<T>> {
 
 function buildSnapshot(wallet: string, createdAt: number): WalletSnapshot {
   const assets = settle(() => fetchAssetsByOwner(wallet));
-  const txs = settle(() => fetchEnhancedTransactions(wallet));
+  const txs = settle(() => fetchWalletTxs(wallet));
   const meteora = settle(() => fetchMeteoraPositions(wallet));
   const orca = settle(() => fetchOrcaPositions(wallet));
   const kaminoObligations = settle(() => fetchKaminoObligations(KAMINO_MAIN_MARKET, wallet));
@@ -293,7 +293,7 @@ export function invalidateWalletSnapshot(wallet: string): void {
   // 残ると、直後の再読みが tx 前の保有を返す。表示用 cache は wallet 単位でまとめて捨てる
   // (§4.0: tx 後の必要な更新)。wallet 非依存の共有 cache は触らない
   invalidateAssetsCacheForWallet(wallet);
-  invalidateEnhancedTxCacheForWallet(wallet);
+  invalidateWalletTxCacheForWallet(wallet);
   invalidateEarnPositionsCacheForWallet(wallet);
 }
 

@@ -80,10 +80,13 @@ import {
   type JupiterLendMarket,
 } from "./clients/jupiter-lend";
 import {
-  fetchEnhancedTransactionsPage,
+  fetchWalletTxPage,
+  walletTxBackend,
   type HeliusEnhancedTx,
   type HeliusTokenBalanceChange,
-} from "./clients/helius-tx";
+  type WalletTx,
+  type WalletTxCursor,
+} from "./clients/tx-history";
 import {
   fetchSwapQuote,
   fetchSwapTransaction,
@@ -127,7 +130,12 @@ import {
   type BalanceDelta,
   type HistoryAsset,
 } from "./portfolio-history";
-import { createHistoryEngine, type HistoryInputs } from "./portfolio/engine";
+import {
+  createHistoryEngine,
+  type HistoryInputs,
+  type HistoryInputsCursor,
+} from "./portfolio/engine";
+import { createInputsStore } from "./portfolio/inputs-store";
 import {
   SWAP_EARN_MARKETS,
   findMarketByProtocolAsset,
@@ -433,13 +441,129 @@ function settledReason(r: Settled<unknown> | PromiseSettledResult<unknown>): str
   return typeof r.reason === "string" ? r.reason : (r.reason as Error | undefined)?.message;
 }
 
+/** tx 1 件から wallet の符号付き差分 (native SOL は wallet 口座の lamports 変化、token は owner = wallet) */
+function walletDeltasOfTx(tx: WalletTx, wallet: string): BalanceDelta[] {
+  const out: BalanceDelta[] = [];
+  for (const account of tx.accountData ?? []) {
+    // native SOL: wallet 自身の account の lamports 変化 (fee 込みの実変化)
+    if (account.account === wallet && account.nativeBalanceChange) {
+      out.push({
+        timestamp: tx.timestamp,
+        mint: WSOL_MINT,
+        amount: BigInt(account.nativeBalanceChange),
+      });
+    }
+    for (const change of account.tokenBalanceChanges ?? []) {
+      if (change.userAccount !== wallet) continue;
+      const raw = change.rawTokenAmount?.tokenAmount;
+      if (typeof raw !== "string" || !/^-?[0-9]+$/.test(raw)) continue;
+      out.push({ timestamp: tx.timestamp, mint: change.mint, amount: BigInt(raw) });
+    }
+  }
+  return out;
+}
+
+interface CollectedDeltas {
+  deltas: BalanceDelta[];
+  oldestSeen: number;
+  complete: boolean;
+  fetchedDays: number;
+  newestSignature?: string;
+}
+
+/**
+ * Phase C: tx を cutoff まで遡って符号付き差分を集める (cursor 連鎖なので直列)。
+ * parsed backend は `time.gte = cutoff` で server 側が window で止まる (最終 page の後の空 page で終端)。
+ * enhanced は従来どおり `before` で遡り、最古が cutoff を越えたら止める
+ */
+async function collectWalletDeltasFull(
+  wallet: string,
+  days: number,
+  nowSeconds: number
+): Promise<CollectedDeltas> {
+  const cutoff = nowSeconds - days * 86_400;
+  const deltas: BalanceDelta[] = [];
+  let oldestSeen = nowSeconds;
+  let newestSignature: string | undefined;
+  const timeBounded = walletTxBackend() === "parsed";
+  let cursor: WalletTxCursor = { limit: 100, ...(timeBounded ? { timeGte: cutoff } : {}) };
+  const done = (complete: boolean): CollectedDeltas => ({
+    deltas,
+    oldestSeen,
+    complete,
+    fetchedDays: days,
+    ...(newestSignature ? { newestSignature } : {}),
+  });
+  for (let page = 0; page < HISTORY_MAX_TX_PAGES; page++) {
+    const { txs, nextCursor } = await fetchWalletTxPage(wallet, cursor);
+    newestSignature ??= txs[0]?.signature;
+    for (const tx of txs) {
+      oldestSeen = Math.min(oldestSeen, tx.timestamp);
+      deltas.push(...walletDeltasOfTx(tx, wallet));
+    }
+    if (!nextCursor) {
+      // time.gte で取り切った = cutoff まで遡れている (window 内に tx が無くても同じ)。
+      // enhanced は cutoff より古い tx が見えるので oldestSeen が自然に cutoff を越える。
+      // これが無いと window 内 tx ゼロの wallet で「証明できる期間」が 0 になり点が出ない
+      if (timeBounded) oldestSeen = Math.min(oldestSeen, cutoff);
+      return done(true);
+    }
+    if (oldestSeen <= cutoff) return done(true);
+    cursor = nextCursor;
+  }
+  // page 上限で打ち切り = これより前の残高は不明
+  return done(false);
+}
+
+/**
+ * Phase C (parsed のみ): 前回分 `prev` より新しい tx だけを `afterSignature` で取り、差分を merge する
+ * (新しい tx が無ければ空 page 1 回 = 10 credit)。signature で重複を除き、`oldestSeen / complete /
+ * fetchedDays` は前回のまま。window より古い差分は捨てる (replay / funding 判定は window 内しか見ない)。
+ * 増分が page 上限を越えたら null (呼び手が全件取り直す)
+ */
+async function collectWalletDeltasSince(
+  wallet: string,
+  prev: HistoryInputsCursor & { newestSignature: string },
+  nowSeconds: number
+): Promise<CollectedDeltas | null> {
+  const fresh: WalletTx[] = [];
+  let cursor: WalletTxCursor | undefined = { limit: 100, afterSignature: prev.newestSignature };
+  for (let page = 0; cursor; page++) {
+    if (page >= HISTORY_MAX_TX_PAGES) return null;
+    const res = await fetchWalletTxPage(wallet, cursor);
+    fresh.push(...res.txs);
+    cursor = res.nextCursor;
+  }
+  const seen = new Set<string>([prev.newestSignature]);
+  const added: BalanceDelta[] = [];
+  let oldestSeen = prev.oldestSeen;
+  for (const tx of fresh) {
+    if (seen.has(tx.signature)) continue;
+    seen.add(tx.signature);
+    oldestSeen = Math.min(oldestSeen, tx.timestamp);
+    added.push(...walletDeltasOfTx(tx, wallet));
+  }
+  const keepAfter = nowSeconds - prev.fetchedDays * 86_400;
+  return {
+    deltas: [...added, ...prev.deltas.filter((d) => d.timestamp > keepAfter)],
+    oldestSeen,
+    complete: prev.complete,
+    fetchedDays: prev.fetchedDays,
+    // afterSignature + 新しい順: 先頭 page の先頭が最新
+    newestSignature: fresh[0]?.signature ?? prev.newestSignature,
+  };
+}
+
 /**
  * 8.60: 「現在残高 + tx 差分」を取得する (cache は engine 側)。
+ * Phase C: `prev` (engine が渡す期限切れの前回分 / 永続化から戻した分) があり backend が parsed なら、
+ * 差分は増分だけ取る。現在残高 (DAS) は毎回読み直す
  */
 async function loadSolanaHistoryInputs(
   wallet: string,
   days: number,
-  nowSeconds: number
+  nowSeconds: number,
+  prev?: HistoryInputsCursor
 ): Promise<HistoryInputs | null> {
   // 1. 現在残高 (DAS)。native SOL は WSOL mint の synthetic entry で入る。
   // 8.70: jlToken の単価は DAS ではなく protocol の交換レートを使う (取得失敗は
@@ -509,66 +633,30 @@ async function loadSolanaHistoryInputs(
     }
   })();
 
-  // 2. tx を cutoff まで遡って符号付き差分を集める (cursor 連鎖なので直列)
-  const cutoff = nowSeconds - days * 86_400;
-  const collectDeltas = async (): Promise<{
-    deltas: BalanceDelta[];
-    oldestSeen: number;
-    complete: boolean;
-  }> => {
-    const deltas: BalanceDelta[] = [];
-    let before: string | undefined;
-    let oldestSeen = nowSeconds;
-    for (let page = 0; page < HISTORY_MAX_TX_PAGES; page++) {
-      const txs = await fetchEnhancedTransactionsPage(wallet, {
-        limit: 100,
-        ...(before ? { before } : {}),
-      });
-      if (txs.length === 0) return { deltas, oldestSeen, complete: true };
-      for (const tx of txs) {
-        oldestSeen = Math.min(oldestSeen, tx.timestamp);
-        for (const account of tx.accountData ?? []) {
-          // native SOL: wallet 自身の account の lamports 変化 (fee 込みの実変化)
-          if (account.account === wallet && account.nativeBalanceChange) {
-            deltas.push({
-              timestamp: tx.timestamp,
-              mint: WSOL_MINT,
-              amount: BigInt(account.nativeBalanceChange),
-            });
-          }
-          for (const change of account.tokenBalanceChanges ?? []) {
-            if (change.userAccount !== wallet) continue;
-            const raw = change.rawTokenAmount?.tokenAmount;
-            if (typeof raw !== "string" || !/^-?[0-9]+$/.test(raw)) continue;
-            deltas.push({
-              timestamp: tx.timestamp,
-              mint: change.mint,
-              amount: BigInt(raw),
-            });
-          }
-        }
-      }
-      before = txs[txs.length - 1]?.signature;
-      if (!before || oldestSeen <= cutoff) {
-        return { deltas, oldestSeen, complete: true };
-      }
+  // 2. tx の符号付き差分。parsed + 前回分ありなら増分 (失敗 / 上限超過は全件取り直し)
+  const collectDeltas = async (): Promise<CollectedDeltas> => {
+    const since = prev?.newestSignature;
+    if (prev && since && prev.fetchedDays >= days && walletTxBackend() === "parsed") {
+      const merged = await collectWalletDeltasSince(
+        wallet,
+        { ...prev, newestSignature: since },
+        nowSeconds
+      ).catch(() => null);
+      if (merged) return merged;
     }
-    // page 上限で打ち切り = これより前の残高は不明
-    return { deltas, oldestSeen, complete: false };
+    return collectWalletDeltasFull(wallet, days, nowSeconds);
   };
 
-  const [{ deltas, oldestSeen, complete }] = await Promise.all([
-    collectDeltas(),
-    fillOraclePrices,
-  ]);
+  const [collected] = await Promise.all([collectDeltas(), fillOraclePrices]);
 
   return {
     current,
     assets: historyAssets,
-    deltas,
-    oldestSeen,
-    fetchedDays: days,
-    complete,
+    deltas: collected.deltas,
+    oldestSeen: collected.oldestSeen,
+    fetchedDays: collected.fetchedDays,
+    complete: collected.complete,
+    ...(collected.newestSignature ? { newestSignature: collected.newestSignature } : {}),
   };
 }
 
@@ -637,12 +725,21 @@ export async function solanaPriceSeries(
   return seriesByMint;
 }
 
-const solanaHistoryEngine = createHistoryEngine({
-  chain: "solana",
-  nativePriceKey: WSOL_MINT,
-  loadInputs: loadSolanaHistoryInputs,
-  priceSeries: solanaPriceSeries,
-});
+/** Phase C: history 入力の volume 永続化 (SEASONALS_DATA_DIR 未設定 = jest では no-op) */
+const solanaHistoryInputsStore = createInputsStore();
+
+const solanaHistoryEngine = createHistoryEngine(
+  {
+    chain: "solana",
+    nativePriceKey: WSOL_MINT,
+    loadInputs: loadSolanaHistoryInputs,
+    priceSeries: solanaPriceSeries,
+  },
+  {
+    hydrate: (address) => solanaHistoryInputsStore.hydrate(address),
+    persist: (address, inputs) => solanaHistoryInputsStore.persist(address, inputs),
+  }
+);
 
 export function _clearPortfolioHistoryCacheForTest(): void {
   solanaHistoryEngine.clear();

@@ -5,9 +5,9 @@
  */
 import { fetchAssetsByOwner, invalidateAssetsCacheForWallet } from "./clients/helius";
 import {
-  fetchEnhancedTransactions,
-  invalidateEnhancedTxCacheForWallet,
-} from "./clients/helius-tx";
+  fetchWalletTxs,
+  invalidateWalletTxCacheForWallet,
+} from "./clients/tx-history";
 import { fetchStakeAccounts } from "./clients/helius-rpc";
 import {
   fetchEarnPositions,
@@ -37,9 +37,9 @@ jest.mock("./clients/helius", () => ({
   fetchAssetsByOwner: jest.fn(),
   invalidateAssetsCacheForWallet: jest.fn(),
 }));
-jest.mock("./clients/helius-tx", () => ({
-  fetchEnhancedTransactions: jest.fn(),
-  invalidateEnhancedTxCacheForWallet: jest.fn(),
+jest.mock("./clients/tx-history", () => ({
+  fetchWalletTxs: jest.fn(),
+  invalidateWalletTxCacheForWallet: jest.fn(),
 }));
 jest.mock("./clients/helius-rpc", () => ({ fetchStakeAccounts: jest.fn() }));
 jest.mock("./clients/jupiter-lend", () => ({
@@ -58,7 +58,7 @@ const OTHER = "9WzDXwBbmkg8ZTbNMqUxvQRAyrZzDsGYdLVL9zYtAWWM";
 
 const CLIENTS = [
   fetchAssetsByOwner,
-  fetchEnhancedTransactions,
+  fetchWalletTxs,
   fetchMeteoraPositions,
   fetchOrcaPositions,
   fetchKaminoObligations,
@@ -98,7 +98,7 @@ describe("loadWalletSnapshot — 共有と dedupe", () => {
     await a.settled;
     for (const fn of CLIENTS) expect(fn).toHaveBeenCalledTimes(1);
     // 引数の形は route が直接呼んでいた時と同じ
-    expect(fetchEnhancedTransactions).toHaveBeenCalledWith(WALLET);
+    expect(fetchWalletTxs).toHaveBeenCalledWith(WALLET);
     expect(fetchKaminoObligations).toHaveBeenCalledWith(KAMINO_MAIN_MARKET, WALLET);
     expect(await a.assets).toEqual({ status: "fulfilled", value: [] });
   });
@@ -197,7 +197,7 @@ describe("invalidateWalletSnapshot", () => {
     invalidateWalletSnapshot(WALLET);
     expect(invalidateAssetsCacheForWallet).toHaveBeenCalledTimes(1);
     expect(invalidateAssetsCacheForWallet).toHaveBeenCalledWith(WALLET);
-    expect(invalidateEnhancedTxCacheForWallet).toHaveBeenCalledWith(WALLET);
+    expect(invalidateWalletTxCacheForWallet).toHaveBeenCalledWith(WALLET);
     expect(invalidateEarnPositionsCacheForWallet).toHaveBeenCalledWith(WALLET);
     expect(invalidateAssetsCacheForWallet).not.toHaveBeenCalledWith(OTHER);
   });

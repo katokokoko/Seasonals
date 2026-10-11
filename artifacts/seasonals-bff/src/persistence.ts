@@ -19,8 +19,10 @@
 import {
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   renameSync,
+  statSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -73,6 +75,43 @@ export function saveJson(name: string, value: unknown): void {
   } catch {
     // best-effort: 永続化失敗はサイクル/リクエストを壊さない
   }
+}
+
+/**
+ * Phase C: `<dataDir>/<name>.json` を消す。無効時 / 不在は no-op、失敗は握りつぶす
+ * (portfolio/inputs-store.ts の LRU 掃除用)。
+ */
+export function deleteJson(name: string): void {
+  const dir = dataDir();
+  if (!dir) return;
+  try {
+    unlinkSync(join(dir, `${name}.json`));
+  } catch {
+    // 不在 / 権限: best-effort
+  }
+}
+
+/**
+ * Phase C: `<prefix>*.json` の一覧 (name は拡張子なし、mtime 付き、古い順)。
+ * 無効時 / dir 不在は空配列。書込途中の `.json.tmp` は含めない。
+ */
+export function listJson(prefix: string): Array<{ name: string; mtimeMs: number }> {
+  const dir = dataDir();
+  if (!dir || !existsSync(dir)) return [];
+  const out: Array<{ name: string; mtimeMs: number }> = [];
+  try {
+    for (const f of readdirSync(dir)) {
+      if (!f.startsWith(prefix) || !f.endsWith(".json")) continue;
+      try {
+        out.push({ name: f.slice(0, -".json".length), mtimeMs: statSync(join(dir, f)).mtimeMs });
+      } catch {
+        // 列挙と stat の間に消えた
+      }
+    }
+  } catch {
+    return [];
+  }
+  return out.sort((a, b) => a.mtimeMs - b.mtimeMs || a.name.localeCompare(b.name));
 }
 
 /**

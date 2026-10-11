@@ -127,6 +127,66 @@ describe("createHistoryEngine.history", () => {
   });
 });
 
+describe("Phase C: incremental prev / hydrate / persist", () => {
+  it("passes the expired entry as prev when it covers the requested range", async () => {
+    let clock = NOW * 1000;
+    const first = inputs({ newestSignature: "SIG1" });
+    const src = source(first);
+    const engine = createHistoryEngine(src, { now: () => clock, cacheTtlMs: 1000 });
+    await engine.holdings("0xabc"); // days = 1 → prev は渡らない (cold)
+    expect(src.loadInputs).toHaveBeenLastCalledWith("0xabc", 1, NOW);
+    await engine.history("0xabc", 30, NOW); // 1 日分の cache では足りない → prev 無し
+    expect(src.loadInputs.mock.calls[1]).toHaveLength(3);
+    clock += 5000; // 期限切れ
+    await engine.holdings("0xabc");
+    expect(src.loadInputs.mock.calls[2]![3]).toBe(first);
+  });
+
+  it("does not pass prev when the cached range is shorter than requested", async () => {
+    let clock = NOW * 1000;
+    const src = source(inputs({ fetchedDays: 1 }));
+    const engine = createHistoryEngine(src, { now: () => clock, cacheTtlMs: 1000 });
+    await engine.holdings("0xabc");
+    clock += 5000;
+    await engine.history("0xabc", 30, NOW);
+    expect(src.loadInputs.mock.calls[1]).toHaveLength(3);
+  });
+
+  it("hydrates once per address (as stale prev), persists loaded inputs, ignores hook failures", async () => {
+    const saved = { deltas: [], oldestSeen: NOW - 40 * DAY, fetchedDays: 30, complete: true, newestSignature: "OLD" };
+    const hydrate = jest.fn().mockReturnValueOnce(saved).mockReturnValue(null);
+    const persist = jest.fn(() => {
+      throw new Error("disk full");
+    });
+    const loaded = inputs({ newestSignature: "NEW" });
+    const src = source(loaded);
+    const engine = createHistoryEngine(src, { now: () => NOW * 1000, hydrate, persist });
+    const res = await engine.history("0xabc", 30, NOW);
+    expect(res.points.length).toBeGreaterThan(0);
+    expect(src.loadInputs).toHaveBeenCalledWith("0xabc", 30, NOW, saved);
+    expect(persist).toHaveBeenCalledWith("0xabc", loaded);
+    // 2 回目の address 違いは別に hydrate、同じ address は再 hydrate しない
+    await engine.holdings("0xdef");
+    await engine.history("0xabc", 30, NOW);
+    expect(hydrate.mock.calls.map((c) => c[0])).toEqual(["0xabc", "0xdef"]);
+  });
+
+  it("a hydrated cursor shorter than the requested range is not used as prev", async () => {
+    const hydrate = jest.fn().mockResolvedValue({ deltas: [], oldestSeen: NOW, fetchedDays: 7, complete: true });
+    const src = source(inputs());
+    const engine = createHistoryEngine(src, { now: () => NOW * 1000, hydrate });
+    await engine.history("0xabc", 30, NOW);
+    expect(src.loadInputs.mock.calls[0]).toHaveLength(3);
+  });
+
+  it("does not persist a wallet with nothing held", async () => {
+    const persist = jest.fn();
+    const engine = createHistoryEngine(source(null), { now: () => NOW * 1000, persist });
+    await engine.history("0xabc", 30, NOW);
+    expect(persist).not.toHaveBeenCalled();
+  });
+});
+
 describe("holdingsFromInputs", () => {
   it("values holdings with the current price and keeps category / deposited", () => {
     const out = holdingsFromInputs("ethereum", "0xabc", inputs());
