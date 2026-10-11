@@ -28,6 +28,8 @@ import {
   type MeteoraDlmmMarket,
 } from "@workspace/lib/config/meteora-markets";
 import { toV0Base64 } from "./tx-utils";
+import { heliusRpcFetch } from "./helius-limiter";
+import { TtlCache } from "../cache/ttl-cache";
 
 const HELIUS_MAINNET_URL = "https://mainnet.helius-rpc.com";
 /** active bin から片側に取る bin 数 (Spot strategy、range UI を出さない preset) */
@@ -62,23 +64,25 @@ function bn(value: string | number): DlmmBN {
 function getConnection(): Connection {
   const apiKey = process.env.HELIUS_API_KEY;
   if (!apiKey) throw new Error("HELIUS_API_KEY is not set");
-  return new Connection(`${HELIUS_MAINNET_URL}/?api-key=${apiKey}`, "confirmed");
+  // B1: SDK の RPC read も Helius の列 (同時実行数 / 間隔) に並べ、usage に数える
+  return new Connection(`${HELIUS_MAINNET_URL}/?api-key=${apiKey}`, { commitment: "confirmed", fetch: heliusRpcFetch });
 }
 
-// pool instance cache (60s — activeBin/state は build 時に SDK が再読するため軽め)
-const poolCache = new Map<string, { at: number; pool: DlmmInstance }>();
+// pool instance cache (60s — activeBin/state は build 時に SDK が再読するため軽め)。
+// B2: TtlCache に移し、同じ pool の同時 miss は 1 回の DLMM.create に合流させる。
+// deposit の getActiveBin は live のまま (pool instance だけを共有する)
 const POOL_TTL_MS = 60_000;
+const poolCache = new TtlCache<DlmmInstance>({
+  name: "meteora.pool",
+  ttlMs: POOL_TTL_MS,
+  maxEntries: 20,
+  now: () => Date.now(),
+});
 
 async function getPool(market: MeteoraDlmmMarket): Promise<DlmmInstance> {
-  const hit = poolCache.get(market.pool_address);
-  if (hit && Date.now() - hit.at < POOL_TTL_MS) return hit.pool;
-  const DLMM = getDlmm();
-  const pool = await DLMM.create(
-    getConnection(),
-    new PublicKey(market.pool_address)
+  return poolCache.getOrLoad(market.pool_address, () =>
+    getDlmm().create(getConnection(), new PublicKey(market.pool_address))
   );
-  poolCache.set(market.pool_address, { at: Date.now(), pool });
-  return pool;
 }
 
 // v0 変換 + ephemeral 部分署名は共通 helper (clients/tx-utils.ts) を使用 (8.18 で共通化)

@@ -9,7 +9,10 @@
  * authToken は厳密には秘密鍵ではないが「再認可をスキップする証」であり機微度が高い
  * ため、`expo-secure-store` (iOS Keychain / Android Keystore 経由) で保存する。
  *
- * persist は authorization のみ partialize。status / error は session-only。
+ * persist は authorization と recentWallets を partialize。status / error は session-only。
+ * recentWallets (API 効率化計画 §4.0) は「端末に cache を残す wallet」の MRU 5 件で、
+ * 中身は公開 address と最終接続時刻だけ (秘密は増やさない)。外れた wallet の
+ * query cache の削除は QueryClient を持つ useWalletQuerySync が行う。
  *
  * @see ./mwa.ts (MWA wrapper、connect / reauthorize / disconnect の実装)
  */
@@ -30,6 +33,10 @@ import {
   type ConnectedAuthorization,
 } from "./mwa";
 import { USE_ONCHAIN } from "./config";
+// 純関数のみ (wallet-query-sync は walletStore を型でしか参照しない = 循環 require なし)
+import { touchRecentWallets, type RecentWallet } from "./wallet-query-sync";
+
+export type { RecentWallet };
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Storage 層 — expo-secure-store の StateStorage adapter
@@ -38,7 +45,17 @@ import { USE_ONCHAIN } from "./config";
 const SECURE_STORE_KEY = "seasonals.wallet.v1";
 
 const secureStorage: StateStorage = {
-  getItem: async (key) => (await SecureStore.getItemAsync(key)) ?? null,
+  // 読めない (Keystore の一時エラー等) は「保存無し」として扱う。reject させると zustand persist は
+  // hasHydrated を立てず onFinishHydration も呼ばないので、復元待ちの側 (useWalletQuerySync /
+  // _layout の persist filter) が永久に待つ
+  getItem: async (key) => {
+    try {
+      return (await SecureStore.getItemAsync(key)) ?? null;
+    } catch (err) {
+      console.warn("[walletStore] SecureStore read failed; starting without saved wallet", err);
+      return null;
+    }
+  },
   setItem: async (key, value) => {
     await SecureStore.setItemAsync(key, value);
   },
@@ -46,6 +63,39 @@ const secureStorage: StateStorage = {
     await SecureStore.deleteItemAsync(key);
   },
 };
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 復元完了の判定 — persist.hasHydrated() は復元が**成功**した時しか true にならない
+// (getItem 以外の失敗、例えば復元直後の setItem の reject でも false のまま)。
+// 失敗も「復元は終わった (保存無しで始める)」として扱い、待っている側を止めない
+// ─────────────────────────────────────────────────────────────────────────────
+
+let hydrationFailed = false;
+const hydrationFailureListeners = new Set<() => void>();
+
+/** walletStore の復元が終わったか (成功 / 失敗のどちらでも true) */
+export function isWalletStoreHydrated(): boolean {
+  return useWalletStore.persist.hasHydrated() || hydrationFailed;
+}
+
+/**
+ * 直近の復元が失敗で終わったか。失敗時は recentWallets が空 (初期値) なので、
+ * 永続化フィルタ (app/_layout.tsx) はこれを見て「wallet 系 cache を全部残す」に倒す —
+ * 一過性の SecureStore 失敗で取得済みデータまで消さない (§4.0)
+ */
+export function walletStoreHydrationFailed(): boolean {
+  return hydrationFailed;
+}
+
+/** 復元が終わったら (成功 / 失敗のどちらでも) cb を呼ぶ。戻り値は解除関数 */
+export function onWalletStoreHydrated(cb: () => void): () => void {
+  const unsub = useWalletStore.persist.onFinishHydration(() => cb());
+  hydrationFailureListeners.add(cb);
+  return () => {
+    unsub();
+    hydrationFailureListeners.delete(cb);
+  };
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Store 型
@@ -57,6 +107,8 @@ export interface WalletStoreState {
   authorization: ConnectedAuthorization | null;
   status: WalletStatus;
   error: string | null;
+  /** §4.0: cache を保持する wallet (MRU、先頭が最新、最大 5 件)。切断では消さない */
+  recentWallets: RecentWallet[];
 }
 
 export interface WalletStoreActions {
@@ -82,6 +134,7 @@ export const useWalletStore = create<WalletStore>()(
       authorization: null,
       status: "idle",
       error: null,
+      recentWallets: [],
 
       connect: async (opts) => {
         set({ status: "connecting", error: null });
@@ -95,7 +148,16 @@ export const useWalletStore = create<WalletStore>()(
             opts?.chain ??
             (USE_ONCHAIN ? "solana:mainnet" : "solana:devnet");
           const authorization = await connectWallet({ ...opts, chain });
-          set({ authorization, status: "connected", error: null });
+          set({
+            authorization,
+            status: "connected",
+            error: null,
+            recentWallets: touchRecentWallets(
+              get().recentWallets,
+              authorization.address,
+              Date.now()
+            ),
+          });
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           set({ status: "error", error: message });
@@ -126,13 +188,22 @@ export const useWalletStore = create<WalletStore>()(
         }
       },
 
-      reset: () => set({ authorization: null, status: "idle", error: null }),
+      reset: () =>
+        set({
+          authorization: null,
+          status: "idle",
+          error: null,
+          recentWallets: [],
+        }),
     }),
     {
       name: SECURE_STORE_KEY,
       storage: createJSONStorage(() => secureStorage),
-      // persist 対象は authorization のみ。status / error は session-only。
-      partialize: (state) => ({ authorization: state.authorization }),
+      // persist 対象は authorization と recentWallets。status / error は session-only。
+      partialize: (state) => ({
+        authorization: state.authorization,
+        recentWallets: state.recentWallets,
+      }),
       /**
        * 8.67: 復元後に status を戻す。
        *
@@ -147,12 +218,43 @@ export const useWalletStore = create<WalletStore>()(
        * まで有効なので「token を保持している = connected」で意味が通る。
        * 起動時の `reauthorize()` は採らない — transact() 経由で wallet アプリ
        * が毎回立ち上がるため。revoke 済だった場合は次の署名で失敗する。
+       *
+       * §4.0: 8.67 は onRehydrateStorage で 2 回目の setState を打っていたため、
+       * subscriber からは「address だけ戻った (idle)」→「connected」の 2 遷移に見え、
+       * wallet 系クエリの再取得が二重に走り得た。merge で **authorization と
+       * status を 1 回の set** にまとめる (復元した wallet は recentWallets の先頭へ)。
        */
-      onRehydrateStorage: () => (state) => {
-        // state を直接書き換えず setState (subscriber に通知させる)
-        if (state?.authorization) {
-          useWalletStore.setState({ status: "connected" });
-        }
+      // 復元の開始で失敗フラグを戻し、失敗で終わったら isWalletStoreHydrated を true にする
+      // (成功時は persist.hasHydrated / onFinishHydration がそのまま知らせる)
+      onRehydrateStorage: () => {
+        hydrationFailed = false;
+        return (_state, error) => {
+          if (!error) return;
+          console.warn("[walletStore] rehydrate failed; continuing without saved wallet", error);
+          hydrationFailed = true;
+          for (const cb of [...hydrationFailureListeners]) cb();
+        };
+      },
+      merge: (persisted, current) => {
+        const p = (persisted ?? {}) as Partial<WalletStoreState>;
+        // 既定の merge (`{ ...current, ...persisted }`) と同じく、保存に無い項目は現値を残す
+        const authorization =
+          p.authorization !== undefined ? p.authorization : current.authorization;
+        const recent = Array.isArray(p.recentWallets)
+          ? p.recentWallets.filter(
+              (w): w is RecentWallet =>
+                typeof w?.address === "string" &&
+                typeof w?.lastConnectedAt === "number"
+            )
+          : current.recentWallets;
+        return {
+          ...current,
+          authorization,
+          recentWallets: authorization
+            ? touchRecentWallets(recent, authorization.address, Date.now())
+            : recent,
+          status: authorization ? "connected" : current.status,
+        };
       },
     }
   )

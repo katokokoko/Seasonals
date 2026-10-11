@@ -13,7 +13,8 @@
  *   - HELIUS_API_KEY env が必須
  */
 
-import { fetchWithTimeout } from "./http"; // Phase 8.38 (B9): 共通 timeout
+// B1: Enhanced は heliusDataFetch の列 (2 in flight / 500ms) に並べ、429 / 5xx は backoff 再試行
+import { fetchJsonWithRetry, heliusDataFetch } from "./helius-limiter";
 const HELIUS_BASE = "https://api.helius.xyz/v0";
 const CACHE_TTL_MS = 60_000;
 
@@ -97,7 +98,16 @@ function buildUrl(walletAddress: string, limit: number): string {
       "HELIUS_API_KEY is not set. Required for Enhanced Transactions API (Phase 8.3)"
     );
   }
-  return `${HELIUS_BASE}/addresses/${walletAddress}/transactions?api-key=${apiKey}&limit=${limit}`;
+  return `${HELIUS_BASE}/addresses/${encodeURIComponent(walletAddress)}/transactions?api-key=${apiKey}&limit=${limit}`;
+}
+
+/** GET 1 本 (列 + retry)。error message に URL (api-key) を出さない (HeliusRpcError) */
+function getEnhancedJson(url: string): Promise<HeliusEnhancedTx[]> {
+  return fetchJsonWithRetry<HeliusEnhancedTx[]>(
+    url,
+    { method: "GET", headers: { accept: "application/json" } },
+    { label: "enhanced-tx", fetchImpl: heliusDataFetch.timed() }
+  );
 }
 
 /**
@@ -105,6 +115,13 @@ function buildUrl(walletAddress: string, limit: number): string {
  * 遡る。cache は使わない (呼び手が cutoff まで繰り返すため、ページ単位で持つと
  * 意味が薄い)。実測: limit=100 / before で 2 ページ目以降も同 shape で返る。
  */
+/**
+ * B3 follow-up: tx 送信後に wallet の 60s cache を捨てる (wallet-snapshot.ts の invalidateWalletSnapshot から)
+ */
+export function invalidateEnhancedTxCacheForWallet(walletAddress: string): void {
+  cache.delete(walletAddress);
+}
+
 export async function fetchEnhancedTransactionsPage(
   walletAddress: string,
   opts: { limit?: number; before?: string } = {}
@@ -113,18 +130,7 @@ export async function fetchEnhancedTransactionsPage(
   const url =
     buildUrl(walletAddress, limit) +
     (opts.before ? `&before=${encodeURIComponent(opts.before)}` : "");
-  const res = await fetchWithTimeout(url, {
-    method: "GET",
-    headers: { accept: "application/json" },
-  });
-  if (!res.ok) {
-    throw new Error(
-      `Helius enhanced-tx HTTP ${res.status} ${res.statusText}: ${await res
-        .text()
-        .catch(() => "")}`
-    );
-  }
-  const json = (await res.json()) as HeliusEnhancedTx[];
+  const json = await getEnhancedJson(url);
   if (!Array.isArray(json)) {
     throw new Error("Helius enhanced-tx unexpected shape (not array)");
   }
@@ -144,18 +150,7 @@ export async function fetchEnhancedTransactions(
     return cached.data;
   }
 
-  const res = await fetchWithTimeout(buildUrl(walletAddress, limit), {
-    method: "GET",
-    headers: { accept: "application/json" },
-  });
-
-  if (!res.ok) {
-    throw new Error(
-      `Helius enhanced-tx HTTP ${res.status} ${res.statusText}: ${await res.text().catch(() => "")}`
-    );
-  }
-
-  const json = (await res.json()) as HeliusEnhancedTx[];
+  const json = await getEnhancedJson(buildUrl(walletAddress, limit));
   if (!Array.isArray(json)) {
     throw new Error(`Helius enhanced-tx unexpected shape (not array)`);
   }

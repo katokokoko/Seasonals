@@ -34,7 +34,7 @@ import {
   fetchKaminoVaultMetrics,
   fetchKaminoVaultUserPositions,
 } from "./clients/kamino-tx";
-import { getOracleResult } from "./clients/oracle";
+import { getOracleResult, getOracleResults } from "./clients/oracle";
 
 jest.mock("./clients/kamino-tx");
 jest.mock("./clients/oracle");
@@ -103,6 +103,10 @@ let app: FastifyInstance;
 
 beforeEach(async () => {
   jest.clearAllMocks();
+  // B3: routes は getOracleResults (batch) を使う — 既存の getOracleResult stub から組み立てる
+  (getOracleResults as jest.Mock).mockImplementation(async (mints: string[]) =>
+    new Map(await Promise.all(mints.map(async (m) => [m, await getOracleResult(m)] as const)))
+  );
   mockOracle.mockResolvedValue(okOracle());
   mockDeposit.mockResolvedValue({ transaction: "KAMINO_DEP_TX" });
   mockWithdraw.mockResolvedValue({ transaction: "KAMINO_WD_TX" });

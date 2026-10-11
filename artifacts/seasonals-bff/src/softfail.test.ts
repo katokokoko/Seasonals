@@ -36,7 +36,8 @@ import {
 import { fetchAssetsByOwner } from "./clients/helius";
 import { fetchEarnMarkets, fetchEarnPositions } from "./clients/jupiter-lend";
 import { fetchEnhancedTransactions } from "./clients/helius-tx";
-import { getOracleResult, oracleMintForSymbol } from "./clients/oracle";
+import { getOracleResult, getOracleResults, oracleMintForSymbol } from "./clients/oracle";
+import { _clearWalletSnapshotForTest } from "./wallet-snapshot";
 
 jest.mock("./clients/meteora-tx", () => ({
   ...jest.requireActual("./clients/meteora-tx"),
@@ -55,6 +56,11 @@ jest.mock("./clients/rates");
 jest.mock("./clients/helius");
 jest.mock("./clients/jupiter-lend");
 jest.mock("./clients/helius-tx");
+// B3: wallet snapshot は stake account も読む — 実 RPC を掴まないよう空で固定
+jest.mock("./clients/helius-rpc", () => ({
+  ...jest.requireActual("./clients/helius-rpc"),
+  fetchStakeAccounts: jest.fn(async () => []),
+}));
 
 const WALLET = "8sN5e1Qm9bYz2c3d4e5f6g7h8i9jAk1L2m3n4o5p6q7r";
 const MAIN_UPSTREAMS = [
@@ -84,6 +90,11 @@ let app: FastifyInstance;
 
 beforeEach(async () => {
   jest.clearAllMocks();
+  // B3: routes は getOracleResults (batch) を使う — 既存の getOracleResult stub から組み立てる
+  (getOracleResults as jest.Mock).mockImplementation(async (mints: string[]) =>
+    new Map(await Promise.all(mints.map(async (m) => [m, await getOracleResult(m)] as const)))
+  );
+  _clearWalletSnapshotForTest(); // B3: wallet snapshot は module cache — test 間で持ち越さない
   // .then/.catch が直接付く client は resolved default が必須 (automock は undefined)
   (fetchMeteoraPositions as jest.Mock).mockResolvedValue([]);
   (fetchMeteoraPoolStats as jest.Mock).mockResolvedValue(new Map());

@@ -17,6 +17,7 @@ import { fixtureMenuListings } from "@workspace/lib/__fixtures__";
 
 import { MenuDrawer } from "./MenuDrawer";
 import { createQueryClient } from "../../services/queryClient";
+import * as api from "../../services/api";
 
 function freshClient(): QueryClient {
   return createQueryClient({
@@ -118,5 +119,17 @@ describe("MenuDrawer drill-down (8.54 カード行)", () => {
     fireEvent.press(link);
     expect(openURL).toHaveBeenCalledWith(pool.external_url);
     openURL.mockRestore();
+  });
+});
+
+describe("MenuDrawer — 保有 positions は Home と同じ wallet key で引く (Phase A-1)", () => {
+  afterEach(() => jest.restoreAllMocks());
+
+  it("walletAddress を渡すと address 付きで取得する (Home と同 key = 追加リクエスト 0)", async () => {
+    const A = "7nZbHkQqXkr3eW8s2dKvHqBxNz9vC5jPpL2tF6mYrXaA";
+    const spy = jest.spyOn(api, "getPositions");
+    render(wrap(<MenuDrawer visible onClose={() => {}} walletAddress={A} testID="menu" />));
+    await waitFor(() => expect(spy).toHaveBeenCalled());
+    expect(spy.mock.calls.every(([address]) => address === A)).toBe(true);
   });
 });

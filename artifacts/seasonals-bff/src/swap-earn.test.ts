@@ -17,7 +17,7 @@ import type { OracleResult } from "@workspace/lib/types";
 
 import { buildServer } from "./server";
 import { fetchSwapQuote, fetchSwapTransaction } from "./clients/jupiter-swap";
-import { getOracleResult } from "./clients/oracle";
+import { getOracleResult, getOracleResults } from "./clients/oracle";
 import { fetchLstSolValues } from "./clients/lst-rates";
 import { getWalletBalanceSmallest } from "./clients/helius-rpc";
 
@@ -89,6 +89,10 @@ let app: FastifyInstance;
 
 beforeEach(async () => {
   jest.clearAllMocks();
+  // B3: routes は getOracleResults (batch) を使う — 既存の getOracleResult stub から組み立てる
+  (getOracleResults as jest.Mock).mockImplementation(async (mints: string[]) =>
+    new Map(await Promise.all(mints.map(async (m) => [m, await getOracleResult(m)] as const)))
+  );
   mockOracle.mockResolvedValue(okOracle());
   mockSolValues.mockResolvedValue(new Map([["jitoSOL", JITO_SOL_VALUE]]));
   // 8.80: 既定は潤沢な残高 (gate を通す)。不足系は専用 describe で上書き

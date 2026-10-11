@@ -101,6 +101,11 @@ import { mergeEarnPositions } from "../services/earn-to-position";
 // 8.56: portfolio chart の実履歴 (1 日 1 点の実測スナップショット)
 import { usePortfolioHistoryStore } from "../stores/portfolioHistory";
 import { totalSolValue } from "../components/portfolio/portfolioTimeSeries";
+// §4.0: wallet 由来データの鮮度ラベル (純関数)
+import {
+  combineQueryFreshness,
+  type QueryFreshnessStatus,
+} from "@workspace/lib/derive/data-freshness";
 
 function localDayKey(day: Date): string {
   return `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, "0")}-${String(day.getDate()).padStart(2, "0")}`;
@@ -129,16 +134,58 @@ export default function HomeScreen() {
   // 8.77: 再接続 (disconnect → 同じ wallet で connect) は query key が元に戻る
   // だけなので、これが無いと staleTime の間キャッシュのままになる
   // (history は 5 分。「再接続してもグラフが変わらない」の原因)
+  // §4.0: 取り直すのは接続した wallet の key だけ。切断では cache を保持し、
+  // recentWallets (MRU 5) から外れた wallet の cache を消す
   useWalletQuerySync();
   const onchainAddress =
     USE_ONCHAIN && authorization?.address ? authorization.address : null;
-  const { data: basePositions = [] } = usePositions(onchainAddress);
+  const positionsQuery = usePositions(onchainAddress);
+  const { data: basePositions = [] } = positionsQuery;
   // Phase 8.2: onchain APK で接続済みなら Jupiter Lend / Kamino positions を取得、
   // MenuDrawer "Your Positions" section に渡す
-  const { data: earnPositionsData } = useEarnPositions(onchainAddress);
+  const earnQuery = useEarnPositions(onchainAddress);
+  const { data: earnPositionsData } = earnQuery;
   // Phase 8.3: wallet tx 履歴から派生する deposit/withdraw time events を取得し、
   // 既存 fixture events と merge して calendar に渡す
-  const { data: walletEvents = [] } = useWalletTimeEvents(onchainAddress);
+  const walletEventsQuery = useWalletTimeEvents(onchainAddress);
+  const { data: walletEvents = [] } = walletEventsQuery;
+  // §4.0: 鮮度ラベル用に wallet 系 3 query の状態を保守的に合成 (最古の取得時刻 /
+  // どれか取得中 / どれか失敗)。PortfolioSummary (React.memo) の identity を保つため
+  // primitive で memo する。未接続は null (ラベルを出さない)
+  const walletDataStatus = useMemo<QueryFreshnessStatus | null>(
+    () =>
+      onchainAddress
+        ? combineQueryFreshness([
+            {
+              dataUpdatedAt: positionsQuery.dataUpdatedAt,
+              isFetching: positionsQuery.isFetching,
+              isError: positionsQuery.isError,
+            },
+            {
+              dataUpdatedAt: earnQuery.dataUpdatedAt,
+              isFetching: earnQuery.isFetching,
+              isError: earnQuery.isError,
+            },
+            {
+              dataUpdatedAt: walletEventsQuery.dataUpdatedAt,
+              isFetching: walletEventsQuery.isFetching,
+              isError: walletEventsQuery.isError,
+            },
+          ])
+        : null,
+    [
+      onchainAddress,
+      positionsQuery.dataUpdatedAt,
+      positionsQuery.isFetching,
+      positionsQuery.isError,
+      earnQuery.dataUpdatedAt,
+      earnQuery.isFetching,
+      earnQuery.isError,
+      walletEventsQuery.dataUpdatedAt,
+      walletEventsQuery.isFetching,
+      walletEventsQuery.isError,
+    ]
+  );
   // SKR staking cooldown (docs/skr-r0-implementation.md): Calendar event / Staking row /
   // 確認通知 / 境界 retry を 1 つの query で賄う。positions には入れない
   const skr = useSkrStakingView(onchainAddress);
@@ -153,16 +200,27 @@ export default function HomeScreen() {
   );
   // Phase 8.56: 評価額を 1 日 1 点だけ記録する (chart の実履歴)。
   // 8.57: 実価格が揃ってから記録する (SOL 価格が無いと 0 になり、store 側で捨てられる)
+  // §4.0: 日次スナップショットは wallet 別。active wallet が変わったら切り替えて復元し、
+  // 未接続 (fixture / default variant) では記録しない。読込完了 (loadedAddress) 前は
+  // store 側が書き込みを拒むので、完了後にもう一度 record が走るよう deps に入れる
+  useEffect(() => {
+    void usePortfolioHistoryStore.getState().hydrate(onchainAddress);
+  }, [onchainAddress]);
+  const historyLoadedFor = usePortfolioHistoryStore((s) => s.loadedAddress);
   const { data: priceStrings } = usePrices();
   useEffect(() => {
+    if (!onchainAddress || historyLoadedFor !== onchainAddress) return;
     if (positions.length === 0) return;
     const prices: Record<string, number> = {};
     for (const [symbol, value] of Object.entries(priceStrings ?? {})) {
+      // 表示用の SOL 換算 (snapshot は Number で貯める既存仕様、8.56)
       const n = Number(value);
       if (Number.isFinite(n) && n > 0) prices[symbol] = n;
     }
-    usePortfolioHistoryStore.getState().record(totalSolValue(positions, prices));
-  }, [positions, priceStrings]);
+    usePortfolioHistoryStore
+      .getState()
+      .record(onchainAddress, totalSolValue(positions, prices));
+  }, [onchainAddress, historyLoadedFor, positions, priceStrings]);
 
   // Phase 8.3 Part B: wallet tx 由来 events + fixture events を merge
   // SKR: BFF の wrapper.event を fromDTO で渡す (stale でも最後の観測を残す。取消済みと解釈しない)
@@ -515,6 +573,7 @@ export default function HomeScreen() {
         protocols={protocols}
         today={today}
         walletAddress={onchainAddress}
+        walletDataStatus={walletDataStatus}
         animatedPosition={sheetPosition}
         minTopY={viewMode === "monthly" ? calendarBottomY : null}
         cooldown={skr}
@@ -542,6 +601,7 @@ export default function HomeScreen() {
         onStartAction={handleStartActionFromServices}
         onWithdrawPosition={handleWithdrawPosition}
         earnPositions={earnPositionsData}
+        walletAddress={onchainAddress}
         testID="home-menu-drawer"
       />
 

@@ -17,7 +17,7 @@ import {
   buildSaveWithdrawTxns,
   fetchSaveReserveRates,
 } from "./clients/save-tx";
-import { getOracleResult } from "./clients/oracle";
+import { getOracleResult, getOracleResults } from "./clients/oracle";
 
 jest.mock("./clients/save-tx");
 jest.mock("./clients/oracle");
@@ -58,6 +58,10 @@ let app: FastifyInstance;
 
 beforeEach(async () => {
   jest.clearAllMocks();
+  // B3: routes は getOracleResults (batch) を使う — 既存の getOracleResult stub から組み立てる
+  (getOracleResults as jest.Mock).mockImplementation(async (mints: string[]) =>
+    new Map(await Promise.all(mints.map(async (m) => [m, await getOracleResult(m)] as const)))
+  );
   mockOracle.mockResolvedValue(okOracle());
   mockDeposit.mockResolvedValue({ transactions: ["SAVE_DEP_TX1", "SAVE_DEP_TX2"] });
   mockWithdraw.mockResolvedValue({ transactions: ["SAVE_WD_TX"] });

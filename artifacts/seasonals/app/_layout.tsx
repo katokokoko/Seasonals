@@ -65,7 +65,14 @@ import {
 } from "../services/cooldown-reminder";
 import { ComingSoonToast } from "../components/feedback/ComingSoonToast";
 import { usePrefsStore } from "../stores/prefs";
-import { usePortfolioHistoryStore } from "../stores/portfolioHistory";
+// §4.0: 永続化の対象判定 (純関数) と、その入力の recentWallets
+import { shouldPersistQuery } from "../services/persist-filter";
+import {
+  isWalletStoreHydrated,
+  useWalletStore,
+  walletStoreHydrationFailed,
+} from "../services/walletStore";
+import { WALLET_QUERY_GC_MS } from "../services/queries";
 import { isDarkBackground, useActiveTheme } from "../stores/theme";
 
 // SplashScreen が消えるタイミングを font load 完了後にする
@@ -93,11 +100,13 @@ export default function RootLayout() {
   // stale query を refetch する (refetchOnWindowFocus: true とセット)
   useEffect(() => attachAppStateFocus(), []);
 
-  // 8.83: portfolio-history query だけ AsyncStorage に永続化する
+  // 8.83: portfolio-history query を AsyncStorage に永続化する
   // (stale-while-revalidate)。再起動時は前回の完全グラフが即復元され、
   // staleTime 超過なら裏で refetch — cold start の brewing は初回起動と
-  // maxAge (24h) 超の離脱時だけになる。他の query の挙動は
-  // shouldDehydrateQuery のフィルタで一切変えない。
+  // maxAge (24h) 超の離脱時だけになる。
+  // §4.0: wallet 系 (recentWallets の wallet だけ) と menu-listings も載せる。
+  // 何を載せ何を載せないか (SKR / oracle / quote / plan は載せない) は
+  // services/persist-filter.ts。recentWallets は dehydrate の瞬間に読む
   const [persistOptions] = useState(() => ({
     persister: createAsyncStoragePersister({
       storage: AsyncStorage,
@@ -106,10 +115,25 @@ export default function RootLayout() {
       throttleTime: 1_000,
     }),
     maxAge: 24 * 60 * 60_000,
+    // §4.0: 復元した query は observer が付くまで既定 gcTime (5 分) で GC される。
+    // 接続していない recentWallets の wallet (再起動後まだ繋いでいない) の cache が
+    // 5 分で消え、次の書き込みで永続からも落ちるので、復元分は wallet 系と同じ 24h 保持する
+    hydrateOptions: {
+      defaultOptions: { queries: { gcTime: WALLET_QUERY_GC_MS } },
+    },
     dehydrateOptions: {
-      shouldDehydrateQuery: (query: { queryKey: readonly unknown[]; state: { status: string } }) =>
-        query.queryKey[0] === "portfolio-history" &&
-        query.state.status === "success",
+      shouldDehydrateQuery: (query: {
+        queryKey: readonly unknown[];
+        state: { status: string };
+      }) =>
+        shouldPersistQuery(
+          query,
+          // 復元前と復元失敗は null = wallet 系を全部残す (recentWallets が空のまま
+          // 書き込むと、繋ぎ直していない wallet の cache が一過性の失敗で消える)
+          isWalletStoreHydrated() && !walletStoreHydrationFailed()
+            ? useWalletStore.getState().recentWallets.map((w) => w.address)
+            : null
+        ),
     },
   }));
 
@@ -129,10 +153,10 @@ export default function RootLayout() {
   }, [fontsLoaded, fontsError]);
 
   // Phase 8.36: UI 設定 (液体演出 on/off 等) を起動時に復元
-  // Phase 8.56: portfolio の日次スナップショット (chart の実履歴) も復元
+  // (8.56 の portfolio 日次スナップショットは §4.0 で wallet 別になり、
+  //  active wallet が決まる app/index.tsx で hydrate(address) する)
   useEffect(() => {
     void usePrefsStore.getState().hydrate();
-    void usePortfolioHistoryStore.getState().hydrate();
   }, []);
 
   // Phase 8.45: edge-to-edge のシステムバーアイコン色を active theme に追従させる。

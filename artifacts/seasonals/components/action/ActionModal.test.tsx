@@ -115,3 +115,24 @@ describe("ActionModal review — tier C single-source note", () => {
     expect(screen.queryByTestId("oracle-single-source-note")).toBeNull();
   });
 });
+
+describe("ActionModal — Kamino reserves は Kamino の action だけ取得 (Phase A-1)", () => {
+  it("Kamino の review では取得する", async () => {
+    jest.spyOn(api, "getOracleStatus").mockResolvedValue(oracle({ tier: "A" }));
+    const spy = jest.spyOn(api, "getKaminoReserves").mockResolvedValue([]);
+    render(wrap(<ActionModal plan={DEPOSIT_PLAN} onClose={() => {}} testID="am" />));
+    await waitFor(() => expect(spy).toHaveBeenCalled());
+  });
+
+  it("Kamino 以外の review では撃たない", async () => {
+    jest.spyOn(api, "getOracleStatus").mockResolvedValue(oracle({ tier: "A" }));
+    const spy = jest.spyOn(api, "getKaminoReserves").mockResolvedValue([]);
+    const jupiterPlan = {
+      ...DEPOSIT_PLAN,
+      selected_action: { ...DEPOSIT_PLAN.selected_action!, protocol: "jupiter_lend" },
+    } as AgentPlan;
+    render(wrap(<ActionModal plan={jupiterPlan} onClose={() => {}} testID="am" />));
+    await waitFor(() => expect(screen.getByText("Approve only")).toBeTruthy());
+    expect(spy).not.toHaveBeenCalled();
+  });
+});
