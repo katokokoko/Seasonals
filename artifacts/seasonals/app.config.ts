@@ -13,7 +13,24 @@
  * 両 variant とも同じ JS bundle / native module を使うため、`pnpm android` と
  * `pnpm android:onchain` で 2 つの APK を Seeker に並べて install できる。
  *
- * @see eas.json `onchain` profile
+ * 配布用 EAS profile (eas.json はコメントを書けないのでここに残す。
+ * docs/external-release-api-handling.md §7):
+ *   - `preview-onchain` (`pnpm build:preview:onchain`) — tester に配る release 署名 APK
+ *   - `production-onchain` (`pnpm build:prod:onchain`) — dApp Store 提出用 release 署名 APK
+ *   - 両 profile とも env に `APP_VARIANT=onchain` と `BFF_BASE_URL=https://api.seasonals.cafe`
+ *     を持つ。expo-constants は Gradle build の度に本 file を再評価して `extra` を APK に
+ *     焼き込むため、env に無いと `useOnchain=false` / `bffBaseUrl` 未指定 (= localhost +
+ *     fixture fallback) の APK が黙ってできる。`APP_ENV` も profile ごとに繰り返す
+ *     (既存 profile と同じく extends の env deep-merge に頼らない)
+ *   - `gradleCommand` の `-PreactNativeArchitectures=arm64-v8a` で配布 APK を Seeker の
+ *     ABI だけに絞る (8 月の debug APK は x86 / x86_64 / armeabi-v7a 同梱で 334MB)。
+ *     android/gradle.properties は local emulator build 用に 4 ABI のまま変えない
+ *   - `preview-onchain` も `autoIncrement` する。versionCode が毎回上がるので tester は
+ *     uninstall せずに上書き install できる (eas.json `appVersionSource: "remote"`)
+ *   - release 署名は EAS 管理の keystore (android/app/build.gradle の
+ *     `signingConfigs.release` コメント参照)
+ *
+ * @see eas.json `onchain` / `preview-onchain` / `production-onchain` profile
  * @see services/config.ts USE_ONCHAIN
  */
 
@@ -89,6 +106,13 @@ const config: ExpoConfig = {
   extra: {
     // services/config.ts USE_ONCHAIN が参照
     useOnchain: isOnchain,
+    // services/config.ts BFF_BASE_URL が参照。別ポートの BFF と並走する時だけ Metro 起動時に
+    // `BFF_BASE_URL=http://localhost:3031` を渡す (docs/skr-r0-demo-runbook.md §2)。
+    // 未指定なら undefined → manifest から消え、dev 既定の localhost:3030 のまま
+    bffBaseUrl: process.env.BFF_BASE_URL,
+    // services/config.ts SKR_SOURCE が参照 (docs/skr-r0-implementation.md)。
+    // "demo" の時だけ demo source を読む。未指定は live (live を demo に見せない)
+    skrSource: process.env.SKR_SOURCE === "demo" ? "demo" : "live",
     eas: {
       // 8.87: EAS プロジェクト紐付け (expo.dev で作成した seasonals プロジェクト)
       projectId: "6de0c8ab-80b1-491b-8317-cf8b48890496",

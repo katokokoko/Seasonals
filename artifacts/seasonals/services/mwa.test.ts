@@ -320,3 +320,24 @@ describe("8.79: transact は第 2 引数なしで呼ばれる (全 call site)", 
     }
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DEFAULT_IDENTITY — MWA dapp identity は自前 domain (docs/external-release-api-handling.md §7)
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("DEFAULT_IDENTITY", () => {
+  it("uri は公開 site (assetlinks.json を host する origin)", () => {
+    expect(DEFAULT_IDENTITY.name).toBe("Seasonals");
+    expect(DEFAULT_IDENTITY.uri).toBe("https://seasonals.cafe");
+  });
+
+  it("icon は uri 相対で https://seasonals.cafe/icon.png に解決される", () => {
+    expect(new URL(DEFAULT_IDENTITY.icon, DEFAULT_IDENTITY.uri).href).toBe(
+      "https://seasonals.cafe/icon.png"
+    );
+  });
+
+  it("他人の domain (seasonals.app) を名乗らない", () => {
+    expect(DEFAULT_IDENTITY.uri).not.toMatch(/seasonals\.app\b/);
+  });
+});

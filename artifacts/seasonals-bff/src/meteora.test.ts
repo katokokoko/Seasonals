@@ -16,7 +16,7 @@ import {
   mapMeteoraPositionsToEarnPositions,
   meteoraTotalsInDepositTerms,
 } from "./server";
-import type { HeliusEnhancedTx } from "./clients/helius-tx";
+import type { HeliusEnhancedTx } from "./clients/tx-history";
 import {
   buildMeteoraDepositTxns,
   buildMeteoraWithdrawTxns,
@@ -40,8 +40,9 @@ import {
 } from "./clients/rates";
 import { fetchAssetsByOwner } from "./clients/helius";
 import { fetchEarnPositions } from "./clients/jupiter-lend";
-import { fetchEnhancedTransactions } from "./clients/helius-tx";
-import { getOracleResult } from "./clients/oracle";
+import { fetchWalletTxs } from "./clients/tx-history";
+import { getOracleResult, getOracleResults } from "./clients/oracle";
+import { _clearWalletSnapshotForTest } from "./wallet-snapshot";
 
 jest.mock("./clients/meteora-tx", () => ({
   ...jest.requireActual("./clients/meteora-tx"),
@@ -63,7 +64,12 @@ jest.mock("./clients/save-tx");
 jest.mock("./clients/rates");
 jest.mock("./clients/helius");
 jest.mock("./clients/jupiter-lend");
-jest.mock("./clients/helius-tx");
+jest.mock("./clients/tx-history");
+// B3: wallet snapshot は stake account も読む — 実 RPC を掴まないよう空で固定
+jest.mock("./clients/helius-rpc", () => ({
+  ...jest.requireActual("./clients/helius-rpc"),
+  fetchStakeAccounts: jest.fn(async () => []),
+}));
 
 const mockDeposit = buildMeteoraDepositTxns as jest.MockedFunction<
   typeof buildMeteoraDepositTxns
@@ -76,7 +82,7 @@ const mockPositions = fetchMeteoraPositions as jest.MockedFunction<
 >;
 const mockOracle = getOracleResult as jest.MockedFunction<typeof getOracleResult>;
 
-const VALID_USER = "8sN5e1Qm9bYz2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7r";
+const VALID_USER = "8sN5e1Qm9bYz2c3d4e5f6g7h8i9jAk1L2m3n4o5p6q7r";
 const USDC_USDT = METEORA_MARKETS.find((m) => m.pool_id === "meteora_usdc_usdt_dlmm")!;
 const SOL_USDC = METEORA_MARKETS.find((m) => m.pool_id === "meteora_sol_usdc_dlmm")!;
 const POSITION = "PoS1t1on111111111111111111111111111111111111";
@@ -115,6 +121,11 @@ let app: FastifyInstance;
 
 beforeEach(async () => {
   jest.clearAllMocks();
+  // B3: routes は getOracleResults (batch) を使う — 既存の getOracleResult stub から組み立てる
+  (getOracleResults as jest.Mock).mockImplementation(async (mints: string[]) =>
+    new Map(await Promise.all(mints.map(async (m) => [m, await getOracleResult(m)] as const)))
+  );
+  _clearWalletSnapshotForTest(); // B3: wallet snapshot は module cache — test 間で持ち越さない
   mockOracle.mockResolvedValue(okOracle());
   mockDeposit.mockResolvedValue({ transactions: ["MET_DEP_TX"], position: POSITION });
   mockWithdraw.mockResolvedValue({ transactions: ["MET_WD_TX"] });
@@ -144,7 +155,7 @@ beforeEach(async () => {
   (fetchEarnPositions as jest.Mock).mockResolvedValue([]);
   for (const fn of [
     fetchAssetsByOwner,
-    fetchEnhancedTransactions,
+    fetchWalletTxs,
     fetchKaminoObligations,
     fetchKaminoReserveMetrics,
     fetchKaminoVaultMetrics,

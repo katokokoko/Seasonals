@@ -13,6 +13,7 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
+  AppState,
   Dimensions,
   Image,
   Pressable,
@@ -63,6 +64,8 @@ import {
 import { AllocationDonut } from "./AllocationDonut";
 import { Charts } from "./Charts";
 import { SponsoredCard } from "./SponsoredCard";
+import { StakingRow } from "./StakingRow";
+import type { SkrStakingView } from "../../services/useSkrStakingView";
 import {
   aggregateAllocation,
   depositedUsdValue,
@@ -106,6 +109,12 @@ import {
 // 8.56: 端末に貯めた日次スナップショット (実測のみ)
 import { usePortfolioHistoryStore } from "../../stores/portfolioHistory";
 import { dayKeyToDate } from "./history";
+// §4.0: cache から先に出した値を「最新」に見せない鮮度ラベル (純関数)
+import {
+  describeDataFreshness,
+  type QueryFreshnessStatus,
+} from "@workspace/lib/derive/data-freshness";
+import { WALLET_QUERY_STALE_MS } from "../../services/queries";
 
 const RANGE_KEYS: RangeKey[] = ["1W", "1M", "3M", "1Y", "ALL"];
 
@@ -134,6 +143,16 @@ export interface PortfolioSummaryProps {
    * 「月ごとにカード位置が上下する」問題は起きない)。null なら 50% 固定
    */
   minTopY?: number | null;
+  /**
+   * SKR staking cooldown (docs/skr-r0-implementation.md §4)。`positions` とは別に受け取り、
+   * 合計・allocation・履歴には入れない専用 section で表示する
+   */
+  cooldown?: SkrStakingView | null;
+  /**
+   * §4.0: wallet 系 query (positions / earn / wallet events) を合成した取得状態。
+   * 鮮度ラベル ("Updated 14:21 · awaiting update") に使う。未接続は null (出さない)
+   */
+  walletDataStatus?: QueryFreshnessStatus | null;
   testID?: string;
 }
 
@@ -151,6 +170,8 @@ export const PortfolioSummary = React.memo(function PortfolioSummary({
   walletAddress,
   animatedPosition,
   minTopY = null,
+  cooldown = null,
+  walletDataStatus = null,
   testID,
 }: PortfolioSummaryProps) {
   // Phase 7.9: theme 連動 styles
@@ -349,6 +370,11 @@ export const PortfolioSummary = React.memo(function PortfolioSummary({
   // 一度分かった開始日は覚えておく (絶対的な事実なので、短い range に
   // 切り替えて判定材料が無くなっても淡色表示を保つ)
   const [knownStart, setKnownStart] = useState<Date | null>(null);
+  // §4.0 (perf/api-usage): wallet を切り替えたら前 wallet の「開始日」を持ち越さない
+  // (別 wallet のデータが現在表示に混ざらない、の一部)
+  useEffect(() => {
+    setKnownStart(null);
+  }, [walletAddress]);
   useEffect(() => {
     if (!coverage.partial || !coverage.from) return;
     setKnownStart((prev) =>
@@ -488,6 +514,14 @@ export const PortfolioSummary = React.memo(function PortfolioSummary({
             ? `${totalSol.toFixed(4)} SOL`
             : `${totalUsd.toLocaleString("en-US", { maximumFractionDigits: 2, minimumFractionDigits: 2 })} USDC`}
         </Text>
+
+        {/* §4.0: 鮮度ラベル。接続中だけ (切断中は wallet 由来データ自体を出さない) */}
+        {walletAddress && walletDataStatus && (
+          <WalletFreshnessLabel
+            status={walletDataStatus}
+            testID={testID ? `${testID}-freshness` : undefined}
+          />
+        )}
 
         {/* Phase 8.10: Yield row — earn position supply_rate_bps の加重平均から算出。
             earn 不在時は "—" で表示。 */}
@@ -835,6 +869,14 @@ export const PortfolioSummary = React.memo(function PortfolioSummary({
           </View>
         )}
 
+        {/* SKR staking (docs/skr-r0-implementation.md §4): positions の外 = 合計 / allocation / 履歴に入らない */}
+        {walletAddress && cooldown && (
+          <View style={styles.section} testID={testID ? `${testID}-staking` : undefined}>
+            <Text style={styles.sectionLabel}>Staking</Text>
+            <StakingRow view={cooldown} testID={testID ? `${testID}-staking-skr` : undefined} />
+          </View>
+        )}
+
         {/* Sponsored slot (dummy fixture) */}
         <View style={styles.section}>
           <Text style={styles.sectionLabel}>Sponsored</Text>
@@ -871,6 +913,59 @@ function BrewingIndicator({
   }));
   return (
     <Animated.Text style={[textStyle, anim]}>Brewing your chart…</Animated.Text>
+  );
+}
+
+/** 鮮度ラベルの再評価間隔 (stale への遷移を 60 秒の閾値から 15 秒以内に反映) */
+const FRESHNESS_TICK_MS = 15_000;
+
+/**
+ * §4.0 鮮度ラベル。時刻 tick と foreground 復帰はここに閉じ込める
+ * (PortfolioSummary 本体 = React.memo の chart / donut を tick で再描画しない)。
+ * 文言・tone の規則は lib/derive/data-freshness.ts。stale / failed は muted。
+ */
+function WalletFreshnessLabel({
+  status,
+  testID,
+}: {
+  status: QueryFreshnessStatus;
+  testID?: string;
+}) {
+  const styles = useThemedStyles(makeStyles);
+  const [nowMs, setNowMs] = useState(() => Date.now());
+  const [resumedAt, setResumedAt] = useState<number | null>(null);
+  useEffect(() => {
+    const id = setInterval(() => setNowMs(Date.now()), FRESHNESS_TICK_MS);
+    return () => clearInterval(id);
+  }, []);
+  useEffect(() => {
+    let prev = AppState.currentState;
+    const sub = AppState.addEventListener("change", (next) => {
+      if (next === "active" && prev !== "active") {
+        const t = Date.now();
+        setResumedAt(t);
+        setNowMs(t);
+      }
+      prev = next;
+    });
+    return () => sub.remove();
+  }, []);
+  const freshness = describeDataFreshness({
+    dataUpdatedAt: status.dataUpdatedAt,
+    isFetching: status.isFetching,
+    isError: status.isError,
+    resumedAt,
+    nowMs,
+    staleAfterMs: WALLET_QUERY_STALE_MS,
+  });
+  const muted = freshness.kind === "stale" || freshness.kind === "failed";
+  return (
+    <Text
+      style={[styles.freshness, muted && styles.freshnessMuted]}
+      testID={testID}
+    >
+      {freshness.label}
+    </Text>
   );
 }
 
@@ -997,6 +1092,16 @@ function makeStyles(c: ThemeColors) {
       color: c.textMuted,
       textTransform: "uppercase",
       letterSpacing: 1.2,
+    },
+    // §4.0 鮮度ラベル: fresh / refreshing は subtitle、stale / failed は muted
+    freshness: {
+      fontSize: FONT_SIZE.caption,
+      fontFamily: FONT.body,
+      fontWeight: WEIGHT.medium,
+      color: c.textSubtitle,
+    },
+    freshnessMuted: {
+      color: c.textMuted,
     },
     total: {
       fontSize: FONT_SIZE.displayMD,

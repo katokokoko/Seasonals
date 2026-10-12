@@ -30,6 +30,12 @@ export const TOKEN_AMOUNT_REGEX = /^[0-9]+$/;
 export const USD_AMOUNT_REGEX = /^[0-9]+(\.[0-9]{1,8})?$/;
 
 /**
+ * **符号付き** token amount (smallest unit) — 残高の増減 (tx 差分 / balance change) 用。
+ * 整数のみ、先頭 "-" を許容、小数を拒否。API boundary の入力検証には使わない (それは TOKEN_AMOUNT_REGEX)
+ */
+export const SIGNED_TOKEN_AMOUNT_REGEX = /^-?[0-9]+$/;
+
+/**
  * token amount string が valid な smallest unit 表現か検証。
  * API boundary で使う (Core Service には parse 結果ではなく string を渡す)。
  */
@@ -94,6 +100,18 @@ export function toBigInt(amount: string): bigint {
     throw new InvalidAmountError("token_amount", amount);
   }
   return BigInt(amount);
+}
+
+/**
+ * **符号付き** smallest unit string ("-5000" / "9007199254740993") を bigint に変換。
+ * 上流の balance change (Helius `rawTokenAmount` / pre・post 差分 / 永続化した差分) のように
+ * 負になりうる値用。不正 (小数 / 空 / 非数字) は InvalidAmountError (toBigInt と同じ)。
+ */
+export function signedToBigInt(value: string): bigint {
+  if (typeof value !== "string" || !SIGNED_TOKEN_AMOUNT_REGEX.test(value)) {
+    throw new InvalidAmountError("token_amount", value);
+  }
+  return BigInt(value);
 }
 
 /**

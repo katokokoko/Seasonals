@@ -28,8 +28,19 @@ import {
   useApproveAgentPlan,
   useRejectAgentPlan,
   useRegisterPushToken,
+  useEarnPositions,
+  useWalletTimeEvents,
+  useJupiterLendMarkets,
+  useKaminoReserves,
+  usePrices,
+  usePortfolioHistory,
   queryKeys,
+  PRICED_SYMBOLS,
+  WALLET_QUERY_STALE_MS,
+  WALLET_QUERY_GC_MS,
+  CATALOG_QUERY_STALE_MS,
 } from "./queries";
+import * as api from "./api";
 import { createQueryClient } from "./queryClient";
 import { TIME_EVENT_CATEGORIES } from "@workspace/lib/types";
 
@@ -366,6 +377,174 @@ describe("services/queries", () => {
       // (8.93: focusManager 配線とセットで refetchOnWindowFocus は true が default)
       expect(opts.queries?.refetchOnWindowFocus).toBe(true);
       expect(opts.queries?.staleTime).toBe(30_000);
+    });
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// API 効率化計画 Phase A: staleTime / gcTime / enabled / placeholder / signal
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("Phase A — 鮮度と保持の設定", () => {
+  const A = "7nZbHkQqXkr3eW8s2dKvHqBxNz9vC5jPpL2tF6mYrXaA";
+  const B = "6QGJNXnCjhYkKgPpDm7qRzxBKCj9KugUL2LDHc8sGUUM";
+
+  /** その key の observer に効いている staleTime と query の gcTime */
+  function settingsOf(client: QueryClient, queryKey: readonly unknown[]) {
+    const q = client.getQueryCache().find({ queryKey, exact: true })!;
+    return {
+      staleTime: q.observers[0]?.options.staleTime,
+      gcTime: q.gcTime,
+    };
+  }
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it("wallet 系 3 hook は staleTime 60s / gcTime 24h (切断・切替後も cache を保持)", async () => {
+    const client = freshClient();
+    const { result } = renderHook(
+      () => ({
+        p: usePositions(A),
+        e: useEarnPositions(A),
+        w: useWalletTimeEvents(A),
+      }),
+      { wrapper: makeWrapper(client) }
+    );
+    await waitFor(() => {
+      expect(result.current.p.isSuccess).toBe(true);
+      expect(result.current.e.isSuccess).toBe(true);
+      expect(result.current.w.isSuccess).toBe(true);
+    });
+    for (const key of [
+      queryKeys.positions(A),
+      queryKeys.earnPositions(A),
+      queryKeys.walletTimeEvents(A),
+    ]) {
+      expect(settingsOf(client, key)).toEqual({
+        staleTime: WALLET_QUERY_STALE_MS,
+        gcTime: WALLET_QUERY_GC_MS,
+      });
+    }
+    expect(WALLET_QUERY_STALE_MS).toBe(60_000);
+    expect(WALLET_QUERY_GC_MS).toBe(24 * 60 * 60_000);
+    client.clear();
+  });
+
+  it("address 無しの fixture positions は gcTime を延ばさない (wallet の cache ではない)", async () => {
+    const client = freshClient();
+    const { result } = renderHook(() => usePositions(), {
+      wrapper: makeWrapper(client),
+    });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(settingsOf(client, queryKeys.positions(null)).gcTime).toBe(5_000);
+    client.clear();
+  });
+
+  it("共有カタログは BFF の cache に揃える (menu / jupiter / kamino 5 分、prices 2 分、protocols ∞)", () => {
+    const client = freshClient();
+    // observer の options を見るだけなので取得完了は待たない (kamino の fixture は adapter を動的 import)
+    const { unmount } = renderHook(
+      () => ({
+        m: useMenuListings(),
+        j: useJupiterLendMarkets(),
+        k: useKaminoReserves(),
+        pr: usePrices(),
+        pt: useProtocols(),
+      }),
+      { wrapper: makeWrapper(client) }
+    );
+    expect(settingsOf(client, queryKeys.menuListings()).staleTime).toBe(CATALOG_QUERY_STALE_MS);
+    expect(settingsOf(client, queryKeys.jupiterLendMarkets()).staleTime).toBe(CATALOG_QUERY_STALE_MS);
+    expect(settingsOf(client, queryKeys.kaminoReserves()).staleTime).toBe(CATALOG_QUERY_STALE_MS);
+    expect(CATALOG_QUERY_STALE_MS).toBe(5 * 60_000);
+    expect(
+      settingsOf(client, queryKeys.prices([...PRICED_SYMBOLS].sort())).staleTime
+    ).toBe(2 * 60_000);
+    expect(settingsOf(client, queryKeys.protocols()).staleTime).toBe(Infinity);
+    unmount();
+    client.clear();
+  });
+
+  it("useKaminoReserves({ enabled: false }) は取得しない (Kamino 以外の ActionModal)", async () => {
+    const spy = jest.spyOn(api, "getKaminoReserves");
+    const { result } = renderHook(() => useKaminoReserves({ enabled: false }), {
+      wrapper: makeWrapper(freshClient()),
+    });
+    await Promise.resolve();
+    expect(result.current.fetchStatus).toBe("idle");
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it("queryFn は TanStack の AbortSignal を getter に渡す (切替 / unmount で回線ごと abort)", async () => {
+    const spy = jest.spyOn(api, "getPositions");
+    const { result } = renderHook(() => usePositions(A), {
+      wrapper: makeWrapper(freshClient()),
+    });
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(spy).toHaveBeenCalledWith(A, expect.any(AbortSignal));
+  });
+
+  it("永続 cache から戻った wallet time events (triggerAt が文字列) を Date に戻す", async () => {
+    const client = freshClient();
+    client.setQueryData(queryKeys.walletTimeEvents(A), [
+      { event_id: "e1", triggerAt: "2026-10-01T00:00:00.000Z" },
+    ]);
+    const { result } = renderHook(() => useWalletTimeEvents(A), {
+      wrapper: makeWrapper(client),
+    });
+    await waitFor(() => expect(result.current.data).toBeDefined());
+    expect(result.current.data![0]!.triggerAt).toBeInstanceOf(Date);
+    expect(result.current.data![0]!.triggerAt.toISOString()).toBe("2026-10-01T00:00:00.000Z");
+    client.clear();
+  });
+
+  describe("usePortfolioHistory の placeholder は wallet を跨がない", () => {
+    const point = (sol: string) => ({
+      points: [{ at: 1, usd: "1", sol }],
+      oldest_at: 1,
+      approximated_symbols: [],
+    });
+
+    it("同じ wallet の range 切替は前の range のチャートを出し続ける", async () => {
+      jest
+        .spyOn(api, "getPortfolioHistory")
+        .mockImplementation((_w, days) =>
+          days === 30 ? Promise.resolve(point("A30")) : new Promise(() => {})
+        );
+      const { result, rerender } = renderHook(
+        ({ address, days }: { address: string; days: number }) =>
+          usePortfolioHistory(address, days),
+        {
+          wrapper: makeWrapper(freshClient()),
+          initialProps: { address: A, days: 30 },
+        }
+      );
+      await waitFor(() => expect(result.current.isSuccess).toBe(true));
+      rerender({ address: A, days: 90 });
+      expect(result.current.isPlaceholderData).toBe(true);
+      expect(result.current.data?.points[0]?.sol).toBe("A30");
+    });
+
+    it("別 wallet への切替では前の wallet のチャートを出さない", async () => {
+      jest
+        .spyOn(api, "getPortfolioHistory")
+        .mockImplementation((w) =>
+          w === A ? Promise.resolve(point("A30")) : new Promise(() => {})
+        );
+      const { result, rerender } = renderHook(
+        ({ address, days }: { address: string; days: number }) =>
+          usePortfolioHistory(address, days),
+        {
+          wrapper: makeWrapper(freshClient()),
+          initialProps: { address: A, days: 30 },
+        }
+      );
+      await waitFor(() => expect(result.current.isSuccess).toBe(true));
+      rerender({ address: B, days: 30 });
+      expect(result.current.isPlaceholderData).toBe(false);
+      expect(result.current.data).toBeUndefined();
     });
   });
 });

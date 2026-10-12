@@ -36,7 +36,7 @@ import { fetchJupiterUsdPrices } from "./clients/jupiter-price";
 import { fetchMeteoraPoolStats } from "./clients/meteora-tx";
 import { getTokenSupplyUi } from "./clients/helius-rpc";
 import { fetchPerenaTriStableTvlUsd } from "./clients/perena";
-import { getOracleResult } from "./clients/oracle";
+import { getOracleResult, getOracleResults } from "./clients/oracle";
 import { METEORA_MARKETS } from "@workspace/lib/config/meteora-markets";
 import { exponentPoolId } from "@workspace/lib/config/exponent-markets";
 import { SWAP_EARN_MARKETS } from "@workspace/lib/config/swap-earn-markets";
@@ -158,6 +158,10 @@ let app: FastifyInstance;
 
 beforeEach(async () => {
   jest.clearAllMocks();
+  // B3: routes は getOracleResults (batch) を使う — 既存の getOracleResult stub から組み立てる
+  (getOracleResults as jest.Mock).mockImplementation(async (mints: string[]) =>
+    new Map(await Promise.all(mints.map(async (m) => [m, await getOracleResult(m)] as const)))
+  );
   mockJup.mockResolvedValue([
     jupMarket({}),
     // 8.26: jl API の SOL market は "WSOL" — alias match の検証用

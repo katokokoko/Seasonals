@@ -14,7 +14,9 @@
     "ios": "expo run:ios",
     "build:dev": "eas build --platform android --profile development",
     "build:preview": "eas build --platform android --profile preview",
-    "build:prod": "eas build --platform android --profile production"
+    "build:prod": "eas build --platform android --profile production",
+    "build:preview:onchain": "eas build --platform android --profile preview-onchain",
+    "build:prod:onchain": "eas build --platform android --profile production-onchain"
   },
   "dependencies": {
     "@babel/runtime": "^7.29.7",

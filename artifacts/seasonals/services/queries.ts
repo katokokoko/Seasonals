@@ -11,7 +11,6 @@
  */
 
 import {
-  keepPreviousData,
   useMutation,
   useQuery,
   useQueryClient,
@@ -33,11 +32,45 @@ import type {
   Wallet,
 } from "@workspace/lib/types";
 import type { ProtocolMenuEntry } from "@workspace/lib/types";
+import type { CooldownSource, CooldownStateResponse } from "@workspace/lib/types";
+import { SKR_STAKING_CLUSTER } from "@workspace/lib/config/skr-staking";
+import {
+  COOLDOWN_POLL_INTERVAL_MS,
+  shouldAcceptCooldownResponse,
+} from "@workspace/lib/derive/cooldown-client";
 
 import * as api from "./api";
+import { SKR_SOURCE, USE_ONCHAIN } from "./config";
 import type { JupiterLendMarketDTO } from "./api";
 // 8.78: oracle blocked 中の自動再チェック間隔 (純関数、oracle-gate.test で担保)
 import { oracleRefetchInterval } from "@workspace/lib/derive/oracle-gate";
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 鮮度 / 保持の定数 (API 効率化計画 Phase A-2 / §4.0)
+//
+// staleTime は BFF 側の cache TTL に揃える: BFF が同じ値を返す間に client が
+// 撃ち直しても credit を使うだけなので、foreground 復帰 / mount の再取得を BFF の
+// 更新周期まで間引く。oracle (10s)・SKR (0)・quote (5s)・autonomous (10s) は
+// 安全 / 実行系なので対象外 (変えない)。
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** wallet 系 (positions / earn-positions / wallet-time-events): BFF wallet snapshot と同じ 60s */
+export const WALLET_QUERY_STALE_MS = 60_000;
+/**
+ * wallet 系の保持期間 (§4.0): 切断・切替で observer が居なくなっても 24h は cache に残し、
+ * 再接続で即表示する。AsyncStorage 永続 (maxAge 24h、app/_layout.tsx) と揃える —
+ * TanStack の persist は GC 済みの query を復元しないため、gcTime < maxAge だと永続が効かない
+ */
+export const WALLET_QUERY_GC_MS = 24 * 60 * 60_000;
+/** menu-listings / jupiter-lend-markets / kamino-reserves: BFF の共有 cache と同じ 5 分 */
+export const CATALOG_QUERY_STALE_MS = 5 * 60_000;
+/** prices (表示用途。oracle gate は useOracleStatus の 10s で別): 2 分 */
+export const PRICES_QUERY_STALE_MS = 2 * 60_000;
+
+/** address がある時だけ wallet 系の長い gcTime を付ける (fixture / disabled key は既定のまま) */
+function walletGc(address: string | null | undefined): { gcTime?: number } {
+  return address ? { gcTime: WALLET_QUERY_GC_MS } : {};
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Query keys (cache invalidation 用、文字列直書きを避ける)
@@ -53,6 +86,9 @@ export const queryKeys = {
   /** Phase 8.3: wallet tx 履歴から派生する time events、address 必須 */
   walletTimeEvents: (address: string) =>
     ["wallet-time-events", address] as const,
+  /** SKR cooldown (docs/skr-r0-implementation.md §3): scope (source / cluster / wallet) ごとに cache を分ける */
+  skrStakingState: (source: CooldownSource, cluster: string, address: string) =>
+    ["skr-staking", source, cluster, address] as const,
   /** Phase 8.6: Jupiter Lend Earn の 7 markets */
   jupiterLendMarkets: () => ["jupiter-lend-markets"] as const,
   /** Phase 8.14: underlying mint 別の oracle 判定 (§4.6) */
@@ -87,10 +123,15 @@ export const queryKeys = {
 // Query hooks
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * fixture の time events (default variant / jest)。onchain build では BFF `/time-events` は
+ * fixture しか返さず calendar にも使わないので取得しない (Phase A-1)
+ */
 export function useTimeEvents(): UseQueryResult<UnifiedTimeEvent[], Error> {
   return useQuery({
     queryKey: queryKeys.timeEvents(),
-    queryFn: api.getTimeEvents,
+    queryFn: ({ signal }) => api.getTimeEvents(signal),
+    enabled: !USE_ONCHAIN,
   });
 }
 
@@ -118,7 +159,13 @@ export function usePositions(
   const effectiveAddress = address ?? null;
   return useQuery({
     queryKey: queryKeys.positions(effectiveAddress),
-    queryFn: () => api.getPositions(effectiveAddress ?? undefined),
+    queryFn: ({ signal }) =>
+      api.getPositions(effectiveAddress ?? undefined, signal),
+    // §4.0: onchain build の未接続 (address 無し) は BFF `/positions` が常に [] なので
+    // 撃たない。default variant / jest は従来どおり fixture を取得する
+    enabled: Boolean(effectiveAddress) || !USE_ONCHAIN,
+    staleTime: WALLET_QUERY_STALE_MS,
+    ...walletGc(effectiveAddress),
     refetchInterval: errorRetryInterval, // 8.93
   });
 }
@@ -132,11 +179,13 @@ export function useEarnPositions(
 ): UseQueryResult<EarnPositionsResponse, Error> {
   return useQuery({
     queryKey: queryKeys.earnPositions(address ?? "disabled"),
-    queryFn: () =>
+    queryFn: ({ signal }) =>
       address
-        ? api.getEarnPositions(address)
+        ? api.getEarnPositions(address, signal)
         : Promise.resolve({ jupiterLend: [], kaminoBestEffort: [] }),
     enabled: Boolean(address),
+    staleTime: WALLET_QUERY_STALE_MS,
+    ...walletGc(address),
     refetchInterval: errorRetryInterval, // 8.93
   });
 }
@@ -151,13 +200,27 @@ export function useOracleStatus(
 ): UseQueryResult<OracleResult, Error> {
   return useQuery({
     queryKey: queryKeys.oracleStatus(mint ?? "disabled"),
-    queryFn: () => api.getOracleStatus(mint as string),
+    queryFn: ({ signal }) => api.getOracleStatus(mint as string, signal),
     enabled: Boolean(mint),
     staleTime: 10_000,
     // 8.78: blocked の間だけ 15 秒間隔で再チェック。瞬断由来の block なら
     // シートを開いたままでも回復して CTA が戻る (従来は開き直すしかなかった)
     refetchInterval: (query) => oracleRefetchInterval(query.state.data),
   });
+}
+
+/**
+ * §4.0: AsyncStorage 永続 cache (app/_layout.tsx) から復元した wallet time events は
+ * JSON を経由するので `triggerAt` が ISO 文字列で戻る。型 (Date) どおりに戻してから渡す。
+ * 取得直後の値 (既に Date) は同じ配列をそのまま返す (select の結果を作り直さない)
+ */
+export function reviveTriggerAt(events: UnifiedTimeEvent[]): UnifiedTimeEvent[] {
+  if (events.every((e) => e.triggerAt instanceof Date)) return events;
+  return events.map((e) =>
+    e.triggerAt instanceof Date
+      ? e
+      : { ...e, triggerAt: new Date(e.triggerAt as unknown as string) }
+  );
 }
 
 /**
@@ -169,9 +232,53 @@ export function useWalletTimeEvents(
 ): UseQueryResult<UnifiedTimeEvent[], Error> {
   return useQuery({
     queryKey: queryKeys.walletTimeEvents(address ?? "disabled"),
-    queryFn: () =>
-      address ? api.getWalletTimeEvents(address) : Promise.resolve([]),
+    queryFn: ({ signal }) =>
+      address ? api.getWalletTimeEvents(address, signal) : Promise.resolve([]),
+    select: reviveTriggerAt,
     enabled: Boolean(address),
+    staleTime: WALLET_QUERY_STALE_MS,
+    ...walletGc(address),
+  });
+}
+
+/**
+ * SKR staking cooldown (docs/skr-r0-implementation.md §3「鮮度とcache」)。
+ *
+ * - 表示中は 5 分 poll、foreground 復帰 / 手動 refresh / 通知 tap でも BFF を読む (staleTime 0)
+ * - retry しない (失敗は即 stale 表示。境界 retry は useCooldownBoundaryRetry が別に持つ)
+ * - 要求と違う scope の応答、slot が後退した応答、fresh を持っている時の unavailable / unsupported は
+ *   cache を上書きせず error にする → 旧値を残したまま stale (取消済み・ready と解釈しない)
+ * - SKR_SOURCE は build 時の env。live の失敗を demo / fixture に差し替えない
+ */
+export function useSkrStakingState(
+  address: string | null
+): UseQueryResult<CooldownStateResponse, Error> {
+  const qc = useQueryClient();
+  const source = SKR_SOURCE;
+  const cluster = SKR_STAKING_CLUSTER;
+  const queryKey = queryKeys.skrStakingState(source, cluster, address ?? "disabled");
+  return useQuery({
+    queryKey,
+    queryFn: async () => {
+      if (!address) throw new Error("wallet_required");
+      const next = await api.getSkrStakingState(address, source);
+      const prev = qc.getQueryData<CooldownStateResponse>(queryKey);
+      const verdict = shouldAcceptCooldownResponse(prev, next, {
+        source,
+        cluster,
+        wallet_address: address,
+      });
+      if (!verdict.ok) {
+        throw new api.BffError(`skr_${verdict.reason}`, `skr_${verdict.reason}`);
+      }
+      return next;
+    },
+    enabled: Boolean(address),
+    staleTime: 0,
+    refetchInterval: COOLDOWN_POLL_INTERVAL_MS,
+    refetchIntervalInBackground: false,
+    refetchOnWindowFocus: true,
+    retry: 0,
   });
 }
 
@@ -185,7 +292,8 @@ export function useJupiterLendMarkets(): UseQueryResult<
 > {
   return useQuery({
     queryKey: queryKeys.jupiterLendMarkets(),
-    queryFn: api.getJupiterLendMarkets,
+    queryFn: ({ signal }) => api.getJupiterLendMarkets(signal),
+    staleTime: CATALOG_QUERY_STALE_MS,
     // 8.96: cold start の初回失敗が focus まで固まる取りこぼし (8.93 では
     // portfolio 系 4 hook のみ対象だった)。yield 表示がこの query 依存
     refetchInterval: errorRetryInterval,
@@ -202,8 +310,8 @@ export function usePrices(
   const key = [...symbols].sort();
   return useQuery({
     queryKey: queryKeys.prices(key),
-    queryFn: () => api.getPrices(key),
-    staleTime: 60_000,
+    queryFn: ({ signal }) => api.getPrices(key, signal),
+    staleTime: PRICES_QUERY_STALE_MS,
     refetchInterval: errorRetryInterval, // 8.93
   });
 }
@@ -221,16 +329,19 @@ export function usePortfolioHistory(
 ): UseQueryResult<api.PortfolioHistoryDTO, Error> {
   return useQuery({
     queryKey: queryKeys.portfolioHistory(address ?? "", days),
-    queryFn: () => api.getPortfolioHistory(address!, days),
+    queryFn: ({ signal }) => api.getPortfolioHistory(address!, days, signal),
     enabled: Boolean(address),
     staleTime: 5 * 60_000,
     // 8.83: range (days) 切替時、新 key の取得中も旧 range のチャートを
-    // 表示し続ける (疎な localSeries / brewing への flash を出さない)
-    placeholderData: keepPreviousData,
+    // 表示し続ける (疎な localSeries / brewing への flash を出さない)。
+    // §4.0: ただし **同じ wallet の range 切替に限る**。keepPreviousData は wallet 切替でも
+    // 前の key の値を出すので、別 wallet のチャートが新 wallet の取得中に見えていた
+    placeholderData: (prev, prevQuery) =>
+      address && prevQuery?.queryKey[1] === address ? prev : undefined,
     // 8.83: 永続キャッシュ (app/_layout.tsx の PersistQueryClientProvider) の
     // 対象なので、gcTime は maxAge (24h) より長くしておく — TanStack の
     // persist は gc された query を復元しないため
-    gcTime: 24 * 60 * 60_000,
+    gcTime: WALLET_QUERY_GC_MS,
     refetchInterval: errorRetryInterval, // 8.93
   });
 }
@@ -239,7 +350,7 @@ export function usePortfolioHistory(
 export function useAgentPlans(): UseQueryResult<AgentPlan[], Error> {
   return useQuery({
     queryKey: queryKeys.agentPlans(),
-    queryFn: api.getAgentPlans,
+    queryFn: ({ signal }) => api.getAgentPlans(signal),
   });
 }
 
@@ -266,12 +377,12 @@ export function useAgentPlan(
   const { refetchInterval } = options;
   return useQuery({
     queryKey: queryKeys.agentPlan(planId ?? ""),
-    queryFn: () => {
+    queryFn: ({ signal }) => {
       if (!planId) {
         // enabled=false で本来呼ばれないが、型上 planId: string が必須なため guard
         throw new Error("agent_plan_id_missing");
       }
-      return api.getAgentPlan(planId);
+      return api.getAgentPlan(planId, signal);
     },
     enabled: planId !== null,
     ...(refetchInterval !== undefined
@@ -294,11 +405,11 @@ export function useApprovalToken(
 ): UseQueryResult<ApprovalToken, Error> {
   return useQuery({
     queryKey: queryKeys.approvalToken(tokenId ?? ""),
-    queryFn: () => {
+    queryFn: ({ signal }) => {
       if (!tokenId) {
         throw new Error("approval_token_id_missing");
       }
-      return api.getApprovalToken(tokenId);
+      return api.getApprovalToken(tokenId, signal);
     },
     enabled: tokenId !== null,
   });
@@ -307,21 +418,23 @@ export function useApprovalToken(
 export function useUserPolicy(): UseQueryResult<UserPolicy, Error> {
   return useQuery({
     queryKey: queryKeys.userPolicy(),
-    queryFn: api.getUserPolicy,
+    queryFn: ({ signal }) => api.getUserPolicy(signal),
   });
 }
 
 export function useWallets(): UseQueryResult<Wallet[], Error> {
   return useQuery({
     queryKey: queryKeys.wallets(),
-    queryFn: api.getWallets,
+    queryFn: ({ signal }) => api.getWallets(signal),
   });
 }
 
 export function useProtocols(): UseQueryResult<Protocol[], Error> {
   return useQuery({
     queryKey: queryKeys.protocols(),
-    queryFn: api.getProtocols,
+    queryFn: ({ signal }) => api.getProtocols(signal),
+    // registry は build / deploy 単位でしか変わらない (Phase A-1)
+    staleTime: Infinity,
   });
 }
 
@@ -329,23 +442,27 @@ export function useProtocols(): UseQueryResult<Protocol[], Error> {
 export function useMenuListings(): UseQueryResult<ProtocolMenuEntry[], Error> {
   return useQuery({
     queryKey: queryKeys.menuListings(),
-    queryFn: api.getMenuListings,
-    staleTime: 60_000,
+    queryFn: ({ signal }) => api.getMenuListings(signal),
+    staleTime: CATALOG_QUERY_STALE_MS,
     refetchInterval: errorRetryInterval, // 8.96: cold start 初回失敗の自己回復
   });
 }
 
 // ─── Adapter-driven (Kamino / Jupiter) ───────────────────────────────────────
 
-export function useKaminoReserves(): UseQueryResult<
-  api.KaminoReserveSummary[],
-  Error
-> {
+/**
+ * Kamino reserve metadata。`enabled: false` で取得しない (ActionModal は Kamino の
+ * action を開いた時だけ必要 — 他 protocol の review で毎回撃たない、Phase A-1)
+ */
+export function useKaminoReserves(
+  options: { enabled?: boolean } = {}
+): UseQueryResult<api.KaminoReserveSummary[], Error> {
   return useQuery({
     queryKey: queryKeys.kaminoReserves(),
-    queryFn: api.getKaminoReserves,
-    // reserve metadata は短時間で大きく変わらないため staleTime を長めに
-    staleTime: 60_000,
+    queryFn: ({ signal }) => api.getKaminoReserves(signal),
+    enabled: options.enabled ?? true,
+    // reserve metadata は短時間で大きく変わらない: BFF の共有 cache と同じ 5 分
+    staleTime: CATALOG_QUERY_STALE_MS,
     refetchInterval: errorRetryInterval, // 8.96: cold start 初回失敗の自己回復
   });
 }
@@ -427,7 +544,7 @@ export function useRejectAgentPlan(): UseMutationResult<
 export function useAutonomousStatus(): UseQueryResult<AutonomousStatus, Error> {
   return useQuery({
     queryKey: queryKeys.autonomousStatus(),
-    queryFn: api.getAutonomousStatus,
+    queryFn: ({ signal }) => api.getAutonomousStatus(signal),
     staleTime: 10_000,
   });
 }
@@ -439,7 +556,7 @@ export function useAutonomousLog(): UseQueryResult<
 > {
   return useQuery({
     queryKey: queryKeys.autonomousLog(),
-    queryFn: api.getAutonomousLog,
+    queryFn: ({ signal }) => api.getAutonomousLog(signal),
     staleTime: 10_000,
   });
 }

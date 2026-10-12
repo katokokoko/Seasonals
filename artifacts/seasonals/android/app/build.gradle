@@ -104,15 +104,23 @@ android {
             keyAlias 'androiddebugkey'
             keyPassword 'android'
         }
+        // Release signing is EAS-managed (docs/mobile-runbook.md §4-5).
+        // EAS Build injects `eas-build.gradle` at build time, which fills this `release`
+        // config from the EAS-managed keystore (credentials.json). It is intentionally
+        // empty here: a local `./gradlew assembleRelease` without credentials produces
+        // `app-release-unsigned.apk` by design (AGP skips signing when the config is not
+        // ready). Never commit a keystore or credentials.json (see root .gitignore).
+        release {
+        }
     }
     buildTypes {
         debug {
             signingConfig signingConfigs.debug
         }
         release {
-            // Caution! In production, you need to generate your own keystore file.
-            // see https://reactnative.dev/docs/signed-apk-android.
-            signingConfig signingConfigs.debug
+            // EAS-managed release keystore (see signingConfigs.release above).
+            // Not the debug keystore: the dApp Store rejects debug-signed APKs.
+            signingConfig signingConfigs.release
             def enableShrinkResources = findProperty('android.enableShrinkResourcesInReleaseBuilds') ?: 'false'
             shrinkResources enableShrinkResources.toBoolean()
             minifyEnabled enableMinifyInReleaseBuilds

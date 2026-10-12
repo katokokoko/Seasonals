@@ -24,6 +24,8 @@ import { SolendActionCore } from "@solendprotocol/solend-sdk";
 
 import type { SaveMarket } from "@workspace/lib/config/save-markets";
 import { fetchWithTimeout } from "./http"; // Phase 8.38 (B9): 共通 timeout
+import { heliusRpcFetch } from "./helius-limiter";
+import { TtlCache } from "../cache/ttl-cache";
 
 const SAVE_API_BASE = "https://api.save.finance";
 const HELIUS_MAINNET_URL = "https://mainnet.helius-rpc.com";
@@ -41,7 +43,8 @@ function getMainnetConnection(): Connection {
   if (!apiKey) {
     throw new Error("HELIUS_API_KEY is not set");
   }
-  return new Connection(`${HELIUS_MAINNET_URL}/?api-key=${apiKey}`, "confirmed");
+  // B2: SDK の RPC read も Helius の列 (同時実行数 / 間隔) に並べ、usage に数える
+  return new Connection(`${HELIUS_MAINNET_URL}/?api-key=${apiKey}`, { commitment: "confirmed", fetch: heliusRpcFetch });
 }
 
 // ── market config (SDK 入力) — REST から取得して 10 分 cache ──────────────────
@@ -205,10 +208,26 @@ export interface SaveReserveRate {
   ctoken_exchange_rate: string;
 }
 
+/**
+ * B2: reserve rates は wallet に依らないので全 user で共有 (120 秒、key = 並べ替えた ids)。
+ * 同時 miss は 1 回の取得に合流、失敗は cache しない
+ */
+const reserveRatesCache = new TtlCache<SaveReserveRate[]>({
+  name: "save.reserves",
+  ttlMs: 120_000,
+  maxEntries: 20,
+  now: () => Date.now(),
+});
+
 export async function fetchSaveReserveRates(
   reserveIds: string[]
 ): Promise<SaveReserveRate[]> {
   if (reserveIds.length === 0) return [];
+  const ids = [...new Set(reserveIds)].sort();
+  return reserveRatesCache.getOrLoad(ids.join(","), () => loadSaveReserveRates(ids));
+}
+
+async function loadSaveReserveRates(reserveIds: string[]): Promise<SaveReserveRate[]> {
   const res = await fetchWithTimeout(
     `${SAVE_API_BASE}/v1/reserves?ids=${reserveIds.join(",")}`,
     { headers: { accept: "application/json" } }

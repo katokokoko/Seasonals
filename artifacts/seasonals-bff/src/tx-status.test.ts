@@ -70,6 +70,6 @@ test("RPC 失敗は 502 で、応答に key を含めない", async () => {
 
 test("/health は Solana 実行可否を boolean だけで返す", async () => {
   const res = await app.inject({ method: "GET", url: "/health" });
-  expect(res.json().solana).toEqual({ heliusConfigured: true });
+  expect(res.json().solana).toEqual({ heliusConfigured: true, executionTarget: "mainnet" });
   expect(res.body).not.toContain("test-key");
 });

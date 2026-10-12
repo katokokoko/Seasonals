@@ -11,6 +11,9 @@ jest.mock("./clients/oracle", () => ({
   // 8.57: symbol → mint の逆引きは実物を使う (registry と一致させるため)
   ...jest.requireActual("./clients/oracle"),
   getOracleResult: (mint: string) => mockGetOracleResult(mint),
+  // B3: /prices 等は batch 版を使う — 同じ stub から組み立てる (判定は stub のまま)
+  getOracleResults: async (mints: string[]) =>
+    new Map(await Promise.all(mints.map(async (m) => [m, await mockGetOracleResult(m)] as const))),
 }));
 
 import { buildServer } from "./server";

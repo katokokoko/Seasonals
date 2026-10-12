@@ -383,8 +383,18 @@ export function validateAndConsumeToken(
 
 // ── push tokens (in-memory) ─────────────────────────────────────────────────
 
+/** 公開 BFF で無制限に溜めない上限 (in-memory)。超えたら最古から捨てる */
+export const MAX_PUSH_TOKENS = 200;
+
 export function registerPushToken(token: string): void {
+  // 再登録は「最新」に付け直す (Set は挿入順なので delete → add)
+  pushTokens.delete(token);
   pushTokens.add(token);
+  while (pushTokens.size > MAX_PUSH_TOKENS) {
+    const oldest = pushTokens.values().next().value;
+    if (oldest === undefined) break;
+    pushTokens.delete(oldest);
+  }
 }
 
 export function listPushTokens(): string[] {

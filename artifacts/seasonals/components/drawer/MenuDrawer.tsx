@@ -355,6 +355,12 @@ export interface MenuDrawerProps {
    * undefined or 空配列なら "Your Positions" section を hide。
    */
   earnPositions?: EarnPositionsResponse | undefined;
+  /**
+   * Phase A-1: Home と同じ onchain wallet address (未接続 / default variant は null)。
+   * `usePositions` を Home と同じ key で引くので追加リクエストは 0。
+   * 旧実装は address 無しで `/positions` を撃ち、onchain build では常に [] だった
+   */
+  walletAddress?: string | null;
   testID?: string;
 }
 
@@ -364,6 +370,7 @@ export function MenuDrawer({
   onStartAction,
   onWithdrawPosition,
   earnPositions,
+  walletAddress = null,
   testID,
 }: MenuDrawerProps) {
   // 8.45: edge-to-edge の inset (drawer は絶対配置で SafeAreaView の padding が効かない)
@@ -372,7 +379,7 @@ export function MenuDrawer({
   const backdropOpacity = useSharedValue(0);
 
   const { data: listings = [] } = useMenuListings();
-  const { data: positions = [] } = usePositions();
+  const { data: positions = [] } = usePositions(walletAddress);
   // Phase 8.6: Jupiter Lend live markets (drill-down で fixture pools を上書き)
   const { data: jlMarkets = [] } = useJupiterLendMarkets();
 

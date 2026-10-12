@@ -62,6 +62,41 @@ export function sanitizeError(err: unknown, env: NodeJS.ProcessEnv = process.env
  */
 const GETLOGS_GAP_MS = 700;
 
+/**
+ * Infura へ実際に出た request を method 別に数える (retry も 1 回として数える = 課金と同じ)。
+ * credit は Infura の公表値の目安 (eth_getLogs 255 / eth_chainId 5 / ほか 80、2026-10-05 確認)。
+ * GET /eth/rpc-usage で見て、削減の効果をダッシュボードを待たずに確かめる。
+ */
+const CREDIT_COST: Record<string, number> = { eth_getLogs: 255, eth_chainId: 5 };
+const DEFAULT_CREDIT = 80;
+const usage = new Map<string, number>();
+let usageSince = new Date().toISOString();
+
+function countRpc(body: unknown) {
+  if (typeof body !== "string") return;
+  try {
+    const parsed = JSON.parse(body) as { method?: string } | Array<{ method?: string }>;
+    for (const r of Array.isArray(parsed) ? parsed : [parsed]) {
+      const m = r.method ?? "unknown";
+      usage.set(m, (usage.get(m) ?? 0) + 1);
+    }
+  } catch {
+    // JSON でない body は数えない
+  }
+}
+
+export function rpcUsageSnapshot() {
+  const byMethod = Object.fromEntries([...usage.entries()].sort((a, b) => b[1] - a[1]));
+  const approxCredits = [...usage.entries()].reduce((sum, [m, n]) => sum + n * (CREDIT_COST[m] ?? DEFAULT_CREDIT), 0);
+  const requests = [...usage.values()].reduce((a, b) => a + b, 0);
+  return { since: usageSince, requests, approxCredits, byMethod };
+}
+
+export function _resetRpcUsageForTest() {
+  usage.clear();
+  usageSince = new Date().toISOString();
+}
+
 export function throttledFetch(maxInFlight = 4, minGapMs = 120, base: typeof fetch = undiciFetch()): typeof fetch {
   let inFlight = 0;
   let last = 0;
@@ -91,6 +126,7 @@ export function throttledFetch(maxInFlight = 4, minGapMs = 120, base: typeof fet
     new Promise<Response>((resolve, reject) => {
       const heavy = typeof init?.body === "string" && init.body.includes('"eth_getLogs"');
       queue.push({ heavy, run: () => {
+        countRpc(init?.body);
         base(input, init)
           .then(resolve, reject)
           .finally(() => {

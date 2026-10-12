@@ -46,6 +46,9 @@ import {
   type UnifiedTimeEventDTO,
   type UserPolicy,
   type Wallet,
+  type CooldownSource,
+  type CooldownStateResponse,
+  isCooldownStateResponse,
 } from "@workspace/lib/types";
 
 import {
@@ -102,8 +105,14 @@ async function bffError(res: Response, fallbackPath: string): Promise<Error> {
   return new Error(message);
 }
 
-async function httpGetJson<T>(path: string): Promise<T> {
-  const res = await fetch(`${BFF_BASE_URL}${path}`);
+/**
+ * API 効率化計画 Phase A-5: TanStack Query の queryFn context の `signal` を fetch に渡す。
+ * wallet 切替 / unmount で observer が居なくなった取得は回線ごと abort される
+ * (応答は元の key にしか書かれないので混ざりはしないが、帯域と BFF の credit を使う)。
+ */
+async function httpGetJson<T>(path: string, signal?: AbortSignal): Promise<T> {
+  const url = `${BFF_BASE_URL}${path}`;
+  const res = await (signal ? fetch(url, { signal }) : fetch(url));
   if (!res.ok) throw await bffError(res, path);
   return (await res.json()) as T;
 }
@@ -154,6 +163,9 @@ async function tryHttpThenFixture<T>(
   try {
     return await http();
   } catch (err) {
+    // Phase A-5: abort は「BFF 不達」ではない (呼び手が取得を取り消しただけ)。
+    // fixture に落とさず dev fallback log にも記録しない
+    if (isAbortError(err)) throw err;
     if (
       (typeof __DEV__ !== "undefined" && __DEV__) ||
       SHOULD_FALLBACK_TO_FIXTURES
@@ -167,6 +179,14 @@ async function tryHttpThenFixture<T>(
     }
     throw err;
   }
+}
+
+function isAbortError(err: unknown): boolean {
+  return (
+    typeof err === "object" &&
+    err !== null &&
+    (err as { name?: unknown }).name === "AbortError"
+  );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -321,9 +341,11 @@ export class BffError extends Error {
   }
 }
 
-export async function getTimeEvents(): Promise<UnifiedTimeEvent[]> {
+export async function getTimeEvents(
+  signal?: AbortSignal
+): Promise<UnifiedTimeEvent[]> {
   return tryHttpThenFixture(
-    () => httpGetJson<UnifiedTimeEvent[]>("/time-events"),
+    () => httpGetJson<UnifiedTimeEvent[]>("/time-events", signal),
     () => fxGetTimeEvents(),
     "/time-events"
   );
@@ -334,7 +356,8 @@ export async function getTimeEvents(): Promise<UnifiedTimeEvent[]> {
  * 未指定なら従来通り fixture / BFF fixture 経由。
  */
 export async function getPositions(
-  walletAddress?: string
+  walletAddress?: string,
+  signal?: AbortSignal
 ): Promise<Position[]> {
   const path = walletAddress
     ? `/positions?wallet=${encodeURIComponent(walletAddress)}`
@@ -342,7 +365,7 @@ export async function getPositions(
   // 8.93: 空の「成功」で正常キャッシュを上書きしない (fixture は非 test では [] を
   // 返すだけで preview 価値なし) — 失敗は reject してキャッシュ保持 + 自動再試行
   return tryHttpThenFixture(
-    () => httpGetJson<Position[]>(path),
+    () => httpGetJson<Position[]>(path, signal),
     () => fxGetPositions(),
     path,
     "throw"
@@ -355,7 +378,8 @@ export async function getPositions(
  * 失敗時は空オブジェクトを返す。
  */
 export async function getEarnPositions(
-  walletAddress: string
+  walletAddress: string,
+  signal?: AbortSignal
 ): Promise<EarnPositionsResponse> {
   const path = `/positions/earn?wallet=${encodeURIComponent(walletAddress)}`;
   // Phase 8.15.x: swapEarn / save は意図的に省略 (undefined)。BFF 不達時は
@@ -365,7 +389,7 @@ export async function getEarnPositions(
     kaminoBestEffort: [],
   };
   return tryHttpThenFixture(
-    () => httpGetJson<EarnPositionsResponse>(path),
+    () => httpGetJson<EarnPositionsResponse>(path, signal),
     async () => empty,
     path,
     "throw" // 8.93: 空 resolve で保有表示を消さない
@@ -401,14 +425,16 @@ export interface JupiterLendMarketDTO {
  * fixture / BFF 不通時は空 map (呼び手は position の unit_price_usd に落ちる)。
  */
 export async function getPrices(
-  symbols: string[]
+  symbols: string[],
+  signal?: AbortSignal
 ): Promise<Record<string, string>> {
   if (symbols.length === 0) return {};
   const q = encodeURIComponent(symbols.join(","));
   return tryHttpThenFixture(
     async () => {
       const res = await httpGetJson<{ prices?: Record<string, string> }>(
-        `/prices?symbols=${q}`
+        `/prices?symbols=${q}`,
+        signal
       );
       return res.prices ?? {};
     },
@@ -432,7 +458,8 @@ export interface PortfolioHistoryDTO {
  */
 export async function getPortfolioHistory(
   wallet: string,
-  days: number
+  days: number,
+  signal?: AbortSignal
 ): Promise<PortfolioHistoryDTO> {
   const empty: PortfolioHistoryDTO = {
     points: [],
@@ -442,7 +469,8 @@ export async function getPortfolioHistory(
   return tryHttpThenFixture(
     () =>
       httpGetJson<PortfolioHistoryDTO>(
-        `/portfolio/history?wallet=${encodeURIComponent(wallet)}&days=${days}`
+        `/portfolio/history?wallet=${encodeURIComponent(wallet)}&days=${days}`,
+        signal
       ),
     async () => empty,
     "/portfolio/history",
@@ -450,9 +478,15 @@ export async function getPortfolioHistory(
   );
 }
 
-export async function getJupiterLendMarkets(): Promise<JupiterLendMarketDTO[]> {
+export async function getJupiterLendMarkets(
+  signal?: AbortSignal
+): Promise<JupiterLendMarketDTO[]> {
   return tryHttpThenFixture(
-    () => httpGetJson<JupiterLendMarketDTO[]>("/protocols/jupiter-lend/markets"),
+    () =>
+      httpGetJson<JupiterLendMarketDTO[]>(
+        "/protocols/jupiter-lend/markets",
+        signal
+      ),
     async () => [],
     "/protocols/jupiter-lend/markets",
     "throw" // 8.93: [] の「成功」で live markets キャッシュを消さない
@@ -771,7 +805,10 @@ export function getSaveWithdrawTxns(input: {
  * ActionModal が deposit/withdraw review 時に引いて WarningArea 表示 / CTA gate に使う。
  * test 環境では network を呼ばず安全側の ok を返す (fixture path)。
  */
-export async function getOracleStatus(mint: string): Promise<OracleResult> {
+export async function getOracleStatus(
+  mint: string,
+  signal?: AbortSignal
+): Promise<OracleResult> {
   if (IS_TEST_ENV) {
     return {
       asset_symbol: "TEST",
@@ -786,7 +823,10 @@ export async function getOracleStatus(mint: string): Promise<OracleResult> {
       block_reason: null,
     };
   }
-  return httpGetJson<OracleResult>(`/oracle/status?mint=${encodeURIComponent(mint)}`);
+  return httpGetJson<OracleResult>(
+    `/oracle/status?mint=${encodeURIComponent(mint)}`,
+    signal
+  );
 }
 
 /**
@@ -795,11 +835,12 @@ export async function getOracleStatus(mint: string): Promise<OracleResult> {
  * Mobile 側で Date に復元してから返す。fixture 未提供、未接続 / 失敗時は空配列。
  */
 export async function getWalletTimeEvents(
-  walletAddress: string
+  walletAddress: string,
+  signal?: AbortSignal
 ): Promise<UnifiedTimeEvent[]> {
   const path = `/time-events/wallet?wallet=${encodeURIComponent(walletAddress)}`;
   const dtos = await tryHttpThenFixture<UnifiedTimeEventDTO[]>(
-    () => httpGetJson<UnifiedTimeEventDTO[]>(path),
+    () => httpGetJson<UnifiedTimeEventDTO[]>(path, signal),
     async () => [],
     path
   );
@@ -809,30 +850,81 @@ export async function getWalletTimeEvents(
   }));
 }
 
-export async function getAgentPlan(planId: string): Promise<AgentPlan> {
+/** SKR state 取得の上限 (BFF の read も 10 秒) */
+export const SKR_STATE_TIMEOUT_MS = 10_000;
+
+/**
+ * SKR staking cooldown の状態 (docs/skr-r0-implementation.md §3)。
+ *
+ * - **fixture に fallback しない** (tryHttpThenFixture を使わない)。live の失敗を
+ *   fixture / demo で埋めると「解除待ちが無い」「ready」と誤表示し得る
+ * - 10 秒で abort。`cache: "no-store"` (BFF も Cache-Control: no-store を返す)
+ * - response は lib の runtime guard で検査し、要求と違う wallet / source なら捨てる
+ */
+export async function getSkrStakingState(
+  wallet: string,
+  source: CooldownSource
+): Promise<CooldownStateResponse> {
+  const path = `/protocols/skr-staking/state?wallet=${encodeURIComponent(wallet)}&source=${source}`;
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), SKR_STATE_TIMEOUT_MS);
+  let body: unknown;
+  try {
+    const res = await fetch(`${BFF_BASE_URL}${path}`, {
+      cache: "no-store",
+      signal: ctrl.signal,
+    });
+    if (!res.ok) {
+      const err = await bffError(res, path);
+      throw new BffError(err.message, err.message);
+    }
+    body = await res.json();
+  } finally {
+    clearTimeout(timer);
+  }
+  if (!isCooldownStateResponse(body)) {
+    throw new BffError("invalid_skr_state_response", "invalid_skr_state_response");
+  }
+  if (body.wallet_address !== wallet || body.source !== source) {
+    throw new BffError("skr_scope_mismatch", "skr_scope_mismatch");
+  }
+  return body;
+}
+
+export async function getAgentPlan(
+  planId: string,
+  signal?: AbortSignal
+): Promise<AgentPlan> {
   return tryHttpThenFixture(
     () =>
-      httpGetJson<AgentPlan>(`/agent-plans/${encodeURIComponent(planId)}`),
+      httpGetJson<AgentPlan>(
+        `/agent-plans/${encodeURIComponent(planId)}`,
+        signal
+      ),
     () => fxGetAgentPlan(planId),
     `/agent-plans/${planId}`
   );
 }
 
-export async function getAgentPlans(): Promise<AgentPlan[]> {
+export async function getAgentPlans(
+  signal?: AbortSignal
+): Promise<AgentPlan[]> {
   return tryHttpThenFixture(
-    () => httpGetJson<AgentPlan[]>("/agent-plans"),
+    () => httpGetJson<AgentPlan[]>("/agent-plans", signal),
     () => fxGetAgentPlans(),
     "/agent-plans"
   );
 }
 
 export async function getApprovalToken(
-  tokenId: string
+  tokenId: string,
+  signal?: AbortSignal
 ): Promise<ApprovalToken> {
   return tryHttpThenFixture(
     () =>
       httpGetJson<ApprovalToken>(
-        `/approval-tokens/${encodeURIComponent(tokenId)}`
+        `/approval-tokens/${encodeURIComponent(tokenId)}`,
+        signal
       ),
     () => fxGetApprovalToken(tokenId),
     `/approval-tokens/${tokenId}`
@@ -853,11 +945,14 @@ export interface KaminoReserveSummary {
   tvl_usd: string;
 }
 
-export async function getKaminoReserves(): Promise<KaminoReserveSummary[]> {
+export async function getKaminoReserves(
+  signal?: AbortSignal
+): Promise<KaminoReserveSummary[]> {
   return tryHttpThenFixture(
     async () => {
       const result = await httpGetJson<{ reserves: KaminoReserveSummary[] }>(
-        "/protocols/kamino/reserves"
+        "/protocols/kamino/reserves",
+        signal
       );
       return result.reserves;
     },
@@ -914,9 +1009,11 @@ export async function postJupiterQuote(
   );
 }
 
-export async function getUserPolicy(): Promise<UserPolicy> {
+export async function getUserPolicy(
+  signal?: AbortSignal
+): Promise<UserPolicy> {
   return tryHttpThenFixture(
-    () => httpGetJson<UserPolicy>("/user-policy"),
+    () => httpGetJson<UserPolicy>("/user-policy", signal),
     () => fxGetUserPolicy(),
     "/user-policy"
   );
@@ -937,18 +1034,22 @@ export async function patchUserPolicy(
 }
 
 /** Phase 8.30: 自律オプションの現在状態 (armed / daily_count / hard_caps)。 */
-export async function getAutonomousStatus(): Promise<AutonomousStatus> {
+export async function getAutonomousStatus(
+  signal?: AbortSignal
+): Promise<AutonomousStatus> {
   return tryHttpThenFixture(
-    () => httpGetJson<AutonomousStatus>("/autonomous/status"),
+    () => httpGetJson<AutonomousStatus>("/autonomous/status", signal),
     () => fxGetAutonomousStatus(),
     "/autonomous/status"
   );
 }
 
 /** Phase 8.30: 自律実行の監査ログ (newest-first)。 */
-export async function getAutonomousLog(): Promise<AutonomousExecutionRecord[]> {
+export async function getAutonomousLog(
+  signal?: AbortSignal
+): Promise<AutonomousExecutionRecord[]> {
   return tryHttpThenFixture(
-    () => httpGetJson<AutonomousExecutionRecord[]>("/autonomous/log"),
+    () => httpGetJson<AutonomousExecutionRecord[]>("/autonomous/log", signal),
     () => fxGetAutonomousLog(),
     "/autonomous/log"
   );
@@ -972,25 +1073,31 @@ export async function resumeAutonomous(): Promise<AutonomousStatus> {
   );
 }
 
-export async function getWallets(): Promise<Wallet[]> {
+export async function getWallets(
+  signal?: AbortSignal
+): Promise<Wallet[]> {
   return tryHttpThenFixture(
-    () => httpGetJson<Wallet[]>("/wallets"),
+    () => httpGetJson<Wallet[]>("/wallets", signal),
     () => fxGetWallets(),
     "/wallets"
   );
 }
 
-export async function getProtocols(): Promise<Protocol[]> {
+export async function getProtocols(
+  signal?: AbortSignal
+): Promise<Protocol[]> {
   return tryHttpThenFixture(
-    () => httpGetJson<Protocol[]>("/protocols"),
+    () => httpGetJson<Protocol[]>("/protocols", signal),
     () => fxGetProtocols(),
     "/protocols"
   );
 }
 
-export async function getMenuListings(): Promise<ProtocolMenuEntry[]> {
+export async function getMenuListings(
+  signal?: AbortSignal
+): Promise<ProtocolMenuEntry[]> {
   return tryHttpThenFixture(
-    () => httpGetJson<ProtocolMenuEntry[]>("/menu-listings"),
+    () => httpGetJson<ProtocolMenuEntry[]>("/menu-listings", signal),
     () => fxGetMenuListings(),
     "/menu-listings"
   );

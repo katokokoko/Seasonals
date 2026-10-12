@@ -1,0 +1,127 @@
+{
+  "kind": "protocol_reference_only",
+  "cluster": "mainnet-beta",
+  "commitment": "confirmed",
+  "captured_at": "2026-09-20T14:21:10.127Z",
+  "idl_sha256": "6e71d7a36ee9ea4410394ec69d9007dca4fb05ad902741004f1d3746b607df03",
+  "program": "SKRskrmtL83pcL4YqLWt6iPefDqwXQWHSw9S9vz94BZ",
+  "addresses": [
+    "4HQy82s9CHTv1GsYKnANHMiHfhcqesYkK6sB3RDSYyqw",
+    "DPJ58trLsF9yPrBa2pk6UaRkvqW8hWUYjawe788WBuqr",
+    "8isViKbwhuhFhsv2t8vaFL74pKCqaFPQXo1KkeQwZbB8",
+    "SKRbvo6Gf7GondiT3BbTfuRDPqLWei4j2Qy2NPGZhW3",
+    "SysvarC1ock11111111111111111111111111111111"
+  ],
+  "rpc_response": {
+    "jsonrpc": "2.0",
+    "result": {
+      "context": {
+        "apiVersion": "4.3.0-rc.0",
+        "slot": 448756823
+      },
+      "value": [
+        {
+          "data": [
+            "7pcrAwuXP7D/99/RmBWIoUKnBCJppz3tD3Kiqm19wGlNrfxqo58KnyMGfFo+Bf5BRxKnour+Qr52ELzZDL9XFid1g3PLitDYpHK7t3HxKVTi9/Qhl74s+E4dlydE1728RBtKSZ5/fy2TQEIPAAAAAAAAowIAAAAAAKLoTHCGiw8AAAAAAAAAAAAzKw9EAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA3KMdu8tgRAA==",
+            "base64"
+          ],
+          "executable": false,
+          "lamports": 135101466,
+          "owner": "SKRskrmtL83pcL4YqLWt6iPefDqwXQWHSw9S9vz94BZ",
+          "rentEpoch": 18446744073709552000,
+          "space": 193
+        },
+        {
+          "data": [
+            "he7/1tcLvRcwx3Q4Vi1F71t5KS9hzw81FDWdjOCzNuWXZq0IibG83gZ8WJTOnorbS50M0/6yYuuZboUVKKTmfwK8/8Gr9hNs99/RmBWIoUKnBCJppz3tD3Kiqm19wGlNrfxqo58KnyOi6ExwhosPAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADMrD0QAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD/AQAAAAAAAAAAAAAAAAAAAAA=",
+            "base64"
+          ],
+          "executable": false,
+          "lamports": 2199360,
+          "owner": "SKRskrmtL83pcL4YqLWt6iPefDqwXQWHSw9S9vz94BZ",
+          "rentEpoch": 18446744073709552000,
+          "space": 188
+        },
+        {
+          "data": [
+            "BnxaPgX+QUcSp6Lq/kK+dhC82Qy/VxYndYNzy4rQ2KQwx3Q4Vi1F71t5KS9hzw81FDWdjOCzNuWXZq0IibG83jcox27y2BEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "base64"
+          ],
+          "executable": false,
+          "lamports": 2039280,
+          "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "rentEpoch": 18446744073709552000,
+          "space": 165
+        },
+        {
+          "data": [
+            "AQAAANU721mLTlyETyBmNLVCQu0ZtyoLZVaIPavZk94uC5ww2qK/4nqsJQAGAQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==",
+            "base64"
+          ],
+          "executable": false,
+          "lamports": 7336442936,
+          "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+          "rentEpoch": 18446744073709552000,
+          "space": 82
+        },
+        {
+          "data": [
+            "V3y/GgAAAACLiK5qAAAAAA4EAAAAAAAADwQAAAAAAACS669qAAAAAA==",
+            "base64"
+          ],
+          "executable": false,
+          "lamports": 1169280,
+          "owner": "Sysvar1111111111111111111111111111111111111",
+          "rentEpoch": 18446744073709552000,
+          "space": 40
+        }
+      ]
+    },
+    "id": 1
+  },
+  "decoded": {
+    "config": {
+      "bump": 255,
+      "authority": "Hgbea5UFVXD3dQoL2mJbXLVnnFFRqyJJis9vfm69w5oQ",
+      "mint": "SKRbvo6Gf7GondiT3BbTfuRDPqLWei4j2Qy2NPGZhW3",
+      "stake_vault": "8isViKbwhuhFhsv2t8vaFL74pKCqaFPQXo1KkeQwZbB8",
+      "min_stake_amount": "1000000",
+      "cooldown_seconds": "172800",
+      "total_shares": "4375534176626850",
+      "share_price": "1141844787",
+      "commission_weight_sum": "0",
+      "cumulative_commission_per_share": "0",
+      "last_vault_amount": "5023610356312119"
+    },
+    "pool": {
+      "stake_config": "4HQy82s9CHTv1GsYKnANHMiHfhcqesYkK6sB3RDSYyqw",
+      "guardian": "SKRGdBwzb1AtFW2chhBnZpGFnFLj6Mi7HM7iwjXALvw",
+      "authority": "Hgbea5UFVXD3dQoL2mJbXLVnnFFRqyJJis9vfm69w5oQ",
+      "total_shares": "4375534176626850",
+      "cumulative_commission_per_share": "0",
+      "last_share_price": "1141844787",
+      "accrued_commission": "0",
+      "commission_bps": 0,
+      "bump": 255,
+      "active": true,
+      "deregistered_share_price": "0"
+    },
+    "vault_token_authority": "4HQy82s9CHTv1GsYKnANHMiHfhcqesYkK6sB3RDSYyqw",
+    "mint_decimals": 6,
+    "chain_time": "1789914002"
+  },
+  "checks": {
+    "config_program_owner": true,
+    "pool_program_owner": true,
+    "config_pda": true,
+    "vault_pda": true,
+    "pool_pda": true,
+    "config_mint": true,
+    "config_vault": true,
+    "pool_config": true,
+    "vault_token_program": true,
+    "mint_token_program": true,
+    "vault_mint": true
+  },
+  "user_stake_included": false
+}

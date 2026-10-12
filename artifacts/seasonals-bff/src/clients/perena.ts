@@ -7,6 +7,7 @@
 import { PublicKey } from "@solana/web3.js";
 import { PERENA_TRI_STABLE_POOL, PERENA_TRI_STABLE_VAULTS } from "@workspace/lib/config/perena";
 import { getMultipleAccountsBase64, type RawAccount } from "./helius-rpc";
+import { TtlCache } from "../cache/ttl-cache";
 
 const TOKEN_PROGRAM = "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA";
 const TOKEN_2022_PROGRAM = "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb";
@@ -24,11 +25,18 @@ export function decodeVaultAmount(acct: RawAccount | null, expected: { mint: str
   return acct.data.readBigUInt64LE(64);
 }
 
+/** B2: 表示専用 TVL は全 user で共有 (300 秒、同時 miss は 1 回の読みに合流、失敗は cache しない) */
+const tvlCache = new TtlCache<number>({ name: "perena.tvl", ttlMs: 300_000, maxEntries: 1, now: () => Date.now() });
+
 /**
  * Tri-Stable Pool の TVL (USD)。中身は USDC / USDT / PYUSD なので 1 token = $1 として合算する
  * (Menu の表示用 TVL。既存の `tvl_usd: number` と同じ扱い)。量は bigint で足してから最後に割る
  */
 export async function fetchPerenaTriStableTvlUsd(): Promise<number> {
+  return tvlCache.getOrLoad("tri-stable", loadTriStableTvlUsd);
+}
+
+async function loadTriStableTvlUsd(): Promise<number> {
   const accts = await getMultipleAccountsBase64(PERENA_TRI_STABLE_VAULTS.map((v) => v.vault));
   if (!Array.isArray(accts) || accts.length !== PERENA_TRI_STABLE_VAULTS.length) {
     throw new Error("Perena vaults: unexpected RPC result");

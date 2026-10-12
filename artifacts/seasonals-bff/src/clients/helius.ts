@@ -21,7 +21,8 @@
  * @see https://docs.helius.dev/compression-and-das-api/digital-asset-standard-das-api/get-assets-by-owner
  */
 
-import { fetchWithTimeout } from "./http"; // Phase 8.38 (B9): 共通 timeout
+// B1: DAS は heliusDataFetch の列 (2 in flight / 500ms) に並べ、429 / 5xx は backoff 再試行
+import { fetchJsonWithRetry, heliusDataFetch } from "./helius-limiter";
 const HELIUS_MAINNET_URL = "https://mainnet.helius-rpc.com";
 
 const CACHE_TTL_MS = 30_000;
@@ -75,9 +76,16 @@ function evictOldest(m: Map<string, unknown>): void {
 }
 
 
+/**
+ * 進行中の読み (wallet ごとに 1 本)。同じ wallet の同時要求は 1 回の DAS 呼び出し (10 credit) に合流する。
+ * wallet snapshot の assets source と /portfolio/history が同時に cold で走る場面で効く
+ */
+const inflight = new Map<string, Promise<HeliusAsset[]>>();
+
 /** test 用 cache クリア (本番では使われない) */
 export function _clearHeliusCacheForTest(): void {
   cache.clear();
+  inflight.clear();
 }
 
 function buildUrl(): string {
@@ -96,6 +104,16 @@ function buildUrl(): string {
  * - NFT は filter で除外 (mapping 側で interface check)
  * - pagination 1 page (limit 1000) のみ対応。それ以上保有する wallet は稀。
  */
+/**
+ * B3 follow-up: wallet の tx 送信後に snapshot と一緒に捨てる (30s cache が tx 前の保有を返さないように)。
+ * wallet-snapshot.ts の invalidateWalletSnapshot から呼ばれる
+ */
+export function invalidateAssetsCacheForWallet(address: string): void {
+  cache.delete(address);
+  // 進行中の読みは tx 前の保有を返しうるので、完了しても cache に書かせない (呼び手には返る)
+  inflight.delete(address);
+}
+
 export async function fetchAssetsByOwner(
   address: string
 ): Promise<HeliusAsset[]> {
@@ -105,50 +123,71 @@ export async function fetchAssetsByOwner(
     return cached.data;
   }
 
-  const url = buildUrl();
-  const res = await fetchWithTimeout(url, {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      jsonrpc: "2.0",
-      id: "seasonals-bff",
-      method: "getAssetsByOwner",
-      params: {
-        ownerAddress: address,
-        page: 1,
-        limit: 1000,
-        displayOptions: {
-          showFungible: true,
-          showNativeBalance: true,
-        },
-      },
-    }),
+  // ── in-flight dedupe ──
+  const pending = inflight.get(address);
+  if (pending) return pending;
+
+  const load = loadAssetsByOwner(address).then(
+    (items) => {
+      // invalidate で切り離された読み (inflight に別物が入っている / 無い) は cache に書かない
+      if (inflight.get(address) === load) {
+        cache.set(address, { data: items, ts: Date.now() });
+        evictOldest(cache);
+      }
+      return items;
+    }
+  );
+  inflight.set(address, load);
+  load.finally(() => {
+    if (inflight.get(address) === load) inflight.delete(address);
+  }).catch(() => {
+    /* 失敗は呼び手に伝わる。ここでは inflight の掃除だけ */
   });
+  return load;
+}
 
-  if (!res.ok) {
-    throw new Error(
-      `Helius HTTP ${res.status} ${res.statusText}: ${await res.text().catch(() => "")}`
-    );
-  }
-
-  const json = (await res.json()) as {
+async function loadAssetsByOwner(address: string): Promise<HeliusAsset[]> {
+  const url = buildUrl();
+  // error message に URL (api-key) を出さない (HeliusRpcError)
+  const json = await fetchJsonWithRetry<{
     jsonrpc?: string;
     result?: { items?: HeliusAsset[]; nativeBalance?: { lamports?: number } };
     error?: { code: number; message: string };
-  };
+  }>(
+    url,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: "seasonals-bff",
+        method: "getAssetsByOwner",
+        params: {
+          ownerAddress: address,
+          page: 1,
+          limit: 1000,
+          displayOptions: {
+            showFungible: true,
+            showNativeBalance: true,
+          },
+        },
+      }),
+    },
+    { label: "getAssetsByOwner", fetchImpl: heliusDataFetch.timed() }
+  );
 
-  if (json.error) {
+  if (json?.error) {
     throw new Error(
       `Helius RPC error ${json.error.code}: ${json.error.message}`
     );
   }
 
-  const items = json.result?.items ?? [];
+  const items = json?.result?.items ?? [];
 
   // ── native SOL を synthetic asset として追加 ──
   // showNativeBalance: true で `result.nativeBalance.lamports` が返る。
   // wallet 表示で SOL 残高を欠落させないよう WSOL mint で entry を追加。
-  const nativeLamports = json.result?.nativeBalance?.lamports;
+  const nativeLamports = json?.result?.nativeBalance?.lamports;
   if (typeof nativeLamports === "number" && nativeLamports > 0) {
     const hasWrappedSolEntry = items.some(
       (a) => a.id === "So11111111111111111111111111111111111111112"
@@ -167,7 +206,5 @@ export async function fetchAssetsByOwner(
     }
   }
 
-  cache.set(address, { data: items, ts: Date.now() });
-  evictOldest(cache);
   return items;
 }

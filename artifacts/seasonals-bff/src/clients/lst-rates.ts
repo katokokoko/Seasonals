@@ -21,6 +21,8 @@
 
 import { fetchWithTimeout } from "./http";
 import { buildUrl, getEpochInfo } from "./helius-rpc";
+import { fetchJsonWithRetry, heliusRpcFetch } from "./helius-limiter";
+import { TtlCache } from "../cache/ttl-cache";
 
 const CACHE_TTL_MS = 60_000;
 const FETCH_TIMEOUT_MS = 15_000;
@@ -121,24 +123,33 @@ export function parseMarinadePriceSol(body: string): bigint | null {
 // I/O
 // ─────────────────────────────────────────────────────────────────────────────
 
-let cache: { at: number; values: Map<string, bigint> } | null = null;
+// B2: 60 秒の共有 cache を TtlCache に移す (同時の呼び手は 1 回の取得に合流)。
+// 取れなかった LST を欠いた Map も従来どおり 60 秒 cache する (各 source の失敗は下で握る)
+const ratesCache = new TtlCache<Map<string, bigint>>({
+  name: "lst.rates",
+  ttlMs: CACHE_TTL_MS,
+  maxEntries: 1,
+  now: () => Date.now(),
+});
 
 export function _clearLstRatesCacheForTest(): void {
-  cache = null;
+  ratesCache.clear();
 }
 
+/**
+ * Helius JSON-RPC 1 本。B2: limiter (heliusRpcFetch の列 + usage 計数) と 429 / 5xx / network の
+ * backoff 再試行 (fetchJsonWithRetry) を通す。timeout は従来どおり 15 秒
+ */
 async function rpc<T>(method: string, params: unknown[]): Promise<T> {
-  const res = await fetchWithTimeout(
+  const json = await fetchJsonWithRetry<{ result?: T; error?: { message?: string } }>(
     buildUrl(),
     {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ jsonrpc: "2.0", id: "seasonals-lst", method, params }),
     },
-    FETCH_TIMEOUT_MS
+    { label: method, fetchImpl: heliusRpcFetch.timed(FETCH_TIMEOUT_MS) }
   );
-  if (!res.ok) throw new Error(`${method} HTTP ${res.status}`);
-  const json = (await res.json()) as { result?: T; error?: { message?: string } };
   if (json.error) throw new Error(json.error.message ?? method);
   if (json.result === undefined) throw new Error(`${method} empty result`);
   return json.result;
@@ -157,7 +168,10 @@ interface AccountValue {
  * 埋めると静かに間違った金額を出すことになる。
  */
 export async function fetchLstSolValues(): Promise<Map<string, bigint>> {
-  if (cache && Date.now() - cache.at < CACHE_TTL_MS) return cache.values;
+  return ratesCache.getOrLoad("all", loadLstSolValues);
+}
+
+async function loadLstSolValues(): Promise<Map<string, bigint>> {
   const out = new Map<string, bigint>();
 
   const [accounts, epoch, infSupply, msol] = await Promise.all([
@@ -199,6 +213,5 @@ export async function fetchLstSolValues(): Promise<Map<string, bigint>> {
     if (rate !== null) out.set("mSOL", rate);
   }
 
-  cache = { at: Date.now(), values: out };
   return out;
 }

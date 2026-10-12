@@ -20,6 +20,8 @@ import {
   // bigint
   toBigInt,
   fromBigInt,
+  SIGNED_TOKEN_AMOUNT_REGEX,
+  signedToBigInt,
   usd8ToBigInt,
   compareUsd8,
   signedUsd8ToBigInt,
@@ -180,6 +182,24 @@ describe("toBigInt / fromBigInt", () => {
   it("invalid input は throw", () => {
     expect(() => toBigInt("1.5")).toThrow(InvalidAmountError);
     expect(() => toBigInt("-1")).toThrow(InvalidAmountError);
+  });
+});
+
+describe("signedToBigInt / SIGNED_TOKEN_AMOUNT_REGEX", () => {
+  it("符号付き整数 string を bigint に (2^53 超も正確)", () => {
+    expect(signedToBigInt("0")).toBe(0n);
+    expect(signedToBigInt("-5000")).toBe(-5000n);
+    expect(signedToBigInt("9007199254740993")).toBe(9007199254740993n);
+    expect(signedToBigInt("-9007199254740993")).toBe(-9007199254740993n);
+  });
+
+  it.each(["", "-", "1.5", "-1.5", "+1", "1e3", " 1", "abc", "--1"])("%p は throw", (v) => {
+    expect(SIGNED_TOKEN_AMOUNT_REGEX.test(v)).toBe(false);
+    expect(() => signedToBigInt(v)).toThrow(InvalidAmountError);
+  });
+
+  it("string 以外は throw", () => {
+    expect(() => signedToBigInt(5 as unknown as string)).toThrow(InvalidAmountError);
   });
 });
 

@@ -107,8 +107,11 @@ function parseIsoUtc(s: string): Date {
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-/** 期日イベントの draft urgency: ≤1日 (過去含む) critical / ≤7日 watch / info */
-function proximityUrgency(at: Date, now: Date): Urgency {
+/**
+ * 期日イベントの draft urgency: ≤1日 (過去含む) critical / ≤7日 watch / info
+ * (SKR cooldown の lockup_end も同じ閾値を使う: lib/derive/cooldown-position.ts)
+ */
+export function proximityUrgency(at: Date, now: Date): Urgency {
   const ms = at.getTime() - now.getTime();
   if (ms <= DAY_MS) return Urgency.Critical;
   if (ms <= 7 * DAY_MS) return Urgency.Watch;

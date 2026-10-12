@@ -71,6 +71,11 @@ export interface TimelineData {
   hasWallet: boolean;
 }
 
+/** Timeline の部分失敗時の再取得間隔: 15 秒から倍々、上限 5 分 (n = これまでの取得成功回数) */
+export function timelineRetryMs(n: number): number {
+  return Math.min(15_000 * 2 ** Math.max(0, n - 1), 5 * 60_000);
+}
+
 function errorText(e: unknown): string {
   if (e instanceof ApiError) return e.status === 404 ? "Not available on this server yet." : e.message;
   return e instanceof Error ? e.message : "Unknown error";
@@ -116,8 +121,10 @@ export function useTimeline(): TimelineData {
       queryFn: s.queryFn,
       staleTime: 60_000,
       retry: (n: number, e: unknown) => !(e instanceof ApiError && e.status === 404) && n < 2,
-      // 一部 source が未完了 / 失敗 (CCA bid の background scan、429 等) なら 15 秒後に再取得
-      refetchInterval: (q: { state: { data?: TimelineEventsResponse } }) => (q.state.data?.sources.some((x) => !x.ok) ? 15_000 : false),
+      // 一部 source が未完了 / 失敗 (CCA bid の background scan、429 等) なら再取得。
+      // 間隔は 15 → 30 → 60 → 120 秒 … 上限 5 分の backoff (失敗が続くと Infura credit を浪費するため)
+      refetchInterval: (q: { state: { data?: TimelineEventsResponse; dataUpdateCount: number } }) =>
+        q.state.data?.sources.some((x) => !x.ok) ? timelineRetryMs(q.state.dataUpdateCount) : false,
     })),
   });
 

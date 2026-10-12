@@ -7,7 +7,7 @@
  *   GET https://lite-api.jup.ag/lend/v1/earn/positions?users=<wallet>
  *     → user positions for all markets (zero balance も含めて返る)
  *
- * Cache: in-memory Map で 30 秒 TTL (rate limit 不明、conservative)。
+ * Cache: TtlCache で 30 秒 TTL (rate limit 不明、conservative)。同時の呼び手は 1 回の取得に合流 (B2)。
  *
  * 規約 (CLAUDE.md §4.5):
  *   - shares / underlyingAssets は underlying / share token の smallest unit integer string
@@ -18,6 +18,7 @@
  */
 
 import { fetchWithTimeout } from "./http"; // Phase 8.38 (B9): 共通 timeout
+import { TtlCache } from "../cache/ttl-cache";
 const JUPITER_LEND_BASE = "https://lite-api.jup.ag/lend/v1";
 const CACHE_TTL_MS = 30_000;
 
@@ -53,32 +54,28 @@ export interface JupiterLendPositionRaw {
   ownerAddress: string;
 }
 
-interface CacheEntry {
-  data: JupiterLendPositionRaw[];
-  ts: number;
-}
-
-const positionsCache = new Map<string, CacheEntry>();
-
-// Phase 8.38 (B10): wallet キー cache の上限 — TTL は read 時にしか効かず、
-// 多数 wallet で無制限成長していた。挿入順 (Map) で古い方から落とす
-const CACHE_MAX_ENTRIES = 200;
-function evictOldest(m: Map<string, unknown>): void {
-  while (m.size > CACHE_MAX_ENTRIES) {
-    const oldest = m.keys().next().value;
-    if (oldest === undefined) break;
-    m.delete(oldest);
-  }
-}
-
+// B2: 30 秒 TTL の Map を TtlCache に移し、同時の呼び手を 1 回の取得に合流させる。
+// positions は wallet キー (Phase 8.38 (B10) の上限 200 は TtlCache の maxEntries で維持)
+const positionsCache = new TtlCache<JupiterLendPositionRaw[]>({
+  name: "jupiterLend.positions",
+  ttlMs: CACHE_TTL_MS,
+  maxEntries: 200,
+  now: () => Date.now(),
+});
 
 /** Phase 8.6: market catalog cache (single global、 wallet 非依存) */
-let marketsCache: { data: JupiterLendMarket[]; ts: number } | null = null;
+const marketsCache = new TtlCache<JupiterLendMarket[]>({
+  name: "jupiterLend.markets",
+  ttlMs: CACHE_TTL_MS,
+  maxEntries: 1,
+  now: () => Date.now(),
+});
+const MARKETS_KEY = "earn-tokens";
 
 /** test 用 cache クリア */
 export function _clearJupiterLendCacheForTest(): void {
   positionsCache.clear();
-  marketsCache = null;
+  marketsCache.clear();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -136,9 +133,10 @@ interface JupTokenRaw {
 }
 
 export async function fetchEarnMarkets(): Promise<JupiterLendMarket[]> {
-  if (marketsCache && Date.now() - marketsCache.ts < CACHE_TTL_MS) {
-    return marketsCache.data;
-  }
+  return marketsCache.getOrLoad(MARKETS_KEY, loadEarnMarkets);
+}
+
+async function loadEarnMarkets(): Promise<JupiterLendMarket[]> {
   const res = await fetchWithTimeout(`${JUPITER_LEND_BASE}/earn/tokens`, {
     method: "GET",
     headers: { accept: "application/json" },
@@ -179,7 +177,6 @@ export async function fetchEarnMarkets(): Promise<JupiterLendMarket[]> {
       totalRateBps: Number(t.totalRate) || 0,
       tvlUnderlying: String(t.totalAssets ?? "0"),
     }));
-  marketsCache = { data, ts: Date.now() };
   return data;
 }
 
@@ -187,14 +184,20 @@ export async function fetchEarnMarkets(): Promise<JupiterLendMarket[]> {
  * 指定 wallet の Jupiter Lend positions を取得。
  * zero balance エントリも含まれるので、呼び出し側で `shares > "0"` filter する。
  */
+/**
+ * B3 follow-up: tx 送信後に wallet の positions cache (30s) を捨てる (wallet-snapshot.ts の invalidateWalletSnapshot から)
+ */
+export function invalidateEarnPositionsCacheForWallet(walletAddress: string): void {
+  positionsCache.delete(walletAddress);
+}
+
 export async function fetchEarnPositions(
   walletAddress: string
 ): Promise<JupiterLendPositionRaw[]> {
-  const cached = positionsCache.get(walletAddress);
-  if (cached && Date.now() - cached.ts < CACHE_TTL_MS) {
-    return cached.data;
-  }
+  return positionsCache.getOrLoad(walletAddress, () => loadEarnPositions(walletAddress));
+}
 
+async function loadEarnPositions(walletAddress: string): Promise<JupiterLendPositionRaw[]> {
   const url = `${JUPITER_LEND_BASE}/earn/positions?users=${encodeURIComponent(walletAddress)}`;
   const res = await fetchWithTimeout(url, {
     method: "GET",
@@ -212,7 +215,5 @@ export async function fetchEarnPositions(
     throw new Error(`Jupiter Lend unexpected response shape (not array)`);
   }
 
-  positionsCache.set(walletAddress, { data: json, ts: Date.now() });
-  evictOldest(positionsCache);
   return json;
 }
