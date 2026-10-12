@@ -12,5 +12,6 @@ export * from "./queryClient";
 export * from "./mwa";
 export * from "./walletStore";
 export * from "./useWallet";
+export * from "./useActiveAddress";
 export * from "./push";
 export * from "./customEventsStore";

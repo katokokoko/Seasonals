@@ -75,6 +75,7 @@ import {
   walletStoreHydrationFailed,
 } from "../services/walletStore";
 import { WALLET_QUERY_GC_MS } from "../services/queries";
+import { useWatchStore } from "../stores/watch";
 import { isDarkBackground, useActiveTheme } from "../stores/theme";
 
 // SplashScreen が消えるタイミングを font load 完了後にする
@@ -131,9 +132,15 @@ export default function RootLayout() {
         shouldPersistQuery(
           query,
           // 復元前と復元失敗は null = wallet 系を全部残す (recentWallets が空のまま
-          // 書き込むと、繋ぎ直していない wallet の cache が一過性の失敗で消える)
-          isWalletStoreHydrated() && !walletStoreHydrationFailed()
-            ? useWalletStore.getState().recentWallets.map((w) => w.address)
+          // 書き込むと、繋ぎ直していない wallet の cache が一過性の失敗で消える)。
+          // watch-only mode: watchlist の address も残す (watch store の復元前は同じく null)
+          isWalletStoreHydrated() &&
+            !walletStoreHydrationFailed() &&
+            useWatchStore.persist.hasHydrated()
+            ? [
+                ...useWalletStore.getState().recentWallets.map((w) => w.address),
+                ...useWatchStore.getState().watchlist,
+              ]
             : null
         ),
     },

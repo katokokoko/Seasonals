@@ -132,6 +132,51 @@ describe("MenuDrawer drill-down (8.54 カード行)", () => {
   });
 });
 
+/**
+ * watch-only mode: 公開 address を閲覧中は deposit / withdraw の導線を止める
+ * (ActionModal 側でも署名は止まるが、そもそも開かせない)
+ */
+describe("MenuDrawer — readOnly (watch-only mode)", () => {
+  async function openJito(readOnly: boolean, onStartAction: jest.Mock) {
+    render(
+      wrap(
+        <MenuDrawer
+          visible
+          onClose={() => {}}
+          onStartAction={onStartAction}
+          readOnly={readOnly}
+          testID="menu"
+        />
+      )
+    );
+    fireEvent.press(await screen.findByTestId("menu-card-jito"));
+    await waitFor(() => expect(screen.getByText("Deposit")).toBeTruthy());
+    return screen.getByTestId(/^menu-detail-pool-.*-cta-deposit$/);
+  }
+
+  it("Deposit CTA は disabled、banner を出し、押しても onStartAction を呼ばない", async () => {
+    const onStartAction = jest.fn();
+    const cta = await openJito(true, onStartAction);
+    expect(cta.props.accessibilityState?.disabled).toBe(true);
+    expect(screen.getByTestId("menu-detail-readonly")).toBeTruthy();
+    fireEvent.press(cta);
+    expect(onStartAction).not.toHaveBeenCalled();
+  });
+
+  it("readOnly でなければ banner は出ず、Deposit で onStartAction が呼ばれる", async () => {
+    const onStartAction = jest.fn();
+    const cta = await openJito(false, onStartAction);
+    expect(screen.queryByTestId("menu-detail-readonly")).toBeNull();
+    fireEvent.press(cta);
+    expect(onStartAction).toHaveBeenCalledWith(
+      "jito",
+      expect.any(String),
+      "deposit",
+      expect.any(String)
+    );
+  });
+});
+
 describe("MenuDrawer — Android back (2026-10-08)", () => {
   afterEach(() => {
     mockFocused = true;

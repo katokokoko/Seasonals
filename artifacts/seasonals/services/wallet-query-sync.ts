@@ -142,6 +142,20 @@ export function evictedAddresses(
 }
 
 /**
+ * watch-only mode: watchlist から外れた address のうち、cache を消してよいもの。
+ * まだ他方 (recentWallets / watchlist) が保持している address は残す
+ * (同じ address の key を接続 wallet と watch で共有するため)
+ */
+export function evictedWatchAddresses(
+  prev: readonly string[],
+  next: readonly string[],
+  retained: readonly string[]
+): string[] {
+  const keep = new Set([...next, ...retained]);
+  return prev.filter((a) => !keep.has(a));
+}
+
+/**
  * tx 成功後: **その wallet の** positions / earn / wallet events / history だけを取り直す。
  * 他 wallet の cache と fixture key (`["positions"]`) には触らない。
  */

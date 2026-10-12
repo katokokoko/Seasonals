@@ -361,6 +361,11 @@ export interface MenuDrawerProps {
    * 旧実装は address 無しで `/positions` を撃ち、onchain build では常に [] だった
    */
   walletAddress?: string | null;
+  /**
+   * watch-only mode: 公開 address を閲覧中 (署名できない)。deposit / withdraw の導線を
+   * 止め、detail pane の先頭に read-only banner を出す。既定 false
+   */
+  readOnly?: boolean;
   testID?: string;
 }
 
@@ -371,6 +376,7 @@ export function MenuDrawer({
   onWithdrawPosition,
   earnPositions,
   walletAddress = null,
+  readOnly = false,
   testID,
 }: MenuDrawerProps) {
   // 8.45: edge-to-edge の inset (drawer は絶対配置で SafeAreaView の padding が効かない)
@@ -548,6 +554,8 @@ export function MenuDrawer({
 
   const handlePoolTap = useCallback(
     (entry: ProtocolMenuEntry, pool: ProtocolPool) => {
+      // watch-only mode: 署名できないので ActionModal を開かない (CTA も disabled)
+      if (readOnly) return;
       // Phase 8.33: read-only listing (Exponent PT 等) は deposit 経路なし — tap 無効
       if (pool.display_only) return;
       // 8.51: 満杯 / 預入停止中も同様に落とす。BFF も 409 で弾くが、必ず失敗する
@@ -557,7 +565,7 @@ export function MenuDrawer({
       const asset = pool.deposit_asset ?? pool.asset;
       onStartAction?.(entry.protocol_id, asset, "deposit", pool.pool_id);
     },
-    [onClose, onStartAction]
+    [readOnly, onClose, onStartAction]
   );
 
   if (!visible && translateX.value >= DRAWER_WIDTH - 1) return null;
@@ -716,8 +724,9 @@ export function MenuDrawer({
                   onPoolTap={(pool) => handlePoolTap(selectedEntry, pool)}
                   earnPositions={earnPositions}
                   positions={positions as Position[]}
-                  onWithdrawPosition={onWithdrawPosition}
+                  onWithdrawPosition={readOnly ? undefined : onWithdrawPosition}
                   jlMarkets={jlMarkets}
+                  readOnly={readOnly}
                   testID={testID ? `${testID}-detail` : undefined}
                 />
               )}
@@ -952,6 +961,8 @@ interface PoolDetailPaneProps {
   onWithdrawPosition?: (position: EarnPosition) => void;
   /** Phase 8.11: Jupiter drill-down で vault rows を構築するための raw markets */
   jlMarkets?: JupiterLendMarketDTO[];
+  /** watch-only mode: CTA を無効化し、先頭に read-only banner */
+  readOnly?: boolean;
   testID?: string;
 }
 
@@ -970,6 +981,7 @@ function DefaultPoolDetailPane({
   earnPositions,
   positions,
   onWithdrawPosition,
+  readOnly = false,
   testID,
 }: PoolDetailPaneProps) {
   const iconSrc = ICON_BY_ID[entry.icon_id];
@@ -1064,6 +1076,10 @@ function DefaultPoolDetailPane({
         contentContainerStyle={styles.detailListInner}
         showsVerticalScrollIndicator={false}
       >
+        {readOnly && (
+          <ReadOnlyBanner testID={testID ? `${testID}-readonly` : undefined} />
+        )}
+
         {/* 8.54: 保有があれば Your Balance サマリー (無い protocol では出さない) */}
         {summary.depositedUsd > 0 && (
           <BalanceSummaryCard
@@ -1094,7 +1110,7 @@ function DefaultPoolDetailPane({
               <YourPositionRow
                 key={`${pos.protocol_id}-${pos.share_mint}`}
                 position={pos}
-                onWithdraw={onWithdrawPosition}
+                onWithdraw={readOnly ? undefined : onWithdrawPosition}
                 testID={
                   testID ? `${testID}-earn-row-${pos.share_mint}` : undefined
                 }
@@ -1114,6 +1130,7 @@ function DefaultPoolDetailPane({
             onDeposit={() => handleDeposit(row)}
             onManage={() => handleManage(row)}
             protocolName={entry.display_name}
+            readOnly={readOnly}
             testID={testID ? `${testID}-pool-${row.key}` : undefined}
           />
         ))}
@@ -1135,6 +1152,7 @@ function DefaultPoolDetailPane({
               onDeposit={() => handleDeposit(row)}
               onManage={() => handleManage(row)}
               protocolName={entry.display_name}
+              readOnly={readOnly}
               testID={testID ? `${testID}-pool-${row.key}` : undefined}
             />
           ))}
@@ -1154,6 +1172,7 @@ function JupiterDetailPane({
   earnPositions,
   onWithdrawPosition,
   jlMarkets,
+  readOnly = false,
   testID,
 }: PoolDetailPaneProps) {
   const iconSrc = ICON_BY_ID[entry.icon_id];
@@ -1259,6 +1278,10 @@ function JupiterDetailPane({
         contentContainerStyle={styles.detailListInner}
         showsVerticalScrollIndicator={false}
       >
+        {readOnly && (
+          <ReadOnlyBanner testID={testID ? `${testID}-readonly` : undefined} />
+        )}
+
         {/* Summary card — Your Jupiter Balance (8.54: 共有 component) */}
         <BalanceSummaryCard
           summary={summary}
@@ -1286,6 +1309,7 @@ function JupiterDetailPane({
             row={row}
             onDeposit={() => handleDeposit(row)}
             onManage={() => handleManage(row)}
+            readOnly={readOnly}
             testID={
               testID ? `${testID}-vault-${row.assetSymbol}` : undefined
             }
@@ -1309,12 +1333,24 @@ function JupiterDetailPane({
               row={row}
               onDeposit={() => handleDeposit(row)}
               onManage={() => handleManage(row)}
+              readOnly={readOnly}
               testID={
                 testID ? `${testID}-vault-${row.assetSymbol}` : undefined
               }
             />
           ))}
       </ScrollView>
+    </View>
+  );
+}
+
+/** watch-only mode: detail pane 先頭の注記 (deposit / withdraw は署名が要る) */
+function ReadOnlyBanner({ testID }: { testID?: string }) {
+  return (
+    <View style={styles.readOnlyBanner} testID={testID}>
+      <Text style={styles.readOnlyBannerText}>
+        Watching — read-only. Connect a wallet to deposit or withdraw.
+      </Text>
     </View>
   );
 }
@@ -1419,6 +1455,7 @@ function VaultRowView({
   onDeposit,
   onManage,
   protocolName,
+  readOnly = false,
   testID,
 }: {
   row: VaultRow;
@@ -1426,10 +1463,13 @@ function VaultRowView({
   onManage: () => void;
   /** externalUrl の導線ラベル ("Open <protocol> ↗") に使う protocol 表示名 */
   protocolName?: string;
+  /** watch-only mode: CTA (Deposit / Manage) を表示のまま無効化 */
+  readOnly?: boolean;
   testID?: string;
 }) {
   const deposited = row.isDeposited;
   const cta = ctaForRow(row);
+  const ctaDisabled = cta ? cta.disabled || readOnly : true;
   return (
     <View
       style={[
@@ -1511,15 +1551,16 @@ function VaultRowView({
         </Text>
         {cta && (
           <Pressable
-            accessibilityRole={cta.disabled ? "none" : "button"}
-            disabled={cta.disabled}
+            accessibilityRole={ctaDisabled ? "none" : "button"}
+            disabled={ctaDisabled}
+            accessibilityState={{ disabled: ctaDisabled }}
             onPress={cta.kind === "manage" ? onManage : onDeposit}
             style={[
               styles.jupVaultCta,
               cta.kind === "manage"
                 ? styles.jupVaultCtaManage
                 : styles.jupVaultCtaDeposit,
-              cta.disabled && styles.jupVaultCtaDisabled,
+              ctaDisabled && styles.jupVaultCtaDisabled,
             ]}
             testID={testID ? `${testID}-cta-${cta.kind}` : undefined}
           >
@@ -1529,7 +1570,7 @@ function VaultRowView({
                 cta.kind === "manage"
                   ? styles.jupVaultCtaTextManage
                   : styles.jupVaultCtaTextDeposit,
-                cta.disabled && styles.jupVaultCtaTextDisabled,
+                ctaDisabled && styles.jupVaultCtaTextDisabled,
               ]}
             >
               {cta.label}
@@ -2048,6 +2089,22 @@ const styles = StyleSheet.create({
   },
   // 8.54: 旧 pool 行 (テキスト羅列) の style は Jupiter 版カード行に統合され消滅
   // 8.26: 稼働率 ≥95% の withdraw 流動性注意 (pool 行下の小テキスト)
+  // watch-only mode banner (caramel = 注意だが警告ではない)
+  readOnlyBanner: {
+    backgroundColor: withAlpha(COLOR.caramel, 0.1),
+    borderColor: withAlpha(COLOR.caramel, 0.35),
+    borderWidth: 1,
+    borderRadius: RADIUS.md,
+    paddingHorizontal: SPACE.md,
+    paddingVertical: SPACE.sm,
+    marginBottom: SPACE.sm,
+  },
+  readOnlyBannerText: {
+    fontSize: FONT_SIZE.bodySM,
+    fontFamily: FONT.body,
+    fontWeight: WEIGHT.semibold,
+    color: COLOR.caramel,
+  },
   poolUtilWarning: {
     fontSize: FONT_SIZE.bodySM,
     fontFamily: FONT.body,

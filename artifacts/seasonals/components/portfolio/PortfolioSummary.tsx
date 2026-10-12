@@ -153,6 +153,11 @@ export interface PortfolioSummaryProps {
    * 鮮度ラベル ("Updated 14:21 · awaiting update") に使う。未接続は null (出さない)
    */
   walletDataStatus?: QueryFreshnessStatus | null;
+  /**
+   * watch-only mode: walletAddress は監視中の公開 address (署名できない)。
+   * "Watching · read-only" pill を出し、空状態の文言を変える
+   */
+  readOnly?: boolean;
   testID?: string;
 }
 
@@ -172,6 +177,7 @@ export const PortfolioSummary = React.memo(function PortfolioSummary({
   minTopY = null,
   cooldown = null,
   walletDataStatus = null,
+  readOnly = false,
   testID,
 }: PortfolioSummaryProps) {
   // Phase 7.9: theme 連動 styles
@@ -515,12 +521,26 @@ export const PortfolioSummary = React.memo(function PortfolioSummary({
             : `${totalUsd.toLocaleString("en-US", { maximumFractionDigits: 2, minimumFractionDigits: 2 })} USDC`}
         </Text>
 
-        {/* §4.0: 鮮度ラベル。接続中だけ (切断中は wallet 由来データ自体を出さない) */}
-        {walletAddress && walletDataStatus && (
-          <WalletFreshnessLabel
-            status={walletDataStatus}
-            testID={testID ? `${testID}-freshness` : undefined}
-          />
+        {/* §4.0: 鮮度ラベル。接続中だけ (切断中は wallet 由来データ自体を出さない)。
+            watch-only mode: 横に read-only pill (閲覧中の address は署名できない) */}
+        {walletAddress && (walletDataStatus || readOnly) && (
+          <View style={styles.freshnessRow}>
+            {walletDataStatus && (
+              <WalletFreshnessLabel
+                status={walletDataStatus}
+                testID={testID ? `${testID}-freshness` : undefined}
+              />
+            )}
+            {readOnly && (
+              <Text
+                style={styles.watchPill}
+                numberOfLines={1}
+                testID={testID ? `${testID}-watch-pill` : undefined}
+              >
+                Watching · read-only
+              </Text>
+            )}
+          </View>
         )}
 
         {/* Phase 8.10: Yield row — earn position supply_rate_bps の加重平均から算出。
@@ -636,7 +656,9 @@ export const PortfolioSummary = React.memo(function PortfolioSummary({
             >
               {areaState === "connect" ? (
                 <Text style={styles.empty}>
-                  Connect a wallet to see your positions
+                  {readOnly
+                    ? "No positions found for this address"
+                    : "Connect a wallet to see your positions"}
                 </Text>
               ) : (
                 <>
@@ -1102,6 +1124,24 @@ function makeStyles(c: ThemeColors) {
     },
     freshnessMuted: {
       color: c.textMuted,
+    },
+    freshnessRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      flexWrap: "wrap",
+      gap: SPACE.sm,
+    },
+    // watch-only mode pill (caramel = 注意だが警告ではない)
+    watchPill: {
+      fontSize: FONT_SIZE.caption,
+      fontFamily: FONT.body,
+      fontWeight: WEIGHT.semibold,
+      color: c.caramel,
+      backgroundColor: withAlpha(c.caramel, 0.15),
+      borderRadius: RADIUS.pill,
+      paddingHorizontal: SPACE.sm,
+      paddingVertical: 2,
+      overflow: "hidden",
     },
     total: {
       fontSize: FONT_SIZE.displayMD,

@@ -17,6 +17,7 @@ import { useWalletStore } from "./walletStore";
 import { useWalletQuerySync } from "./useWalletQuerySync";
 import type { ConnectedAuthorization } from "./mwa";
 import { usePortfolioHistoryStore } from "../stores/portfolioHistory";
+import { useWatchStore } from "../stores/watch";
 
 jest.mock("./mwa", () => ({
   __esModule: true,
@@ -64,6 +65,7 @@ const invalidatedOf = (qc: QueryClient, address: string | null) =>
 
 beforeEach(() => {
   useWalletStore.getState().reset();
+  useWatchStore.getState().reset();
   jest.restoreAllMocks();
 });
 
@@ -139,6 +141,50 @@ describe("useWalletQuerySync", () => {
     expect(qc.getQueryCache().getAll().some((q) => q.queryKey[1] === A)).toBe(false);
     expect(qc.getQueryCache().getAll().filter((q) => q.queryKey[1] === B)).toHaveLength(4);
     expect(forget).toHaveBeenCalledWith(A);
+    unmount();
+    qc.clear();
+  });
+
+  it("watch-only mode: watchlist から外した address の cache と日次履歴を消す", () => {
+    const forget = jest.spyOn(usePortfolioHistoryStore.getState(), "forget");
+    useWatchStore.getState().addWatch(A);
+    useWatchStore.getState().addWatch(B);
+    const { qc, unmount } = setup();
+    act(() => {
+      useWatchStore.getState().removeWatch(A);
+    });
+    expect(qc.getQueryCache().getAll().some((q) => q.queryKey[1] === A)).toBe(false);
+    expect(qc.getQueryCache().getAll().filter((q) => q.queryKey[1] === B)).toHaveLength(4);
+    expect(forget).toHaveBeenCalledWith(A);
+    unmount();
+    qc.clear();
+  });
+
+  it("watch-only mode: recentWallets に残る address は watchlist から外しても消さない", () => {
+    useWalletStore.setState({ recentWallets: [{ address: A, lastConnectedAt: 1 }] });
+    useWatchStore.getState().addWatch(A);
+    const { qc, unmount } = setup();
+    act(() => {
+      useWatchStore.getState().removeWatch(A);
+    });
+    expect(qc.getQueryCache().getAll().filter((q) => q.queryKey[1] === A)).toHaveLength(4);
+    unmount();
+    qc.clear();
+  });
+
+  it("recentWallets から外れても watch 中の address の cache は残す", () => {
+    useWalletStore.setState({
+      recentWallets: [
+        { address: B, lastConnectedAt: 2 },
+        { address: A, lastConnectedAt: 1 },
+      ],
+    });
+    useWatchStore.getState().addWatch(A);
+    const { qc, unmount } = setup();
+    act(() => {
+      useWalletStore.setState({ recentWallets: [{ address: B, lastConnectedAt: 2 }] });
+    });
+    expect(qc.getQueryCache().getAll().filter((q) => q.queryKey[1] === A)).toHaveLength(4);
     unmount();
     qc.clear();
   });
