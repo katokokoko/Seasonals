@@ -259,23 +259,24 @@ Web 側 (`artifacts/seasonals-web`) は `BFF_URL` (Vite dev proxy 先、node 側
 - 検証: unit (BFF `strategy-brief.test.ts` 11 件 / `prices.test.ts` 5 件 / agent-proposals 追加 4 件、MCP 20 件、web ProposalInbox 4 件)。**fork e2e (2026-09-26、🍋 Lemon Ladder、owner `0x28C6…1d60`)**: `POST /eth/agent-proposals` で 3 step (100 USDC → USDe swap / 99 USDe → sUSDe / Aqua PEGGED_STABLE 40 + 40 ship) を提出 → brief は "This rebalance moves $178.94: 0.00% → 2.67% (+2.67% pts)" / "Deployed capital (DeFi only): $924.80 → $1,103.77 · 2.25% → 2.32%"、表は 4 行 + Unchanged 2 件 → web `/agent` のカードで承認 → 36 秒で `executed` (`via: "web"`)、**8 tx すべて success** (Permit2 approve / permit / swap、sUSDe approve / deposit → 79.2001 sUSDe、Aqua USDC approve / USDe approve / ship)。カレンダーに Executed 3 件 + `strategy_review` (2026-10-10) が出て、brief の horizon で予告した予定がそのまま乗った
 - 既知: Pendle の暗黙単価は 8 桁に丸めるため 1e-6 USD 程度ずれる (approx 表示)。YT は Llama に無いことが多く dashboard 評価額が無ければ unpriced
 
+### Infura credit 削減 (2026-10-05)
+- 背景: Infura free (3M credit/日) を 9 割近く消費。主因は CCA bid scan (address ごとに 24.33M → head を 10k block 分割 `eth_getLogs` ≈ 180 call ≈ 46k credit、cache 5 分・永続化なし)、それを初回必ず `ok:false` にして web が 15 秒 polling で回す連鎖、Anvil fork が毎回 latest を fork して `~/.foundry/cache/rpc` が効かないこと
+- 実装:
+  - bid scan は `ETHERSCAN_API_KEY` があれば Etherscan V2 `module=logs` (block 範囲制限なし、address 無し topic0 AND topic2=owner の検索が可能なことを実測) で event ごと 1 call。key 無しは従来の Infura 経路に fallback。`userCache` 10 分
+  - `events.ts` は source 単位の cache。失敗した source だけ 10 秒で再試行し、成功 source (Ethena / Lido 等) の RPC read は通常 TTL まで再利用
+  - web Timeline の部分失敗時 refetch は 15 → 30 → 60 … 秒、上限 5 分の backoff
+  - CCA `head()` 12 秒 cache、`enrich` の個別 revert は 24h 再試行しない、`/eth/status` は block 12 秒 cache + chainId 保持
+  - `GET /eth/rpc-usage`: BFF 起動後に Infura へ出た request の method 別件数と credit 目安。`rpc-proxy.mjs` も上流 request 数を 60 秒ごとに log
+  - `eth-fork.sh`: `--fork-block-number` を `.data/fork-block` に固定 (`FORK_MAX_AGE_H` 既定 24h、`FORK_REFRESH=1` で更新)。上流は `FORK_UPSTREAM_RPC_URL` (例: Alchemy free) を優先できる
+  - Settings に Etherscan API 規約の表記 ("Powered by Etherscan.io APIs")
+- 実測: bid のある実 address で `/eth/events` が初回から全 source ok・1.4 秒・Infura 4 request (≈495 credit、うち getLogs は CCA factory index の差分 1 回)。2 回目は 0 request。`/eth/status` 4 回で blockNumber 1 + chainId 1
+- 実測 (fork、2026-10-09): block 26148842 を固定して 2 回起動、上流 request は 1 回目 50 → 2 回目 6 (`~/.foundry/cache/rpc/mainnet/26148842/` を再利用、reachable まで 12 秒 → 3 秒)。同じ fork で Lemon Ladder 相当 (100 USDC → USDe swap → 99 USDe → sUSDe) を REST で提出 → 実行: 5 tx すべて success、31 秒、`FORK_REFRESH` 不要。e2e 中の上流 request は +99 (tx が触る storage slot 48 件など、以後は cache)、BFF 側の Infura は +9 request (≈720 credit)。execute は `approvedBy` / `bundleHash` に加えて `via: "web"` が必須。残る気づき: proxy 経由で `anvil_nodeInfo` と fork tx の `eth_getTransactionReceipt` (10 件) が上流に出ている (次の削減候補)
+- 不採用: HyperSync (新依存 + token、free は fair-use のみ)、Alchemy free の getLogs (10 block 制限)、JSON-RPC batch (課金は減らず、429 時に結果欠落した過去あり)
+
 ### Home portal card を水の blob に (droplet glass、2026-10-05)
 - 経緯: 水面に独立した blob を浮かべる案 (`web-liquid-blobs-attempt1`) は想定と違ったため取り消し、4 隅の portal card 自体を blob の質感にした
 - `data-water-glass="droplet"` (`GLASS_VARIANTS.droplet`、lens 1.2 / frost 0) + `uGlassShape` (輪郭の揺らぎ 4 CSS px、seed)。shader は透明な「水への窓」(quiet × 0.6 で線の間を沈める、縁だけ薄い水色)、光の側の細い光の線、光に向いた角の 4 点星、水面 layer (`uGlassLens = 0`) にカードの外の集光。CSS は WebGL 中だけ tint / rim / 影を外し、文字の後ろに薄い vanilla の楕円と白い縁取り。WebGL 不可 / reduced transparency は従来の glass
 - 計測: drawArrays + readPixels で水面 layer 7.60 → 7.97 ms、glass layer 4.58 → 4.29 ms (droplet は bevel の色分散を省く)。`e2e/run.mjs` 全 pass (droplet の 2 check 追加)
-
-### droplet カードのきらめきの位置 (2026-10-05)
-- きらめきは光の向きの符号で 4 隅のどれかに置いていたため、ポインターが画面の中心線をまたぐと隅から隅へ飛んでいた。中心から光の方向 (カードの縦横比で引き伸ばす) へ伸ばした線が角丸の輪郭と交わる点の少し内側に置き、`uLight` の追従に合わせて縁に沿ってなめらかに動くようにした。既定の左上の光では左上の隅の近くに止まる
-- カードの下のキャラを glass layer で描く案 (texture) と top bar の droplet 版 (`?nav=droplet`) は試したが、どちらも不要と決めて外した
-
-### 水面を浅い海の写真に寄せる (/goal、2026-10-05)
-- 参照は浅い海を真上から撮った写真 (local-only、`docs/web/reference/water-ref.png`)。膨らみや blob ではなく、水面の shader (`renderB`) そのものを寄せた。手順・採点文面・記録は `docs/web/reference/water-{goal,judge,tuning-log}.md`、撮影と gate は `e2e/water-shots.mjs`
-- 採用は iter 7 の形: 集光は「6 波の和の曲面が光を集める」(1 / |det(I − s∇²h)|) の折れ線、焦点外は少し深いアクア、水は赤から吸収するターコイズで浅い砂と深い斑、砂は粒 + 小石 + 砂紋、流れに沿う水面の筋と星、Home の静かな所はぼかした線を残す。描画コストは元の shader の 0.87 倍
-- 採点 (fresh な Opus、全軸 4 以上 2 回連続が完了条件) は上限 10 回で未達。元の shader の 2/3/2/2/3 から 3/3/3/3/4 (iter 5 と 7) まで。iter 2 以降は全軸 3 前後で頭打ちで、網目の形 (Voronoi はタイル的、焦点の折れ線は稲妻的、重み付き Voronoi の iter 9 / 10 も多角形と言われた) と水面の筋の弱さが毎回残った。規則どおり最低軸が最も高い commit のうち後の iter 7 に戻した。iter 9 / 10 の丸い網目は `0ccdeec` / `a10006f` に残してある
-- gate は全 iteration で通過: 文字のコントラスト (iter 0 の値以上)、作業画面の静かさ、reduced motion で静止、描画コストの比 ≤ 1.4。作業マシンは別セッションの test / build で負荷が高く、perf は iter 0 の shader と同じ page で交互に測る比にした。撮影中の vite reload は撮り直す
-- 延長 (iter 11–15、ユーザーの指示): 浅い砂を app の vanilla cream (別の UI mock の上端の色) に変え、採点の depth 軸も合わせた。網目は乗法重み付き Voronoi (壁が円弧の小石状の網目) に替え、吸収を深さの 2 乗に (浅い所は vanilla、深い所はティール)。最良は iter 14 / 15 の 3/3/3/4/4 (depth が初めて 4) で、後の iter 15 を採用。完了条件 (全軸 4 × 2 回) は未達。e2e 110 件全 pass、描画コストは元の 0.95 倍
-- 粒の修正と 2 回目の延長 (iter 16–20): 砂の粒を正方形の hash から滑らかな noise に (Retina で荒く見えない)、droplet card の縁で粒・砂紋・筋を薄める。線の太さを細線〜太い帯に、knot に hot spot と小さなきらめき、水面の筋を流れに沿う長い細線に。最良は iter 16 / 19 / 20 の 3/4/3/4/4 (caustics と depth が 4) で iter 20 を採用。完了条件は未達。採点には ±1 のぶれ (同じ線で Ca が 4 と 3)。e2e 110 件全 pass、描画コストは元の 1.05 倍
-- Home の水色の膜: DOM の層ではなく、列ごとに束ねた quiet zone (0.85) だった。Home の `quiet` を下げ (0.4 を試してユーザー指定で 0.6)、上部バーの glass の下だけは 0.85 のまま (ロゴの文字のコントラストを保つ)
 
 ### 水面背景の発熱対策 (2026-10-06)
 
@@ -311,6 +312,19 @@ Web 側 (`artifacts/seasonals-web`) は `BFF_URL` (Vite dev proxy 先、node 側
   - e2e 113/113 (`SOL_E2E=1`): 偽 Wallet Standard wallet の検出・接続・reload で silent 再接続、実 BFF で Menu の Jupiter USDC deposit panel が実 mainnet 残高 (38.486021 USDC) を読む、network を差し替えた block で署名 → `/tx/submit` (署名済 bytes の base64 一致) → confirmed → Solscan link
 - **oracle 障害 → 解消済み** (下の「oracle 移行」): 実 BFF での build → wallet prompt は e2e で確認済み。**mainnet 実送信は未検証**のまま (実 wallet での署名が要る)。少額で Jupiter Lend USDC deposit → withdraw、Kamino、Save (複数 tx)、Orca / Meteora の部分署名済 tx を wallet ごと (Phantom / Solflare / Backpack) に確かめる
 - 既知: Orca / Meteora の withdraw は Seeker と同じ入力単位 (metadata の share_decimals と asset) なので、position NFT 1 枚が「1 USDC」のように見える。mobile の `ActionModal` はまだ `resolveSolanaRoute` に乗せ替えていない (lib test が cascade 順序を固定。乗せ替えは実機確認が要るので別 phase)
+
+### droplet カードのきらめきの位置 (2026-10-05)
+- きらめきは光の向きの符号で 4 隅のどれかに置いていたため、ポインターが画面の中心線をまたぐと隅から隅へ飛んでいた。中心から光の方向 (カードの縦横比で引き伸ばす) へ伸ばした線が角丸の輪郭と交わる点の少し内側に置き、`uLight` の追従に合わせて縁に沿ってなめらかに動くようにした。既定の左上の光では左上の隅の近くに止まる
+- カードの下のキャラを glass layer で描く案 (texture) と top bar の droplet 版 (`?nav=droplet`) は試したが、どちらも不要と決めて外した
+
+### 水面を浅い海の写真に寄せる (/goal、2026-10-05)
+- 参照は浅い海を真上から撮った写真 (local-only、`docs/web/reference/water-ref.png`)。膨らみや blob ではなく、水面の shader (`renderB`) そのものを寄せた。手順・採点文面・記録は `docs/web/reference/water-{goal,judge,tuning-log}.md`、撮影と gate は `e2e/water-shots.mjs`
+- 採用は iter 7 の形: 集光は「6 波の和の曲面が光を集める」(1 / |det(I − s∇²h)|) の折れ線、焦点外は少し深いアクア、水は赤から吸収するターコイズで浅い砂と深い斑、砂は粒 + 小石 + 砂紋、流れに沿う水面の筋と星、Home の静かな所はぼかした線を残す。描画コストは元の shader の 0.87 倍
+- 採点 (fresh な Opus、全軸 4 以上 2 回連続が完了条件) は上限 10 回で未達。元の shader の 2/3/2/2/3 から 3/3/3/3/4 (iter 5 と 7) まで。iter 2 以降は全軸 3 前後で頭打ちで、網目の形 (Voronoi はタイル的、焦点の折れ線は稲妻的、重み付き Voronoi の iter 9 / 10 も多角形と言われた) と水面の筋の弱さが毎回残った。規則どおり最低軸が最も高い commit のうち後の iter 7 に戻した。iter 9 / 10 の丸い網目は `0ccdeec` / `a10006f` に残してある
+- gate は全 iteration で通過: 文字のコントラスト (iter 0 の値以上)、作業画面の静かさ、reduced motion で静止、描画コストの比 ≤ 1.4。作業マシンは別セッションの test / build で負荷が高く、perf は iter 0 の shader と同じ page で交互に測る比にした。撮影中の vite reload は撮り直す
+- 延長 (iter 11–15、ユーザーの指示): 浅い砂を app の vanilla cream (別の UI mock の上端の色) に変え、採点の depth 軸も合わせた。網目は乗法重み付き Voronoi (壁が円弧の小石状の網目) に替え、吸収を深さの 2 乗に (浅い所は vanilla、深い所はティール)。最良は iter 14 / 15 の 3/3/3/4/4 (depth が初めて 4) で、後の iter 15 を採用。完了条件 (全軸 4 × 2 回) は未達。e2e 110 件全 pass、描画コストは元の 0.95 倍
+- 粒の修正と 2 回目の延長 (iter 16–20): 砂の粒を正方形の hash から滑らかな noise に (Retina で荒く見えない)、droplet card の縁で粒・砂紋・筋を薄める。線の太さを細線〜太い帯に、knot に hot spot と小さなきらめき、水面の筋を流れに沿う長い細線に。最良は iter 16 / 19 / 20 の 3/4/3/4/4 (caustics と depth が 4) で iter 20 を採用。完了条件は未達。採点には ±1 のぶれ (同じ線で Ca が 4 と 3)。e2e 110 件全 pass、描画コストは元の 1.05 倍
+- Home の水色の膜: DOM の層ではなく、列ごとに束ねた quiet zone (0.85) だった。Home の `quiet` を下げ (0.4 を試してユーザー指定で 0.6)、上部バーの glass の下だけは 0.85 のまま (ロゴの文字のコントラストを保つ)
 
 ### oracle 移行: Pyth push + RedStone push (2026-10-05、未 commit)
 - 背景: Pyth Hermes REST が 2026-08-26 の Pyth Core upgrade で API key 必須 (key 無しは 401、key は 14 日 trial 後 $500/月)、Switchboard が 2026-09-25 にサポート終了 (crossbar は DNS 消滅)。BFF の oracle gate が全 Solana asset で `oracle_unavailable` になり、Seeker も web も Solana の tx を組めなかった
