@@ -10,7 +10,11 @@
 #   npx wrangler@4 pages secret put BFF_PROXY_SECRET --project-name seasonals-web
 name = "seasonals-web"
 pages_build_output_dir = "dist"
-compatibility_date = "2026-09-01"
+# 2026-10-12: "2026-09-01" は Pages Functions の publish API が "Failed to publish your Function.
+# Got error: Unknown internal error occurred." で拒否した (Git build も wrangler 4 の直接 deploy も同じ)。
+# 同じ bundle が "2025-09-01" では deploy できたので、Pages が受け付ける範囲の日付に固定する。
+# 上げる時は `npx wrangler@4 pages deploy dist --project-name seasonals-web --branch main` で先に試す。
+compatibility_date = "2025-09-01"
 
 [vars]
 # Pages Function functions/api/[[path]].ts proxies /api/* here.
