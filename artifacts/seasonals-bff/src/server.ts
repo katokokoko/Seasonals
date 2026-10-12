@@ -1167,6 +1167,11 @@ async function oracleResultsInOrder(mints: string[]): Promise<OracleResult[]> {
  *   - oracleMint: fail-closed 判定する underlying mint (deposit/withdraw とも underlying)
  *   - blocked → reply 409 + oracle_blocked、swap 失敗 → 502。
  */
+/** 0.0001 SOL 未満は手数料すら払えない (base fee 5000 + priority fee)。rent 込みの目安は ~0.003 SOL */
+const MIN_FEE_SOL_LAMPORTS = 100_000n;
+const NO_FEE_SOL_MESSAGE =
+  "Your wallet has no SOL for the network fee. Send about 0.003 SOL to this wallet (fee + token account), then try again. Nothing was signed.";
+
 async function buildSwapEarnTx(
   req: FastifyRequest,
   reply: FastifyReply,
@@ -1229,6 +1234,22 @@ async function buildSwapEarnTx(
       balance: balance.toString(),
       message: `You hold ${toHumanReadable(balance.toString(), meta.decimals)} ${meta.symbol} — this needs ${toHumanReadable(p.amount, meta.decimals)}. Nothing was signed.`,
     };
+  }
+
+  // 2026-10-13: 手数料用 SOL の gate。SOL 0 の Seeker wallet で Jupiter USDC deposit を署名させ、
+  // preflight が "-32002 Attempt to debit an account but found no record of a prior credit" で落ちた。
+  // 手数料と share token account の rent (~0.002 SOL) は SOL で払うので、ほぼ 0 なら署名前に止める。
+  // 閾値は「どう見ても足りない」量だけ (既存 ATA なら少額で足りる人を誤ブロックしない)。null は素通し
+  if (p.inputMint !== WSOL_MINT) {
+    const lamports = await getWalletBalanceSmallest(p.user, WSOL_MINT);
+    if (lamports !== null && lamports < MIN_FEE_SOL_LAMPORTS) {
+      reply.code(400);
+      return {
+        error: "insufficient_sol",
+        balance: lamports.toString(),
+        message: NO_FEE_SOL_MESSAGE,
+      };
+    }
   }
 
   // #49 review: funding deposit の交換レート (Jupiter Lend convertToAssets) は quote に依存しない。
@@ -5024,6 +5045,11 @@ export async function buildServer(
           { err: (err as Error).message },
           "tx submit failed"
         );
+        // 2026-10-13: fee payer に SOL が無い時の RPC 文言は意味が取れないので言い換える
+        if (/no record of a prior credit/i.test((err as Error).message)) {
+          reply.code(400);
+          return { error: "insufficient_sol", message: NO_FEE_SOL_MESSAGE.replace("Nothing was signed.", "Nothing was sent.") };
+        }
         // 2026-10-13: blockhash 失効は「何も動いていない、組み直す」が正しい (client は expired と同じ扱い)
         if (err instanceof BlockhashExpiredError) {
           reply.code(409);

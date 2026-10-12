@@ -181,6 +181,13 @@ describe("sendTransactionViaHelius の maxRetries", () => {
     expect(methods(spy).filter((m) => m === "sendTransaction")).toHaveLength(SUBMIT_BLOCKHASH_RETRIES + 1);
   });
 
+  test("fee payer に SOL が無い preflight error は 400 insufficient_sol の読める文言にする", async () => {
+    scripted(() => new Response(JSON.stringify({ jsonrpc: "2.0", id: "x", error: { code: -32002, message: "Transaction simulation failed: Attempt to debit an account but found no record of a prior credit." } }), { status: 200 }));
+    const res = await app.inject({ method: "POST", url: "/tx/submit", payload: { signedTx: signedTxB64() } });
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toMatchObject({ error: "insufficient_sol", message: expect.stringMatching(/no SOL for the network fee.*Nothing was sent/) });
+  });
+
   test("skipPreflight の送信と他の error は再送しない", async () => {
     let spy = scripted(notFound);
     await expect(sendTransactionViaHelius(signedTxB64(), { skipPreflight: true })).rejects.toThrow(/Blockhash not found/);

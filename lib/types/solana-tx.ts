@@ -150,6 +150,8 @@ export type SolanaTxErrorCode =
   | "oracle_blocked"
   | "fair_value_blocked"
   | "insufficient_balance"
+  /** 2026-10-13: 手数料 / rent を払う SOL が wallet に無い (署名前 400、/tx/submit の preflight も同じ code) */
+  | "insufficient_sol"
   | "invalid_amount"
   | "not_matured"
   | "missing_required_field"
