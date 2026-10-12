@@ -14,6 +14,8 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react-
 import { BackHandler, Linking } from "react-native";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { fixtureMenuListings } from "@workspace/lib/__fixtures__";
+import type { EarnPosition } from "@workspace/lib/types";
+import { findMarketByProtocolAsset } from "@workspace/lib/config/swap-earn-markets";
 
 import { MenuDrawer } from "./MenuDrawer";
 import { createQueryClient } from "../../services/queryClient";
@@ -50,6 +52,45 @@ function wrap(ui: ReactNode) {
     </SafeAreaProvider>
   );
 }
+
+/**
+ * Jupiter Lend JupUSD の live market / 保有 fixture (funding deposit と保有行 CTA で共用)。
+ * mint は lib registry から引く (test に直書きしない)
+ */
+const MARKET = findMarketByProtocolAsset("jupiter_lend", "JupUSD")!;
+const USDC_MINT = MARKET.funding![0]!.mint;
+
+const JUPUSD_MARKET: api.JupiterLendMarketDTO = {
+  jlMint: MARKET.share_mint,
+  jlSymbol: "jlJupUSD",
+  jlDecimals: 6,
+  underlyingMint: MARKET.underlying_mint,
+  // Jupiter API は "jupUSD" 表記 (Menu の行は displayJupiterAsset で "JupUSD")
+  underlyingSymbol: "jupUSD",
+  underlyingDecimals: 6,
+  underlyingPriceUsd: 1,
+  supplyRateBps: 800,
+  rewardsRateBps: 0,
+  totalRateBps: 800,
+  tvlUnderlying: "1000000000000",
+};
+
+const JL_POSITION: EarnPosition = {
+  protocol_id: "jupiter_lend",
+  protocol_name: "Jupiter Lend",
+  market_symbol: "JupUSD",
+  share_mint: MARKET.share_mint,
+  shares: "1000000",
+  share_decimals: 6,
+  asset_symbol: "JupUSD",
+  underlying_amount: "1000000",
+  underlying_decimals: 6,
+  underlying_usd: "1.00000000",
+  supply_rate_bps: 800,
+  accrued_yield_amount: "0",
+  accrued_yield_sign: "unknown",
+  cost_basis_amount: null,
+};
 
 /** protocol カードを tap して drill-down を開く */
 async function openProtocol(protocolId: string) {
@@ -261,28 +302,6 @@ describe("MenuDrawer — 保有 positions は Home と同じ wallet key で引�
  * (asset = "USDC" + { shareMint })、JupUSD を持つなら従来どおり underlying (shareMint なし)
  */
 describe("MenuDrawer — funding deposit (Jupiter Lend JupUSD)", () => {
-  // lib registry から引く (mint を test に直書きしない)
-  const { findMarketByProtocolAsset } = jest.requireActual(
-    "@workspace/lib/config/swap-earn-markets"
-  ) as typeof import("@workspace/lib/config/swap-earn-markets");
-  const MARKET = findMarketByProtocolAsset("jupiter_lend", "JupUSD")!;
-  const USDC_MINT = MARKET.funding![0]!.mint;
-
-  const JUPUSD_MARKET: api.JupiterLendMarketDTO = {
-    jlMint: MARKET.share_mint,
-    jlSymbol: "jlJupUSD",
-    jlDecimals: 6,
-    underlyingMint: MARKET.underlying_mint,
-    // Jupiter API は "jupUSD" 表記 (Menu の行は displayJupiterAsset で "JupUSD")
-    underlyingSymbol: "jupUSD",
-    underlyingDecimals: 6,
-    underlyingPriceUsd: 1,
-    supplyRateBps: 800,
-    rewardsRateBps: 0,
-    totalRateBps: 800,
-    tvlUnderlying: "1000000000000",
-  };
-
   function walletRow(symbol: string, mint: string, amount: string) {
     return {
       position_id: `helius_x_${mint}`,
@@ -336,6 +355,20 @@ describe("MenuDrawer — funding deposit (Jupiter Lend JupUSD)", () => {
     );
   });
 
+  it("plans-only server: Deposit が 'Unavailable' の行には 'Pay with USDC' を出さない", async () => {
+    jest.spyOn(api, "getHealth").mockResolvedValue({
+      status: "ok",
+      solana: { heliusConfigured: true, executionTarget: "disabled" },
+    });
+    await tapJupUsdDeposit([walletRow("USDC", USDC_MINT, "5000000")], jest.fn());
+    await waitFor(() => expect(screen.getByText("Unavailable")).toBeTruthy());
+    await waitFor(() => expect(api.getPositions).toHaveBeenCalled());
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    expect(screen.queryByTestId(`pool-paywith-${MARKET.share_mint}`)).toBeNull();
+  });
+
   it("JupUSD を保有 (DAS 表記 'jupUSD') → 従来どおり asset 'JupUSD'、shareMint なし、sub-label なし", async () => {
     const onStartAction = jest.fn();
     const cta = await tapJupUsdDeposit(
@@ -376,5 +409,97 @@ describe("MenuDrawer — funding deposit (Jupiter Lend JupUSD)", () => {
       "deposit",
       "jl_JupUSD",
     ]);
+  });
+});
+
+/**
+ * 2026-10-13: 保有行にも Deposit (買い増し) を出す。旧 "Manage" は "Withdraw" に改名し、
+ * Deposit と並べる。Exponent の満期済 PT は deposit 経路が無いので "Redeem" だけ
+ */
+describe("MenuDrawer — 保有行の Deposit + Withdraw (2026-10-13)", () => {
+  const DEPOSIT_ID = "menu-detail-vault-JupUSD-cta-deposit";
+  const MANAGE_ID = "menu-detail-vault-JupUSD-cta-manage";
+
+  afterEach(() => jest.restoreAllMocks());
+
+  async function openDepositedJupUsd(opts: {
+    onStartAction?: jest.Mock;
+    onWithdrawPosition?: jest.Mock;
+    readOnly?: boolean;
+  }) {
+    jest.spyOn(api, "getJupiterLendMarkets").mockResolvedValue([JUPUSD_MARKET]);
+    render(
+      wrap(
+        <MenuDrawer
+          visible
+          onClose={() => {}}
+          onStartAction={opts.onStartAction}
+          onWithdrawPosition={opts.onWithdrawPosition}
+          earnPositions={{ jupiterLend: [JL_POSITION], kaminoBestEffort: [] }}
+          readOnly={opts.readOnly}
+          testID="menu"
+        />
+      )
+    );
+    fireEvent.press(await screen.findByTestId("menu-card-jupiter"));
+    await screen.findByTestId(MANAGE_ID);
+  }
+
+  it("保有行に Deposit と Withdraw が並び、Manage は出ない", async () => {
+    await openDepositedJupUsd({});
+    expect(screen.getByTestId(DEPOSIT_ID)).toBeTruthy();
+    expect(screen.getByText("Withdraw")).toBeTruthy();
+    expect(screen.queryByText("Manage")).toBeNull();
+    // "You: …" 行は残る
+    expect(screen.getByText(/^You: .* JupUSD · Earned — USD$/)).toBeTruthy();
+  });
+
+  it("Deposit はその pool の deposit を開き、Withdraw は position の withdraw を開く", async () => {
+    const onStartAction = jest.fn();
+    const onWithdrawPosition = jest.fn();
+    await openDepositedJupUsd({ onStartAction, onWithdrawPosition });
+    fireEvent.press(screen.getByTestId(DEPOSIT_ID));
+    expect(onStartAction).toHaveBeenCalledWith(
+      "jupiter",
+      "JupUSD",
+      "deposit",
+      "jl_JupUSD"
+    );
+    expect(onWithdrawPosition).not.toHaveBeenCalled();
+    fireEvent.press(screen.getByTestId(MANAGE_ID));
+    expect(onWithdrawPosition).toHaveBeenCalledWith(JL_POSITION);
+  });
+
+  it("plans-only server: Deposit は 'Unavailable'、Withdraw も disabled (BFF が withdraw-tx も 409)", async () => {
+    jest.spyOn(api, "getHealth").mockResolvedValue({
+      status: "ok",
+      solana: { heliusConfigured: true, executionTarget: "disabled" },
+    });
+    const onStartAction = jest.fn();
+    const onWithdrawPosition = jest.fn();
+    await openDepositedJupUsd({ onStartAction, onWithdrawPosition });
+    await waitFor(() => expect(screen.getByText("Unavailable")).toBeTruthy());
+    const deposit = screen.getByTestId(DEPOSIT_ID);
+    expect(deposit.props.accessibilityState?.disabled).toBe(true);
+    fireEvent.press(deposit);
+    expect(onStartAction).not.toHaveBeenCalled();
+    const withdraw = screen.getByTestId(MANAGE_ID);
+    expect(withdraw.props.accessibilityState?.disabled).toBe(true);
+    fireEvent.press(withdraw);
+    expect(onWithdrawPosition).not.toHaveBeenCalled();
+  });
+
+  it("readOnly (watch-only): 両方とも表示したまま disabled", async () => {
+    const onStartAction = jest.fn();
+    const onWithdrawPosition = jest.fn();
+    await openDepositedJupUsd({ onStartAction, onWithdrawPosition, readOnly: true });
+    const deposit = screen.getByTestId(DEPOSIT_ID);
+    const withdraw = screen.getByTestId(MANAGE_ID);
+    expect(deposit.props.accessibilityState?.disabled).toBe(true);
+    expect(withdraw.props.accessibilityState?.disabled).toBe(true);
+    fireEvent.press(deposit);
+    fireEvent.press(withdraw);
+    expect(onStartAction).not.toHaveBeenCalled();
+    expect(onWithdrawPosition).not.toHaveBeenCalled();
   });
 });

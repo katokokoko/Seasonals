@@ -7,6 +7,7 @@
  */
 import { KAMINO_MARKETS, KAMINO_VAULTS } from "@workspace/lib/config/kamino-markets";
 import { SAVE_MARKETS } from "@workspace/lib/config/save-markets";
+import { EXPONENT_MARKETS } from "@workspace/lib/config/exponent-markets";
 import {
   PositionCategory,
   type EarnPosition,
@@ -18,6 +19,7 @@ import {
   applyVaultFilter,
   buildPoolVaultRows,
   computeVaultSummary,
+  ctaForRow,
   partitionPositions,
   poolIdForPosition,
   visibleFilters,
@@ -305,5 +307,152 @@ describe("applyVaultFilter", () => {
     expect(applyVaultFilter(rows, "stable").map((r) => r.assetSymbol)).toEqual(["USDC"]);
     expect(applyVaultFilter(rows, "sol").map((r) => r.assetSymbol)).toEqual(["SOL"]);
     expect(applyVaultFilter(rows, "deposited").map((r) => r.assetSymbol)).toEqual(["USDC"]);
+  });
+});
+
+/** 2026-10-13: カード行の CTA matrix (保有行にも Deposit = 買い増し) */
+describe("ctaForRow — CTA matrix", () => {
+  const POOL: ProtocolPool = {
+    pool_id: "kamino_usdc_main",
+    name: "USDC Main Market",
+    category: PositionCategory.Stable,
+    asset: "USDC",
+    apy: 0.05,
+    tvl_usd: 1_000_000,
+  };
+
+  const WITHDRAWABLE: EarnPosition = {
+    protocol_id: "meteora", // canWithdrawEarnPosition: meteora は常に true
+    protocol_name: "Meteora",
+    market_symbol: "USDC",
+    share_mint: "11111111111111111111111111111111",
+    shares: "1",
+    share_decimals: 6,
+    asset_symbol: "USDC",
+    underlying_amount: "1000000",
+    underlying_decimals: 6,
+    underlying_usd: "1.00000000",
+    supply_rate_bps: null,
+    accrued_yield_amount: "0",
+    accrued_yield_sign: "unknown",
+    cost_basis_amount: null,
+  };
+  const PT = EXPONENT_MARKETS[0]!;
+  const ptPosition = (maturityIso: string): EarnPosition => ({
+    ...WITHDRAWABLE,
+    protocol_id: "exponent",
+    protocol_name: "Exponent",
+    share_mint: PT.pt_mint,
+    maturity_at: maturityIso,
+  });
+  const MATURED = "2000-01-01T00:00:00.000Z";
+  const NOT_MATURED = "2999-01-01T00:00:00.000Z";
+  // withdraw 経路を解決できない position (未知 protocol)
+  const NO_ROUTE: EarnPosition = { ...WITHDRAWABLE, protocol_id: "unknown_protocol" };
+
+  function row(over: Partial<VaultRow>): VaultRow {
+    return {
+      key: "k",
+      assetSymbol: "USDC",
+      subtitle: "s",
+      apyBps: 500,
+      tvlUsd: 1,
+      pool: POOL,
+      displayOnly: false,
+      capView: null,
+      isDeposited: false,
+      userUnderlyingHuman: 0,
+      userUnderlyingUsd: 0,
+      userEarnedUsd: 0,
+      userEarnedKnown: false,
+      ...over,
+    };
+  }
+  const deposited = (position: EarnPosition, over: Partial<VaultRow> = {}) =>
+    row({ isDeposited: true, earnPosition: position, userUnderlyingHuman: 1, ...over });
+  const closedCap = (reason: "paused" | "full" | "blocked" | "unavailable") => ({
+    label: "Cap reached",
+    ratio: 1,
+    closed: true,
+    reason,
+  });
+
+  it("未保有: Deposit だけ", () => {
+    expect(ctaForRow(row({}))).toEqual({
+      deposit: { label: "Deposit", disabled: false },
+    });
+  });
+
+  it("未保有 + plans-only server: Deposit は Unavailable (disabled)", () => {
+    expect(ctaForRow(row({}), true)).toEqual({
+      deposit: { label: "Unavailable", disabled: true },
+    });
+  });
+
+  it("保有 + withdraw 経路あり: Deposit + Withdraw", () => {
+    expect(ctaForRow(deposited(WITHDRAWABLE))).toEqual({
+      deposit: { label: "Deposit", disabled: false },
+      manage: { label: "Withdraw", disabled: false },
+    });
+  });
+
+  it("保有 + withdraw 経路なし: Deposit だけ (Withdraw は出さない)", () => {
+    expect(ctaForRow(deposited(NO_ROUTE))).toEqual({
+      deposit: { label: "Deposit", disabled: false },
+    });
+  });
+
+  it("保有 + plans-only server: Deposit は Unavailable、Withdraw も disabled (BFF が withdraw-tx も 409)", () => {
+    expect(ctaForRow(deposited(WITHDRAWABLE), true)).toEqual({
+      deposit: { label: "Unavailable", disabled: true },
+      manage: { label: "Withdraw", disabled: true },
+    });
+  });
+
+  it.each([
+    ["paused", "Paused"],
+    ["full", "Full"],
+    ["blocked", "Blocked"],
+    ["unavailable", "Unavailable"],
+  ] as const)("保有 + capView closed (%s): Deposit は '%s' で disabled、Withdraw は押せる", (reason, label) => {
+    expect(ctaForRow(deposited(WITHDRAWABLE, { capView: closedCap(reason) }))).toEqual({
+      deposit: { label, disabled: true },
+      manage: { label: "Withdraw", disabled: false },
+    });
+  });
+
+  it("pool が無い保有行: Withdraw だけ", () => {
+    expect(ctaForRow(deposited(WITHDRAWABLE, { pool: undefined }))).toEqual({
+      manage: { label: "Withdraw", disabled: false },
+    });
+  });
+
+  it("Exponent 満期済 PT: Redeem だけ (deposit 経路なし)。plans-only では disabled", () => {
+    const matured = deposited(ptPosition(MATURED), { displayOnly: true });
+    expect(ctaForRow(matured)).toEqual({
+      manage: { label: "Redeem", disabled: false },
+    });
+    expect(ctaForRow(matured, true)).toEqual({
+      manage: { label: "Redeem", disabled: true },
+    });
+  });
+
+  it("Redeem は pt_mint で判定する (displayOnly でない行でも PT なら Redeem、Deposit なし)", () => {
+    expect(ctaForRow(deposited(ptPosition(MATURED)))).toEqual({
+      manage: { label: "Redeem", disabled: false },
+    });
+  });
+
+  it("display_only 行に紐付いた非 PT 保有 (Sanctum 等の asset fallback): Withdraw、Deposit なし", () => {
+    expect(ctaForRow(deposited(WITHDRAWABLE, { displayOnly: true }))).toEqual({
+      manage: { label: "Withdraw", disabled: false },
+    });
+  });
+
+  it("Exponent 未満期 PT / 未保有の View only: CTA なし", () => {
+    expect(
+      ctaForRow(deposited(ptPosition(NOT_MATURED), { displayOnly: true }))
+    ).toEqual({});
+    expect(ctaForRow(row({ displayOnly: true }))).toEqual({});
   });
 });
