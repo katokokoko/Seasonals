@@ -150,11 +150,15 @@ export type SolanaTxErrorCode =
   | "oracle_blocked"
   | "fair_value_blocked"
   | "insufficient_balance"
+  /** 2026-10-13: 手数料 / rent を払う SOL が wallet に無い (署名前 400、/tx/submit の preflight も同じ code) */
+  | "insufficient_sol"
   | "invalid_amount"
   | "not_matured"
   | "missing_required_field"
   | "invalid_wallet_address"
   | "submit_failed"
+  /** 2026-10-13: /tx/submit で blockhash が失効していた (409)。何も動いていない — 組み直して署名し直す */
+  | "blockhash_expired"
   /** 2026-10-13: swap-earn deposit の inputMint が underlying でも allowlist の funding でもない */
   | "unsupported_input_mint"
   /** swap-earn の shareMint が registry に無い */

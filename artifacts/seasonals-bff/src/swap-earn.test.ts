@@ -19,7 +19,7 @@ import { buildServer } from "./server";
 import { fetchSwapQuote, fetchSwapTransaction } from "./clients/jupiter-swap";
 import { getOracleResult, getOracleResults } from "./clients/oracle";
 import { fetchLstSolValues } from "./clients/lst-rates";
-import { getWalletBalanceSmallest } from "./clients/helius-rpc";
+import { getWalletBalanceSmallest, refreshUnsignedTxBlockhash } from "./clients/helius-rpc";
 import { fetchEarnMarkets, type JupiterLendMarket } from "./clients/jupiter-lend";
 
 jest.mock("./clients/jupiter-swap");
@@ -94,6 +94,10 @@ function blockedOracle(symbol = "SOL"): OracleResult {
 let app: FastifyInstance;
 
 beforeEach(async () => {
+  // 2026-10-13: blockhash 差し替えは auto-mock だと undefined を返すので素通しにする (差し替え自体は tx-status.test.ts)
+  (refreshUnsignedTxBlockhash as jest.MockedFunction<typeof refreshUnsignedTxBlockhash>).mockImplementation(
+    async (txBase64, lastValidBlockHeight) => ({ txBase64, lastValidBlockHeight, refreshed: false })
+  );
   jest.clearAllMocks();
   // B3: routes は getOracleResults (batch) を使う — 既存の getOracleResult stub から組み立てる
   (getOracleResults as jest.Mock).mockImplementation(async (mints: string[]) =>
@@ -416,6 +420,24 @@ describe("Phase 8.72 — 償還価値ガード (LST の NAV から不利方向�
 
 describe("8.80: input 残高 gate", () => {
   const jl = SWAP_EARN_MARKETS.find((m) => m.share_symbol === "jlUSDC")!;
+
+  // 2026-10-13: SOL 0 の Seeker wallet で preflight が "no record of a prior credit" (-32002) になった件
+  it("USDC は足りても手数料の SOL がほぼ 0 → 400 insufficient_sol、quote を呼ばない", async () => {
+    const WSOL = "So11111111111111111111111111111111111111112";
+    mockBalance.mockImplementation(async (_user, mint) => (mint === WSOL ? 0n : 1_000_000_000n));
+    const res = await post("/protocols/swap-earn/deposit-tx", { user: VALID_USER, shareMint: jl.share_mint, amount: "100000" });
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toMatchObject({ error: "insufficient_sol", balance: "0", message: expect.stringMatching(/no SOL for the network fee.*Nothing was signed/) });
+    expect(mockQuote).not.toHaveBeenCalled();
+  });
+
+  it("SOL が閾値以上 / 取得失敗 (null) なら通す", async () => {
+    const WSOL = "So11111111111111111111111111111111111111112";
+    mockBalance.mockImplementation(async (_user, mint) => (mint === WSOL ? 100_000n : 1_000_000_000n));
+    expect((await post("/protocols/swap-earn/deposit-tx", { user: VALID_USER, shareMint: jl.share_mint, amount: "100000" })).statusCode).toBe(200);
+    mockBalance.mockImplementation(async (_user, mint) => (mint === WSOL ? null : 1_000_000_000n));
+    expect((await post("/protocols/swap-earn/deposit-tx", { user: VALID_USER, shareMint: jl.share_mint, amount: "100000" })).statusCode).toBe(200);
+  });
 
   it("残高不足 → 400 insufficient_balance、quote を呼ばない", async () => {
     mockBalance.mockResolvedValue(0n); // 未保有

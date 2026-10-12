@@ -534,15 +534,8 @@ export async function submitSignedTx(
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ signedTx: signedTxBase64, ...opts }),
   });
-  if (!res.ok) {
-    const body = (await res.json().catch(() => ({}))) as {
-      error?: string;
-      message?: string;
-    };
-    throw new Error(
-      body.message ?? body.error ?? `HTTP ${res.status} ${res.statusText}`
-    );
-  }
+  // 2026-10-13: code を持つ BffError で投げる (blockhash_expired = 何も動いていない、組み直す)
+  if (!res.ok) throw await bffCodedError(res);
   return (await res.json()) as { signature: string };
 }
 

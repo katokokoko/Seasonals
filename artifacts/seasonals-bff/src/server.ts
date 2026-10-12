@@ -101,6 +101,8 @@ import {
   getTokenSupplyUi,
   getWalletBalanceSmallest,
   sendTransactionViaHelius,
+  BlockhashExpiredError,
+  refreshUnsignedTxBlockhash,
   getSignatureStatus,
   type StakeAccountInfo,
 } from "./clients/helius-rpc";
@@ -1165,6 +1167,11 @@ async function oracleResultsInOrder(mints: string[]): Promise<OracleResult[]> {
  *   - oracleMint: fail-closed 判定する underlying mint (deposit/withdraw とも underlying)
  *   - blocked → reply 409 + oracle_blocked、swap 失敗 → 502。
  */
+/** 0.0001 SOL 未満は手数料すら払えない (base fee 5000 + priority fee)。rent 込みの目安は ~0.003 SOL */
+const MIN_FEE_SOL_LAMPORTS = 100_000n;
+const NO_FEE_SOL_MESSAGE =
+  "Your wallet has no SOL for the network fee. Send about 0.003 SOL to this wallet (fee + token account), then try again. Nothing was signed.";
+
 async function buildSwapEarnTx(
   req: FastifyRequest,
   reply: FastifyReply,
@@ -1229,6 +1236,22 @@ async function buildSwapEarnTx(
     };
   }
 
+  // 2026-10-13: 手数料用 SOL の gate。SOL 0 の Seeker wallet で Jupiter USDC deposit を署名させ、
+  // preflight が "-32002 Attempt to debit an account but found no record of a prior credit" で落ちた。
+  // 手数料と share token account の rent (~0.002 SOL) は SOL で払うので、ほぼ 0 なら署名前に止める。
+  // 閾値は「どう見ても足りない」量だけ (既存 ATA なら少額で足りる人を誤ブロックしない)。null は素通し
+  if (p.inputMint !== WSOL_MINT) {
+    const lamports = await getWalletBalanceSmallest(p.user, WSOL_MINT);
+    if (lamports !== null && lamports < MIN_FEE_SOL_LAMPORTS) {
+      reply.code(400);
+      return {
+        error: "insufficient_sol",
+        balance: lamports.toString(),
+        message: NO_FEE_SOL_MESSAGE,
+      };
+    }
+  }
+
   // #49 review: funding deposit の交換レート (Jupiter Lend convertToAssets) は quote に依存しない。
   // quote と並行で取りに行き、cold cache でも lite-api の往復を直列に積まない (reject しない promise)
   const exchangeRateP = p.funding ? prefetchFundingExchangeRate(p.funding.market) : undefined;
@@ -1286,9 +1309,12 @@ async function buildSwapEarnTx(
       prioritizationFeeLamports: "auto",
       dynamicComputeUnitLimit: true,
     });
+    // 2026-10-13: Jupiter の blockhash は残り ~46 秒しかなく Seed Vault の署名中に失効する。
+    // 未署名 tx の blockhash を最新 (confirmed) に差し替えて猶予を ~60 秒に (失敗時は元のまま)
+    const fresh = await refreshUnsignedTxBlockhash(tx.swapTransaction, tx.lastValidBlockHeight);
     return {
-      swapTransaction: tx.swapTransaction,
-      lastValidBlockHeight: tx.lastValidBlockHeight,
+      swapTransaction: fresh.txBase64,
+      lastValidBlockHeight: fresh.lastValidBlockHeight,
       outAmount: quote.outAmount,
       outputMint: p.outputMint,
       // 2026-10-13: 実際に支払った mint (funding deposit なら funding token)
@@ -5019,6 +5045,16 @@ export async function buildServer(
           { err: (err as Error).message },
           "tx submit failed"
         );
+        // 2026-10-13: fee payer に SOL が無い時の RPC 文言は意味が取れないので言い換える
+        if (/no record of a prior credit/i.test((err as Error).message)) {
+          reply.code(400);
+          return { error: "insufficient_sol", message: NO_FEE_SOL_MESSAGE.replace("Nothing was signed.", "Nothing was sent.") };
+        }
+        // 2026-10-13: blockhash 失効は「何も動いていない、組み直す」が正しい (client は expired と同じ扱い)
+        if (err instanceof BlockhashExpiredError) {
+          reply.code(409);
+          return { error: err.code, message: err.message };
+        }
         reply.code(502);
         return {
           error: "submit_failed",

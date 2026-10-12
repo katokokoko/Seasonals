@@ -5,7 +5,7 @@
  */
 import type { FastifyInstance } from "fastify";
 import { buildServer } from "./server";
-import { _setSleepForTest, sendTransactionViaHelius } from "./clients/helius-rpc";
+import { _setSleepForTest, BlockhashExpiredError, refreshUnsignedTxBlockhash, sendTransactionViaHelius, SUBMIT_BLOCKHASH_RETRIES } from "./clients/helius-rpc";
 
 const SIG = "5".repeat(87);
 let app: FastifyInstance;
@@ -132,9 +132,119 @@ describe("sendTransactionViaHelius の maxRetries", () => {
     expect(opts).toMatchObject({ encoding: "base64", skipPreflight: false, preflightCommitment: "confirmed" });
   });
 
+  // 2026-10-13: Seed Vault 署名の tx が preflight で "Blockhash not found" (-32002) になった件
+  const { Keypair, TransactionMessage, VersionedTransaction } = jest.requireActual("@solana/web3.js") as typeof import("@solana/web3.js");
+  const BLOCKHASH = "GHtXQBsoZHVnNFa9YevAzFr17DJjgHXk3ycTKD5xD3Zi";
+  function signedTxB64(): string {
+    const payer = Keypair.generate();
+    const msg = new TransactionMessage({ payerKey: payer.publicKey, recentBlockhash: BLOCKHASH, instructions: [] }).compileToV0Message();
+    const tx = new VersionedTransaction(msg);
+    tx.sign([payer]);
+    return Buffer.from(tx.serialize()).toString("base64");
+  }
+  const notFound = () =>
+    new Response(JSON.stringify({ jsonrpc: "2.0", id: "x", error: { code: -32002, message: "Transaction simulation failed: Blockhash not found" } }), { status: 200 });
+  const ok = () => new Response(JSON.stringify({ jsonrpc: "2.0", id: "x", result: SIG }), { status: 200 });
+  const valid = (v: boolean) => new Response(JSON.stringify({ jsonrpc: "2.0", id: "x", result: { context: { slot: 1 }, value: v } }), { status: 200 });
+  function scripted(...responses: Array<() => Response>) {
+    let i = 0;
+    return jest.spyOn(global, "fetch").mockImplementation(async () => (responses[Math.min(i++, responses.length - 1)]!)());
+  }
+  function methods(spy: jest.SpyInstance): string[] {
+    return spy.mock.calls.map((c) => rpcBody(c[1] as RequestInit).method as string);
+  }
+
+  test("Blockhash not found でも blockhash が有効なら待って再送し signature を返す", async () => {
+    const spy = scripted(notFound, () => valid(true), ok);
+    await expect(sendTransactionViaHelius(signedTxB64())).resolves.toBe(SIG);
+    expect(methods(spy)).toEqual(["sendTransaction", "isBlockhashValid", "sendTransaction"]);
+    expect(rpcBody(spy.mock.calls[1]![1] as RequestInit).params).toEqual([BLOCKHASH, { commitment: "processed" }]);
+  });
+
+  test("blockhash が失効していれば BlockhashExpiredError (再送しない)、/tx/submit は 409 blockhash_expired", async () => {
+    let spy = scripted(notFound, () => valid(false));
+    await expect(sendTransactionViaHelius(signedTxB64())).rejects.toBeInstanceOf(BlockhashExpiredError);
+    expect(methods(spy)).toEqual(["sendTransaction", "isBlockhashValid"]);
+    spy.mockRestore();
+
+    spy = scripted(notFound, () => valid(false));
+    const res = await app.inject({ method: "POST", url: "/tx/submit", payload: { signedTx: signedTxB64() } });
+    expect(res.statusCode).toBe(409);
+    expect(res.json()).toMatchObject({ error: "blockhash_expired", message: expect.stringMatching(/Nothing moved/) });
+  });
+
+  test("有効なのに見つからないままなら再送は上限で打ち切り、元の error を返す", async () => {
+    // send → isBlockhashValid を交互に返す (上限 + 1 回目の send まで)
+    const seq = Array.from({ length: SUBMIT_BLOCKHASH_RETRIES + 1 }, () => [notFound, () => valid(true)]).flat();
+    const spy = scripted(...seq);
+    await expect(sendTransactionViaHelius(signedTxB64())).rejects.toThrow(/Blockhash not found/);
+    expect(methods(spy).filter((m) => m === "sendTransaction")).toHaveLength(SUBMIT_BLOCKHASH_RETRIES + 1);
+  });
+
+  test("fee payer に SOL が無い preflight error は 400 insufficient_sol の読める文言にする", async () => {
+    scripted(() => new Response(JSON.stringify({ jsonrpc: "2.0", id: "x", error: { code: -32002, message: "Transaction simulation failed: Attempt to debit an account but found no record of a prior credit." } }), { status: 200 }));
+    const res = await app.inject({ method: "POST", url: "/tx/submit", payload: { signedTx: signedTxB64() } });
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toMatchObject({ error: "insufficient_sol", message: expect.stringMatching(/no SOL for the network fee.*Nothing was sent/) });
+  });
+
+  test("skipPreflight の送信と他の error は再送しない", async () => {
+    let spy = scripted(notFound);
+    await expect(sendTransactionViaHelius(signedTxB64(), { skipPreflight: true })).rejects.toThrow(/Blockhash not found/);
+    expect(methods(spy)).toEqual(["sendTransaction"]);
+    spy.mockRestore();
+    spy = scripted(() => new Response(JSON.stringify({ jsonrpc: "2.0", id: "x", error: { code: -32002, message: "Transaction simulation failed: insufficient funds" } }), { status: 200 }));
+    await expect(sendTransactionViaHelius(signedTxB64())).rejects.toThrow(/insufficient funds/);
+    expect(methods(spy)).toEqual(["sendTransaction"]);
+  });
+
   test("明示した maxRetries はそのまま渡す", async () => {
     const spy = mockSend();
     await sendTransactionViaHelius("AAAA", { maxRetries: 5, skipPreflight: true });
     expect(sendOpts(spy)).toMatchObject({ maxRetries: 5, skipPreflight: true, preflightCommitment: "confirmed" });
+  });
+});
+
+describe("refreshUnsignedTxBlockhash (2026-10-13: Jupiter の blockhash は残り ~46 秒しか無い)", () => {
+  const { Keypair, TransactionMessage, VersionedTransaction } = jest.requireActual("@solana/web3.js") as typeof import("@solana/web3.js");
+  const OLD = "GHtXQBsoZHVnNFa9YevAzFr17DJjgHXk3ycTKD5xD3Zi";
+  const NEW = "6ckoxazW8suCggdwKYc4HBbnrqzQBNTDgYdG1vSw176U";
+  const payer = Keypair.generate();
+  type VTx = InstanceType<typeof VersionedTransaction>;
+  function unsigned(): VTx {
+    return new VersionedTransaction(
+      new TransactionMessage({ payerKey: payer.publicKey, recentBlockhash: OLD, instructions: [] }).compileToV0Message()
+    );
+  }
+  const b64 = (t: VTx) => Buffer.from(t.serialize()).toString("base64");
+  const latest = (blockhash: string, lastValidBlockHeight: number) =>
+    jest.spyOn(global, "fetch").mockImplementation(async () =>
+      new Response(JSON.stringify({ jsonrpc: "2.0", id: "x", result: { context: { slot: 1 }, value: { blockhash, lastValidBlockHeight } } }), { status: 200 })
+    );
+  const blockhashOf = (s: string) => VersionedTransaction.deserialize(Buffer.from(s, "base64")).message.recentBlockhash;
+
+  test("未署名 tx は最新 blockhash (confirmed) に差し替え、lastValidBlockHeight も更新", async () => {
+    const spy = latest(NEW, 1150);
+    const r = await refreshUnsignedTxBlockhash(b64(unsigned()), 1116);
+    expect(r).toMatchObject({ refreshed: true, lastValidBlockHeight: 1150 });
+    expect(blockhashOf(r.txBase64)).toBe(NEW);
+    expect(rpcBody(spy.mock.calls[0]![1] as RequestInit)).toMatchObject({ method: "getLatestBlockhash", params: [{ commitment: "confirmed" }] });
+  });
+
+  test("署名済 tx / 新しくない blockhash / RPC 失敗 / 壊れた tx は元のまま", async () => {
+    const signed = unsigned();
+    signed.sign([payer]);
+    let spy = latest(NEW, 1150);
+    expect(await refreshUnsignedTxBlockhash(b64(signed), 1116)).toMatchObject({ refreshed: false, txBase64: b64(signed) });
+    expect(spy).not.toHaveBeenCalled();
+    spy.mockRestore();
+
+    spy = latest(NEW, 1100);
+    expect(await refreshUnsignedTxBlockhash(b64(unsigned()), 1116)).toMatchObject({ refreshed: false, lastValidBlockHeight: 1116 });
+    spy.mockRestore();
+
+    jest.spyOn(global, "fetch").mockImplementation(async () => new Response("boom", { status: 500 }));
+    expect(await refreshUnsignedTxBlockhash(b64(unsigned()), 1116)).toMatchObject({ refreshed: false });
+    expect(await refreshUnsignedTxBlockhash("not-a-tx", 1)).toEqual({ txBase64: "not-a-tx", lastValidBlockHeight: 1, refreshed: false });
   });
 });
