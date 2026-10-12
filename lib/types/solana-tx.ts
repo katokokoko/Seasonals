@@ -15,6 +15,41 @@ export interface SwapEarnTxResponse {
   outAmount: string;
   outputMint: string;
   quote: unknown;
+  /** 2026-10-13: 実際に支払った mint (funding deposit なら funding token)。旧 BFF には無い */
+  inputMint?: string;
+}
+
+/**
+ * swap の償還価値ガードの判定 (BFF fair-value.ts FairValueVerdict と同形)。
+ * - ok: 参照値との乖離 (bps、正 = ユーザー不利)
+ * - no_reference: 参照レートを持たない market (ガード対象外)
+ * - blocked: 乖離が guard を超えた / 参照が取れなかった (execute は 409 fair_value_blocked)
+ */
+export type SwapFairValueVerdict =
+  | { status: "ok"; deviation_bps: number }
+  | { status: "no_reference" }
+  | { status: "blocked"; reason: "fair_value_deviation" | "fair_value_unavailable"; deviation_bps?: number };
+
+/** `POST /protocols/swap-earn/quote` — tx を組まずに見積りだけ返す (2026-10-13、"Receive ≈" 表示用) */
+export interface SwapEarnQuoteRequest {
+  shareMint: string;
+  /** 省略 = market の underlying。funding token の mint を渡すと funding deposit の見積り */
+  inputMint?: string;
+  /** smallest unit string (§4.5) */
+  amount: string;
+  slippageBps?: number;
+}
+export interface SwapEarnQuoteResponse {
+  inputMint: string;
+  outputMint: string;
+  inAmount: string;
+  outAmount: string;
+  /** slippage 込みの最低受取 (Jupiter otherAmountThreshold) */
+  minOut: string;
+  /** Jupiter の priceImpactPct (string のまま) */
+  priceImpactPct: string;
+  slippageBps: number;
+  fairValue: SwapFairValueVerdict;
 }
 
 /** `/protocols/kamino/{deposit,withdraw}-tx` (Lend reserve) */
@@ -119,7 +154,11 @@ export type SolanaTxErrorCode =
   | "not_matured"
   | "missing_required_field"
   | "invalid_wallet_address"
-  | "submit_failed";
+  | "submit_failed"
+  /** 2026-10-13: swap-earn deposit の inputMint が underlying でも allowlist の funding でもない */
+  | "unsupported_input_mint"
+  /** swap-earn の shareMint が registry に無い */
+  | "unsupported_share_mint";
 
 export const SOLANA_DECLINED_CODES: readonly SolanaTxErrorCode[] = ["oracle_blocked", "fair_value_blocked"];
 

@@ -142,6 +142,93 @@ describe("Seasonals MCP server", () => {
     expect(created).toHaveLength(1);
   });
 
+  // 2026-10-13: Jupiter Lend JupUSD は USDC を funding token として受け付ける (registry allowlist)
+  describe("compare: funding token (USDC → jlJupUSD)", () => {
+    const JUPITER = {
+      protocol_id: "jupiter",
+      display_name: "Jupiter Lend",
+      primary_category: "lending",
+      supported_assets: ["USDC", "JupUSD"],
+      icon_id: "jupiter",
+      icon_bg: "#000",
+      pools: [
+        { pool_id: "jupiter_usdc", name: "USDC", category: "lending", asset: "USDC", apy: 0.06, tvl_usd: 50_000_000 },
+        { pool_id: "jupiter_jupusd", name: "JupUSD", category: "lending", asset: "JupUSD", apy: 0.07, tvl_usd: 20_000_000 },
+      ],
+    };
+    const JL_JUPUSD = "7GxATsNMnaC88vdwd2t3mwrFuQwwGvmYPrUQ4D6FotXk";
+    const run = async (asset: string) => {
+      const { client } = await connect(
+        fakeBff({ "/menu-listings": () => [...MENU, JUPITER], "/agent-plans": () => ({ plan_id: "pf" }) })
+      );
+      return textOf(
+        await client.callTool({ name: "compare_opportunities", arguments: { objective: "max_yield", asset } })
+      ) as { ranked_candidates: Record<string, unknown>[] };
+    };
+
+    it("asset USDC は jlUSDC と並んで USDC 払いの jlJupUSD を候補に出す", async () => {
+      const out = await run("USDC");
+      const ids = out.ranked_candidates.map((c) => c.market_id);
+      expect(ids).toEqual(["savefi_usdc_main", "jupiter_jupusd", "jupiter_usdc", "kamino_usdc_main"]); // APY 順のまま
+      const funded = out.ranked_candidates.find((c) => c.market_id === "jupiter_jupusd")!;
+      expect(funded).toMatchObject({
+        protocol_id: "jupiter",
+        action_spec_template: {
+          action_type: "deposit",
+          protocol: "jupiter",
+          asset: "USDC",
+          metadata: { share_mint: JL_JUPUSD, pool_id: "jupiter_jupusd" },
+        },
+        route_kind: "swap_earn_deposit",
+        amount_decimals: 6,
+        amount_unit: "USDC",
+      });
+      expect(funded.reasoning).toContain(
+        "Paid with USDC, swapped to JupUSD via Jupiter (cross-asset fair-value guard applies)"
+      );
+      const plain = out.ranked_candidates.find((c) => c.market_id === "jupiter_usdc")!;
+      expect(plain.action_spec_template).toEqual({
+        action_type: "deposit",
+        protocol: "jupiter",
+        asset: "USDC",
+        metadata: { pool_id: "jupiter_usdc" },
+      });
+      expect((plain.reasoning as string[]).some((r) => r.startsWith("Paid with"))).toBe(false);
+    });
+
+    it("funding symbol は大文字小文字を問わない (canonical の USDC で組む)", async () => {
+      const out = await run("usdc");
+      // #49 review: 直の underlying 候補 (jlUSDC 等) も同じく case-insensitive に残る (funded だけにならない)
+      expect(out.ranked_candidates.map((c) => c.market_id)).toEqual([
+        "savefi_usdc_main",
+        "jupiter_jupusd",
+        "jupiter_usdc",
+        "kamino_usdc_main",
+      ]);
+      const plain = out.ranked_candidates.find((c) => c.market_id === "jupiter_usdc")!;
+      expect(plain).toMatchObject({
+        action_spec_template: { asset: "USDC", metadata: { pool_id: "jupiter_usdc" } },
+        amount_unit: "USDC",
+      });
+      expect((plain.action_spec_template as { metadata: object }).metadata).not.toHaveProperty("share_mint");
+      const funded = out.ranked_candidates.find((c) => c.market_id === "jupiter_jupusd")!;
+      expect(funded).toMatchObject({ action_spec_template: { asset: "USDC" }, amount_unit: "USDC" });
+    });
+
+    it("asset JupUSD は underlying 払いだけ (funded 経路にしない)、SOL には出さない", async () => {
+      const jup = await run("JupUSD");
+      expect(jup.ranked_candidates.map((c) => c.market_id)).toEqual(["jupiter_jupusd"]);
+      expect(jup.ranked_candidates[0]).toMatchObject({
+        action_spec_template: { asset: "JupUSD", metadata: { pool_id: "jupiter_jupusd" } },
+        route_kind: "swap_earn_deposit",
+        amount_unit: "JupUSD",
+      });
+      expect((jup.ranked_candidates[0]!.action_spec_template as { metadata: object }).metadata).not.toHaveProperty("share_mint");
+      const sol = await run("SOL");
+      expect(sol.ranked_candidates).toEqual([]);
+    });
+  });
+
   it("compare: max_utilization 制約で満杯 pool を除外、safety_first は TVL 順", async () => {
     const { client } = await connect(
       fakeBff({
@@ -415,6 +502,19 @@ describe("Seasonals MCP server", () => {
     const ok = await client.callTool({ name: "simulate_action", arguments: { plan_id: "p1", action_spec: withdraw } });
     expect(ok.isError).toBeFalsy();
     expect(sent).toEqual({ action_spec: withdraw });
+
+    // funded deposit (compare_opportunities の USDC → jlJupUSD 雛形) も share_mint + pool_id のまま通る
+    const funded = {
+      wallet_id: "W",
+      action_type: "deposit",
+      protocol: "jupiter",
+      asset: "USDC",
+      amount: "1000000",
+      metadata: { share_mint: "7GxATsNMnaC88vdwd2t3mwrFuQwwGvmYPrUQ4D6FotXk", pool_id: "jupiter_jupusd" },
+    };
+    const fundedRes = await client.callTool({ name: "simulate_action", arguments: { plan_id: "p1", action_spec: funded } });
+    expect(fundedRes.isError).toBeFalsy();
+    expect(sent).toEqual({ action_spec: funded });
   });
 
   it("simulate_action: 未知の metadata key / base58 でない share_mint / 不正 pool_id は zod で拒否 (BFF を呼ばない)", async () => {

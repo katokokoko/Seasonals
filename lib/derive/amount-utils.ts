@@ -19,6 +19,7 @@ import {
 import {
   findMarketByProtocolAsset,
   findMarketByShareMint,
+  swapEarnDepositInputBySymbol,
 } from "../config/swap-earn-markets";
 import {
   findKaminoMarketByReserve,
@@ -26,6 +27,7 @@ import {
 } from "../config/kamino-markets";
 import { findSaveMarketByCToken } from "../config/save-markets";
 import { findExponentMarketByPtMint } from "../config/exponent-markets";
+import { pinnedSwapEarnMarket } from "./solana-action";
 
 type Action = SolanaActionShape;
 
@@ -114,6 +116,13 @@ export function resolveAmountUnit(
   // 優先する (グローバル TOKEN_DECIMALS 表との乖離で桁ズレしないため)。
   const depositProtocol =
     action.protocol === "jupiter" ? "jupiter_lend" : action.protocol;
+  // 2026-10-13: share_mint で固定された swap-earn deposit は、その market の入力 token
+  // (underlying か funding) で単位を決める (asset で引くと USDC + jlJupUSD が jlUSDC の単位になる)
+  const pinned = pinnedSwapEarnMarket(action);
+  if (pinned) {
+    const input = swapEarnDepositInputBySymbol(pinned, action.asset);
+    if (input) return { decimals: input.decimals, unitSymbol: input.symbol };
+  }
   const market = action.asset
     ? findMarketByProtocolAsset(depositProtocol, action.asset)
     : undefined;

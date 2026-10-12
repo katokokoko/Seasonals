@@ -34,11 +34,14 @@ export async function buildSolanaTxs(
 ): Promise<BuiltTxs> {
   switch (route.kind) {
     case "swap_earn_deposit": {
+      // 2026-10-13: funding deposit (USDC → jlJupUSD 等) だけ inputMint を載せる。
+      // 省略 = underlying (旧 BFF / 従来の body と完全に同じ)
       const r = await api.getSwapEarnDepositTx({
         user,
         shareMint: route.shareMint,
         amount,
         slippageBps: SWAP_EARN_SLIPPAGE_BPS,
+        ...(route.inputMint ? { inputMint: route.inputMint } : {}),
       });
       return { txs: [r.swapTransaction], lastValidBlockHeight: r.lastValidBlockHeight };
     }

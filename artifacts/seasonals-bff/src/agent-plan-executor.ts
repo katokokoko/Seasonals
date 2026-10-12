@@ -48,7 +48,14 @@ export function txBuildRequestFor(
     case "swap_earn_deposit":
       return {
         url: "/protocols/swap-earn/deposit-tx",
-        payload: { user, shareMint: route.shareMint, amount, slippageBps: SWAP_EARN_SLIPPAGE_BPS },
+        payload: {
+          user,
+          shareMint: route.shareMint,
+          amount,
+          slippageBps: SWAP_EARN_SLIPPAGE_BPS,
+          // 2026-10-13: funding deposit (USDC → jlJupUSD) は人と同じ builder 経路で支払い token を渡す
+          ...(route.inputMint ? { inputMint: route.inputMint } : {}),
+        },
         responseKey: "swapTransaction",
       };
     case "swap_earn_withdraw":

@@ -28,6 +28,8 @@ import type {
   OracleResult,
   Position,
   Protocol,
+  SwapEarnQuoteRequest,
+  SwapEarnQuoteResponse,
   UnifiedTimeEvent,
   UserPolicy,
   Wallet,
@@ -112,6 +114,12 @@ export const queryKeys = {
   protocols: () => ["protocols"] as const,
   menuListings: () => ["menu-listings"] as const,
   kaminoReserves: () => ["kamino-reserves"] as const,
+  /**
+   * 2026-10-13: swap-earn deposit の見積り ("Receive ≈" 表示)。inputMint 省略 (underlying) は
+   * "underlying" で埋めて funding 見積りと key を分ける
+   */
+  swapEarnQuote: (shareMint: string, inputMint: string | undefined, amount: string) =>
+    ["swap-earn-quote", shareMint, inputMint ?? "underlying", amount] as const,
   jupiterQuote: (input: api.JupiterQuoteInput) =>
     [
       "jupiter-quote",
@@ -503,6 +511,44 @@ export function useJupiterQuote(
     enabled: input !== null,
     // quote は時々刻々変わるので短め
     staleTime: 5_000,
+  });
+}
+
+/**
+ * 2026-10-13: swap-earn deposit の見積り (`POST /protocols/swap-earn/quote`)。
+ * funding deposit (USDC で jlJupUSD を受け取る等) の "Receive ≈" と fair value の事前判定用。
+ *
+ * - amount は validated smallest unit string (§4.5)。空 / 非整数 / "0" は撃たない
+ * - quote は時々刻々変わるので staleTime 5s (useJupiterQuote と同じ)
+ * - 入力中に key が変わっても **同じ market + 入力 mint の間は** 前の見積りを出し続ける
+ *   (行がちらつかない)。入力 token を切り替えたら前の見積りは出さない (別 token の値を見せない)
+ * - #49 review: placeholderData は **表示用だけ**。前の金額の fairValue verdict で署名させないよう、
+ *   ActionModal は `isPending || isPlaceholderData` の間 CTA を止める ("Checking price…")
+ * - 404 (quote endpoint の無い旧 BFF) は `BffError.status` で判別できる (ActionModal は通す)
+ */
+export function useSwapEarnQuote(
+  input: SwapEarnQuoteRequest | null
+): UseQueryResult<SwapEarnQuoteResponse, Error> {
+  const valid =
+    input !== null &&
+    /^[0-9]+$/.test(input.amount) &&
+    !/^0+$/.test(input.amount);
+  return useQuery({
+    queryKey: valid
+      ? queryKeys.swapEarnQuote(input.shareMint, input.inputMint, input.amount)
+      : ["swap-earn-quote", "disabled"],
+    queryFn: ({ signal }) => {
+      if (!valid) throw new Error("swap_earn_quote_input_missing");
+      return api.getSwapEarnQuote(input, signal);
+    },
+    enabled: valid,
+    staleTime: 5_000,
+    placeholderData: (prev, prevQuery) =>
+      valid &&
+      prevQuery?.queryKey[1] === input.shareMint &&
+      prevQuery?.queryKey[2] === (input.inputMint ?? "underlying")
+        ? prev
+        : undefined,
   });
 }
 

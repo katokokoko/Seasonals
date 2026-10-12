@@ -441,8 +441,29 @@ describe("GET /menu-listings — live overlay", () => {
     const usdc = pool(menu, "jupiter", "jupiter_usdc_main");
     expect(usdc.apy).toBeCloseTo(0.045, 6);
     expect(usdc.tvl_usd).toBeCloseTo(5_000_000, 0);
-    // 8.27: jupiter_jlp_lending は削除済 (実体は kamino_jlp) — jupiter は 2 pools
-    expect(menu.find((e) => e.protocol_id === "jupiter")!.pools).toHaveLength(2);
+    // 8.27: jupiter_jlp_lending は削除済 (実体は kamino_jlp)。2026-10-13 に jupiter_jupusd を追加 — 3 pools
+    expect(menu.find((e) => e.protocol_id === "jupiter")!.pools).toHaveLength(3);
+  });
+
+  it("2026-10-13: jupiter_jupusd (asset JupUSD) は jl API の \"jupUSD\" market から live APY を受ける (大文字小文字無視)", async () => {
+    mockJup.mockResolvedValue([
+      jupMarket({}),
+      jupMarket({
+        jlMint: "7GxATsNMnaC88vdwd2t3mwrFuQwwGvmYPrUQ4D6FotXk",
+        jlSymbol: "jlJupUSD",
+        underlyingMint: "JuprjznTrTSp2UFa3ZBUFgwdAmtZCq4MQCwysN55USD",
+        underlyingSymbol: "jupUSD",
+        supplyRateBps: 512,
+        tvlUnderlying: "40000000000000", // 40M
+      }),
+    ]);
+    const menu = await getMenu();
+    const jupusd = pool(menu, "jupiter", "jupiter_jupusd");
+    expect(jupusd.asset).toBe("JupUSD");
+    expect(jupusd.apy).toBeCloseTo(0.0512, 6);
+    expect(jupusd.tvl_usd).toBeCloseTo(40_000_000, 0);
+    // USDC pool は自分の market のまま (JupUSD と混線しない)
+    expect(pool(menu, "jupiter", "jupiter_usdc_main").apy).toBeCloseTo(0.045, 6);
   });
 
   it("orca / savefi の overlay", async () => {

@@ -28,8 +28,9 @@ import { _resetPolicyForTest } from "./policy-store";
 import { sendAndConfirmDevnetTx, getDevnetConnection } from "./clients/solana-devnet";
 
 // Phase 8.37: /simulate が実 oracle gate を通るため mock (hermetic 維持)
-jest.mock("./clients/oracle", () => ({
-  getOracleResult: jest.fn(async () => ({
+// 2026-10-13: simulate は funding deposit の 2 本 gate のため batch (getOracleResults) を使う
+jest.mock("./clients/oracle", () => {
+  const okSol = () => ({
     asset_symbol: "SOL",
     status: "ok",
     primary: "pyth",
@@ -40,8 +41,12 @@ jest.mock("./clients/oracle", () => ({
     divergence_pct: null,
     warnings: [],
     block_reason: null,
-  })),
-}));
+  });
+  return {
+    getOracleResult: jest.fn(async () => okSol()),
+    getOracleResults: jest.fn(async (mints: string[]) => new Map(mints.map((m) => [m, okSol()]))),
+  };
+});
 // 2026-10-08: /simulate が route ごとの実見積り (Jupiter quote + LST 償還価値) を読むため mock
 // (無 mock だと lite-api.jup.ag / stake pool RPC を叩く)
 jest.mock("./clients/jupiter-swap", () => ({

@@ -107,6 +107,15 @@ export const KNOWN_PROTOCOL_MINTS: Record<string, KnownMint> = {
     asset_symbol: "USDC",
     decimals: 6,
   },
+  // 2026-10-13: Jupiter Lend JupUSD market の underlying。DAS の symbol は "jupUSD" で揺れるので
+  // 登録して "JupUSD" に固定する (ActionModal の残高照合は mint で行うが、表示も揃える)
+  JuprjznTrTSp2UFa3ZBUFgwdAmtZCq4MQCwysN55USD: {
+    mint: "JuprjznTrTSp2UFa3ZBUFgwdAmtZCq4MQCwysN55USD",
+    protocol_id: "wallet_holding",
+    category: PositionCategory.Stable,
+    asset_symbol: "JupUSD",
+    decimals: 6,
+  },
   Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB: {
     mint: "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",
     protocol_id: "wallet_holding",

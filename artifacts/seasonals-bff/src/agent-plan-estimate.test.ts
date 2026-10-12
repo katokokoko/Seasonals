@@ -14,11 +14,17 @@ import { fetchSwapQuote } from "./clients/jupiter-swap";
 import { fetchLstSolValues } from "./clients/lst-rates";
 import { fetchKaminoVaultMetrics } from "./clients/kamino-tx";
 import { fetchSaveReserveRates } from "./clients/save-tx";
+import { fetchEarnMarkets } from "./clients/jupiter-lend";
+import { getOracleResults } from "./clients/oracle";
+import type { OracleResult } from "@workspace/lib/types";
 
 jest.mock("./clients/jupiter-swap", () => ({ fetchSwapQuote: jest.fn() }));
 jest.mock("./clients/lst-rates", () => ({ fetchLstSolValues: jest.fn() }));
 jest.mock("./clients/kamino-tx", () => ({ fetchKaminoVaultMetrics: jest.fn() }));
 jest.mock("./clients/save-tx", () => ({ fetchSaveReserveRates: jest.fn() }));
+// 2026-10-13: funding deposit の cross-asset チェック (convertToAssets と oracle 価格)
+jest.mock("./clients/jupiter-lend", () => ({ fetchEarnMarkets: jest.fn() }));
+jest.mock("./clients/oracle", () => ({ getOracleResults: jest.fn() }));
 
 const mockQuote = fetchSwapQuote as jest.MockedFunction<typeof fetchSwapQuote>;
 const mockLst = fetchLstSolValues as jest.MockedFunction<typeof fetchLstSolValues>;
@@ -54,6 +60,138 @@ beforeEach(() => {
   jest.clearAllMocks();
   log = { warn: jest.fn() };
   mockLst.mockResolvedValue(new Map([["jitoSOL", JITOSOL_LAMPORTS]]));
+});
+
+const mockMarkets = fetchEarnMarkets as jest.MockedFunction<typeof fetchEarnMarkets>;
+const mockOracles = getOracleResults as jest.MockedFunction<typeof getOracleResults>;
+const jlJupUsd = SWAP_EARN_MARKETS.find((m) => m.share_symbol === "jlJupUSD")!;
+const USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+
+function usdOracle(symbol: string, price: string | null = "1.00000000"): OracleResult {
+  return {
+    asset_symbol: symbol,
+    status: price ? "ok" : "blocked",
+    primary: price ? "pyth" : null,
+    price_usd: price,
+    pyth: { available: !!price, price_usd: price, age_seconds: 1 },
+    secondary: { source: "redstone", available: !!price, price_usd: price, age_seconds: 1 },
+    tier: "A",
+    divergence_pct: price ? 0 : null,
+    warnings: [],
+    block_reason: price ? null : "oracle_both_stale",
+  };
+}
+
+describe("2026-10-13: funding deposit (USDC → jlJupUSD)", () => {
+  const route = { kind: "swap_earn_deposit" as const, shareMint: jlJupUsd.share_mint, inputMint: USDC_MINT };
+  const oracleByMint = (usdc: string | null = "1.00000000") =>
+    Promise.resolve(
+      new Map([
+        [jlJupUsd.underlying_mint, usdOracle("JupUSD")],
+        [USDC_MINT, usdOracle("USDC", usdc)],
+      ])
+    );
+  beforeEach(() => {
+    mockMarkets.mockResolvedValue([
+      {
+        jlMint: jlJupUsd.share_mint,
+        jlSymbol: "jlJupUSD",
+        jlDecimals: 6,
+        underlyingMint: jlJupUsd.underlying_mint,
+        underlyingSymbol: "jupUSD",
+        underlyingDecimals: 6,
+        underlyingPriceUsd: 1,
+        convertToAssets: "1041200",
+        supplyRateBps: 430,
+        rewardsRateBps: 0,
+        totalRateBps: 430,
+        tvlUnderlying: "0",
+      },
+    ]);
+  });
+
+  it("quote は funding (USDC) から。out は share 建て (≈ N jlJupUSD)、cross-asset は ok", async () => {
+    mockQuote.mockResolvedValue(quote("1000000", "960781", "955977"));
+    const est = await estimatePlanAction(route, "1000000", log, { oracleByMint: oracleByMint() });
+    expect(mockQuote).toHaveBeenCalledWith({
+      inputMint: USDC_MINT,
+      outputMint: jlJupUsd.share_mint,
+      amount: "1000000",
+      slippageBps: 50,
+    });
+    expect(est).toMatchObject({
+      estimate_kind: "quote",
+      estimated_out: "960781",
+      estimated_out_mint: jlJupUsd.share_mint,
+      estimated_out_symbol: "jlJupUSD",
+      estimated_out_decimals: 6,
+      min_out: "955977",
+      metadata: {
+        input_mint: USDC_MINT,
+        input_symbol: "USDC",
+        fair_value: { status: "ok", deviation_bps: -3 },
+      },
+    });
+    expect(est.warnings).toBeUndefined();
+    // simulate が渡した oracle 結果を使う (再取得しない)。LST の参照も読まない
+    expect(mockOracles).not.toHaveBeenCalled();
+    expect(mockLst).not.toHaveBeenCalled();
+  });
+
+  it("不利な quote は止めずに warning (fair_value_deviation)", async () => {
+    mockQuote.mockResolvedValue(quote("1000000", "930000"));
+    const est = await estimatePlanAction(route, "1000000", log, { oracleByMint: oracleByMint() });
+    expect(est.estimate_kind).toBe("quote");
+    expect(est.warnings).toEqual(["fair_value_deviation"]);
+  });
+
+  it("USDC の価格が無ければ fair_value_unavailable (warning)", async () => {
+    mockQuote.mockResolvedValue(quote("1000000", "960781"));
+    const est = await estimatePlanAction(route, "1000000", log, { oracleByMint: oracleByMint(null) });
+    expect(est.warnings).toEqual(["fair_value_unavailable"]);
+    expect(log.warn).toHaveBeenCalled();
+  });
+
+  it("oracle 結果を渡されなければ自前で [underlying, funding] を引く", async () => {
+    mockQuote.mockResolvedValue(quote("1000000", "960781"));
+    mockOracles.mockImplementation(() => oracleByMint());
+    const est = await estimatePlanAction(route, "1000000", log);
+    expect(mockOracles).toHaveBeenCalledWith([jlJupUsd.underlying_mint, USDC_MINT]);
+    expect(est.metadata?.fair_value).toEqual({ status: "ok", deviation_bps: -3 });
+  });
+
+  it("#49 review: 交換レート (earn/tokens) は quote の完了を待たずに取りに行く (並行)", async () => {
+    let resolveQuote: ((q: ReturnType<typeof quote>) => void) | undefined;
+    mockQuote.mockImplementation(
+      () => new Promise((resolve) => { resolveQuote = resolve; }) as ReturnType<typeof fetchSwapQuote>
+    );
+    const estP = estimatePlanAction(route, "1000000", log, { oracleByMint: oracleByMint() });
+    for (let i = 0; i < 20 && !resolveQuote; i++) await new Promise((r) => setImmediate(r));
+    // quote はまだ pending — それでも markets は既に取りに行っている
+    expect(resolveQuote).toBeDefined();
+    expect(mockMarkets).toHaveBeenCalledTimes(1);
+    resolveQuote!(quote("1000000", "960781"));
+    const est = await estP;
+    expect(est.metadata?.fair_value).toEqual({ status: "ok", deviation_bps: -3 });
+    expect(mockMarkets).toHaveBeenCalledTimes(1);
+  });
+
+  it("#49 review: 先行取得した markets が落ちても fail-closed (quote が後から返る)", async () => {
+    mockMarkets.mockRejectedValue(new Error("lite-api down"));
+    mockQuote.mockResolvedValue(quote("1000000", "960781"));
+    const est = await estimatePlanAction(route, "1000000", log, { oracleByMint: oracleByMint() });
+    expect(est.warnings).toEqual(["fair_value_unavailable"]);
+  });
+
+  it("allowlist 外の inputMint は unsupported_market (quote を呼ばない)", async () => {
+    const est = await estimatePlanAction(
+      { ...route, inputMint: "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB" },
+      "1000000",
+      log
+    );
+    expect(est).toEqual({ estimate_kind: "none", failure_reason: "unsupported_market" });
+    expect(mockQuote).not.toHaveBeenCalled();
+  });
 });
 
 describe("swap-earn (Jupiter quote)", () => {

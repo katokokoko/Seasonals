@@ -11,7 +11,13 @@ export async function buildSolanaTxs(route: SolanaRoute, user: string, amount: s
   if (route.kind === "swap_earn_deposit" || route.kind === "swap_earn_withdraw") {
     const r =
       route.kind === "swap_earn_deposit"
-        ? await api.solanaSwapEarnDepositTx({ user, shareMint: route.shareMint, amount })
+        ? await api.solanaSwapEarnDepositTx({
+            user,
+            shareMint: route.shareMint,
+            amount,
+            // funding deposit (USDC → jlJupUSD) だけ inputMint を付ける。underlying 払いは従来の body のまま
+            ...(route.inputMint ? { inputMint: route.inputMint } : {}),
+          })
         : await api.solanaSwapEarnWithdrawTx({ user, shareMint: route.shareMint, amount });
     return { txs: [r.swapTransaction], lastValidBlockHeight: r.lastValidBlockHeight };
   }

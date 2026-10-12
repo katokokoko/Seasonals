@@ -25,6 +25,8 @@ import {
 function gatedMints(): Array<[string, string]> {
   return [
     ...SWAP_EARN_MARKETS.map((m) => [m.underlying_mint, `swap-earn ${m.protocol_id} ${m.underlying_symbol}`] as [string, string]),
+    // 2026-10-13: funding deposit は funding mint も gate する (resolveOracleMints の 2 本目)
+    ...SWAP_EARN_MARKETS.flatMap((m) => (m.funding ?? []).map((f) => [f.mint, `swap-earn funding ${m.share_symbol} ← ${f.symbol}`] as [string, string])),
     ...KAMINO_MARKETS.map((m) => [m.underlying_mint, `kamino ${m.pool_id}`] as [string, string]),
     ...KAMINO_VAULTS.map((m) => [m.underlying_mint, `kamino vault ${m.pool_id}`] as [string, string]),
     ...SAVE_MARKETS.map((m) => [m.underlying_mint, `save ${m.pool_id}`] as [string, string]),

@@ -25,6 +25,23 @@ test("swap-earn deposit は tx 1 本と lastValidBlockHeight を返す", async (
   expect(calls[0]!.body).toMatchObject({ user: USER, shareMint: jlUsdc.share_mint, amount: "1500000" });
 });
 
+test("funding deposit (USDC → jlJupUSD) は inputMint を body に載せる。underlying 払いは載せない", async () => {
+  const jupUsd = SWAP_EARN_MARKETS.find((m) => m.share_symbol === "jlJupUSD")!;
+  const usdc = jupUsd.funding![0]!;
+  const calls = installFakeBff((path) =>
+    path === "/protocols/swap-earn/deposit-tx"
+      ? { json: { swapTransaction: b64([9]), lastValidBlockHeight: 42, outAmount: "1", outputMint: jupUsd.share_mint, quote: {}, inputMint: usdc.mint } }
+      : undefined
+  );
+  await expect(
+    buildSolanaTxs({ kind: "swap_earn_deposit", shareMint: jupUsd.share_mint, inputMint: usdc.mint }, USER, "2000000")
+  ).resolves.toEqual({ txs: [b64([9])], lastValidBlockHeight: 42 });
+  expect(calls[0]!.body).toEqual({ slippageBps: 50, user: USER, shareMint: jupUsd.share_mint, amount: "2000000", inputMint: usdc.mint });
+
+  await buildSolanaTxs({ kind: "swap_earn_deposit", shareMint: jupUsd.share_mint }, USER, "1");
+  expect(calls[1]!.body).not.toHaveProperty("inputMint");
+});
+
 test("swap-earn withdraw も lastValidBlockHeight を返す", async () => {
   installFakeBff((path) =>
     path === "/protocols/swap-earn/withdraw-tx"

@@ -11,8 +11,15 @@
  */
 import type { EarnPosition, SolanaActionInput, SolanaActionShape } from "../types";
 import { isValidTokenAmount } from "../utils/numeric";
+import { normalizeAssetSymbol } from "../utils/asset-symbol";
 import { isSolanaAddress } from "../config/chains";
-import { findMarketByProtocolAsset, findMarketByShareMint } from "../config/swap-earn-markets";
+import {
+  findMarketByProtocolAsset,
+  findMarketByShareMint,
+  swapEarnDepositInput,
+  swapEarnDepositInputBySymbol,
+  type SwapEarnMarket,
+} from "../config/swap-earn-markets";
 import {
   findKaminoMarketByAsset,
   findKaminoMarketByPool,
@@ -32,7 +39,8 @@ import { findOrcaMarketByPool } from "../config/orca-markets";
 
 /** BFF の tx builder 1 本と、その body に入る識別子 */
 export type SolanaRoute =
-  | { kind: "swap_earn_deposit"; shareMint: string }
+  /** inputMint = funding token で支払う時だけ付く (省略 = market の underlying)。2026-10-13 */
+  | { kind: "swap_earn_deposit"; shareMint: string; inputMint?: string }
   | { kind: "swap_earn_withdraw"; shareMint: string }
   | { kind: "kamino_deposit"; reserve: string }
   | { kind: "kamino_withdraw"; reserve: string }
@@ -58,6 +66,21 @@ export function normalizeSolanaProtocol(protocol: string): string {
   return protocol === "jupiter" ? "jupiter_lend" : protocol;
 }
 
+/**
+ * 2026-10-13: `metadata.share_mint` で固定された swap-earn deposit の market。
+ * share_mint が swap-earn の share で、かつ protocol が一致する時だけ返す (Kamino reserve 等の
+ * share_mint や protocol 違いは undefined → 呼び手は従来の asset 解決に落ちる)。
+ * resolveSolanaRoute / resolveOracleMint(s) / resolveAmountUnit / client UI が **全部これ** を使う
+ * (pin の規則を 1 箇所に、#49 review)
+ */
+export function pinnedSwapEarnMarket(action: SolanaActionShape | null | undefined): SwapEarnMarket | undefined {
+  if (!action || action.action_type !== "deposit") return undefined;
+  const shareMint = str(action.metadata?.share_mint);
+  if (!shareMint) return undefined;
+  const m = findMarketByShareMint(shareMint);
+  return m && m.protocol_id === normalizeSolanaProtocol(action.protocol) ? m : undefined;
+}
+
 export function resolveSolanaRoute(action: SolanaActionShape | null | undefined): SolanaRoute | null {
   if (!action) return null;
   const isDeposit = action.action_type === "deposit";
@@ -69,6 +92,17 @@ export function resolveSolanaRoute(action: SolanaActionShape | null | undefined)
   const poolId = str(action.metadata?.pool_id);
 
   if (isDeposit) {
+    // 2026-10-13: metadata.share_mint が swap-earn market を指す deposit は、その market に固定して
+    // asset を underlying / funding と照合する (asset で先に引くと USDC + jlJupUSD が jlUSDC に流れる)。
+    // market が asset を受け付けなければ null = fail-closed
+    const pinned = pinnedSwapEarnMarket(action);
+    if (pinned) {
+      const input = swapEarnDepositInputBySymbol(pinned, action.asset);
+      if (!input) return null;
+      return input.isFunding
+        ? { kind: "swap_earn_deposit", shareMint: pinned.share_mint, inputMint: input.mint }
+        : { kind: "swap_earn_deposit", shareMint: pinned.share_mint };
+    }
     const swap = action.asset ? findMarketByProtocolAsset(protocolId, action.asset) : undefined;
     if (swap) return { kind: "swap_earn_deposit", shareMint: swap.share_mint };
   } else if (shareMint) {
@@ -146,6 +180,26 @@ export function depositAction(protocolId: string, asset: string, poolId: string 
   };
 }
 
+/**
+ * funding token で支払う deposit action (2026-10-13)。asset = 支払う token (USDC)、market は
+ * metadata.share_mint で固定する。pool_id は表示 / 互換のため任意で載せる
+ */
+export function fundedDepositAction(
+  protocolId: string,
+  fundingSymbol: string,
+  shareMint: string,
+  poolId?: string,
+  amount = ""
+): SolanaActionInput {
+  return {
+    action_type: "deposit",
+    protocol: protocolId,
+    asset: fundingSymbol,
+    amount,
+    metadata: { share_mint: shareMint, ...(poolId ? { pool_id: poolId } : {}) },
+  };
+}
+
 /** Your Positions の行から全量 withdraw action (Seeker app/index.tsx handleWithdrawPosition と同形) */
 export function withdrawActionFromPosition(position: EarnPosition): SolanaActionInput {
   return {
@@ -217,7 +271,9 @@ export function withdrawActionFromParams(params: Record<string, string>): Solana
  * Solana action の `metadata` に載ってよいキー。これ以外は境界 (BFF simulate / MCP zod) で拒否する。
  * - pool_id: deposit の market 特定 (resolveSolanaRoute / resolveOracleMint)
  * - share_mint: withdraw の market 特定 (swap-earn share mint / Kamino reserve / kVault address /
- *   Save cToken / Exponent PT mint / Meteora・Orca の position pubkey)
+ *   Save cToken / Exponent PT mint / Meteora・Orca の position pubkey)。
+ *   2026-10-13 から deposit でも使う: funding token (USDC) で支払う swap-earn deposit は
+ *   share_mint で market を固定し、asset は支払う token になる (fundedDepositAction)
  * - share_decimals / underlying_decimals: 入力単位 (resolveAmountUnit)
  * - underlying_amount: 部分 withdraw の ≈underlying 表示用 (display-only)
  * withdrawActionFromPosition / withdrawActionFromParams が組む形と同じ集合。
@@ -293,7 +349,10 @@ export function routeInputSymbol(route: SolanaRoute): RouteInputToken | null {
   switch (route.kind) {
     case "swap_earn_deposit": {
       const m = findMarketByShareMint(route.shareMint);
-      return m ? { mint: m.underlying_mint, symbol: m.underlying_symbol, decimals: m.underlying_decimals } : null;
+      if (!m) return null;
+      // funding deposit は支払う token (allowlist 外の inputMint は builder が 400 で弾くが、ここでも null)
+      const input = swapEarnDepositInput(m, route.inputMint);
+      return input ? { mint: input.mint, symbol: input.symbol, decimals: input.decimals } : null;
     }
     case "kamino_deposit": {
       const m = findKaminoMarketByReserve(route.reserve);
@@ -318,12 +377,6 @@ export function routeInputSymbol(route: SolanaRoute): RouteInputToken | null {
     default:
       return null;
   }
-}
-
-/** 表記揺れの吸収: 大文字小文字 (JitoSOL / jitoSOL) と wrapped SOL (WSOL = SOL) */
-function normalizeAssetSymbol(symbol: string): string {
-  const upper = symbol.trim().toUpperCase();
-  return upper === "WSOL" ? "SOL" : upper;
 }
 
 /** action.asset と deposit route の入力 token が同じ asset か (asset 無しは不一致扱い) */

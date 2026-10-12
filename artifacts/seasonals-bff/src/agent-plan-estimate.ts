@@ -5,7 +5,9 @@
  * だった。ここでは resolveSolanaRoute が解決した route ごとに、**人が使う tx builder と同じ見積り元**
  * を読む:
  *   - swap-earn (Jupiter Lend / LST / USD* 等): Jupiter quote (builder と同じ slippage 50bps)。
- *     LST は償還価値ガード (swap-fair-value.ts) の判定を warning として添える
+ *     LST は償還価値ガード (swap-fair-value.ts) の判定を warning として添える。
+ *     funding deposit (route.inputMint、例: USDC → jlJupUSD、2026-10-13) は funding mint で quote し、
+ *     cross-asset の償還価値チェック (funding-fair-value.ts) を同じく warning として添える
  *   - Kamino reserve: 受け取り量 = 入力量 (担保は underlying 建てで管理される)。預入停止は warning
  *   - Kamino kVault: vault metrics の tokensPerShare で shares ⇄ underlying を換算
  *   - Save: reserve の cTokenExchangeRate で cToken ⇄ underlying を換算
@@ -20,13 +22,17 @@
 import type { FastifyBaseLogger } from "fastify";
 
 import type {
+  OracleResult,
   SimulationEstimateKind,
   SimulationResult,
   SimulationWarning,
 } from "@workspace/lib/types";
 import { isValidTokenAmount } from "@workspace/lib/utils/numeric";
 import type { SolanaRoute } from "@workspace/lib/derive/solana-action";
-import { findMarketByShareMint } from "@workspace/lib/config/swap-earn-markets";
+import {
+  findMarketByShareMint,
+  swapEarnDepositInput,
+} from "@workspace/lib/config/swap-earn-markets";
 import {
   findKaminoMarketByReserve,
   findKaminoVaultByAddress,
@@ -40,7 +46,12 @@ import { fetchSwapQuote } from "./clients/jupiter-swap";
 import { fetchKaminoVaultMetrics } from "./clients/kamino-tx";
 import { fetchSaveReserveRates } from "./clients/save-tx";
 import { SWAP_EARN_SLIPPAGE_BPS } from "./agent-plan-executor";
-import { evaluateSwapFairValue } from "./swap-fair-value";
+import { getOracleResults } from "./clients/oracle";
+import {
+  evaluateFundingFairValue,
+  evaluateSwapFairValue,
+  prefetchFundingExchangeRate,
+} from "./swap-fair-value";
 import {
   kvaultSharesToUnderlying,
   kvaultUnderlyingToShares,
@@ -67,6 +78,14 @@ export type PlanEstimate = Pick<
 
 type Log = Pick<FastifyBaseLogger, "warn">;
 
+export interface EstimateOptions {
+  /**
+   * simulate route が §4.6 gate のために引いた oracle 結果 (mint → result)。funding deposit の
+   * cross-asset チェックはこの価格を使う (再取得しない)。省略時は自前で getOracleResults を引く
+   */
+  oracleByMint?: Promise<Map<string, OracleResult>>;
+}
+
 function none(failure_reason: NonNullable<PlanEstimate["failure_reason"]>): PlanEstimate {
   return { estimate_kind: "none", failure_reason };
 }
@@ -78,19 +97,29 @@ function errMessage(err: unknown): string {
 async function estimateSwapEarn(
   route: Extract<SolanaRoute, { kind: "swap_earn_deposit" | "swap_earn_withdraw" }>,
   amount: string,
-  log: Log
+  log: Log,
+  opts: EstimateOptions
 ): Promise<PlanEstimate> {
   const market = findMarketByShareMint(route.shareMint);
   if (!market) return none("unsupported_market");
   const deposit = route.kind === "swap_earn_deposit";
+  // deposit の支払い token: route.inputMint (funding) か underlying。allowlist 外は builder と同じく不可
+  const input = deposit
+    ? swapEarnDepositInput(market, route.kind === "swap_earn_deposit" ? route.inputMint : undefined)
+    : undefined;
+  if (deposit && !input) return none("unsupported_market");
+  // 受け取りは share (funding deposit でも同じ — "≈ N jlJupUSD")
   const out = deposit
     ? { mint: market.share_mint, symbol: market.share_symbol, decimals: market.share_decimals }
     : { mint: market.underlying_mint, symbol: market.underlying_symbol, decimals: market.underlying_decimals };
 
+  // #49 review: funding deposit の交換レート (convertToAssets) は quote に依存しないので並行で取る。
+  // reject しない promise なので、quote 失敗で捨てても unhandled rejection にならない
+  const exchangeRateP = input?.isFunding ? prefetchFundingExchangeRate(market) : undefined;
   let quote: Awaited<ReturnType<typeof fetchSwapQuote>>;
   try {
     quote = await fetchSwapQuote({
-      inputMint: deposit ? market.underlying_mint : market.share_mint,
+      inputMint: deposit ? input!.mint : market.share_mint,
       outputMint: deposit ? market.share_mint : market.underlying_mint,
       amount,
       slippageBps: SWAP_EARN_SLIPPAGE_BPS,
@@ -107,11 +136,32 @@ async function estimateSwapEarn(
   const warnings: SimulationWarning[] = [];
   const metadata: Record<string, unknown> = {};
   if (typeof quote.priceImpactPct === "string") metadata.price_impact_pct = quote.priceImpactPct;
-  // 8.72 の償還価値ガード。simulate では止めず warning にする (execute の builder が 409 で止める)
-  const verdict = await evaluateSwapFairValue(log, quote, {
-    direction: deposit ? "deposit" : "withdraw",
-    shareSymbol: market.share_symbol,
-  }).catch((err) => {
+  if (input?.isFunding) {
+    metadata.input_mint = input.mint;
+    metadata.input_symbol = input.symbol;
+  }
+  // 8.72 の償還価値ガード。simulate では止めず warning にする (execute の builder が 409 で止める)。
+  // funding deposit は cross-asset 版 (価格は simulate の oracle gate の結果)
+  const verdictP = input?.isFunding
+    ? (opts.oracleByMint ?? getOracleResults([market.underlying_mint, input.mint]))
+        .catch((err) => {
+          log.warn({ err: errMessage(err), route: route.kind }, "simulate: oracle read for fair value failed");
+          return new Map<string, OracleResult>();
+        })
+        .then((byMint) =>
+          evaluateFundingFairValue(log, quote, {
+            market,
+            input,
+            underlyingOracle: byMint.get(market.underlying_mint),
+            fundingOracle: byMint.get(input.mint),
+            exchangeRate: exchangeRateP,
+          })
+        )
+    : evaluateSwapFairValue(log, quote, {
+        direction: deposit ? "deposit" : "withdraw",
+        shareSymbol: market.share_symbol,
+      });
+  const verdict = await verdictP.catch((err) => {
     log.warn({ err: errMessage(err), route: route.kind }, "simulate: fair value check failed");
     return { status: "blocked", reason: "fair_value_unavailable" } as const;
   });
@@ -239,14 +289,15 @@ async function estimateSave(
 export async function estimatePlanAction(
   route: SolanaRoute,
   amount: string,
-  log: Log
+  log: Log,
+  opts: EstimateOptions = {}
 ): Promise<PlanEstimate> {
   if (!isValidTokenAmount(amount) || amount === "0") return none("amount_required");
   try {
     switch (route.kind) {
       case "swap_earn_deposit":
       case "swap_earn_withdraw":
-        return await estimateSwapEarn(route, amount, log);
+        return await estimateSwapEarn(route, amount, log, opts);
       case "kamino_deposit":
       case "kamino_withdraw":
         return estimateKaminoReserve(route, amount);

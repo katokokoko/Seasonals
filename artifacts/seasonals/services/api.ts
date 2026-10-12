@@ -70,6 +70,8 @@ export type {
 } from "@workspace/lib/types";
 import type {
   HealthResponse,
+  SwapEarnQuoteRequest,
+  SwapEarnQuoteResponse,
   TxStatusResponse,
 } from "@workspace/lib/types";
 // 2026-10-13: /tx/status が無い旧 BFF (404) は着地確認を打ち切る合図 (lib/derive/tx-confirm.ts)
@@ -356,10 +358,13 @@ async function fxRejectAgentPlan(planId: string): Promise<AgentPlan> {
  */
 export class BffError extends Error {
   readonly code: string | undefined;
-  constructor(message: string, code?: string) {
+  /** HTTP status (分かる経路のみ。#49 review: swap-earn quote の 404 = 旧 BFF の判別用) */
+  readonly status: number | undefined;
+  constructor(message: string, code?: string, status?: number) {
     super(message);
     this.name = "BffError";
     this.code = code;
+    this.status = status;
   }
 }
 
@@ -625,6 +630,11 @@ export async function getSwapEarnDepositTx(input: {
   shareMint: string;
   amount: string;
   slippageBps?: number;
+  /**
+   * 2026-10-13: funding deposit (例: USDC で jlJupUSD を受け取る) の支払い mint。
+   * 省略 = market の underlying。allowlist 外は BFF が 400 `unsupported_input_mint`
+   */
+  inputMint?: string;
 }): Promise<JupiterDepositTxResponse> {
   const res = await fetch(`${BFF_BASE_URL}/protocols/swap-earn/deposit-tx`, {
     method: "POST",
@@ -635,6 +645,35 @@ export async function getSwapEarnDepositTx(input: {
     throw await bffCodedError(res);
   }
   return (await res.json()) as JupiterDepositTxResponse;
+}
+
+/**
+ * 2026-10-13: swap-earn deposit の見積りだけを取る (tx は組まない)。ActionModal の
+ * "Receive ≈ … jlJupUSD" 表示と cross-asset fair value の事前判定に使う。
+ * 金額は smallest unit string のまま (§4.5)。非 2xx は他の builder と同じく BffError。
+ */
+export async function getSwapEarnQuote(
+  input: SwapEarnQuoteRequest,
+  signal?: AbortSignal
+): Promise<SwapEarnQuoteResponse> {
+  const res = await fetch(`${BFF_BASE_URL}/protocols/swap-earn/quote`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(input),
+    signal,
+  });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as {
+      error?: string;
+      message?: string;
+    };
+    throw new BffError(
+      body.message ?? body.error ?? `HTTP ${res.status} ${res.statusText}`,
+      body.error,
+      res.status
+    );
+  }
+  return (await res.json()) as SwapEarnQuoteResponse;
 }
 
 /**

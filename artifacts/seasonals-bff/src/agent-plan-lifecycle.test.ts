@@ -13,6 +13,7 @@ import { join } from "node:path";
 import type { FastifyInstance } from "fastify";
 
 import { AgentPlanStatus, type ActionSpec } from "@workspace/lib/types";
+import { fundedDepositAction } from "@workspace/lib/derive/solana-action";
 
 import { buildServer } from "./server";
 import {
@@ -30,6 +31,7 @@ import { fetchSwapQuote, fetchSwapTransaction } from "./clients/jupiter-swap";
 import { getOracleResult, getOracleResults } from "./clients/oracle";
 import { fetchLstSolValues } from "./clients/lst-rates";
 import { getWalletBalanceSmallest } from "./clients/helius-rpc";
+import { fetchEarnMarkets } from "./clients/jupiter-lend";
 import {
   fetchKaminoDepositCaps,
   fetchKaminoDepositTx,
@@ -46,6 +48,11 @@ jest.mock("./clients/lst-rates");
 jest.mock("./clients/helius-rpc");
 // Kamino route の builder (Kamino REST)
 jest.mock("./clients/kamino-tx");
+// 2026-10-13: funding deposit の cross-asset ガードが Jupiter Lend の convertToAssets を読む
+jest.mock("./clients/jupiter-lend", () => ({
+  ...jest.requireActual("./clients/jupiter-lend"),
+  fetchEarnMarkets: jest.fn(),
+}));
 
 const mockQuote = fetchSwapQuote as jest.MockedFunction<typeof fetchSwapQuote>;
 const mockSwapTx = fetchSwapTransaction as jest.MockedFunction<
@@ -1016,6 +1023,155 @@ describe("persistence (.data/agent-plans.json)", () => {
     });
     expect(res.statusCode).toBe(200);
     expect(res.json().status).toBe("broadcasted");
+  });
+});
+
+describe("2026-10-13: funding deposit (USDC で jlJupUSD を買う) の simulate → execute", () => {
+  const JUPUSD_MINT = "JuprjznTrTSp2UFa3ZBUFgwdAmtZCq4MQCwysN55USD";
+  const JLJUPUSD_MINT = "7GxATsNMnaC88vdwd2t3mwrFuQwwGvmYPrUQ4D6FotXk";
+  const FUNDED: ActionSpec = {
+    wallet_id: WALLET,
+    ...fundedDepositAction("jupiter", "USDC", JLJUPUSD_MINT, "jupiter_jupusd", "1000000"),
+  } as ActionSpec;
+
+  beforeEach(() => {
+    // 両 asset とも $1 (okOracle の $80 ではなく stable の価格)
+    mockOracle.mockImplementation(async (mint: string) => ({
+      ...okOracle(),
+      asset_symbol: mint === USDC_MINT ? "USDC" : "JupUSD",
+      price_usd: "1.00000000",
+    }));
+    (fetchEarnMarkets as jest.Mock).mockResolvedValue([
+      {
+        jlMint: JLJUPUSD_MINT,
+        jlSymbol: "jlJupUSD",
+        jlDecimals: 6,
+        underlyingMint: JUPUSD_MINT,
+        underlyingSymbol: "jupUSD",
+        underlyingDecimals: 6,
+        underlyingPriceUsd: 1,
+        convertToAssets: "1041200",
+        supplyRateBps: 430,
+        rewardsRateBps: 0,
+        totalRateBps: 430,
+        tvlUnderlying: "0",
+      },
+    ]);
+    mockQuote.mockResolvedValue({
+      inputMint: USDC_MINT,
+      outputMint: JLJUPUSD_MINT,
+      inAmount: "1000000",
+      outAmount: "960781",
+      otherAmountThreshold: "955977",
+      swapMode: "ExactIn",
+      slippageBps: 50,
+      priceImpactPct: "0",
+      routePlan: [],
+    });
+  });
+
+  it("simulate: asset (USDC) は route の入力と一致 (asset_mismatch にならない)、見積りは USDC → jlJupUSD", async () => {
+    const created = await post("/agent-plans", { objective: "max_yield", mcp_client_id: "mcp_test" });
+    const planId = created.json().plan_id as string;
+    const res = await post(`/agent-plans/${planId}/simulate`, { action_spec: FUNDED });
+    expect(res.statusCode).toBe(200);
+    const sim = res.json().simulation;
+    expect(sim.failure_reason).toBeUndefined();
+    expect(sim).toMatchObject({
+      estimate_kind: "quote",
+      estimated_out: "960781",
+      estimated_out_mint: JLJUPUSD_MINT,
+      estimated_out_symbol: "jlJupUSD",
+      metadata: { input_mint: USDC_MINT, fair_value: { status: "ok", deviation_bps: -3 } },
+    });
+    expect(sim.warnings).toBeUndefined();
+    expect(mockQuote).toHaveBeenCalledWith(
+      expect.objectContaining({ inputMint: USDC_MINT, outputMint: JLJUPUSD_MINT, amount: "1000000" })
+    );
+    // oracle は underlying + funding の 2 本 (1 回の batch。見積りは同じ結果を使う)
+    expect(getOracleResults).toHaveBeenCalledTimes(1);
+    expect(getOracleResults).toHaveBeenCalledWith([JUPUSD_MINT, USDC_MINT]);
+    expect(sim.oracle).toMatchObject({ primary: "pyth" });
+  });
+
+  it("simulate: USDC の oracle が両 stale なら 409 (JupUSD が ok でも)", async () => {
+    mockOracle.mockImplementation(async (mint: string) =>
+      mint === USDC_MINT
+        ? { ...blockedOracle("oracle_both_stale"), asset_symbol: "USDC" }
+        : { ...okOracle(), asset_symbol: "JupUSD", price_usd: "1.00000000" }
+    );
+    const created = await post("/agent-plans", { objective: "max_yield", mcp_client_id: "mcp_test" });
+    const res = await post(`/agent-plans/${created.json().plan_id}/simulate`, { action_spec: FUNDED });
+    expect(res.statusCode).toBe(409);
+    expect(res.json()).toMatchObject({ error: "oracle_blocked", block_reason: "oracle_both_stale" });
+  });
+
+  it("simulate: JupUSD の >5% 乖離 block が USDC の両 stale を覆い隠さない (merge 結果の block_reason で 409)", async () => {
+    // #49 review: route は oracle_divergence_too_large だけを「通す + 強警告」にする。
+    // merge が先頭の block_reason を拾うと、USDC が両 stale でも simulate が 200 で通っていた
+    mockOracle.mockImplementation(async (mint: string) =>
+      mint === USDC_MINT
+        ? { ...blockedOracle("oracle_both_stale"), asset_symbol: "USDC" }
+        : { ...blockedOracle("oracle_divergence_too_large"), asset_symbol: "JupUSD" }
+    );
+    const created = await post("/agent-plans", { objective: "max_yield", mcp_client_id: "mcp_test" });
+    const res = await post(`/agent-plans/${created.json().plan_id}/simulate`, { action_spec: FUNDED });
+    // 前提: JupUSD (underlying) が先 — 乖離 block が配列の先頭にある
+    expect(getOracleResults).toHaveBeenCalledWith([JUPUSD_MINT, USDC_MINT]);
+    expect(res.statusCode).toBe(409);
+    expect(res.json()).toMatchObject({
+      error: "oracle_blocked",
+      block_reason: "oracle_both_stale",
+      oracle: { status: "blocked", block_reason: "oracle_both_stale" },
+    });
+  });
+
+  it("execute: 人と同じ swap-earn builder に inputMint (USDC) を渡し、USDC → jlJupUSD の tx を組む", async () => {
+    const { exec } = await executingPlan(FUNDED);
+    expect(exec.unsigned_transactions).toEqual([
+      // funded deposit も Jupiter swap builder なので last_valid_block_height を透過する (#48 review 対応)
+      { index: 0, label: "deposit USDC on jupiter", tx_base64: "UNSIGNED_TX_B64", last_valid_block_height: 300_000_456 },
+    ]);
+    // builder の残高 gate は支払う USDC を見る
+    expect(mockBalance).toHaveBeenCalledWith(WALLET, USDC_MINT);
+    expect(mockQuote).toHaveBeenLastCalledWith(
+      expect.objectContaining({ inputMint: USDC_MINT, outputMint: JLJUPUSD_MINT, slippageBps: 50 })
+    );
+    expect(mockSwapTx).toHaveBeenCalledWith(expect.objectContaining({ userPublicKey: WALLET }));
+  });
+
+  it("execute: quote が fair から外れていれば builder の 409 fair_value_blocked で止まり token は残る", async () => {
+    const { planId, tokenId } = await approvedPlan(FUNDED);
+    mockQuote.mockResolvedValue({
+      inputMint: USDC_MINT,
+      outputMint: JLJUPUSD_MINT,
+      inAmount: "1000000",
+      outAmount: "930000",
+      otherAmountThreshold: "925350",
+      swapMode: "ExactIn",
+      slippageBps: 50,
+      priceImpactPct: "0",
+      routePlan: [],
+    });
+    const exec = await post(`/agent-plans/${planId}/execute`, { approval_token: tokenId, via: "web" });
+    expect(exec.statusCode).toBe(409);
+    expect(exec.json()).toMatchObject({ error: "fair_value_blocked", reason: "fair_value_deviation" });
+    expect(mockSwapTx).not.toHaveBeenCalled();
+    // builder は token 消費前に呼ばれる (8.37 B1 / 8.75 の順序)
+    expect((await get(`/approval-tokens/${tokenId}`)).json().consumed_at).toBeNull();
+  });
+
+  it("txBuildRequestFor: funding route は payload に inputMint を載せる", () => {
+    const req = txBuildRequestFor(
+      { kind: "swap_earn_deposit", shareMint: JLJUPUSD_MINT, inputMint: USDC_MINT },
+      WALLET,
+      "1000000"
+    );
+    expect(req).toEqual({
+      url: "/protocols/swap-earn/deposit-tx",
+      payload: { user: WALLET, shareMint: JLJUPUSD_MINT, amount: "1000000", slippageBps: 50, inputMint: USDC_MINT },
+      responseKey: "swapTransaction",
+    });
   });
 });
 

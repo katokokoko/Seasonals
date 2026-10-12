@@ -59,7 +59,7 @@ test("names keep the token prefix on one line", () => {
 });
 
 // ── Solana カード: Seeker MenuDrawer と同じ gate で Deposit / Withdraw ──
-import { cleanup, fireEvent, within } from "@testing-library/react";
+import { cleanup, fireEvent, waitFor, within } from "@testing-library/react";
 import type { EarnPosition, ProtocolMenuEntry, ProtocolPool } from "@workspace/lib/types";
 import { SWAP_EARN_MARKETS } from "@workspace/lib/config/swap-earn-markets";
 import ExploreMenu, { MenuCard } from "./ExploreMenu";
@@ -166,6 +166,54 @@ describe("Solana menu card", () => {
   test("Learn link points at /learn#<protocol_id> when a guide exists", () => {
     renderSol(pool(), SOL);
     expect(screen.getByRole("link", { name: "Learn" }).getAttribute("href")).toBe("/learn#jupiter");
+  });
+
+  // 2026-10-13: Jupiter Lend JupUSD は USDC でも払える (registry の funding allowlist)
+  describe("funding token (JupUSD pool を USDC で)", () => {
+    const jupUsd = SWAP_EARN_MARKETS.find((m) => m.share_symbol === "jlJupUSD")!;
+    const usdcMint = jupUsd.funding![0]!.mint;
+    const jupUsdPool = () => pool({ pool_id: "jupiter_jupusd", name: "JupUSD", asset: "JupUSD" });
+    const holdingBff = (rows: unknown[]) => (path: string) =>
+      path.startsWith("/positions?")
+        ? { json: rows }
+        : path.startsWith("/oracle/status")
+          ? { json: { asset_symbol: "X", status: "ok", tier: "A", warnings: [], block_reason: null } }
+          : undefined;
+    beforeEach(() => useSession.setState({ connected: { solana: { address: SOL, wallet: { name: "Phantom", icon: "", rdns: "Phantom" } } } }));
+
+    test("カードは支払える token を出し、Deposit は routable", () => {
+      renderSol(jupUsdPool(), SOL);
+      expect(btn("Deposit").disabled).toBe(false);
+      expect(screen.getByText("Pay with").nextElementSibling?.textContent).toBe("JupUSD or USDC");
+      fireEvent.click(screen.getByRole("button", { name: "View details" }));
+      expect(screen.getByText(/accepts JupUSD or USDC/)).toBeTruthy();
+    });
+
+    test("USDC だけ持つ wallet は USDC 払いの funding deposit を開く", async () => {
+      const calls = installFakeBff(
+        holdingBff([{ protocol_id: "wallet_stable", asset_symbol: "USDC", current_amount: "3000000", raw_state: { mint: usdcMint } }])
+      );
+      renderSol(jupUsdPool(), SOL);
+      fireEvent.click(btn("Deposit"));
+      expect(await screen.findByText(/Pay with USDC: you hold no JupUSD/)).toBeTruthy();
+      expect(screen.getByText(/Wallet balance: 3 USDC/)).toBeTruthy();
+      expect(screen.getByText("Paying with USDC, swapped to jlJupUSD by Jupiter")).toBeTruthy();
+      await waitFor(() => expect(calls.filter((c) => c.path.startsWith("/oracle/status"))).toHaveLength(2));
+    });
+
+    test("JupUSD を持つ wallet は従来通り JupUSD 払い", async () => {
+      installFakeBff(
+        holdingBff([
+          { protocol_id: "wallet_stable", asset_symbol: "JupUSD", current_amount: "2000000", raw_state: { mint: jupUsd.underlying_mint } },
+          { protocol_id: "wallet_stable", asset_symbol: "USDC", current_amount: "3000000", raw_state: { mint: usdcMint } },
+        ])
+      );
+      renderSol(jupUsdPool(), SOL);
+      fireEvent.click(btn("Deposit"));
+      expect(await screen.findByText(/Wallet balance: 2 JupUSD/)).toBeTruthy();
+      expect(screen.queryByText(/Pay with USDC/)).toBeNull();
+      expect(screen.queryByText(/Paying with/)).toBeNull();
+    });
   });
 
   test("未接続で Deposit を開くと接続を案内し、署名ボタンは出さない", () => {

@@ -5,9 +5,14 @@ import type { AgentPlan } from "../types";
 import { findKaminoMarketByAsset } from "../config/kamino-markets";
 import { findSaveMarketByAsset } from "../config/save-markets";
 import { EXPONENT_MARKETS } from "../config/exponent-markets";
+import type { OracleResult } from "../types";
+import { SWAP_EARN_MARKETS } from "../config/swap-earn-markets";
+import { fundedDepositAction } from "./solana-action";
 import {
   JUPITER_UNDERLYING_MINTS,
+  mergeOracleResults,
   oracleBlockLabel,
+  resolveOracleMints,
   ORACLE_WARNING_HEADLINE,
   oracleWarningBody,
   oracleRefetchInterval,
@@ -287,5 +292,88 @@ describe("oracle warning copy (Seeker / Web 共有)", () => {
     expect(oracleWarningBody({ kind: "oracle_pyth_stale", pythAgeSeconds: 92.7 })).toBe("Pyth last updated 92s ago · using the secondary source");
     expect(oracleWarningBody({ kind: "oracle_secondary_stale", secondaryAgeSeconds: 121 })).toMatch(/121s ago · using Pyth/);
     expect(oracleWarningBody({ kind: "oracle_secondary_stale" })).toMatch(/not cross-checked/);
+  });
+});
+
+describe("2026-10-13: funding deposit は 2 mint を gate する", () => {
+  const jlJupUsd = SWAP_EARN_MARKETS.find((m) => m.share_symbol === "jlJupUSD")!;
+  const jlUsdc = SWAP_EARN_MARKETS.find((m) => m.share_symbol === "jlUSDC")!;
+  const USDC = jlUsdc.underlying_mint;
+  const JUPUSD = jlJupUsd.underlying_mint;
+
+  it("USDC で jlJupUSD: resolveOracleMint は underlying (JupUSD)、resolveOracleMints は [JupUSD, USDC]", () => {
+    const a = fundedDepositAction("jupiter", "USDC", jlJupUsd.share_mint);
+    expect(resolveOracleMint(a)).toBe(JUPUSD);
+    expect(resolveOracleMints(a)).toEqual([JUPUSD, USDC]);
+  });
+  it("underlying で支払う (share_mint 固定) は 1 mint", () => {
+    expect(resolveOracleMints(fundedDepositAction("jupiter_lend", "JupUSD", jlJupUsd.share_mint))).toEqual([JUPUSD]);
+  });
+  it("share_mint 無しの従来 deposit / withdraw は resolveOracleMint 1 本と一致", () => {
+    const dep = { action_type: "deposit", protocol: "jupiter", asset: "USDC", amount: "1", metadata: { pool_id: "jupiter_usdc_main" } };
+    expect(resolveOracleMints(dep)).toEqual([USDC]);
+    const wd = { action_type: "withdraw", protocol: "jupiter_lend", asset: "jlUSDC", amount: "1", metadata: { share_mint: jlUsdc.share_mint } };
+    expect(resolveOracleMints(wd)).toEqual([USDC]);
+    expect(resolveOracleMints(undefined)).toEqual([]);
+  });
+
+  const base = (asset_symbol: string, status: OracleResult["status"], extra: Partial<OracleResult> = {}): OracleResult => ({
+    asset_symbol,
+    status,
+    primary: "pyth",
+    price_usd: "1.00000000",
+    pyth: { available: true, price_usd: "1.00000000", age_seconds: 5 },
+    secondary: { source: "redstone", available: true, price_usd: "1.00000000", age_seconds: 5 },
+    tier: "A",
+    divergence_pct: 0.01,
+    warnings: [],
+    block_reason: null,
+    ...extra,
+  });
+
+  it("mergeOracleResults: どちらか blocked なら blocked (block_reason を引き継ぎ、price は null)", () => {
+    const merged = mergeOracleResults([
+      base("JupUSD", "ok"),
+      base("USDC", "blocked", { price_usd: null, block_reason: "oracle_both_stale" }),
+    ])!;
+    expect(merged.status).toBe("blocked");
+    expect(merged.block_reason).toBe("oracle_both_stale");
+    expect(merged.price_usd).toBeNull();
+    expect(merged.asset_symbol).toBe("JupUSD / USDC");
+  });
+  it("mergeOracleResults: warning は連結、ok 同士は ok、tier は弱い方", () => {
+    const w = base("USDC", "warning", { tier: "C", warnings: [{ kind: "oracle_secondary_stale", secondaryAgeSeconds: 120 }] });
+    const merged = mergeOracleResults([base("JupUSD", "ok"), w])!;
+    expect(merged.status).toBe("warning");
+    expect(merged.warnings).toHaveLength(1);
+    expect(merged.tier).toBe("C");
+    expect(merged.price_usd).toBe("1.00000000");
+    expect(mergeOracleResults([base("JupUSD", "ok"), base("USDC", "ok")])!.status).toBe("ok");
+  });
+  it("mergeOracleResults: 1 件はそのまま、0 件は null、not_configured はどれかが対象外なら true", () => {
+    const one = base("USDC", "ok");
+    expect(mergeOracleResults([one])).toBe(one);
+    expect(mergeOracleResults([])).toBeNull();
+    expect(mergeOracleResults([base("A", "ok"), base("B", "ok", { tier: "D", not_configured: true, reason: "no feed" })])!.not_configured).toBe(true);
+  });
+});
+
+describe("#49 review: mergeOracleResults は最も重い block_reason を採る", () => {
+  const r = (asset_symbol: string, block_reason: OracleResult["block_reason"]): OracleResult => ({
+    asset_symbol,
+    status: "blocked",
+    primary: null,
+    price_usd: null,
+    pyth: { available: false, price_usd: null, age_seconds: null },
+    secondary: { source: "redstone", available: false, price_usd: null, age_seconds: null },
+    tier: "A",
+    divergence_pct: null,
+    warnings: [],
+    block_reason,
+  });
+  it("divergence (simulate は warning で通す) が both_stale / unavailable を隠さない", () => {
+    expect(mergeOracleResults([r("JupUSD", "oracle_divergence_too_large"), r("USDC", "oracle_both_stale")])!.block_reason).toBe("oracle_both_stale");
+    expect(mergeOracleResults([r("JupUSD", "oracle_both_stale"), r("USDC", "oracle_unavailable")])!.block_reason).toBe("oracle_unavailable");
+    expect(mergeOracleResults([r("JupUSD", "oracle_divergence_too_large"), r("USDC", "oracle_divergence_too_large")])!.block_reason).toBe("oracle_divergence_too_large");
   });
 });
