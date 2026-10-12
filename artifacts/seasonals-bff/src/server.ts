@@ -101,6 +101,7 @@ import {
   getTokenSupplyUi,
   getWalletBalanceSmallest,
   sendTransactionViaHelius,
+  BlockhashExpiredError,
   getSignatureStatus,
   type StakeAccountInfo,
 } from "./clients/helius-rpc";
@@ -5019,6 +5020,11 @@ export async function buildServer(
           { err: (err as Error).message },
           "tx submit failed"
         );
+        // 2026-10-13: blockhash 失効は「何も動いていない、組み直す」が正しい (client は expired と同じ扱い)
+        if (err instanceof BlockhashExpiredError) {
+          reply.code(409);
+          return { error: err.code, message: err.message };
+        }
         reply.code(502);
         return {
           error: "submit_failed",

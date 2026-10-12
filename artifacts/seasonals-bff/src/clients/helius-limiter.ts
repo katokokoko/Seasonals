@@ -185,6 +185,11 @@ type SleepFn = (ms: number) => Promise<void>;
 const defaultSleep: SleepFn = (ms) => new Promise((r) => setTimeout(r, ms));
 let sleep: SleepFn = defaultSleep;
 
+/** 差し替え可能な待ち (helius-rpc の submit 再送も同じ hook を使い、test は _setSleepForTest で即時化) */
+export function limiterSleep(ms: number): Promise<void> {
+  return sleep(ms);
+}
+
 /** test 専用: backoff の待ちを差し替える (null で既定に戻す) */
 export function _setSleepForTest(fn: SleepFn | null): void {
   sleep = fn ?? defaultSleep;

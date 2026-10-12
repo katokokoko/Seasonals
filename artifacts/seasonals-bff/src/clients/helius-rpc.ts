@@ -12,7 +12,8 @@
 
 import type { TxStatusResponse } from "@workspace/lib/types";
 import { fetchWithTimeout } from "./http"; // Phase 8.38 (B9): 共通 timeout
-import { fetchJsonWithRetry, HeliusRpcError, heliusRpcFetch, redactKey } from "./helius-limiter";
+import { VersionedTransaction } from "@solana/web3.js";
+import { fetchJsonWithRetry, HeliusRpcError, heliusRpcFetch, limiterSleep, redactKey } from "./helius-limiter";
 import { recordUpstreamCall } from "../usage";
 const HELIUS_MAINNET_URL = "https://mainnet.helius-rpc.com";
 
@@ -83,12 +84,81 @@ async function rpcReadWithRetry<T>(
  * (Seeker の USDC → jlUSDC deposit、2026-10-13) の余地を広げていた。
  * 着地の判定は呼び手が /tx/status の blockHeight と lastValidBlockHeight を比べて行う。
  */
+/**
+ * 2026-10-13: Seeker の Seed Vault で Jupiter USDC deposit を送ると preflight が
+ * `-32002 Transaction simulation failed: Blockhash not found` で落ちた (build から送信まで 32 秒、
+ * blockhash の失効 ~60-90 秒より前)。wallet が署名時に blockhash を新しいもの (processed) に
+ * 差し替えると、`preflightCommitment: "confirmed"` の Helius node からはまだ見えないことがある。
+ *
+ * preflight で落ちた tx は broadcast されていない。同じ署名済 tx を再送しても signature は同一なので
+ * 二重実行にはならない。そこで:
+ *   1. tx の recentBlockhash を `isBlockhashValid` (processed) で確かめる
+ *   2. 有効 = RPC がまだ追いついていないだけ → 待って再送 (最大 SUBMIT_BLOCKHASH_RETRIES 回)
+ *   3. 無効 = 本当に失効 → BlockhashExpiredError (何も動いていない、組み直して署名し直す)
+ */
+export const SUBMIT_BLOCKHASH_RETRIES = 3;
+const SUBMIT_BLOCKHASH_WAIT_MS = 1_500;
+
+export class BlockhashExpiredError extends Error {
+  readonly code = "blockhash_expired";
+  constructor() {
+    super("The transaction expired before it reached the network. Nothing moved — build and sign it again.");
+    this.name = "BlockhashExpiredError";
+  }
+}
+
+const BLOCKHASH_NOT_FOUND_RE = /blockhash not found/i;
+
+function recentBlockhashOf(signedTxBase64: string): string | null {
+  try {
+    return VersionedTransaction.deserialize(Buffer.from(signedTxBase64, "base64")).message.recentBlockhash;
+  } catch {
+    return null;
+  }
+}
+
+/** blockhash が processed の bank でまだ有効か。読めなければ null (判断材料にしない) */
+async function isBlockhashValid(blockhash: string): Promise<boolean | null> {
+  try {
+    const r = await rpcReadWithRetry<{ value?: boolean }>(
+      "isBlockhashValid",
+      [blockhash, { commitment: "processed" }],
+      { id: "seasonals-submit-blockhash" }
+    );
+    return typeof r?.value === "boolean" ? r.value : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function sendTransactionViaHelius(
   signedTxBase64: string,
   opts: {
     skipPreflight?: boolean;
     maxRetries?: number;
   } = {}
+): Promise<string> {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await sendTransactionOnce(signedTxBase64, opts);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      if (opts.skipPreflight || !BLOCKHASH_NOT_FOUND_RE.test(msg)) throw e;
+      const blockhash = recentBlockhashOf(signedTxBase64);
+      const valid = blockhash ? await isBlockhashValid(blockhash) : null;
+      if (valid === false) throw new BlockhashExpiredError();
+      if (attempt >= SUBMIT_BLOCKHASH_RETRIES) throw e;
+      await limiterSleep(SUBMIT_BLOCKHASH_WAIT_MS);
+    }
+  }
+}
+
+async function sendTransactionOnce(
+  signedTxBase64: string,
+  opts: {
+    skipPreflight?: boolean;
+    maxRetries?: number;
+  }
 ): Promise<string> {
   const url = buildUrl();
   // 列に並べず retry もしない (broadcast は即時・1 回)。usage には数える
