@@ -8,11 +8,15 @@ import type { Position } from "../types/position";
 import { PositionCategory } from "../types/enums";
 import {
   SWAP_EARN_MARKETS,
+  findFundingToken,
   findMarketByShareMint,
   findMarketByProtocolAsset,
   jupiterLendUnderlyingToShare,
   heldSwapEarnPositions,
+  swapEarnDepositInput,
+  swapEarnDepositInputBySymbol,
 } from "./swap-earn-markets";
+import { oracleFeedForMint } from "./oracle-feeds";
 
 const JITOSOL = "J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn";
 const MSOL = "mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So";
@@ -157,5 +161,48 @@ describe("heldSwapEarnPositions", () => {
     expect(out).toHaveLength(1);
     expect(out[0]!.share_mint).toBe(MSOL);
     expect(out[0]!.shares).toBe("777");
+  });
+});
+
+describe("2026-10-13: funding token (USDC で jlJupUSD を買う)", () => {
+  const jlJupUsd = SWAP_EARN_MARKETS.find((m) => m.share_symbol === "jlJupUSD")!;
+  const jlUsdc = findMarketByShareMint(JL_USDC)!;
+
+  it("funding は underlying / share と重複せず、oracle tier (A〜C) を持つ (fail-closed の前提)", () => {
+    for (const m of SWAP_EARN_MARKETS) {
+      for (const f of m.funding ?? []) {
+        expect(f.mint).not.toBe(m.underlying_mint);
+        expect(f.mint).not.toBe(m.share_mint);
+        expect(f.decimals).toBeGreaterThan(0);
+        const tier = oracleFeedForMint(f.mint)?.tier;
+        expect(["A", "B", "C"]).toContain(tier);
+      }
+    }
+  });
+  it("jlJupUSD は USDC を funding に持つ。jlUSDC は持たない", () => {
+    expect(jlJupUsd.funding?.map((f) => f.symbol)).toEqual(["USDC"]);
+    expect(jlUsdc.funding).toBeUndefined();
+  });
+  it("funding は underlying ではない: findMarketByProtocolAsset(jupiter_lend, USDC) は従来どおり jlUSDC", () => {
+    expect(findMarketByProtocolAsset("jupiter_lend", "USDC")?.share_mint).toBe(JL_USDC);
+  });
+  it("findFundingToken は symbol (大文字小文字無視) と mint で引ける", () => {
+    expect(findFundingToken(jlJupUsd, "usdc")?.mint).toBe(USDC);
+    expect(findFundingToken(jlJupUsd, USDC)?.symbol).toBe("USDC");
+    expect(findFundingToken(jlJupUsd, "USDT")).toBeUndefined();
+    expect(findFundingToken(jlUsdc, "USDC")).toBeUndefined();
+  });
+  it("swapEarnDepositInput: 省略 / underlying mint → underlying、funding mint → isFunding、他は undefined", () => {
+    expect(swapEarnDepositInput(jlJupUsd)).toEqual({ mint: jlJupUsd.underlying_mint, symbol: "JupUSD", decimals: 6, isFunding: false });
+    expect(swapEarnDepositInput(jlJupUsd, jlJupUsd.underlying_mint)?.isFunding).toBe(false);
+    expect(swapEarnDepositInput(jlJupUsd, USDC)).toEqual({ mint: USDC, symbol: "USDC", decimals: 6, isFunding: true });
+    expect(swapEarnDepositInput(jlJupUsd, "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB")).toBeUndefined();
+    expect(swapEarnDepositInput(jlUsdc, jlJupUsd.underlying_mint)).toBeUndefined();
+  });
+  it("swapEarnDepositInputBySymbol: underlying 優先、funding は表記揺れ吸収、不一致は undefined", () => {
+    expect(swapEarnDepositInputBySymbol(jlJupUsd, "jupUSD")?.isFunding).toBe(false);
+    expect(swapEarnDepositInputBySymbol(jlJupUsd, "USDC")?.isFunding).toBe(true);
+    expect(swapEarnDepositInputBySymbol(jlJupUsd, "SOL")).toBeUndefined();
+    expect(swapEarnDepositInputBySymbol(jlJupUsd, undefined)).toBeUndefined();
   });
 });

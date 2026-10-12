@@ -17,6 +17,7 @@ import {
   assetMatchesRouteInput,
   canWithdrawEarnPosition,
   depositAction,
+  fundedDepositAction,
   resolveSolanaRoute,
   routeInputSymbol,
   validateActionMetadata,
@@ -259,5 +260,49 @@ describe("MCP compare の deposit 雛形 (depositAction + resolveAmountUnit)", (
       }
     }
     expect(checked).toBeGreaterThan(10);
+  });
+});
+
+describe("2026-10-13: funding deposit (USDC で jlJupUSD)", () => {
+  const jlJupUsd = SWAP_EARN_MARKETS.find((m) => m.share_symbol === "jlJupUSD")!;
+  const USDC = jlUsdc.underlying_mint;
+
+  it("share_mint で固定 + asset USDC → jlJupUSD に inputMint 付きで解決 (jlUSDC に流れない)", () => {
+    const a = fundedDepositAction("jupiter", "USDC", jlJupUsd.share_mint, "jupiter_jupusd");
+    expect(resolveSolanaRoute(a)).toEqual({ kind: "swap_earn_deposit", shareMint: jlJupUsd.share_mint, inputMint: USDC });
+    expect(validateActionMetadata(a.metadata)).toEqual({ ok: true });
+    // pool_id は POOL_ID_RE (英小文字・数字・_) — mobile の合成 id "jl_JupUSD" は載せない (省略するか fixture id を使う)
+    expect(validateActionMetadata(fundedDepositAction("jupiter", "USDC", jlJupUsd.share_mint, "jl_JupUSD").metadata)).toEqual({ ok: false, field: "pool_id" });
+    expect(validateActionMetadata(fundedDepositAction("jupiter", "USDC", jlJupUsd.share_mint).metadata)).toEqual({ ok: true });
+  });
+  it("share_mint で固定 + asset が underlying (JupUSD / jupUSD) → inputMint 無し", () => {
+    expect(resolveSolanaRoute(fundedDepositAction("jupiter_lend", "JupUSD", jlJupUsd.share_mint))).toEqual({ kind: "swap_earn_deposit", shareMint: jlJupUsd.share_mint });
+    expect(resolveSolanaRoute(fundedDepositAction("jupiter_lend", "jupUSD", jlJupUsd.share_mint))).toEqual({ kind: "swap_earn_deposit", shareMint: jlJupUsd.share_mint });
+  });
+  it("share_mint の market が受け付けない asset (USDT / SOL) は null = fail-closed", () => {
+    expect(resolveSolanaRoute(fundedDepositAction("jupiter_lend", "USDT", jlJupUsd.share_mint))).toBeNull();
+    expect(resolveSolanaRoute(fundedDepositAction("jupiter_lend", "SOL", jlJupUsd.share_mint))).toBeNull();
+  });
+  it("funding allowlist の無い market (jlUSDC) に USDT を share_mint 固定で渡しても null", () => {
+    expect(resolveSolanaRoute(fundedDepositAction("jupiter_lend", "USDT", jlUsdc.share_mint))).toBeNull();
+  });
+  it("protocol が market と違う share_mint は無視して従来の asset 解決に落ちる", () => {
+    expect(resolveSolanaRoute(fundedDepositAction("kamino", "USDC", jlJupUsd.share_mint))?.kind).toBe("kamino_deposit");
+  });
+  it("share_mint 無しの deposit は従来どおり (USDC → jlUSDC)", () => {
+    expect(resolveSolanaRoute(depositAction("jupiter", "USDC", "jupiter_usdc_main"))).toEqual({ kind: "swap_earn_deposit", shareMint: jlUsdc.share_mint });
+  });
+  it("routeInputSymbol は funding token を返し、asset_mismatch 判定が通る", () => {
+    const route = resolveSolanaRoute(fundedDepositAction("jupiter", "USDC", jlJupUsd.share_mint))!;
+    const input = routeInputSymbol(route)!;
+    expect(input).toEqual({ mint: USDC, symbol: "USDC", decimals: 6 });
+    expect(assetMatchesRouteInput("USDC", input)).toBe(true);
+    expect(assetMatchesRouteInput("JupUSD", input)).toBe(false);
+    // allowlist 外の inputMint を無理に積んだ route は null (builder も 400)
+    expect(routeInputSymbol({ kind: "swap_earn_deposit", shareMint: jlJupUsd.share_mint, inputMint: "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB" })).toBeNull();
+  });
+  it("resolveAmountUnit は支払う token (USDC / 6) になる", () => {
+    expect(resolveAmountUnit(fundedDepositAction("jupiter", "USDC", jlJupUsd.share_mint))).toEqual({ decimals: 6, unitSymbol: "USDC" });
+    expect(resolveAmountUnit(fundedDepositAction("jupiter", "JupUSD", jlJupUsd.share_mint))).toEqual({ decimals: 6, unitSymbol: "JupUSD" });
   });
 });

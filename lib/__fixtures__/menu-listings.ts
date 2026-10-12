@@ -32,7 +32,7 @@ export const fixtureMenuListings: ProtocolMenuEntry[] = [
     protocol_id: "jupiter",
     display_name: "Jupiter",
     primary_category: PositionCategory.Lending,
-    supported_assets: ["USDC", "SOL"],
+    supported_assets: ["USDC", "SOL", "JupUSD"],
     icon_id: "jupiter",
     icon_bg: ICON_BG_DARK,
     // 8.27: 旧 "jupiter_jlp_lending" は Jupiter に実体が無く削除 —
@@ -56,6 +56,16 @@ export const fixtureMenuListings: ProtocolMenuEntry[] = [
         asset: "SOL",
         apy: 0.072,
         tvl_usd: 80_000_000,
+      },
+      // 2026-10-13: Jupiter Lend JupUSD market (jlJupUSD)。web / MCP が指せるように fixture にも載せる。
+      // deposit は JupUSD のほか、registry の funding token (USDC) でも支払える (swap-earn-markets.ts)
+      {
+        pool_id: "jupiter_jupusd",
+        name: "JupUSD Main",
+        category: PositionCategory.Lending,
+        asset: "JupUSD",
+        apy: 0.043,
+        tvl_usd: 49_500_000,
       },
     ],
   },

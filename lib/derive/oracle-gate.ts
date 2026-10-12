@@ -2,11 +2,18 @@
  * oracle-gate — Phase 8.14 §4.6 の純粋ヘルパー (ActionModal から分離、test 容易化)。
  * RN/React に依存しないので jest で軽量に検証できる。
  */
-import type { OracleBlockReason, OracleWarning, OracleWarningKind, SolanaActionShape } from "../types";
+import type {
+  OracleBlockReason,
+  OracleResult,
+  OracleWarning,
+  OracleWarningKind,
+  SolanaActionShape,
+} from "../types";
 import {
   SWAP_EARN_MARKETS,
   findMarketByProtocolAsset,
   findMarketByShareMint,
+  swapEarnDepositInputBySymbol,
 } from "../config/swap-earn-markets";
 import {
   findKaminoMarketByAsset,
@@ -52,6 +59,15 @@ export function resolveOracleMint(
   // Menu catalog の "jupiter" は registry の "jupiter_lend" に正規化。
   const protocolId =
     action.protocol === "jupiter" ? "jupiter_lend" : action.protocol;
+  // 2026-10-13: share_mint で固定された swap-earn deposit (funding deposit を含む) は
+  // asset で引かず、その market の underlying を gate する (asset で引くと別 market に流れる)。
+  // funding mint は resolveOracleMints が 2 本目として返す
+  if (action.action_type === "deposit") {
+    const shareMint = action.metadata?.share_mint;
+    const pinned =
+      typeof shareMint === "string" ? findMarketByShareMint(shareMint) : undefined;
+    if (pinned && pinned.protocol_id === protocolId) return pinned.underlying_mint;
+  }
   if (action.action_type === "withdraw") {
     const shareMint = action.metadata?.share_mint;
     if (typeof shareMint === "string") {
@@ -120,6 +136,63 @@ export function resolveOracleMint(
     );
   }
   return null;
+}
+
+/**
+ * 2026-10-13: gate を引く mint をすべて返す。funding deposit (USDC で jlJupUSD を買う) は
+ * [underlying, funding] の 2 本 — どちらかが blocked なら execute を止める (§4.6 fail-closed)。
+ * それ以外は resolveOracleMint 1 本 (無ければ [])。先頭 = resolveOracleMint と同じ値 (back-compat)
+ */
+export function resolveOracleMints(
+  action: SolanaActionShape | null | undefined
+): string[] {
+  const primary = resolveOracleMint(action);
+  if (!primary) return [];
+  if (action?.action_type === "deposit") {
+    const shareMint = action.metadata?.share_mint;
+    const protocolId =
+      action.protocol === "jupiter" ? "jupiter_lend" : action.protocol;
+    const pinned =
+      typeof shareMint === "string" ? findMarketByShareMint(shareMint) : undefined;
+    if (pinned && pinned.protocol_id === protocolId) {
+      const input = swapEarnDepositInputBySymbol(pinned, action.asset);
+      if (input?.isFunding && input.mint !== primary) return [primary, input.mint];
+    }
+  }
+  return [primary];
+}
+
+/**
+ * 複数 asset の oracle 判定を 1 つにまとめる (funding deposit の WarningArea / CTA 用)。
+ * status は最悪値 (blocked > warning > ok)、block_reason は最初に blocked だった asset のもの、
+ * warnings は連結、price_usd / asset_symbol は先頭 (= underlying) のもの。空配列は null。
+ * tier は最も弱い構成 (D > C > B > A)、not_configured はどれかが gate 対象外なら true
+ */
+export function mergeOracleResults(results: OracleResult[]): OracleResult | null {
+  if (results.length === 0) return null;
+  if (results.length === 1) return results[0]!;
+  const rank = { ok: 0, warning: 1, blocked: 2 } as const;
+  const tierRank = { A: 0, B: 1, C: 2, D: 3 } as const;
+  const worst = results.reduce((acc, r) => (rank[r.status] > rank[acc.status] ? r : acc));
+  const blocked = results.find((r) => r.status === "blocked");
+  const first = results[0]!;
+  const weakestTier = results.reduce(
+    (acc, r) => (tierRank[r.tier] > tierRank[acc] ? r.tier : acc),
+    first.tier
+  );
+  const notConfigured = results.some((r) => r.not_configured);
+  return {
+    ...first,
+    asset_symbol: results.map((r) => r.asset_symbol).join(" / "),
+    status: worst.status,
+    price_usd: blocked ? null : first.price_usd,
+    tier: weakestTier,
+    divergence_pct: first.divergence_pct,
+    warnings: results.flatMap((r) => r.warnings),
+    block_reason: blocked?.block_reason ?? null,
+    ...(notConfigured ? { not_configured: true } : {}),
+    ...(blocked?.reason ?? first.reason ? { reason: blocked?.reason ?? first.reason } : {}),
+  };
 }
 
 /** block reason (§4.6) の表示ラベル */

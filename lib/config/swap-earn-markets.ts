@@ -18,6 +18,19 @@
 import type { EarnPosition } from "../types/earn-position";
 import type { Position } from "../types/position";
 
+/**
+ * 2026-10-13: market の underlying 以外で deposit を支払える token (funding token)。
+ * Jupiter が funding → share を 1 tx で route できると実地検証したペアだけを載せる。
+ * oracle gate は funding と underlying の両方を引き、BFF は cross-asset fair-value guard を掛ける
+ * (`fairOut = in × P_funding / P_underlying ÷ exchange_rate`)。funding は underlying ではないので
+ * `findMarketByProtocolAsset(protocol, funding.symbol)` には出てこない (別 market と曖昧化しない)。
+ */
+export interface SwapEarnFundingToken {
+  symbol: string;
+  mint: string;
+  decimals: number;
+}
+
 export interface SwapEarnMarket {
   /** Seasonals 内 protocol_id (menu entry / fixtureProtocols と一致させる) */
   protocol_id: string;
@@ -29,6 +42,17 @@ export interface SwapEarnMarket {
   share_symbol: string;
   share_mint: string;
   share_decimals: number;
+  /** underlying 以外の支払い token (allowlist)。無ければ underlying のみ */
+  funding?: SwapEarnFundingToken[];
+}
+
+/** deposit の入力 token (underlying か funding のどちらか) */
+export interface SwapEarnDepositInput {
+  mint: string;
+  symbol: string;
+  decimals: number;
+  /** true = funding token 経由 (BFF は両 mint の oracle + cross-asset fair value を掛ける) */
+  isFunding: boolean;
 }
 
 // ── 既知 mint (定数化して可読性を上げる) ───────────────────────────────────────
@@ -48,7 +72,11 @@ export const SWAP_EARN_MARKETS: SwapEarnMarket[] = [
   { protocol_id: "jupiter_lend", underlying_symbol: "EURC", underlying_mint: EURC, underlying_decimals: 6, share_symbol: "jlEURC", share_mint: "GcV9tEj62VncGithz4o4N9x6HWXARxuRgEAYk9zahNA8", share_decimals: 6 },
   { protocol_id: "jupiter_lend", underlying_symbol: "USDS", underlying_mint: USDS, underlying_decimals: 6, share_symbol: "jlUSDS", share_mint: "j14XLJZSVMcUYpAfajdZRpnfHUpJieZHS4aPektLWvh", share_decimals: 6 },
   { protocol_id: "jupiter_lend", underlying_symbol: "USDG", underlying_mint: USDG, underlying_decimals: 6, share_symbol: "jlUSDG", share_mint: "9fvHrYNw1A8Evpcj7X2yy4k4fT7nNHcA9L6UsamNHAif", share_decimals: 6 },
-  { protocol_id: "jupiter_lend", underlying_symbol: "JupUSD", underlying_mint: JUPUSD, underlying_decimals: 6, share_symbol: "jlJupUSD", share_mint: "7GxATsNMnaC88vdwd2t3mwrFuQwwGvmYPrUQ4D6FotXk", share_decimals: 6 },
+  // 2026-10-13: USDC を支払って jlJupUSD を受け取る funding deposit。Jupiter lite-api で
+  // USDC → jlJupUSD (1 USDC → 0.960781、SolFi V2 → … → Jupiter Lend Earn) と JupUSD → jlJupUSD
+  // (1 JupUSD → 0.960423) が同等レートで route できることを実測。USDC / JupUSD はともに oracle tier A
+  { protocol_id: "jupiter_lend", underlying_symbol: "JupUSD", underlying_mint: JUPUSD, underlying_decimals: 6, share_symbol: "jlJupUSD", share_mint: "7GxATsNMnaC88vdwd2t3mwrFuQwwGvmYPrUQ4D6FotXk", share_decimals: 6,
+    funding: [{ symbol: "USDC", mint: USDC, decimals: 6 }] },
 
   // ── Phase 8.15 Tier A: LST / appreciating SPL (Jupiter routable、実地検証済) ──
   // Jito: SOL → jitoSOL (stake-pool LST、price appreciates)
@@ -91,6 +119,58 @@ export function findMarketByProtocolAsset(
   return SWAP_EARN_MARKETS.find(
     (m) => m.protocol_id === protocolId && m.underlying_symbol === underlyingSymbol
   );
+}
+
+/** 表記揺れの吸収 (jupUSD / JupUSD、WSOL = SOL)。solana-action.ts の normalizeAssetSymbol と同じ規則 */
+function sameSymbol(a: string, b: string): boolean {
+  const n = (s: string) => {
+    const u = s.trim().toUpperCase();
+    return u === "WSOL" ? "SOL" : u;
+  };
+  return n(a) === n(b);
+}
+
+/** market の funding token を symbol (大文字小文字無視) か mint (厳密) で引く */
+export function findFundingToken(
+  market: SwapEarnMarket,
+  symbolOrMint: string
+): SwapEarnFundingToken | undefined {
+  return market.funding?.find(
+    (f) => f.mint === symbolOrMint || sameSymbol(f.symbol, symbolOrMint)
+  );
+}
+
+/**
+ * deposit の入力 token を解決する。`inputMint` 省略 = underlying。
+ * underlying でも allowlist の funding でもない mint は undefined (BFF は 400 unsupported_input_mint)。
+ */
+export function swapEarnDepositInput(
+  market: SwapEarnMarket,
+  inputMint?: string | null
+): SwapEarnDepositInput | undefined {
+  if (!inputMint || inputMint === market.underlying_mint) {
+    return {
+      mint: market.underlying_mint,
+      symbol: market.underlying_symbol,
+      decimals: market.underlying_decimals,
+      isFunding: false,
+    };
+  }
+  const f = market.funding?.find((x) => x.mint === inputMint);
+  return f ? { mint: f.mint, symbol: f.symbol, decimals: f.decimals, isFunding: true } : undefined;
+}
+
+/** asset symbol から deposit の入力 token を解決する (underlying 優先、次に funding)。不一致は undefined */
+export function swapEarnDepositInputBySymbol(
+  market: SwapEarnMarket,
+  asset: string | undefined
+): SwapEarnDepositInput | undefined {
+  if (!asset) return undefined;
+  if (sameSymbol(asset, market.underlying_symbol)) {
+    return swapEarnDepositInput(market, market.underlying_mint);
+  }
+  const f = findFundingToken(market, asset);
+  return f ? swapEarnDepositInput(market, f.mint) : undefined;
 }
 
 /** underlying mint → share mint (Jupiter Lend deposit、protocol 単位の back-compat 用) */
