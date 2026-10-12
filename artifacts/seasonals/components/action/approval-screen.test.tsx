@@ -29,6 +29,11 @@ import ApprovalScreen from "../../app/approval/[planId]";
 import { createQueryClient } from "../../services/queryClient";
 import * as api from "../../services/api";
 
+// 1 件目の it は `app/approval/[planId]` (expo-router screen + MCPApprovalPushCard + WarningArea) の
+// cold import と初回 render を含む。単独では 100 ms 弱だが、`pnpm -r test` で BFF と並走する
+// CI (2 core) では 5 秒の既定 timeout を超えて落ちた (2026-10-12、PR #42)。この file だけ延ばす
+jest.setTimeout(20_000);
+
 // expo-router: test ごとに params / router を差し替える
 let mockParams: { planId?: string; token?: string } = {};
 const mockBack = jest.fn();
