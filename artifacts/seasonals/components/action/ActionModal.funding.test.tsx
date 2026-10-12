@@ -8,6 +8,11 @@
  *   (c) どちらも無い → "Insufficient JupUSD — you have 0" + "This market also accepts USDC"、CTA disabled
  *   (d) 見積り (useSwapEarnQuote) → "Receive ≈ 0.9608 jlJupUSD"。fair value blocked なら CTA を止める
  *   (e) oracle は 2 mint とも gate (USDC blocked + JupUSD ok → blocked)
+ *   (f) #49 review: oracle の取得失敗は残りの結果だけで通さない (USDC reject + JupUSD ok → blocked)
+ *   (g) #49 review: positions が後から届く — 未保有の支払い token なら保有 token へ 1 回だけ自動切替
+ *       (金額未編集時のみ。編集後は toggle + "You hold USDC — switch …" hint)
+ *   (h) #49 review: 今の金額の fair value verdict が出るまで署名させない (pending / placeholder /
+ *       error は disabled、404 = 旧 BFF は通す)
  *
  * ActionModal.onchain.test.tsx と同じく config / web3 / mwa を mock するが、solana-tx は
  * mock しない (builder の body まで見る)。BFF は api の spy で差し替える。
@@ -44,6 +49,8 @@ import type {
   SwapEarnTxResponse,
 } from "@workspace/lib/types";
 import { findMarketByProtocolAsset } from "@workspace/lib/config/swap-earn-markets";
+
+import { act } from "@testing-library/react-native";
 
 import { ActionModal } from "./ActionModal";
 import * as api from "../../services/api";
@@ -352,5 +359,168 @@ describe("ActionModal — funding deposit (USDC → jlJupUSD)", () => {
     await waitFor(() => expect(ctaDisabled()).toBe(false));
     expect(new Set(getOracle.mock.calls.map(([m]) => m))).toEqual(new Set([JUPUSD_MINT]));
     qc.clear();
+  });
+
+  it("(f) oracle: USDC の取得失敗 + JupUSD ok → 'Blocked (oracle)' + 理由、CTA disabled", async () => {
+    jest.spyOn(api, "getOracleStatus").mockImplementation(async (mint: string) => {
+      if (mint === USDC_MINT) throw new Error("network down");
+      return oracle("JupUSD", "ok");
+    });
+    jest.spyOn(api, "getPositions").mockResolvedValue([USDC_ROW]);
+    jest.spyOn(api, "getSwapEarnQuote").mockResolvedValue(quote());
+    const build = jest.spyOn(api, "getSwapEarnDepositTx");
+    const qc = renderModal(FUNDED_PLAN());
+
+    await waitFor(() => expect(screen.getByTestId("am-review-oracle-unreachable")).toBeTruthy());
+    expect(screen.getByText("Blocked (oracle)")).toBeTruthy();
+    expect(ctaDisabled()).toBe(true);
+    fireEvent.press(screen.getByTestId("am-review-execute"));
+    expect(build).not.toHaveBeenCalled();
+    qc.clear();
+  });
+
+  describe("(g) positions が後から届く", () => {
+    function deferredPositions() {
+      let resolve!: (rows: Position[]) => void;
+      jest.spyOn(api, "getPositions").mockImplementation(
+        () => new Promise<Position[]>((r) => (resolve = r))
+      );
+      return (rows: Position[]) => act(async () => resolve(rows));
+    }
+
+    it("JupUSD で開き USDC しか無いと分かったら USDC 払いに自動切替し、builder に inputMint = USDC", async () => {
+      mockOracles();
+      const resolvePositions = deferredPositions();
+      jest.spyOn(api, "getSwapEarnQuote").mockResolvedValue(quote());
+      const build = jest.spyOn(api, "getSwapEarnDepositTx").mockResolvedValue(TX);
+      const qc = renderModal(UNDERLYING_PLAN());
+
+      await waitFor(() => expect(textOf("am-review-amount-unit")).toBe("JupUSD"));
+      expect(screen.queryByTestId("am-review-pay-with")).toBeNull();
+      await resolvePositions([USDC_ROW]);
+
+      await waitFor(() => expect(textOf("am-review-amount-unit")).toBe("USDC"));
+      // 切替後は保有 token = 支払い token なので toggle は出ない ((a) と同じ。USDC しか無い)
+      expect(screen.queryByTestId("am-review-pay-with")).toBeNull();
+      expect(textOf("am-review-balance")).toBe("Balance 50 USDC");
+      expect(textOf("am-review-funding-line")).toMatch(/^Pay with USDC · /);
+      expect(screen.queryByText(/Insufficient/)).toBeNull();
+
+      await waitFor(() => expect(ctaDisabled()).toBe(false));
+      fireEvent.press(screen.getByTestId("am-review-execute"));
+      await waitFor(() => expect(build).toHaveBeenCalled());
+      expect(build.mock.calls[0]![0]).toEqual({
+        user: A,
+        shareMint: SHARE_MINT,
+        amount: "1000000",
+        slippageBps: 50,
+        inputMint: USDC_MINT,
+      });
+      qc.clear();
+    });
+
+    it("金額を編集済みなら自動では切り替えず、toggle + 'You hold USDC — switch …' を出す", async () => {
+      mockOracles();
+      const resolvePositions = deferredPositions();
+      jest.spyOn(api, "getSwapEarnQuote").mockResolvedValue(quote());
+      const qc = renderModal(UNDERLYING_PLAN());
+
+      fireEvent.changeText(screen.getByTestId("am-review-amount-input"), "1.5");
+      await resolvePositions([USDC_ROW]);
+
+      await waitFor(() => expect(screen.getByTestId("am-review-pay-with")).toBeTruthy());
+      expect(textOf("am-review-amount-unit")).toBe("JupUSD");
+      expect(screen.getByTestId("am-review-accepts-hint").props.children).toBe(
+        "You hold USDC — switch to pay with USDC"
+      );
+      expect(screen.getByText("Insufficient JupUSD — you have 0")).toBeTruthy();
+
+      fireEvent.press(screen.getByTestId("am-review-pay-with-USDC"));
+      await waitFor(() => expect(textOf("am-review-amount-unit")).toBe("USDC"));
+      expect(screen.queryByTestId("am-review-accepts-hint")).toBeNull();
+      qc.clear();
+    });
+  });
+
+  describe("(h) fair value verdict が今の金額で出るまで署名させない", () => {
+    it("見積り pending → 'Checking price…' で disabled", async () => {
+      mockOracles();
+      jest.spyOn(api, "getPositions").mockResolvedValue([USDC_ROW]);
+      jest.spyOn(api, "getSwapEarnQuote").mockImplementation(() => new Promise(() => {}));
+      const build = jest.spyOn(api, "getSwapEarnDepositTx");
+      const qc = renderModal(FUNDED_PLAN());
+
+      await waitFor(() => expect(screen.getByText("Checking price…")).toBeTruthy());
+      expect(ctaDisabled()).toBe(true);
+      fireEvent.press(screen.getByTestId("am-review-execute"));
+      expect(build).not.toHaveBeenCalled();
+      qc.clear();
+    });
+
+    it("金額変更後は前の金額の ok (placeholderData) を使わず、新しい見積りが着くまで disabled", async () => {
+      mockOracles();
+      jest.spyOn(api, "getPositions").mockResolvedValue([USDC_ROW]);
+      let resolveSecond!: (q: SwapEarnQuoteResponse) => void;
+      const getQuote = jest
+        .spyOn(api, "getSwapEarnQuote")
+        .mockResolvedValueOnce(quote())
+        .mockImplementationOnce(() => new Promise((r) => (resolveSecond = r)));
+      const qc = renderModal(FUNDED_PLAN());
+
+      await waitFor(() => expect(ctaDisabled()).toBe(false));
+      fireEvent.changeText(screen.getByTestId("am-review-amount-input"), "2");
+      await waitFor(() => expect(getQuote).toHaveBeenCalledTimes(2));
+      expect(getQuote.mock.calls[1]![0]).toEqual({
+        shareMint: SHARE_MINT,
+        inputMint: USDC_MINT,
+        amount: "2000000",
+      });
+      // 前の見積りは表示に残ってよいが、verdict は使わない
+      expect(textOf("am-review-funding-line")).toBe(
+        "Pay with USDC · Receive ≈ 0.9608 jlJupUSD via Jupiter"
+      );
+      expect(screen.getByText("Checking price…")).toBeTruthy();
+      expect(ctaDisabled()).toBe(true);
+
+      await act(async () => resolveSecond(quote({ inAmount: "2000000", outAmount: "1921600" })));
+      await waitFor(() => expect(ctaDisabled()).toBe(false));
+      expect(textOf("am-review-funding-line")).toBe(
+        "Pay with USDC · Receive ≈ 1.9216 jlJupUSD via Jupiter"
+      );
+      qc.clear();
+    });
+
+    it("見積り失敗 (502) → 'Quote unavailable' で disabled", async () => {
+      mockOracles();
+      jest.spyOn(api, "getPositions").mockResolvedValue([USDC_ROW]);
+      jest
+        .spyOn(api, "getSwapEarnQuote")
+        .mockRejectedValue(new api.BffError("upstream failed", "jupiter_quote_failed", 502));
+      const build = jest.spyOn(api, "getSwapEarnDepositTx");
+      const qc = renderModal(FUNDED_PLAN());
+
+      await waitFor(() => expect(screen.getByText("Quote unavailable")).toBeTruthy());
+      expect(ctaDisabled()).toBe(true);
+      expect(textOf("am-review-funding-line")).toBe("Pay with USDC · Quote unavailable");
+      fireEvent.press(screen.getByTestId("am-review-execute"));
+      expect(build).not.toHaveBeenCalled();
+      qc.clear();
+    });
+
+    it("404 (quote endpoint の無い旧 BFF) は通す (BFF builder の guard が最終防衛線)", async () => {
+      mockOracles();
+      jest.spyOn(api, "getPositions").mockResolvedValue([USDC_ROW]);
+      jest
+        .spyOn(api, "getSwapEarnQuote")
+        .mockRejectedValue(new api.BffError("Not Found", "Not Found", 404));
+      const build = jest.spyOn(api, "getSwapEarnDepositTx").mockResolvedValue(TX);
+      const qc = renderModal(FUNDED_PLAN());
+
+      await waitFor(() => expect(screen.getByText("Sign & execute")).toBeTruthy());
+      await waitFor(() => expect(ctaDisabled()).toBe(false));
+      fireEvent.press(screen.getByTestId("am-review-execute"));
+      await waitFor(() => expect(build).toHaveBeenCalled());
+      qc.clear();
+    });
   });
 });

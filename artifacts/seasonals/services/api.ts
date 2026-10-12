@@ -358,10 +358,13 @@ async function fxRejectAgentPlan(planId: string): Promise<AgentPlan> {
  */
 export class BffError extends Error {
   readonly code: string | undefined;
-  constructor(message: string, code?: string) {
+  /** HTTP status (分かる経路のみ。#49 review: swap-earn quote の 404 = 旧 BFF の判別用) */
+  readonly status: number | undefined;
+  constructor(message: string, code?: string, status?: number) {
     super(message);
     this.name = "BffError";
     this.code = code;
+    this.status = status;
   }
 }
 
@@ -666,7 +669,8 @@ export async function getSwapEarnQuote(
     };
     throw new BffError(
       body.message ?? body.error ?? `HTTP ${res.status} ${res.statusText}`,
-      body.error
+      body.error,
+      res.status
     );
   }
   return (await res.json()) as SwapEarnQuoteResponse;

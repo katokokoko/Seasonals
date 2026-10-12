@@ -8,7 +8,7 @@ import { Link } from "react-router";
 import { LEARN } from "../learn/content";
 import { SUPPORTED_CHAINS, chainInfo, type ChainId } from "@workspace/lib/config/chains";
 import { heldPoolKeys } from "@workspace/lib/derive/earn-positions";
-import { canWithdrawEarnPosition, depositAction, fundedDepositAction, resolveSolanaRoute } from "@workspace/lib/derive/solana-action";
+import { canWithdrawEarnPosition, depositAction, resolveSolanaRoute } from "@workspace/lib/derive/solana-action";
 import { depositAcceptedSymbols } from "@workspace/lib/derive/deposit-funding";
 import type { EarnPosition, MenuHolding, MenuProduct, PositionCategory, ProtocolMenuEntry, ProtocolPool } from "@workspace/lib/types";
 import { useEthMenu, useMenuHoldings, useMenuListings, type MenuHoldingsData } from "../services/queries";
@@ -217,14 +217,12 @@ export function MenuCard({ item, held, owner, mine }: { item: MenuItem; held?: E
   const [panel, setPanel] = useState<MenuAction | null>(null);
   const avail = availability(pool);
   const fundable = useMemo(() => fundableMarket(protocol.protocol_id, pool.deposit_asset ?? pool.asset), [protocol.protocol_id, pool.deposit_asset, pool.asset]);
-  // funding deposit (USDC で jlJupUSD 等) の template も routable として数える (どちらで払うかは panel が保有で決める)
+  // underlying 払いの template が route に解決すれば routable。funding deposit (USDC で jlJupUSD 等) は同じ
+  // swap-earn market に解決するので別途数えない (fundable が在る = depositAction も同じ market に解決する、#49 review)。
+  // どちらで払うかは panel が保有で決める
   const routable = useMemo(
-    () =>
-      resolveSolanaRoute(depositAction(protocol.protocol_id, pool.deposit_asset ?? pool.asset, pool.pool_id)) !== null ||
-      (fundable?.funding ?? []).some(
-        (f) => resolveSolanaRoute(fundedDepositAction(protocol.protocol_id, f.symbol, fundable!.share_mint, pool.pool_id)) !== null
-      ),
-    [protocol.protocol_id, pool.deposit_asset, pool.asset, pool.pool_id, fundable]
+    () => resolveSolanaRoute(depositAction(protocol.protocol_id, pool.deposit_asset ?? pool.asset, pool.pool_id)) !== null,
+    [protocol.protocol_id, pool.deposit_asset, pool.asset, pool.pool_id]
   );
   const accepts = fundable && routable ? depositAcceptedSymbols(fundable) : null;
   const depositReason = pool.display_only || pool.deposit_open === false ? avail?.label : !routable ? "Seasonals cannot build deposits for this pool yet" : null;

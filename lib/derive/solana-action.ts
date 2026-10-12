@@ -11,12 +11,14 @@
  */
 import type { EarnPosition, SolanaActionInput, SolanaActionShape } from "../types";
 import { isValidTokenAmount } from "../utils/numeric";
+import { normalizeAssetSymbol } from "../utils/asset-symbol";
 import { isSolanaAddress } from "../config/chains";
 import {
   findMarketByProtocolAsset,
   findMarketByShareMint,
   swapEarnDepositInput,
   swapEarnDepositInputBySymbol,
+  type SwapEarnMarket,
 } from "../config/swap-earn-markets";
 import {
   findKaminoMarketByAsset,
@@ -64,6 +66,21 @@ export function normalizeSolanaProtocol(protocol: string): string {
   return protocol === "jupiter" ? "jupiter_lend" : protocol;
 }
 
+/**
+ * 2026-10-13: `metadata.share_mint` で固定された swap-earn deposit の market。
+ * share_mint が swap-earn の share で、かつ protocol が一致する時だけ返す (Kamino reserve 等の
+ * share_mint や protocol 違いは undefined → 呼び手は従来の asset 解決に落ちる)。
+ * resolveSolanaRoute / resolveOracleMint(s) / resolveAmountUnit / client UI が **全部これ** を使う
+ * (pin の規則を 1 箇所に、#49 review)
+ */
+export function pinnedSwapEarnMarket(action: SolanaActionShape | null | undefined): SwapEarnMarket | undefined {
+  if (!action || action.action_type !== "deposit") return undefined;
+  const shareMint = str(action.metadata?.share_mint);
+  if (!shareMint) return undefined;
+  const m = findMarketByShareMint(shareMint);
+  return m && m.protocol_id === normalizeSolanaProtocol(action.protocol) ? m : undefined;
+}
+
 export function resolveSolanaRoute(action: SolanaActionShape | null | undefined): SolanaRoute | null {
   if (!action) return null;
   const isDeposit = action.action_type === "deposit";
@@ -78,8 +95,8 @@ export function resolveSolanaRoute(action: SolanaActionShape | null | undefined)
     // 2026-10-13: metadata.share_mint が swap-earn market を指す deposit は、その market に固定して
     // asset を underlying / funding と照合する (asset で先に引くと USDC + jlJupUSD が jlUSDC に流れる)。
     // market が asset を受け付けなければ null = fail-closed
-    const pinned = shareMint ? findMarketByShareMint(shareMint) : undefined;
-    if (pinned && pinned.protocol_id === protocolId) {
+    const pinned = pinnedSwapEarnMarket(action);
+    if (pinned) {
       const input = swapEarnDepositInputBySymbol(pinned, action.asset);
       if (!input) return null;
       return input.isFunding
@@ -360,12 +377,6 @@ export function routeInputSymbol(route: SolanaRoute): RouteInputToken | null {
     default:
       return null;
   }
-}
-
-/** 表記揺れの吸収: 大文字小文字 (JitoSOL / jitoSOL) と wrapped SOL (WSOL = SOL) */
-function normalizeAssetSymbol(symbol: string): string {
-  const upper = symbol.trim().toUpperCase();
-  return upper === "WSOL" ? "SOL" : upper;
 }
 
 /** action.asset と deposit route の入力 token が同じ asset か (asset 無しは不一致扱い) */

@@ -73,6 +73,38 @@ export interface FundingFairValueTarget {
   /** §4.6 gate で引いた結果 (再取得しない)。undefined = 取れていない → fail-closed */
   fundingOracle: OracleResult | undefined;
   underlyingOracle: OracleResult | undefined;
+  /**
+   * #49 review: C (convertToAssets) の取得は quote に依存しないので、caller が quote と並行で
+   * `prefetchFundingExchangeRate` を起動して渡す (cold cache で lite-api 1 往復分の待ちを消す)。
+   * 省略時はここで取りに行く (従来どおり直列)
+   */
+  exchangeRate?: Promise<FundingExchangeRateLookup>;
+}
+
+/**
+ * convertToAssets の取得結果。**reject しない** — caller が quote より先に起動し、quote 失敗等で
+ * await しないまま捨てても unhandled rejection にならないようにするため。失敗は ok: false で運ぶ
+ */
+export type FundingExchangeRateLookup =
+  | { ok: true; convertToAssets: string | undefined }
+  | { ok: false; err: unknown };
+
+/**
+ * cross-asset ガードが読む C (Jupiter Lend `earn/tokens` の convertToAssets、30 s cache) を先行取得する。
+ * ガードが参照を取りに行かない条件 (env で無効化 / Jupiter Lend 以外の market) では undefined —
+ * `evaluateFundingFairValue` がその前に判定を返すので、無駄な fetch を起こさない
+ */
+export function prefetchFundingExchangeRate(
+  market: SwapEarnMarket
+): Promise<FundingExchangeRateLookup> | undefined {
+  if (fairValueGuardBps() <= 0 || market.protocol_id !== "jupiter_lend") return undefined;
+  return fetchEarnMarkets().then(
+    (markets): FundingExchangeRateLookup => ({
+      ok: true,
+      convertToAssets: markets.find((m) => m.jlMint === market.share_mint)?.convertToAssets,
+    }),
+    (err: unknown): FundingExchangeRateLookup => ({ ok: false, err })
+  );
 }
 
 /**
@@ -100,13 +132,11 @@ export async function evaluateFundingFairValue(
   if (guardBps <= 0) return { status: "no_reference" };
   if (market.protocol_id !== "jupiter_lend") return unavailable("no_exchange_rate_source");
 
-  let convertToAssets: string | undefined;
-  try {
-    const markets = await fetchEarnMarkets();
-    convertToAssets = markets.find((m) => m.jlMint === market.share_mint)?.convertToAssets;
-  } catch (err) {
-    return unavailable("jupiter_lend_markets_failed", err);
-  }
+  // caller が先行起動していればそれを待つだけ (判定・fail-closed は従来と同じ)
+  const lookup = await (target.exchangeRate ?? prefetchFundingExchangeRate(market));
+  if (!lookup) return unavailable("no_exchange_rate_source");
+  if (!lookup.ok) return unavailable("jupiter_lend_markets_failed", lookup.err);
+  const { convertToAssets } = lookup;
   if (!convertToAssets) return unavailable("convert_to_assets_missing");
 
   const verdict = evaluateCrossAssetFairValue({

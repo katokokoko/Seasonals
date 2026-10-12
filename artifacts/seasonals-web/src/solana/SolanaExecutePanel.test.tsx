@@ -57,7 +57,8 @@ function renderPanel(action: SolanaActionInput, owner: string | null = SOL_OWNER
   );
 }
 
-const signButton = () => screen.getByRole("button", { name: /Sign in wallet|Working/ }) as HTMLButtonElement;
+const signButton = () =>
+  screen.getByRole("button", { name: /Sign in wallet|Working|Checking price|Quote unavailable/ }) as HTMLButtonElement;
 
 beforeEach(() => useSession.setState({ watchlist: [], connected: {}, lastSolanaWallet: null }));
 afterEach(() => {
@@ -409,6 +410,54 @@ describe("funding deposit (USDC → jlJupUSD)", () => {
     fireEvent.click(signButton());
     expect(w.signFn).not.toHaveBeenCalled();
     expect(calls.some((c) => c.path === "/protocols/swap-earn/deposit-tx")).toBe(false);
+  });
+
+  // #49 review: fair value の判定が出るまで (見積り中 / 失敗) は署名させない。404 (旧 BFF) だけ従来通り
+  test("見積り中は Checking price… で署名させない", async () => {
+    const w = await connect();
+    const calls = installFakeBff(fundedBff());
+    const fake = globalThis.fetch;
+    globalThis.fetch = ((url: string, init?: RequestInit) =>
+      String(url).endsWith("/protocols/swap-earn/quote") ? new Promise<Response>(() => {}) : fake(url, init)) as typeof fetch;
+    renderPanel(funded());
+    await screen.findByText(/Wallet balance: 5 USDC/);
+    fireEvent.change(screen.getByLabelText("Amount"), { target: { value: "1" } });
+    await screen.findByText(/Getting a quote…/);
+    // oracle の 1 秒グレーアウトが明けても押せないまま
+    await new Promise((r) => setTimeout(r, 1200));
+    expect(signButton().textContent).toBe("Checking price…");
+    expect(signButton().disabled).toBe(true);
+    fireEvent.click(signButton());
+    expect(w.signFn).not.toHaveBeenCalled();
+    expect(calls.some((c) => c.path === "/protocols/swap-earn/deposit-tx")).toBe(false);
+  });
+
+  test("見積りが失敗 (502) なら Quote unavailable で署名させない", async () => {
+    const w = await connect();
+    const calls = installFakeBff(fundedBff({ "/protocols/swap-earn/quote": () => ({ status: 502, json: { error: "quote_failed" } }) }));
+    renderPanel(funded());
+    await screen.findByText(/Wallet balance: 5 USDC/);
+    fireEvent.change(screen.getByLabelText("Amount"), { target: { value: "1" } });
+    await screen.findByText(/· Quote unavailable/);
+    await new Promise((r) => setTimeout(r, 1200));
+    expect(signButton().textContent).toBe("Quote unavailable");
+    expect(signButton().disabled).toBe(true);
+    fireEvent.click(signButton());
+    expect(w.signFn).not.toHaveBeenCalled();
+    expect(calls.some((c) => c.path === "/protocols/swap-earn/deposit-tx")).toBe(false);
+  });
+
+  test("quote endpoint の無い旧 BFF (404) は従来通り署名できる", async () => {
+    await connect();
+    const calls = installFakeBff(fundedBff({ "/protocols/swap-earn/quote": () => ({ status: 404, json: { error: "not_found" } }) }));
+    renderPanel(funded());
+    await screen.findByText(/Wallet balance: 5 USDC/);
+    fireEvent.change(screen.getByLabelText("Amount"), { target: { value: "1" } });
+    await waitFor(() => expect(signButton().disabled).toBe(false), { timeout: 3000 });
+    expect(signButton().textContent).toBe("Sign in wallet");
+    fireEvent.click(signButton());
+    await screen.findByText("Confirmed on Solana mainnet.");
+    expect(calls.find((c) => c.path === "/protocols/swap-earn/deposit-tx")!.body).toMatchObject({ inputMint: usdc.mint });
   });
 
   test("underlying 払い (JupUSD) は見積り行も inputMint も出さない", async () => {

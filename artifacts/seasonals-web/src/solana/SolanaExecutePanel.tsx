@@ -6,7 +6,9 @@
  * - route は lib resolveSolanaRoute。解決しなければ CTA を出さない (fail-closed、Seeker 8.37)
  * - 署名できるのは接続中の wallet の address だけ。watch 中の address は読み取りのみ
  * - funding deposit (USDC で jlJupUSD 等、lib fundedDepositAction): 残高は支払う token で見て、oracle は 2 本 gate、
- *   BFF の見積り (/protocols/swap-earn/quote) で受取量を出す。cross-asset fair value が blocked なら署名させない
+ *   BFF の見積り (/protocols/swap-earn/quote) で受取量を出す。署名は fair value の判定が出てから (fail-closed、#49 review):
+ *   見積り中は "Checking price…"、見積り失敗は "Quote unavailable" で止め、blocked なら理由を出して止める。
+ *   例外は 404 (quote endpoint の無い旧 BFF) だけで、その場合は BFF の execute 側 gate に任せて従来通り署名させる
  * - BFF が plans-only (`/health` の solana.executionTarget = "disabled") なら wallet を開く前に止める
  * - mainnet に実際に送る。送信は BFF /tx/submit (Helius)。Seasonals は秘密鍵を扱わない (CLAUDE.md §5)
  */
@@ -26,6 +28,7 @@ import { resolveSolanaRoute, routeInputSymbol, UNSUPPORTED_MARKET_MESSAGE } from
 import type { TrackedTx } from "@workspace/lib/derive/tx-confirm";
 import { findMarketByShareMint } from "@workspace/lib/config/swap-earn-markets";
 import { useConnectedAddress } from "../state/session";
+import { ApiError } from "../services/api";
 import { useHealth, useSolanaWalletBalance, useSwapEarnQuote } from "../services/queries";
 import { requestOpenWallet } from "../timeline/detailStore";
 import { shortAddress } from "../ui/format";
@@ -105,7 +108,23 @@ export function SolanaExecutePanel({
       : null;
   const quote = useSwapEarnQuote(quoteReq);
   const fairValue = quoteReq ? quote.data?.fairValue : undefined;
-  const fairBlocked = fairValue?.status === "blocked";
+  /**
+   * funding deposit の fair value 判定 (OracleGate の checking と同じく、判定が出るまでは押させない)。
+   * - none: 見積り不要 (underlying 払い / 金額未確定)、ok: 判定済みで通す
+   * - checking / unavailable / blocked: 署名不可。404 は旧 BFF (quote endpoint 無し) なので ok 扱い
+   */
+  const fairState: "none" | "ok" | "checking" | "unavailable" | "blocked" = !quoteReq
+    ? "none"
+    : quote.isPending
+      ? "checking"
+      : quote.isError
+        ? quote.error instanceof ApiError && quote.error.status === 404
+          ? "ok"
+          : "unavailable"
+        : fairValue?.status === "blocked"
+          ? "blocked"
+          : "ok";
+  const fairBlocked = fairState === "checking" || fairState === "unavailable" || fairState === "blocked";
   const valid = format.ok && !limitError;
   const max = isDeposit ? (balance ? depositMaxSmallest(balance, action.asset) : null) : (action.amount ?? null);
   const approx = !isDeposit && unit.unitSymbol !== action.asset ? approxUnderlying(action, format.ok ? format.smallest : null) : null;
@@ -211,7 +230,13 @@ export function SolanaExecutePanel({
                   disabled={readOnly || !oracleOk || !valid || fairBlocked || locked}
                   onClick={() => !readOnly && !fairBlocked && format.ok && route && sign.run(() => buildSolanaTxs(route, owner!, format.smallest))}
                 >
-                  {sign.busy ? "Working…" : "Sign in wallet"}
+                  {sign.busy
+                    ? "Working…"
+                    : fairState === "checking"
+                      ? "Checking price…"
+                      : fairState === "unavailable"
+                        ? "Quote unavailable"
+                        : "Sign in wallet"}
                 </button>
                 <button type="button" className="btn" onClick={onClose} disabled={sign.busy}>
                   {sign.state.phase === "success" || sign.state.phase === "submitted" ? "Close" : "Cancel"}

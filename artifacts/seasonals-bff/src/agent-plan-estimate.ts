@@ -47,7 +47,11 @@ import { fetchKaminoVaultMetrics } from "./clients/kamino-tx";
 import { fetchSaveReserveRates } from "./clients/save-tx";
 import { SWAP_EARN_SLIPPAGE_BPS } from "./agent-plan-executor";
 import { getOracleResults } from "./clients/oracle";
-import { evaluateFundingFairValue, evaluateSwapFairValue } from "./swap-fair-value";
+import {
+  evaluateFundingFairValue,
+  evaluateSwapFairValue,
+  prefetchFundingExchangeRate,
+} from "./swap-fair-value";
 import {
   kvaultSharesToUnderlying,
   kvaultUnderlyingToShares,
@@ -109,6 +113,9 @@ async function estimateSwapEarn(
     ? { mint: market.share_mint, symbol: market.share_symbol, decimals: market.share_decimals }
     : { mint: market.underlying_mint, symbol: market.underlying_symbol, decimals: market.underlying_decimals };
 
+  // #49 review: funding deposit の交換レート (convertToAssets) は quote に依存しないので並行で取る。
+  // reject しない promise なので、quote 失敗で捨てても unhandled rejection にならない
+  const exchangeRateP = input?.isFunding ? prefetchFundingExchangeRate(market) : undefined;
   let quote: Awaited<ReturnType<typeof fetchSwapQuote>>;
   try {
     quote = await fetchSwapQuote({
@@ -147,6 +154,7 @@ async function estimateSwapEarn(
             input,
             underlyingOracle: byMint.get(market.underlying_mint),
             fundingOracle: byMint.get(input.mint),
+            exchangeRate: exchangeRateP,
           })
         )
     : evaluateSwapFairValue(log, quote, {

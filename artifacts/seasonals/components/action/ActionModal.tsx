@@ -83,6 +83,7 @@ import {
 } from "@workspace/lib/derive/oracle-gate";
 import {
   normalizeSolanaProtocol,
+  pinnedSwapEarnMarket,
   resolveSolanaRoute,
   routeInputSymbol,
   UNSUPPORTED_MARKET_MESSAGE,
@@ -97,13 +98,13 @@ import {
 import {
   chooseDepositFunding,
   depositAcceptedSymbols,
-} from "@workspace/lib/derive/deposit-funding";
-import { describeSimulationWarning } from "@workspace/lib/derive/simulation-display";
-import {
-  findWalletRow,
   holdsMint,
-  walletHoldingsOf,
-} from "../../services/wallet-holdings";
+  walletHoldingsFromPositions,
+} from "@workspace/lib/derive/deposit-funding";
+// #49 review: symbol 比較は lib の唯一の正規化 (大文字小文字 + WSOL = SOL)
+import { sameAssetSymbol } from "@workspace/lib/utils/asset-symbol";
+import { describeSimulationWarning } from "@workspace/lib/derive/simulation-display";
+import { findWalletRow } from "../../services/wallet-holdings";
 import { useWallet } from "../../services/useWallet";
 // watch-only mode: 読み取り address と mode (watch 中は署名経路に入らない)
 import {
@@ -173,23 +174,19 @@ function shortenAddress(addr: string): string {
 
 /**
  * 2026-10-13: deposit が向かう swap-earn market。metadata.share_mint で固定された market を
- * 優先し (funding deposit)、無ければ (protocol, asset) で引く。deposit 以外 / 非 swap-earn は null
+ * 優先し (funding deposit。pin の規則は lib `pinnedSwapEarnMarket` が唯一、#49 review)、
+ * 無ければ (protocol, asset) で引く。deposit 以外 / 非 swap-earn は null
  */
 function depositSwapEarnMarket(
   action: AgentPlan["selected_action"] | undefined
 ): SwapEarnMarket | null {
   if (!action || action.action_type !== "deposit") return null;
-  const protocolId = normalizeSolanaProtocol(action.protocol);
-  const shareMint = action.metadata?.share_mint;
-  const pinned =
-    typeof shareMint === "string" ? findMarketByShareMint(shareMint) : undefined;
-  if (pinned && pinned.protocol_id === protocolId) return pinned;
+  const pinned = pinnedSwapEarnMarket(action);
+  if (pinned) return pinned;
   if (!action.asset) return null;
-  return findMarketByProtocolAsset(protocolId, action.asset) ?? null;
-}
-
-function sameSymbolCI(a: string, b: string): boolean {
-  return a.trim().toUpperCase() === b.trim().toUpperCase();
+  return (
+    findMarketByProtocolAsset(normalizeSolanaProtocol(action.protocol), action.asset) ?? null
+  );
 }
 
 export interface ActionModalProps {
@@ -325,30 +322,82 @@ export function ActionModal({
     return null;
   }, [isDeposit, action, routeInput, rawPositions, onchainWallet, positionsLoaded]);
 
-  // 2026-10-13: funding を受け付ける market で、保有から出す toggle / hint。
-  // toggle = underlying と funding token の両方を持つ時だけ (片方なら Menu が既に決めている)。
-  // hint = どちらも無い時 (positions 取得成功時のみ。不明なら出さない)
+  // 2026-10-13: funding を受け付ける market で、保有から出す toggle / hint / 自動切替。
+  // #49 review: positions が modal を開いた後に届くと「JupUSD で開いたが実は USDC しか無い」が
+  // 起きる。toggle は「今の支払い token 以外に保有している選択肢がある」時に出し
+  // (options = [underlying, …保有 or 選択中の funding])、選択中の token を持っていなければ
+  // MenuDrawer と同じ `chooseDepositFunding` の判定で 1 回だけ自動で切り替える (金額未編集の時のみ。
+  // 編集後は toggle + "You hold USDC — switch …" の hint に留める)。
+  // hint / 自動切替は positions 取得成功時のみ (不明なら出さない・動かさない)
+  const holdingsKnown = Boolean(onchainWallet) && positionsLoaded;
   const fundingUi = useMemo(() => {
     if (!isDeposit || !fundingMarket?.funding?.length) return null;
-    const holdings = walletHoldingsOf(rawPositions);
-    const heldFunding = fundingMarket.funding.filter((f) => holdsMint(holdings, f.mint));
+    const holdings = walletHoldingsFromPositions(rawPositions);
+    const activeSymbol = routeInput?.symbol ?? action?.asset ?? null;
+    const isActive = (o: { symbol: string; mint: string }) =>
+      routeInput ? o.mint === routeInput.mint : sameAssetSymbol(o.symbol, activeSymbol ?? undefined);
+    const all = [
+      { symbol: fundingMarket.underlying_symbol, mint: fundingMarket.underlying_mint },
+      ...fundingMarket.funding.map((f) => ({ symbol: f.symbol, mint: f.mint })),
+    ];
+    const held = all.filter((o) => holdsMint(holdings, o.mint));
+    const activeHeld = held.some(isActive);
+    const switchable = held.filter((o) => !isActive(o));
     const payOptions =
-      holdsMint(holdings, fundingMarket.underlying_mint) && heldFunding.length > 0
-        ? [fundingMarket.underlying_symbol, ...heldFunding.map((f) => f.symbol)]
+      switchable.length > 0
+        ? [
+            fundingMarket.underlying_symbol,
+            ...all
+              .slice(1)
+              .filter((o) => holdsMint(holdings, o.mint) || isActive(o))
+              .map((o) => o.symbol),
+          ]
         : null;
-    const knownEmpty =
-      Boolean(onchainWallet) &&
-      positionsLoaded &&
-      chooseDepositFunding(fundingMarket, holdings).kind === "none";
-    const others = depositAcceptedSymbols(fundingMarket).filter(
-      (sym) => !sameSymbolCI(sym, amountUnit.unitSymbol)
-    );
-    const acceptsHint =
-      knownEmpty && others.length > 0
-        ? `This market also accepts ${others.join(", ")}`
+
+    const choice = chooseDepositFunding(fundingMarket, holdings);
+    // 選択中の token を持たず、他に保有 token がある時の切替先 (Menu と同じ優先順: underlying → funding)
+    const suggested =
+      holdingsKnown && !activeHeld
+        ? choice.kind === "underlying"
+          ? fundingMarket.underlying_symbol
+          : choice.kind === "funding"
+            ? choice.token.symbol
+            : null
         : null;
-    return { payOptions, acceptsHint };
-  }, [isDeposit, fundingMarket, rawPositions, onchainWallet, positionsLoaded, amountUnit]);
+    let hint: string | null = null;
+    if (holdingsKnown && choice.kind === "none") {
+      const others = depositAcceptedSymbols(fundingMarket).filter(
+        (sym) => !sameAssetSymbol(sym, amountUnit.unitSymbol)
+      );
+      if (others.length > 0) hint = `This market also accepts ${others.join(", ")}`;
+    } else if (suggested) {
+      hint = `You hold ${suggested} — switch to pay with ${suggested}`;
+    }
+    return { payOptions, acceptsHint: hint, autoSwitchTo: suggested };
+  }, [isDeposit, fundingMarket, rawPositions, routeInput, action, holdingsKnown, amountUnit]);
+
+  /** 金額を利用者が編集した plan_id (自動切替はこの plan では動かさない) */
+  const amountEditedRef = useRef<string | null>(null);
+  /** 自動切替の判定を済ませた plan_id (positions 確定後に 1 回だけ) */
+  const autoPayDecidedRef = useRef<string | null>(null);
+  const handleChangeAmount = useCallback(
+    (v: string) => {
+      if (plan) amountEditedRef.current = plan.plan_id;
+      setAmountInput(v);
+    },
+    [plan]
+  );
+  useEffect(() => {
+    const planId = plan?.plan_id;
+    if (!planId || !fundingUi || !holdingsKnown) return;
+    if (autoPayDecidedRef.current === planId) return;
+    autoPayDecidedRef.current = planId;
+    if (!fundingUi.autoSwitchTo) return;
+    // 利用者が金額を触った / 自分で支払い token を選んだ後は勝手に変えない (toggle + hint)
+    if (amountEditedRef.current === planId) return;
+    if (payWith?.planId === planId) return;
+    setPayWith({ planId, symbol: fundingUi.autoSwitchTo });
+  }, [plan?.plan_id, fundingUi, holdingsKnown, payWith]);
 
   const handleSelectPayWith = useCallback(
     (symbol: string) => {
@@ -382,6 +431,7 @@ export function ActionModal({
         if (!depositBalance) return;
         const max = depositMaxSmallest(depositBalance, action.asset);
         if (max !== null) {
+          amountEditedRef.current = plan?.plan_id ?? null;
           setAmountInput(toHumanReadable(max, amountUnit.decimals));
         }
       } else if (action.amount) {
@@ -391,7 +441,7 @@ export function ActionModal({
     } catch {
       // 変換不能 (不正 balance 等) は無視
     }
-  }, [action, isDeposit, depositBalance, amountUnit]);
+  }, [action, isDeposit, depositBalance, amountUnit, plan?.plan_id]);
 
   const reset = useCallback(() => {
     // 2026-10-13: 進行中の着地確認があれば結果を捨てさせる (isAlive が false になる)
@@ -725,7 +775,7 @@ export function ActionModal({
             mode={addressMode}
             activeAddress={activeAddress}
             amountInput={amountInput}
-            onChangeAmount={setAmountInput}
+            onChangeAmount={handleChangeAmount}
             amountUnit={amountUnit}
             amountError={amountValidation.ok ? null : amountValidation.error}
             depositBalance={depositBalance}
@@ -963,6 +1013,11 @@ function ReviewBody({
     return mergeOracleResults(loaded);
   }, [primaryMint, fundingMint, primaryOracle.data, fundingOracle.data]);
   const oracleBlocked = oracle?.status === "blocked";
+  // #49 review: gate 対象の mint のどれかが取得失敗なら、残りの結果だけで merge して通さない
+  // (web OracleGate の `unreachable` と同じ fail-closed、§4.6)。builder 側も拒否する
+  const oracleUnreachable =
+    (Boolean(primaryMint) && primaryOracle.isError) ||
+    (Boolean(fundingMint) && fundingOracle.isError);
 
   // 2026-10-13: funding deposit の見積り ("Receive ≈ … jlJupUSD via Jupiter")。
   // fair value が blocked なら BFF の builder も 409 で止めるので、CTA を先に止める
@@ -978,9 +1033,12 @@ function ReviewBody({
         }
       : null
   );
-  const fairValueBlocked =
-    fundedRoute !== null && quote.data?.fairValue.status === "blocked";
-  const oracleWarnings = oracleBlocked ? [] : oracle?.warnings ?? [];
+  // #49 review: fair value の判定は **今の金額の** 見積りが着いてから。pending や
+  // placeholderData (前の金額の ok) の verdict で署名させない。404 (quote endpoint の無い旧 BFF) は
+  // 判定不能だが builder 側の fair value guard が最終防衛線なので通す
+  const quoteGate = fundingQuoteGate(fundedRoute !== null, quoteAmount !== null, quote);
+  const fairValueBlocked = quoteGate === "blocked";
+  const oracleWarnings = oracleBlocked || oracleUnreachable ? [] : oracle?.warnings ?? [];
 
   // Kamino reserve metadata (lending action 時のみ表示)
   const isKamino = action?.protocol === "kamino";
@@ -1016,7 +1074,7 @@ function ReviewBody({
             <Text style={styles.metaLabel}>Pay with</Text>
             <View style={styles.segment}>
               {payOptions.map((sym) => {
-                const active = payActive !== null && sameSymbolCI(sym, payActive);
+                const active = payActive !== null && sameAssetSymbol(sym, payActive);
                 return (
                   <Pressable
                     key={sym}
@@ -1103,10 +1161,12 @@ function ReviewBody({
             shareDecimals={fundedMarket.share_decimals}
             amountReady={quoteAmount !== null}
             loading={quote.isLoading}
-            failed={quote.isError && !quote.data}
+            failed={quoteGate === "unavailable"}
             outAmount={quote.data?.outAmount ?? null}
             blockedReason={
-              quote.data?.fairValue.status === "blocked" ? quote.data.fairValue.reason : null
+              !quote.isPlaceholderData && quote.data?.fairValue.status === "blocked"
+                ? quote.data.fairValue.reason
+                : null
             }
             testID={testID ? `${testID}-funding` : undefined}
           />
@@ -1149,9 +1209,22 @@ function ReviewBody({
         </View>
       )}
 
+      {/* #49 review: oracle の取得失敗 (BFF に届かない等) も fail-closed で止める */}
+      {oracleUnreachable && !oracleBlocked && (
+        <View
+          style={styles.warningCard}
+          testID={testID ? `${testID}-oracle-unreachable` : undefined}
+        >
+          <Text style={styles.warningIcon}>⛔</Text>
+          <Text style={styles.warningText}>
+            Oracle check failed: couldn't read the price — execution blocked for safety.
+          </Text>
+        </View>
+      )}
+
       {/* §4.6 tier C (Pyth のみ): warning ではない注記なので WarningArea の外・oracleWarnings
           に入れない。web OracleGate の「single price source」表示と同じ文言 */}
-      {oracle?.tier === "C" && oracle.status !== "blocked" && (
+      {oracle?.tier === "C" && oracle.status !== "blocked" && !oracleUnreachable && (
         <Text style={styles.singleSourceNote} testID="oracle-single-source-note">
           Single price source (Pyth). Not cross-checked against a second oracle.
         </Text>
@@ -1204,8 +1277,10 @@ function ReviewBody({
             watchOnly ||
             executionDisabled ||
             oracleBlocked ||
+            oracleUnreachable ||
             oracleChecking ||
-            fairValueBlocked ||
+            // funded route: 今の金額の fair value verdict が ok (or 旧 BFF) の時だけ通す
+            (quoteGate !== "n/a" && quoteGate !== "ok") ||
             amountInvalid;
           return (
             <Pressable
@@ -1221,12 +1296,16 @@ function ReviewBody({
                   ? "Connect a wallet to sign"
                   : executionDisabled
                     ? "Unavailable"
-                    : oracleBlocked
+                    : oracleBlocked || oracleUnreachable
                     ? "Blocked (oracle)"
                     : fairValueBlocked
                     ? "Blocked (price check)"
                     : oracleChecking
                       ? "Checking oracle…"
+                      : quoteGate === "checking"
+                      ? "Checking price…"
+                      : quoteGate === "unavailable"
+                      ? "Quote unavailable"
                       : isConnected
                         ? "Sign & execute"
                         : "Approve only"}
@@ -1237,6 +1316,38 @@ function ReviewBody({
       />
     </View>
   );
+}
+
+/**
+ * #49 review: funded route (route.inputMint あり) の CTA 判定。
+ *   n/a         : funded route ではない (gate しない)
+ *   missing     : 入力額が未検証 (見積りを撃てない。金額 error 側が理由を出す)
+ *   checking    : 今の金額の見積りが未着 (pending / placeholderData = 前の金額の verdict)
+ *   unavailable : 見積り失敗 (404 以外)
+ *   blocked     : fair value が blocked
+ *   ok          : 今の金額の verdict が ok / warning、または 404 (quote endpoint の無い旧 BFF —
+ *                 BFF builder の fair value guard が最終防衛線)
+ */
+type FundingQuoteGate = "n/a" | "missing" | "checking" | "unavailable" | "blocked" | "ok";
+
+function fundingQuoteGate(
+  funded: boolean,
+  amountReady: boolean,
+  quote: {
+    isPending: boolean;
+    isPlaceholderData: boolean;
+    isError: boolean;
+    error: Error | null;
+    data: { fairValue: { status: string } } | undefined;
+  }
+): FundingQuoteGate {
+  if (!funded) return "n/a";
+  if (!amountReady) return "missing";
+  if (quote.isError) {
+    return quote.error instanceof BffError && quote.error.status === 404 ? "ok" : "unavailable";
+  }
+  if (quote.isPending || quote.isPlaceholderData || !quote.data) return "checking";
+  return quote.data.fairValue.status === "blocked" ? "blocked" : "ok";
 }
 
 /**

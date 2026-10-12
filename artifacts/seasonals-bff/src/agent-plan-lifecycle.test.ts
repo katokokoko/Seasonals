@@ -1106,6 +1106,26 @@ describe("2026-10-13: funding deposit (USDC で jlJupUSD を買う) の simulate
     expect(res.json()).toMatchObject({ error: "oracle_blocked", block_reason: "oracle_both_stale" });
   });
 
+  it("simulate: JupUSD の >5% 乖離 block が USDC の両 stale を覆い隠さない (merge 結果の block_reason で 409)", async () => {
+    // #49 review: route は oracle_divergence_too_large だけを「通す + 強警告」にする。
+    // merge が先頭の block_reason を拾うと、USDC が両 stale でも simulate が 200 で通っていた
+    mockOracle.mockImplementation(async (mint: string) =>
+      mint === USDC_MINT
+        ? { ...blockedOracle("oracle_both_stale"), asset_symbol: "USDC" }
+        : { ...blockedOracle("oracle_divergence_too_large"), asset_symbol: "JupUSD" }
+    );
+    const created = await post("/agent-plans", { objective: "max_yield", mcp_client_id: "mcp_test" });
+    const res = await post(`/agent-plans/${created.json().plan_id}/simulate`, { action_spec: FUNDED });
+    // 前提: JupUSD (underlying) が先 — 乖離 block が配列の先頭にある
+    expect(getOracleResults).toHaveBeenCalledWith([JUPUSD_MINT, USDC_MINT]);
+    expect(res.statusCode).toBe(409);
+    expect(res.json()).toMatchObject({
+      error: "oracle_blocked",
+      block_reason: "oracle_both_stale",
+      oracle: { status: "blocked", block_reason: "oracle_both_stale" },
+    });
+  });
+
   it("execute: 人と同じ swap-earn builder に inputMint (USDC) を渡し、USDC → jlJupUSD の tx を組む", async () => {
     const { exec } = await executingPlan(FUNDED);
     expect(exec.unsigned_transactions).toEqual([

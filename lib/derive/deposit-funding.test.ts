@@ -31,3 +31,33 @@ describe("chooseDepositFunding (2026-10-13 funding deposit)", () => {
     expect(depositAcceptedSymbols(jlUsdc)).toEqual(["USDC"]);
   });
 });
+
+describe("#49 review: /positions → 保有一覧 (mobile / web 共有)", () => {
+  const { walletHoldingsFromPositions, holdsMint, isWalletPosition, walletPositionMint } = jest.requireActual("./deposit-funding") as typeof import("./deposit-funding");
+  const pos = (protocol_id: string, mint: string | undefined, current_amount: string) =>
+    ({ protocol_id, current_amount, raw_state: mint ? { mint } : {} }) as unknown as import("../types/position").Position;
+
+  it("wallet_ 行だけを mint 付きで拾い、mint 無し / 他 protocol は落とす", () => {
+    const h = walletHoldingsFromPositions([
+      pos("wallet_holding", USDC, "5000000"),
+      pos("wallet_sol", "So11111111111111111111111111111111111111112", "1"),
+      pos("jupiter_lend", JUPUSD, "7"),
+      pos("wallet_holding", undefined, "9"),
+    ]);
+    expect(h).toEqual([
+      { mint: USDC, amount: "5000000" },
+      { mint: "So11111111111111111111111111111111111111112", amount: "1" },
+    ]);
+    expect(isWalletPosition({ protocol_id: "wallet_holding" })).toBe(true);
+    expect(isWalletPosition({ protocol_id: "kamino" })).toBe(false);
+    expect(walletPositionMint({ raw_state: { mint: USDC } } as never)).toBe(USDC);
+    expect(walletPositionMint({ raw_state: {} } as never)).toBeUndefined();
+  });
+  it("holdsMint は正の整数残高だけ true ('0' / '00' / 不正は false)", () => {
+    expect(holdsMint([{ mint: USDC, amount: "1" }], USDC)).toBe(true);
+    expect(holdsMint([{ mint: USDC, amount: "0" }], USDC)).toBe(false);
+    expect(holdsMint([{ mint: USDC, amount: "00" }], USDC)).toBe(false);
+    expect(holdsMint([{ mint: USDC, amount: "1.5" }], USDC)).toBe(false);
+    expect(holdsMint([{ mint: USDC, amount: "1" }], JUPUSD)).toBe(false);
+  });
+});

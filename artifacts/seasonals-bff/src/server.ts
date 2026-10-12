@@ -69,6 +69,7 @@ import {
   toHumanReadable,
   toSmallestUnit,
 } from "@workspace/lib/utils/numeric";
+import { normalizeAssetSymbol } from "@workspace/lib/utils/asset-symbol";
 import {
   deriveAllTimeEvents,
   deriveTimeEvents,
@@ -119,7 +120,11 @@ import {
 import { fetchLstSolValues } from "./clients/lst-rates";
 // 8.72: swap quote の償還価値ガード (LST の NAV から不利方向に外れたら署名前に止める)
 import { fairValueBlockMessage, fairValueGuardBps } from "./fair-value";
-import { evaluateFundingFairValue, evaluateSwapFairValue } from "./swap-fair-value";
+import {
+  evaluateFundingFairValue,
+  evaluateSwapFairValue,
+  prefetchFundingExchangeRate,
+} from "./swap-fair-value";
 // 2026-10-13: funding token deposit (USDC → jlJupUSD) の cross-asset 償還価値ガード
 import { fundingFairValueBlockMessage } from "./funding-fair-value";
 // 2026-10-08: kVault / Save の交換レート換算 (positions 表示と simulate 見積りで共有)
@@ -1224,6 +1229,9 @@ async function buildSwapEarnTx(
     };
   }
 
+  // #49 review: funding deposit の交換レート (Jupiter Lend convertToAssets) は quote に依存しない。
+  // quote と並行で取りに行き、cold cache でも lite-api の往復を直列に積まない (reject しない promise)
+  const exchangeRateP = p.funding ? prefetchFundingExchangeRate(p.funding.market) : undefined;
   try {
     const quote = await fetchSwapQuote({
       inputMint: p.inputMint,
@@ -1240,6 +1248,7 @@ async function buildSwapEarnTx(
           input: p.funding.input,
           underlyingOracle: oracleResults[p.oracleMints.indexOf(p.funding.market.underlying_mint)],
           fundingOracle: oracleResults[p.oracleMints.indexOf(p.funding.input.mint)],
+          exchangeRate: exchangeRateP,
         })
       : await evaluateSwapFairValue(req.log, quote, p.fairValue);
     if (fv.status === "blocked") {
@@ -3213,12 +3222,10 @@ export function applyMenuLiveOverlays(
         // (mobile 側 MenuDrawer と同じ規約)
         // 2026-10-13: 大文字小文字も無視する (jl API は JupUSD market を "jupUSD" で返しうる。
         // registry / fixture は "JupUSD" — jupiter_jupusd pool に live APY を載せるため)
-        const norm = (sym: string) => {
-          const u = sym.toUpperCase();
-          return u === "WSOL" ? "SOL" : u;
-        };
+        // #49 review: 正規化は lib の normalizeAssetSymbol に 1 本化 (同じ規則)
+        const asset = normalizeAssetSymbol(pool.asset);
         const m = s.jupiterMarkets.find(
-          (mk) => norm(mk.underlyingSymbol) === norm(pool.asset)
+          (mk) => normalizeAssetSymbol(mk.underlyingSymbol) === asset
         );
         if (m) {
           const apy = finite(m.supplyRateBps / 10000);
@@ -5260,6 +5267,8 @@ export async function buildServer(
             return null;
           })
         : Promise.resolve(null);
+      // #49 review: 交換レート (convertToAssets) も quote / oracle と並行で取る (reject しない)
+      const exchangeRateP = input.isFunding ? prefetchFundingExchangeRate(market) : undefined;
       let quote: Awaited<ReturnType<typeof fetchSwapQuote>>;
       try {
         quote = await fetchSwapQuote({
@@ -5283,6 +5292,7 @@ export async function buildServer(
             input,
             underlyingOracle: oracles?.[0],
             fundingOracle: oracles?.[1],
+            exchangeRate: exchangeRateP,
           })
         : await evaluateSwapFairValue(req.log, quote, {
             direction: "deposit",

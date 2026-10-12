@@ -306,3 +306,16 @@ describe("2026-10-13: funding deposit (USDC で jlJupUSD)", () => {
     expect(resolveAmountUnit(fundedDepositAction("jupiter", "JupUSD", jlJupUsd.share_mint))).toEqual({ decimals: 6, unitSymbol: "JupUSD" });
   });
 });
+
+describe("#49 review: pinnedSwapEarnMarket (pin の規則を 1 箇所に)", () => {
+  const { pinnedSwapEarnMarket } = jest.requireActual("./solana-action") as typeof import("./solana-action");
+  const jlJupUsd = SWAP_EARN_MARKETS.find((m) => m.share_symbol === "jlJupUSD")!;
+  it("deposit + swap-earn share_mint + protocol 一致で market、それ以外は undefined", () => {
+    expect(pinnedSwapEarnMarket(fundedDepositAction("jupiter", "USDC", jlJupUsd.share_mint))?.share_symbol).toBe("jlJupUSD");
+    expect(pinnedSwapEarnMarket(fundedDepositAction("kamino", "USDC", jlJupUsd.share_mint))).toBeUndefined();
+    expect(pinnedSwapEarnMarket(fundedDepositAction("jupiter", "USDC", kReserve.reserve))).toBeUndefined();
+    expect(pinnedSwapEarnMarket(withdraw("jupiter_lend", jlJupUsd.share_mint))).toBeUndefined();
+    expect(pinnedSwapEarnMarket(depositAction("jupiter", "USDC", "jupiter_usdc_main"))).toBeUndefined();
+    expect(pinnedSwapEarnMarket(undefined)).toBeUndefined();
+  });
+});

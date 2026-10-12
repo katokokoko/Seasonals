@@ -522,6 +522,9 @@ export function useJupiterQuote(
  * - quote は時々刻々変わるので staleTime 5s (useJupiterQuote と同じ)
  * - 入力中に key が変わっても **同じ market + 入力 mint の間は** 前の見積りを出し続ける
  *   (行がちらつかない)。入力 token を切り替えたら前の見積りは出さない (別 token の値を見せない)
+ * - #49 review: placeholderData は **表示用だけ**。前の金額の fairValue verdict で署名させないよう、
+ *   ActionModal は `isPending || isPlaceholderData` の間 CTA を止める ("Checking price…")
+ * - 404 (quote endpoint の無い旧 BFF) は `BffError.status` で判別できる (ActionModal は通す)
  */
 export function useSwapEarnQuote(
   input: SwapEarnQuoteRequest | null

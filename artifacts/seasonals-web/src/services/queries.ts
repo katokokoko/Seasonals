@@ -24,12 +24,17 @@ import type {
   PortfolioHoldingsResponse,
   ProtocolMenuEntry,
   OracleResult,
-  Position,
   SwapEarnQuoteRequest,
   TimelineEvent,
   TimelineEventsResponse,
 } from "@workspace/lib/types";
-import type { WalletHolding } from "@workspace/lib/derive/deposit-funding";
+import {
+  isWalletPosition,
+  walletHoldingsFromPositions,
+  walletPositionMint,
+  type WalletHolding,
+} from "@workspace/lib/derive/deposit-funding";
+import { sameAssetSymbol } from "@workspace/lib/utils/asset-symbol";
 import { useActiveAddresses, type ActiveAddress } from "../state/session";
 import { useCustomEvents } from "../state/customEvents";
 import { AgentPlanStatus, type AgentPlan } from "@workspace/lib/types";
@@ -380,18 +385,10 @@ function useSolanaPositionsQuery(owner: string | null, enabled = true) {
   });
 }
 
-function isWalletRow(p: Position): boolean {
-  return p.protocol_id.startsWith("wallet_");
-}
-
-function rowMint(p: Position): string | undefined {
-  const m = (p.raw_state as { mint?: unknown } | undefined)?.mint;
-  return typeof m === "string" ? m : undefined;
-}
-
 /**
  * deposit の残高 (smallest unit string)。`wallet_*` 行の current_amount (Seeker ActionModal 8.80 と同じ)。
- * mint を渡せば `raw_state.mint` で先に引く (DAS の symbol 表記揺れ jupUSD / JupUSD に強い)、無ければ symbol で。
+ * mint を渡せば `raw_state.mint` で先に引く (DAS の symbol 表記揺れ jupUSD / JupUSD に強い)、無ければ symbol で
+ * (lib sameAssetSymbol)。wallet 行の判定 / mint は lib deposit-funding の helper (mobile と同じ、#49 review)。
  * - 取得成功で行が無い = "0" (DAS は保有 token を全部返す)
  * - 未取得 / 失敗 = null (不明。誤ブロックせず BFF の insufficient_balance に任せる)
  */
@@ -404,8 +401,8 @@ export function useSolanaWalletBalance(
   if (!owner || !asset) return { balance: null, isLoading: false };
   if (!q.isSuccess) return { balance: null, isLoading: q.isPending };
   const row =
-    (mint ? q.data.find((p) => isWalletRow(p) && rowMint(p) === mint) : undefined) ??
-    q.data.find((p) => p.asset_symbol === asset && isWalletRow(p));
+    (mint ? q.data.find((p) => isWalletPosition(p) && walletPositionMint(p) === mint) : undefined) ??
+    q.data.find((p) => isWalletPosition(p) && sameAssetSymbol(p.asset_symbol, asset));
   return { balance: row ? row.current_amount : "0", isLoading: false };
 }
 
@@ -417,17 +414,13 @@ export function useSolanaWalletHoldings(owner: string | null): { holdings: Walle
   const q = useSolanaPositionsQuery(owner);
   if (!owner) return { holdings: null, isLoading: false };
   if (!q.isSuccess) return { holdings: null, isLoading: q.isPending };
-  const holdings: WalletHolding[] = [];
-  for (const p of q.data) {
-    const mint = rowMint(p);
-    if (isWalletRow(p) && mint) holdings.push({ mint, amount: p.current_amount });
-  }
-  return { holdings, isLoading: false };
+  return { holdings: walletHoldingsFromPositions(q.data), isLoading: false };
 }
 
 /**
  * swap-earn deposit の見積り (POST /protocols/swap-earn/quote)。funding deposit の "Receive ≈" 表示と
- * cross-asset fair value の事前判定に使う。req = null で無効。旧 BFF (404) はエラーのまま (CTA は止めない)
+ * cross-asset fair value の事前判定に使う。req = null で無効。判定が出るまで CTA は止める
+ * (SolanaExecutePanel)。例外は旧 BFF (404、endpoint 無し) で、その時だけ CTA を止めない
  */
 export function useSwapEarnQuote(req: SwapEarnQuoteRequest | null) {
   return useQuery({

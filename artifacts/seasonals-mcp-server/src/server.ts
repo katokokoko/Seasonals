@@ -54,6 +54,7 @@ import {
 } from "@workspace/lib/derive/solana-action";
 import { findFundingToken, findMarketByProtocolAsset } from "@workspace/lib/config/swap-earn-markets";
 import { resolveAmountUnit } from "@workspace/lib/derive/amount-utils";
+import { sameAssetSymbol } from "@workspace/lib/utils/asset-symbol";
 import { isSolanaAddress } from "@workspace/lib/config/chains";
 
 import { BffHttpError, type BffClient } from "./bff-client";
@@ -283,7 +284,10 @@ export function buildMcpServer(
             // 解決しない pool は simulate で unsupported_market、承認で 422 になるので最初から出さない
             .flatMap((p): DepositCandidate[] => {
               const depositAsset = p.deposit_asset ?? p.asset;
-              if (depositAsset === asset) {
+              // 2026-10-13 (#49 review): underlying 照合も funded 側 (findFundingToken) と同じく
+              // sameAssetSymbol で大文字小文字を吸収する。case-sensitive だと asset "usdc" で
+              // funded jlJupUSD だけが出て直の jlUSDC が消える。template は canonical の depositAsset で組む
+              if (sameAssetSymbol(depositAsset, asset)) {
                 const { amount: _blank, ...template } = depositAction(
                   entry.protocol_id,
                   depositAsset,

@@ -160,6 +160,29 @@ describe("2026-10-13: funding deposit (USDC → jlJupUSD)", () => {
     expect(est.metadata?.fair_value).toEqual({ status: "ok", deviation_bps: -3 });
   });
 
+  it("#49 review: 交換レート (earn/tokens) は quote の完了を待たずに取りに行く (並行)", async () => {
+    let resolveQuote: ((q: ReturnType<typeof quote>) => void) | undefined;
+    mockQuote.mockImplementation(
+      () => new Promise((resolve) => { resolveQuote = resolve; }) as ReturnType<typeof fetchSwapQuote>
+    );
+    const estP = estimatePlanAction(route, "1000000", log, { oracleByMint: oracleByMint() });
+    for (let i = 0; i < 20 && !resolveQuote; i++) await new Promise((r) => setImmediate(r));
+    // quote はまだ pending — それでも markets は既に取りに行っている
+    expect(resolveQuote).toBeDefined();
+    expect(mockMarkets).toHaveBeenCalledTimes(1);
+    resolveQuote!(quote("1000000", "960781"));
+    const est = await estP;
+    expect(est.metadata?.fair_value).toEqual({ status: "ok", deviation_bps: -3 });
+    expect(mockMarkets).toHaveBeenCalledTimes(1);
+  });
+
+  it("#49 review: 先行取得した markets が落ちても fail-closed (quote が後から返る)", async () => {
+    mockMarkets.mockRejectedValue(new Error("lite-api down"));
+    mockQuote.mockResolvedValue(quote("1000000", "960781"));
+    const est = await estimatePlanAction(route, "1000000", log, { oracleByMint: oracleByMint() });
+    expect(est.warnings).toEqual(["fair_value_unavailable"]);
+  });
+
   it("allowlist 外の inputMint は unsupported_market (quote を呼ばない)", async () => {
     const est = await estimatePlanAction(
       { ...route, inputMint: "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB" },

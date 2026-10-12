@@ -793,6 +793,37 @@ describe("2026-10-13: POST /protocols/swap-earn/quote", () => {
     expect(mockQuote).not.toHaveBeenCalled();
   });
 
+  it("#49 review: 交換レート (earn/tokens) は quote の完了を待たずに取りに行く (deposit-tx / quote 両方)", async () => {
+    for (const url of ["/protocols/swap-earn/quote", "/protocols/swap-earn/deposit-tx"]) {
+      mockMarkets.mockClear();
+      let resolveQuote: ((q: Awaited<ReturnType<typeof fetchSwapQuote>>) => void) | undefined;
+      mockQuote.mockImplementation(
+        () => new Promise((resolve) => { resolveQuote = resolve; })
+      );
+      const resP = post(url, { user: VALID_USER, shareMint: JLJUPUSD_MINT, inputMint: USDC_MINT, amount: "1000000" });
+      for (let i = 0; i < 50 && !resolveQuote; i++) await new Promise((r) => setImmediate(r));
+      // quote はまだ pending — それでも markets は既に取りに行っている
+      expect(resolveQuote).toBeDefined();
+      expect(mockMarkets).toHaveBeenCalledTimes(1);
+      resolveQuote!({
+        inputMint: USDC_MINT,
+        outputMint: JLJUPUSD_MINT,
+        inAmount: "1000000",
+        outAmount: "960781",
+        otherAmountThreshold: "955977",
+        swapMode: "ExactIn",
+        slippageBps: 50,
+        priceImpactPct: "0.0001",
+        routePlan: [],
+      });
+      const res = await resP;
+      expect(res.statusCode).toBe(200);
+      if (url.endsWith("/quote")) expect(res.json().fairValue).toEqual({ status: "ok", deviation_bps: -3 });
+      else expect(res.json().outAmount).toBe("960781");
+      expect(mockMarkets).toHaveBeenCalledTimes(1);
+    }
+  });
+
   it("Jupiter quote 失敗 → 502 jupiter_swap_failed", async () => {
     mockQuote.mockRejectedValue(new Error("boom"));
     const res = await post("/protocols/swap-earn/quote", { shareMint: JLJUPUSD_MINT, amount: "1000000" });

@@ -75,8 +75,8 @@ import {
   chooseDepositFunding,
   type DepositFundingChoice,
   type WalletHolding,
+  walletHoldingsFromPositions,
 } from "@workspace/lib/derive/deposit-funding";
-import { walletHoldingsOf } from "../../services/wallet-holdings";
 
 import type { JupiterLendMarketDTO } from "../../services/api";
 import {
@@ -426,7 +426,7 @@ export function MenuDrawer({
   const { data: positions = [] } = usePositions(walletAddress);
   // 2026-10-13: deposit の支払い token 判定用 (mint 基準、Home と同じ positions cache)
   const walletHoldings = useMemo(
-    () => walletHoldingsOf(positions as Position[]),
+    () => walletHoldingsFromPositions(positions as Position[]),
     [positions]
   );
   // Phase 8.6: Jupiter Lend live markets (drill-down で fixture pools を上書き)
@@ -1257,7 +1257,7 @@ function JupiterDetailPane({
   // 2026-10-13: underlying が無く funding token だけ持つ行は "Pay with USDC" を添える
   // (Deposit tap は handlePoolTap が同じ判定で funding deposit を開く)
   const payWithByKey = useMemo(() => {
-    const holdings = walletHoldingsOf(positions);
+    const holdings = walletHoldingsFromPositions(positions);
     const out = new Map<string, string>();
     for (const r of rows) {
       if (!r.pool || r.isDeposited) continue;

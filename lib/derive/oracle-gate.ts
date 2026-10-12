@@ -15,6 +15,7 @@ import {
   findMarketByShareMint,
   swapEarnDepositInputBySymbol,
 } from "../config/swap-earn-markets";
+import { pinnedSwapEarnMarket } from "./solana-action";
 import {
   findKaminoMarketByAsset,
   findKaminoMarketByPool,
@@ -62,12 +63,8 @@ export function resolveOracleMint(
   // 2026-10-13: share_mint で固定された swap-earn deposit (funding deposit を含む) は
   // asset で引かず、その market の underlying を gate する (asset で引くと別 market に流れる)。
   // funding mint は resolveOracleMints が 2 本目として返す
-  if (action.action_type === "deposit") {
-    const shareMint = action.metadata?.share_mint;
-    const pinned =
-      typeof shareMint === "string" ? findMarketByShareMint(shareMint) : undefined;
-    if (pinned && pinned.protocol_id === protocolId) return pinned.underlying_mint;
-  }
+  const pinned = pinnedSwapEarnMarket(action);
+  if (pinned) return pinned.underlying_mint;
   if (action.action_type === "withdraw") {
     const shareMint = action.metadata?.share_mint;
     if (typeof shareMint === "string") {
@@ -146,20 +143,33 @@ export function resolveOracleMint(
 export function resolveOracleMints(
   action: SolanaActionShape | null | undefined
 ): string[] {
-  const primary = resolveOracleMint(action);
-  if (!primary) return [];
-  if (action?.action_type === "deposit") {
-    const shareMint = action.metadata?.share_mint;
-    const protocolId =
-      action.protocol === "jupiter" ? "jupiter_lend" : action.protocol;
-    const pinned =
-      typeof shareMint === "string" ? findMarketByShareMint(shareMint) : undefined;
-    if (pinned && pinned.protocol_id === protocolId) {
-      const input = swapEarnDepositInputBySymbol(pinned, action.asset);
-      if (input?.isFunding && input.mint !== primary) return [primary, input.mint];
-    }
+  const pinned = pinnedSwapEarnMarket(action);
+  if (pinned) {
+    const input = swapEarnDepositInputBySymbol(pinned, action?.asset);
+    return input?.isFunding && input.mint !== pinned.underlying_mint
+      ? [pinned.underlying_mint, input.mint]
+      : [pinned.underlying_mint];
   }
-  return [primary];
+  const primary = resolveOracleMint(action);
+  return primary ? [primary] : [];
+}
+
+/**
+ * block reason の重さ。両 stale / 未取得は「価格が無い」= divergence (両方 fresh で乖離) より重い。
+ * simulate は divergence だけ warning で通すので、merge で divergence が他の block を隠すと
+ * §4.6 の fail-closed が破れる (#49 review)
+ */
+function blockReasonRank(reason: OracleBlockReason | null): number {
+  switch (reason) {
+    case "oracle_unavailable":
+      return 3;
+    case "oracle_both_stale":
+      return 2;
+    case "oracle_divergence_too_large":
+      return 1;
+    default:
+      return 0;
+  }
 }
 
 /**
@@ -174,7 +184,13 @@ export function mergeOracleResults(results: OracleResult[]): OracleResult | null
   const rank = { ok: 0, warning: 1, blocked: 2 } as const;
   const tierRank = { A: 0, B: 1, C: 2, D: 3 } as const;
   const worst = results.reduce((acc, r) => (rank[r.status] > rank[acc.status] ? r : acc));
-  const blocked = results.find((r) => r.status === "blocked");
+  // blocked が複数なら最も重い block_reason を採る (divergence が both_stale を隠さない)
+  const blocked = results
+    .filter((r) => r.status === "blocked")
+    .reduce<OracleResult | undefined>(
+      (acc, r) => (!acc || blockReasonRank(r.block_reason) > blockReasonRank(acc.block_reason) ? r : acc),
+      undefined
+    );
   const first = results[0]!;
   const weakestTier = results.reduce(
     (acc, r) => (tierRank[r.tier] > tierRank[acc] ? r.tier : acc),

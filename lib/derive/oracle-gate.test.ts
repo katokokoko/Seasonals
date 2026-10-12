@@ -357,3 +357,23 @@ describe("2026-10-13: funding deposit は 2 mint を gate する", () => {
     expect(mergeOracleResults([base("A", "ok"), base("B", "ok", { tier: "D", not_configured: true, reason: "no feed" })])!.not_configured).toBe(true);
   });
 });
+
+describe("#49 review: mergeOracleResults は最も重い block_reason を採る", () => {
+  const r = (asset_symbol: string, block_reason: OracleResult["block_reason"]): OracleResult => ({
+    asset_symbol,
+    status: "blocked",
+    primary: null,
+    price_usd: null,
+    pyth: { available: false, price_usd: null, age_seconds: null },
+    secondary: { source: "redstone", available: false, price_usd: null, age_seconds: null },
+    tier: "A",
+    divergence_pct: null,
+    warnings: [],
+    block_reason,
+  });
+  it("divergence (simulate は warning で通す) が both_stale / unavailable を隠さない", () => {
+    expect(mergeOracleResults([r("JupUSD", "oracle_divergence_too_large"), r("USDC", "oracle_both_stale")])!.block_reason).toBe("oracle_both_stale");
+    expect(mergeOracleResults([r("JupUSD", "oracle_both_stale"), r("USDC", "oracle_unavailable")])!.block_reason).toBe("oracle_unavailable");
+    expect(mergeOracleResults([r("JupUSD", "oracle_divergence_too_large"), r("USDC", "oracle_divergence_too_large")])!.block_reason).toBe("oracle_divergence_too_large");
+  });
+});

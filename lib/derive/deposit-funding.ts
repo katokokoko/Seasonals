@@ -6,6 +6,8 @@
  * 判定は **mint** で行う (symbol は DAS の表記揺れ jupUSD / JupUSD で外れる)。
  */
 import type { SwapEarnFundingToken, SwapEarnMarket } from "../config/swap-earn-markets";
+import type { Position } from "../types/position";
+import { isValidTokenAmount } from "../utils/numeric";
 
 export interface WalletHolding {
   mint: string;
@@ -21,21 +23,45 @@ export type DepositFundingChoice =
   /** どちらも無い (CTA は disabled、hint を出す) */
   | { kind: "none"; accepts: string[] };
 
-function held(holdings: WalletHolding[], mint: string): boolean {
-  return holdings.some((h) => h.mint === mint && /^[0-9]+$/.test(h.amount) && h.amount !== "0" && !/^0+$/.test(h.amount));
+/** 残高が正の保有か (§4.5: 整数 string のみ、"0" / "00" は未保有) */
+export function holdsMint(holdings: WalletHolding[], mint: string): boolean {
+  return holdings.some((h) => h.mint === mint && isValidTokenAmount(h.amount) && !/^0+$/.test(h.amount));
+}
+
+/** /positions の wallet 行か (`wallet_holding` / `wallet_sol` 等、protocol_id が wallet_ で始まる) */
+export function isWalletPosition(p: Pick<Position, "protocol_id">): boolean {
+  return p.protocol_id.startsWith("wallet_");
+}
+
+/** wallet 行の mint (BFF は raw_state.mint に入れる。native SOL は WSOL mint の合成行) */
+export function walletPositionMint(p: Pick<Position, "raw_state">): string | undefined {
+  const mint = (p.raw_state as { mint?: unknown } | undefined)?.mint;
+  return typeof mint === "string" && mint.length > 0 ? mint : undefined;
+}
+
+/**
+ * /positions → 保有一覧 (mint, smallest amount)。mobile / web が同じ変換を使う (#49 review で重複を 1 本化)。
+ * mint の無い行 (fixture 等) は落とす
+ */
+export function walletHoldingsFromPositions(positions: readonly Position[]): WalletHolding[] {
+  const out: WalletHolding[] = [];
+  for (const p of positions) {
+    if (!isWalletPosition(p)) continue;
+    const mint = walletPositionMint(p);
+    if (!mint) continue;
+    out.push({ mint, amount: p.current_amount });
+  }
+  return out;
 }
 
 export function chooseDepositFunding(
   market: SwapEarnMarket,
   holdings: WalletHolding[]
 ): DepositFundingChoice {
-  if (held(holdings, market.underlying_mint)) return { kind: "underlying" };
-  const funding = (market.funding ?? []).find((f) => held(holdings, f.mint));
+  if (holdsMint(holdings, market.underlying_mint)) return { kind: "underlying" };
+  const funding = (market.funding ?? []).find((f) => holdsMint(holdings, f.mint));
   if (funding) return { kind: "funding", token: funding };
-  return {
-    kind: "none",
-    accepts: [market.underlying_symbol, ...(market.funding ?? []).map((f) => f.symbol)],
-  };
+  return { kind: "none", accepts: depositAcceptedSymbols(market) };
 }
 
 /** 保有に関係なく market が受け付ける token の symbol 一覧 (hint 表示用) */

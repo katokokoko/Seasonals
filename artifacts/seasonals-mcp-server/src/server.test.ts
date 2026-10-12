@@ -198,6 +198,19 @@ describe("Seasonals MCP server", () => {
 
     it("funding symbol は大文字小文字を問わない (canonical の USDC で組む)", async () => {
       const out = await run("usdc");
+      // #49 review: 直の underlying 候補 (jlUSDC 等) も同じく case-insensitive に残る (funded だけにならない)
+      expect(out.ranked_candidates.map((c) => c.market_id)).toEqual([
+        "savefi_usdc_main",
+        "jupiter_jupusd",
+        "jupiter_usdc",
+        "kamino_usdc_main",
+      ]);
+      const plain = out.ranked_candidates.find((c) => c.market_id === "jupiter_usdc")!;
+      expect(plain).toMatchObject({
+        action_spec_template: { asset: "USDC", metadata: { pool_id: "jupiter_usdc" } },
+        amount_unit: "USDC",
+      });
+      expect((plain.action_spec_template as { metadata: object }).metadata).not.toHaveProperty("share_mint");
       const funded = out.ranked_candidates.find((c) => c.market_id === "jupiter_jupusd")!;
       expect(funded).toMatchObject({ action_spec_template: { asset: "USDC" }, amount_unit: "USDC" });
     });

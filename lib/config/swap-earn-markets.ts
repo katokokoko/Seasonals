@@ -17,6 +17,7 @@
 
 import type { EarnPosition } from "../types/earn-position";
 import type { Position } from "../types/position";
+import { sameAssetSymbol } from "../utils/asset-symbol";
 
 /**
  * 2026-10-13: market の underlying 以外で deposit を支払える token (funding token)。
@@ -121,22 +122,13 @@ export function findMarketByProtocolAsset(
   );
 }
 
-/** 表記揺れの吸収 (jupUSD / JupUSD、WSOL = SOL)。solana-action.ts の normalizeAssetSymbol と同じ規則 */
-function sameSymbol(a: string, b: string): boolean {
-  const n = (s: string) => {
-    const u = s.trim().toUpperCase();
-    return u === "WSOL" ? "SOL" : u;
-  };
-  return n(a) === n(b);
-}
-
 /** market の funding token を symbol (大文字小文字無視) か mint (厳密) で引く */
 export function findFundingToken(
   market: SwapEarnMarket,
   symbolOrMint: string
 ): SwapEarnFundingToken | undefined {
   return market.funding?.find(
-    (f) => f.mint === symbolOrMint || sameSymbol(f.symbol, symbolOrMint)
+    (f) => f.mint === symbolOrMint || sameAssetSymbol(f.symbol, symbolOrMint)
   );
 }
 
@@ -166,7 +158,7 @@ export function swapEarnDepositInputBySymbol(
   asset: string | undefined
 ): SwapEarnDepositInput | undefined {
   if (!asset) return undefined;
-  if (sameSymbol(asset, market.underlying_symbol)) {
+  if (sameAssetSymbol(asset, market.underlying_symbol)) {
     return swapEarnDepositInput(market, market.underlying_mint);
   }
   const f = findFundingToken(market, asset);
