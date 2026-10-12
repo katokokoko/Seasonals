@@ -432,11 +432,16 @@ export async function runAutonomousCycle(
   const bundleHash = computeBundleHash(action);
   updatePlan(plan.plan_id, {
     selected_action: action,
+    // 2026-10-08: 見積り (agent-plan-estimate.ts) には通さない。実際に動くのは devnet の
+    // lamport 送金 (下の SystemProgram.transfer) で、選んだ market の deposit ではないため、
+    // market の quote を載せると「この量を受け取る」と読める偽の値になる。以前は amount_usd8
+    // (USD 8 桁) を token 欄の estimated_out に入れていた。estimate_kind "none" は契約上
+    // failure_reason 必須 (見積り失敗の意味) なので使わず、estimate_kind / estimated_out /
+    // estimated_fee をすべて省く (表示側は「見積り無し」として何も出さない)。出所は metadata.source
     simulation_result: {
       simulation_id: `sim_${plan.plan_id}`,
-      estimated_out: chosen.c.amount_usd8,
-      estimated_fee: "0",
       bundle_hash: bundleHash,
+      metadata: { source: "autonomous_devnet_transfer" },
     },
     status: "simulated",
   });

@@ -208,6 +208,7 @@ export function noBreakHyphen(name: string): string {
  * - display_only / deposit_open === false は Deposit を押させない (BFF も 409 で拒否する、fail-closed)
  * - BFF の tx builder に解決できない pool も押させない (Seeker は押した後に止める。web は先に見せる)
  * - Withdraw は接続 wallet がこの pool に withdraw できる position を持つ時だけ
+ * 最下段の右下には、Learn に解説がある protocol なら /learn#<protocol_id> への「Learn」(Ethereum カードと同じ位置)。
  */
 export function MenuCard({ item, held, owner, mine }: { item: MenuItem; held?: EarnPosition[]; owner: string | null; mine: EarnPosition[] }) {
   const { protocol, pool } = item;
@@ -301,6 +302,13 @@ export function MenuCard({ item, held, owner, mine }: { item: MenuItem; held?: E
             <button type="button" className="btn" onClick={() => setPanel("withdraw")} disabled={!withdrawable} title={withdrawReason ?? undefined}>
               {actionLabel("withdraw")}
             </button>
+          </span>
+        )}
+        {LEARN_IDS.has(protocol.protocol_id) && (
+          <span className="menu-links">
+            <Link className="menu-open-link" to={`/learn#${protocol.protocol_id}`}>
+              Learn
+            </Link>
           </span>
         )}
       </div>

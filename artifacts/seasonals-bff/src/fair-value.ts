@@ -16,7 +16,7 @@
  * layout を新規に持ち込まずに済む。
  *
  * **「参照が無い」と「参照が取れない」は区別する** (ここが安全性の要):
- *   - jlUSDC / USD* / eUSX / hyloSOL / sHYUSD 等は **そもそも参照を持たない**
+ *   - jlUSDC / USD* / eUSX / hyloSOL / eHYUSD 等は **そもそも参照を持たない**
  *     → 対象外として通す。ここで止めると大半の protocol の deposit が死ぬ
  *   - 参照を持つはずの LST で値が取れない → **fail-closed で止める**
  *

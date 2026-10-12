@@ -33,12 +33,19 @@
   font-size: var(--fs-bodyLG);
 }
 
+/* chain filter (chip の見た目は shell.css の .filter-chip を Menu と共有) */
+.learn-chain {
+  display: flex;
+  gap: var(--sp-xs);
+  margin-top: var(--sp-lg);
+}
+
 /* 横 3 枚 (アプリの最小幅 1100px でも 3 列)。それ未満は保険で 2 列 → 1 列 */
 .learn-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: var(--sp-lg);
-  margin-top: var(--sp-xl);
+  margin-top: var(--sp-lg);
 }
 @media (max-width: 1099px) {
   .learn-grid {

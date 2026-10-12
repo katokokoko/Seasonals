@@ -287,6 +287,215 @@ describe("Seasonals MCP server", () => {
     expect(bad.isError).toBe(true);
   });
 
+  it("compare: 候補は action_spec_template / route_kind / amount 単位を持ち、route の無い pool は出さない", async () => {
+    const menu = [
+      ...MENU,
+      {
+        protocol_id: "nowhere",
+        display_name: "Nowhere",
+        primary_category: "lending",
+        supported_assets: ["USDC"],
+        icon_id: "x",
+        icon_bg: "#000",
+        pools: [
+          // APY 最高だが lib の resolveSolanaRoute に解決しない (execute できない)
+          { pool_id: "nowhere_usdc", name: "USDC", category: "lending", asset: "USDC", apy: 0.99, tvl_usd: 1e9 },
+        ],
+      },
+      {
+        protocol_id: "meteora",
+        display_name: "Meteora",
+        primary_category: "lp",
+        supported_assets: ["USDC"],
+        icon_id: "meteora",
+        icon_bg: "#000",
+        pools: [
+          {
+            pool_id: "meteora_usdc_usdt_dlmm",
+            name: "USDC-USDT",
+            category: "lp",
+            asset: "USDC-USDT",
+            deposit_asset: "USDC",
+            apy: 0.2,
+            tvl_usd: 1_000_000,
+          },
+        ],
+      },
+    ];
+    const { client } = await connect(
+      fakeBff({ "/menu-listings": () => menu, "/agent-plans": () => ({ plan_id: "p5" }) })
+    );
+    const out = textOf(
+      await client.callTool({ name: "compare_opportunities", arguments: { objective: "max_yield", asset: "USDC" } })
+    ) as { ranked_candidates: Record<string, unknown>[] };
+    const ids = out.ranked_candidates.map((c) => c.market_id);
+    expect(ids).not.toContain("nowhere_usdc");
+    expect(ids).toEqual(["savefi_usdc_main", "meteora_usdc_usdt_dlmm", "kamino_usdc_main"]);
+    const kamino = out.ranked_candidates.find((c) => c.market_id === "kamino_usdc_main")!;
+    expect(kamino).toMatchObject({
+      action_spec_template: {
+        action_type: "deposit",
+        protocol: "kamino",
+        asset: "USDC",
+        metadata: { pool_id: "kamino_usdc_main" },
+      },
+      route_kind: "kamino_deposit",
+      amount_decimals: 6,
+      amount_unit: "USDC",
+    });
+    // 雛形に amount は入れない (空文字は simulate_action の §4.5 検証で落ちる)
+    expect("amount" in (kamino.action_spec_template as object)).toBe(false);
+    // LP は deposit_asset 建て
+    const met = out.ranked_candidates.find((c) => c.market_id === "meteora_usdc_usdt_dlmm")!;
+    expect(met).toMatchObject({ route_kind: "meteora_deposit", amount_unit: "USDC" });
+    expect((met.action_spec_template as { asset: string }).asset).toBe("USDC");
+  });
+
+  it("simulate_action: metadata を BFF へそのまま渡し、見積りと status を返す", async () => {
+    let sent: unknown;
+    const { client } = await connect(
+      fakeBff({
+        "/agent-plans/p1/simulate": (body) => {
+          sent = body;
+          return {
+            plan_id: "p1",
+            simulation: {
+              simulation_id: "sim_1",
+              estimate_kind: "exchange_rate",
+              estimated_out: "2000000",
+              estimated_out_symbol: "Allez SOL shares",
+              estimated_out_decimals: 6,
+              bundle_hash: "0xdef",
+              oracle: { primary: "pyth", primary_age_seconds: 3, warnings: ["oracle_secondary_stale"] },
+              metadata: { tokens_per_share: "1.25" },
+            },
+          };
+        },
+      })
+    );
+    const action_spec = {
+      wallet_id: "W",
+      action_type: "deposit",
+      protocol: "kamino",
+      asset: "SOL",
+      amount: "2500000000",
+      metadata: { pool_id: "kamino_allez_sol_vault" },
+    };
+    const out = textOf(
+      await client.callTool({ name: "simulate_action", arguments: { plan_id: "p1", action_spec } })
+    );
+    expect(sent).toEqual({ action_spec });
+    expect(out).toEqual({
+      simulation_id: "sim_1",
+      plan_id: "p1",
+      status: "ok",
+      estimate_kind: "exchange_rate",
+      estimated_out: "2000000",
+      estimated_out_symbol: "Allez SOL shares",
+      estimated_out_decimals: 6,
+      warnings: [],
+      oracle_warnings: ["oracle_secondary_stale"],
+      bundle_hash: "0xdef",
+    });
+
+    // withdraw の metadata (seasonals://positions の position から写した形) も通る
+    const withdraw = {
+      wallet_id: "W",
+      action_type: "withdraw",
+      protocol: "kamino",
+      asset: "SOL",
+      amount: "2000000",
+      metadata: {
+        share_mint: "A1so1bPD3W1TfeFwboDh8yfAAVaVtcdAYBYCjhg2mJQ",
+        share_decimals: 6,
+        underlying_decimals: 9,
+        underlying_amount: "2500000000",
+      },
+    };
+    const ok = await client.callTool({ name: "simulate_action", arguments: { plan_id: "p1", action_spec: withdraw } });
+    expect(ok.isError).toBeFalsy();
+    expect(sent).toEqual({ action_spec: withdraw });
+  });
+
+  it("simulate_action: 未知の metadata key / base58 でない share_mint / 不正 pool_id は zod で拒否 (BFF を呼ばない)", async () => {
+    const called = jest.fn();
+    const { client } = await connect(fakeBff({ "/agent-plans/p1/simulate": called }));
+    const base = { wallet_id: "W", action_type: "deposit", protocol: "kamino", asset: "USDC", amount: "1" };
+    for (const metadata of [
+      { pool_id: "kamino_usdc_main", slippage_bps: 9999 },
+      { share_mint: "0OIl-not-base58" },
+      { pool_id: "Kamino USDC" },
+      { share_decimals: 6.5 },
+      { underlying_amount: "1.5" },
+    ]) {
+      const res = await client.callTool({
+        name: "simulate_action",
+        arguments: { plan_id: "p1", action_spec: { ...base, metadata } },
+      });
+      expect(res.isError).toBe(true);
+    }
+    expect(called).not.toHaveBeenCalled();
+  });
+
+  it("simulate_action: failure_reason があれば status failed", async () => {
+    const { client } = await connect(
+      fakeBff({
+        "/agent-plans/p1/simulate": () => ({
+          plan_id: "p1",
+          simulation: {
+            simulation_id: "sim_2",
+            estimate_kind: "none",
+            failure_reason: "asset_mismatch",
+            bundle_hash: "0x1",
+            metadata: { oracle_warnings: ["oracle_pyth_stale"] },
+          },
+        }),
+      })
+    );
+    const out = textOf(
+      await client.callTool({
+        name: "simulate_action",
+        arguments: {
+          plan_id: "p1",
+          action_spec: {
+            wallet_id: "W",
+            action_type: "deposit",
+            protocol: "kamino",
+            asset: "USDC",
+            amount: "1000000",
+            metadata: { pool_id: "kamino_sol_main" },
+          },
+        },
+      })
+    ) as Record<string, unknown>;
+    expect(out).toMatchObject({
+      status: "failed",
+      estimate_kind: "none",
+      failure_reason: "asset_mismatch",
+      warnings: [],
+      oracle_warnings: ["oracle_pyth_stale"],
+    });
+    expect(out.estimated_out).toBeUndefined();
+  });
+
+  it("request_user_approval: 422 simulation_failed は poll せず理由を返す", async () => {
+    const polled = jest.fn();
+    const { client } = await connect({
+      get: async () => {
+        polled();
+        return {} as never;
+      },
+      post: async () => {
+        throw new BffHttpError(422, { error: "simulation_failed", failure_reason: "unsupported_market", plan_id: "p6" });
+      },
+    });
+    const out = textOf(
+      await client.callTool({ name: "request_user_approval", arguments: { plan_id: "p6", timeout_seconds: 5 } })
+    ) as { status: string; failure_reason: string };
+    expect(out).toMatchObject({ status: "simulation_failed", failure_reason: "unsupported_market" });
+    expect(polled).not.toHaveBeenCalled();
+  });
+
   it("request_user_approval: web で approve → 署名中 → broadcasted まで待って signatures を返す", async () => {
     const SIG = "5".repeat(88);
     const states = [

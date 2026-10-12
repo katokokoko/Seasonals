@@ -278,19 +278,6 @@ Web 側 (`artifacts/seasonals-web`) は `BFF_URL` (Vite dev proxy 先、node 側
 - `data-water-glass="droplet"` (`GLASS_VARIANTS.droplet`、lens 1.2 / frost 0) + `uGlassShape` (輪郭の揺らぎ 4 CSS px、seed)。shader は透明な「水への窓」(quiet × 0.6 で線の間を沈める、縁だけ薄い水色)、光の側の細い光の線、光に向いた角の 4 点星、水面 layer (`uGlassLens = 0`) にカードの外の集光。CSS は WebGL 中だけ tint / rim / 影を外し、文字の後ろに薄い vanilla の楕円と白い縁取り。WebGL 不可 / reduced transparency は従来の glass
 - 計測: drawArrays + readPixels で水面 layer 7.60 → 7.97 ms、glass layer 4.58 → 4.29 ms (droplet は bevel の色分散を省く)。`e2e/run.mjs` 全 pass (droplet の 2 check 追加)
 
-### droplet カードのきらめきの位置 (2026-10-05)
-- きらめきは光の向きの符号で 4 隅のどれかに置いていたため、ポインターが画面の中心線をまたぐと隅から隅へ飛んでいた。中心から光の方向 (カードの縦横比で引き伸ばす) へ伸ばした線が角丸の輪郭と交わる点の少し内側に置き、`uLight` の追従に合わせて縁に沿ってなめらかに動くようにした。既定の左上の光では左上の隅の近くに止まる
-- カードの下のキャラを glass layer で描く案 (texture) と top bar の droplet 版 (`?nav=droplet`) は試したが、どちらも不要と決めて外した
-
-### 水面を浅い海の写真に寄せる (/goal、2026-10-05)
-- 参照は浅い海を真上から撮った写真 (local-only、`docs/web/reference/water-ref.png`)。膨らみや blob ではなく、水面の shader (`renderB`) そのものを寄せた。手順・採点文面・記録は `docs/web/reference/water-{goal,judge,tuning-log}.md`、撮影と gate は `e2e/water-shots.mjs`
-- 採用は iter 7 の形: 集光は「6 波の和の曲面が光を集める」(1 / |det(I − s∇²h)|) の折れ線、焦点外は少し深いアクア、水は赤から吸収するターコイズで浅い砂と深い斑、砂は粒 + 小石 + 砂紋、流れに沿う水面の筋と星、Home の静かな所はぼかした線を残す。描画コストは元の shader の 0.87 倍
-- 採点 (fresh な Opus、全軸 4 以上 2 回連続が完了条件) は上限 10 回で未達。元の shader の 2/3/2/2/3 から 3/3/3/3/4 (iter 5 と 7) まで。iter 2 以降は全軸 3 前後で頭打ちで、網目の形 (Voronoi はタイル的、焦点の折れ線は稲妻的、重み付き Voronoi の iter 9 / 10 も多角形と言われた) と水面の筋の弱さが毎回残った。規則どおり最低軸が最も高い commit のうち後の iter 7 に戻した。iter 9 / 10 の丸い網目は `0ccdeec` / `a10006f` に残してある
-- gate は全 iteration で通過: 文字のコントラスト (iter 0 の値以上)、作業画面の静かさ、reduced motion で静止、描画コストの比 ≤ 1.4。作業マシンは別セッションの test / build で負荷が高く、perf は iter 0 の shader と同じ page で交互に測る比にした。撮影中の vite reload は撮り直す
-- 延長 (iter 11–15、ユーザーの指示): 浅い砂を app の vanilla cream (別の UI mock の上端の色) に変え、採点の depth 軸も合わせた。網目は乗法重み付き Voronoi (壁が円弧の小石状の網目) に替え、吸収を深さの 2 乗に (浅い所は vanilla、深い所はティール)。最良は iter 14 / 15 の 3/3/3/4/4 (depth が初めて 4) で、後の iter 15 を採用。完了条件 (全軸 4 × 2 回) は未達。e2e 110 件全 pass、描画コストは元の 0.95 倍
-- 粒の修正と 2 回目の延長 (iter 16–20): 砂の粒を正方形の hash から滑らかな noise に (Retina で荒く見えない)、droplet card の縁で粒・砂紋・筋を薄める。線の太さを細線〜太い帯に、knot に hot spot と小さなきらめき、水面の筋を流れに沿う長い細線に。最良は iter 16 / 19 / 20 の 3/4/3/4/4 (caustics と depth が 4) で iter 20 を採用。完了条件は未達。採点には ±1 のぶれ (同じ線で Ca が 4 と 3)。e2e 110 件全 pass、描画コストは元の 1.05 倍
-- Home の水色の膜: DOM の層ではなく、列ごとに束ねた quiet zone (0.85) だった。Home の `quiet` を下げ (0.4 を試してユーザー指定で 0.6)、上部バーの glass の下だけは 0.85 のまま (ロゴの文字のコントラストを保つ)
-
 ### 水面背景の発熱対策 (2026-10-06)
 
 - 原因: MacBook Pro M4 Pro (ProMotion 120 Hz) で、水面と glass の 2 枚の canvas を毎フレーム全画面に描いていた。
@@ -325,6 +312,19 @@ Web 側 (`artifacts/seasonals-web`) は `BFF_URL` (Vite dev proxy 先、node 側
   - e2e 113/113 (`SOL_E2E=1`): 偽 Wallet Standard wallet の検出・接続・reload で silent 再接続、実 BFF で Menu の Jupiter USDC deposit panel が実 mainnet 残高 (38.486021 USDC) を読む、network を差し替えた block で署名 → `/tx/submit` (署名済 bytes の base64 一致) → confirmed → Solscan link
 - **oracle 障害 → 解消済み** (下の「oracle 移行」): 実 BFF での build → wallet prompt は e2e で確認済み。**mainnet 実送信は未検証**のまま (実 wallet での署名が要る)。少額で Jupiter Lend USDC deposit → withdraw、Kamino、Save (複数 tx)、Orca / Meteora の部分署名済 tx を wallet ごと (Phantom / Solflare / Backpack) に確かめる
 - 既知: Orca / Meteora の withdraw は Seeker と同じ入力単位 (metadata の share_decimals と asset) なので、position NFT 1 枚が「1 USDC」のように見える。mobile の `ActionModal` はまだ `resolveSolanaRoute` に乗せ替えていない (lib test が cascade 順序を固定。乗せ替えは実機確認が要るので別 phase)
+
+### droplet カードのきらめきの位置 (2026-10-05)
+- きらめきは光の向きの符号で 4 隅のどれかに置いていたため、ポインターが画面の中心線をまたぐと隅から隅へ飛んでいた。中心から光の方向 (カードの縦横比で引き伸ばす) へ伸ばした線が角丸の輪郭と交わる点の少し内側に置き、`uLight` の追従に合わせて縁に沿ってなめらかに動くようにした。既定の左上の光では左上の隅の近くに止まる
+- カードの下のキャラを glass layer で描く案 (texture) と top bar の droplet 版 (`?nav=droplet`) は試したが、どちらも不要と決めて外した
+
+### 水面を浅い海の写真に寄せる (/goal、2026-10-05)
+- 参照は浅い海を真上から撮った写真 (local-only、`docs/web/reference/water-ref.png`)。膨らみや blob ではなく、水面の shader (`renderB`) そのものを寄せた。手順・採点文面・記録は `docs/web/reference/water-{goal,judge,tuning-log}.md`、撮影と gate は `e2e/water-shots.mjs`
+- 採用は iter 7 の形: 集光は「6 波の和の曲面が光を集める」(1 / |det(I − s∇²h)|) の折れ線、焦点外は少し深いアクア、水は赤から吸収するターコイズで浅い砂と深い斑、砂は粒 + 小石 + 砂紋、流れに沿う水面の筋と星、Home の静かな所はぼかした線を残す。描画コストは元の shader の 0.87 倍
+- 採点 (fresh な Opus、全軸 4 以上 2 回連続が完了条件) は上限 10 回で未達。元の shader の 2/3/2/2/3 から 3/3/3/3/4 (iter 5 と 7) まで。iter 2 以降は全軸 3 前後で頭打ちで、網目の形 (Voronoi はタイル的、焦点の折れ線は稲妻的、重み付き Voronoi の iter 9 / 10 も多角形と言われた) と水面の筋の弱さが毎回残った。規則どおり最低軸が最も高い commit のうち後の iter 7 に戻した。iter 9 / 10 の丸い網目は `0ccdeec` / `a10006f` に残してある
+- gate は全 iteration で通過: 文字のコントラスト (iter 0 の値以上)、作業画面の静かさ、reduced motion で静止、描画コストの比 ≤ 1.4。作業マシンは別セッションの test / build で負荷が高く、perf は iter 0 の shader と同じ page で交互に測る比にした。撮影中の vite reload は撮り直す
+- 延長 (iter 11–15、ユーザーの指示): 浅い砂を app の vanilla cream (別の UI mock の上端の色) に変え、採点の depth 軸も合わせた。網目は乗法重み付き Voronoi (壁が円弧の小石状の網目) に替え、吸収を深さの 2 乗に (浅い所は vanilla、深い所はティール)。最良は iter 14 / 15 の 3/3/3/4/4 (depth が初めて 4) で、後の iter 15 を採用。完了条件 (全軸 4 × 2 回) は未達。e2e 110 件全 pass、描画コストは元の 0.95 倍
+- 粒の修正と 2 回目の延長 (iter 16–20): 砂の粒を正方形の hash から滑らかな noise に (Retina で荒く見えない)、droplet card の縁で粒・砂紋・筋を薄める。線の太さを細線〜太い帯に、knot に hot spot と小さなきらめき、水面の筋を流れに沿う長い細線に。最良は iter 16 / 19 / 20 の 3/4/3/4/4 (caustics と depth が 4) で iter 20 を採用。完了条件は未達。採点には ±1 のぶれ (同じ線で Ca が 4 と 3)。e2e 110 件全 pass、描画コストは元の 1.05 倍
+- Home の水色の膜: DOM の層ではなく、列ごとに束ねた quiet zone (0.85) だった。Home の `quiet` を下げ (0.4 を試してユーザー指定で 0.6)、上部バーの glass の下だけは 0.85 のまま (ロゴの文字のコントラストを保つ)
 
 ### oracle 移行: Pyth push + RedStone push (2026-10-05、未 commit)
 - 背景: Pyth Hermes REST が 2026-08-26 の Pyth Core upgrade で API key 必須 (key 無しは 401、key は 14 日 trial 後 $500/月)、Switchboard が 2026-09-25 にサポート終了 (crossbar は DNS 消滅)。BFF の oracle gate が全 Solana asset で `oracle_unavailable` になり、Seeker も web も Solana の tx を組めなかった
@@ -440,6 +440,63 @@ Web 側 (`artifacts/seasonals-web`) は `BFF_URL` (Vite dev proxy 先、node 側
 - 検証: lib 293 / BFF 634 / mobile 456 / MCP 24 / web 152 tests green、`pnpm -r typecheck` green。`verify:tx` 23 経路 要調査 0。web e2e 116/116 (agent inbox の 3 check 含む)。**MCP e2e** (新コードの MCP server を stdio で spawn、dev BFF 相手): compare → simulate (jupiter_lend USDC 1.0) → request_user_approval を待たせつつ web 相当の approve → execute (mainnet の実 tx 構築、署名なし) → /failed で Agent に `{status:"failed", failure_reason:"user_cancelled"}` が返る、wallet filter、token の秘匿、user 承認 plan への `execute_approved_action` が `awaiting_user_signature`、再 approve の token 再発行 — 19/19
 - 未検証: 実 wallet で web から署名して送る (mainnet 少額、ユーザー)、Seeker 実機で承認画面が token 無しで開くこと
 - 範囲外: Seeker 上での agent plan 署名、`/agent-plans` の認証 (従来どおり無し)
+
+### Learn に Solana 12 protocol と chain filter (2026-10-08、未 commit、Fable 5.1 が文章 / Opus 5.5 subagent 3 本が code)
+- 背景: Learn は 2026-09-26 に Ethereum 6 件で作った初学者向けガイドで、Menu の Solana 12 protocol は載っていなかった。Menu の「Learn」link も Ethereum カードだけ。ユーザー指定で **Fable 5.1 = 文章、Opus 5.5 = 機能実装** に分担 (content.ts と WORKLOG は Fable、それ以外は Opus。同じファイルを両者が触らない)
+- 判断 (ユーザー決定 / 設計):
+  - 並び順は Menu と同じ config 順。chip は `["all", ...SUPPORTED_CHAINS]` から描いて **All chains / Solana / Ethereum**、カードは chain ごとにまとめて **Solana 12 → Ethereum 6** (`learn/filter.ts` の `CHAIN_ORDER`、逆にするなら 1 行)
+  - chip の見た目は Menu の `.filter-chip` を **shell.css に移して共有**。explore.css は Menu route の lazy chunk でしか読まれないので、Learn を先に開くと chip が無スタイルになる (実バグ回避)。`.segmented` (soda 塗り) は view 切替用なので使わない
+  - filter は `useState("all")`、URL には載せない。`/learn#<id>` の entry が filter で隠れていれば **その chain に切り替えてから** 次 render で scroll + 詳細を開く (依存配列 `[hash, chain]`)
+  - Learn の id = `menu-listings` の `protocol_id` (logo と `/learn#<id>` が解決する前提)。`content.test.ts` が `fixtureMenuListings` と突き合わせて契約として固定
+- 実装:
+  - `content.ts`: `LearnEntry.chain: ChainId` を追加 (Ethereum 6 件に `"ethereum"`)、Solana 12 件 (jupiter / kamino / solstice / sanctum / perena / savefi / marinade / meteora / jito / orca / hylo / exponent) を既存と同じ 13 field で追加。全文を 2026-10-08 に公式 docs で裏取りし `sources` に残した (計 40 URL、Jito の docs は bot 対策で WebFetch / curl が 403 のため Chrome で同日に読んだ)。`inSeasonals` / `onYourCalendar` は実装済みのことだけ: wallet 署名 → Seasonals server → mainnet、oracle gate (2% warning / 5% refuse / both stale refuse)、swap-earn 系の withdraw は protocol の unstake ではなく Jupiter swap、jitoSOL / mSOL / INF は fair-value guard (償還価値より 2% 超不利で拒否)、epoch イベントは jitoSOL / mSOL / INF / hyloSOL 保有時、health は借入のある Kamino obligation、claim は Orca / Meteora の未請求 fee、maturity は Exponent PT / YT、Exponent は満期 PT の Redeem のみ (買いは未実装)
+  - `learn/filter.ts` (新規): `LEARN_CHAINS` / `CHAIN_ORDER` / `chainLabel` / `learnEntries(chain)` (filter → stable sort、`LEARN` は不変)
+  - `LearnPage.tsx`: chip group (`role="group" aria-label="Chain"`、Menu と同じ markup)、grid は `learnEntries(chain)`、hash effect の chain 切替。`learn.css` に `.learn-chain`、grid の `margin-top` を `--sp-lg` に
+  - `shell.css` ← `explore.css`: `.filter-chip` 2 規則を move (copy ではない)
+  - `ExploreMenu.tsx`: Solana `MenuCard` の `.menu-item-bottom` 右下に `LEARN_IDS.has(protocol.protocol_id)` で「Learn」(`span.menu-links`、Ethereum カードと同じ位置)
+  - tests: `content.test.ts` を data-driven に (id 集合 = Ethereum 6 + fixture の Solana 12、`chain` は `SUPPORTED_CHAINS`、Solana の `inSeasonals` に "fork" 無し / Ethereum に "Solana wallet" 無し)。`LearnPage.test.tsx` に chip 由来 / 並び順 / Solana・Ethereum 絞り込み / 隠れた guide への deep link が chip を切り替える、の 4 本。`ExploreMenu.test.tsx` に Solana カードの Learn link。e2e `run.mjs` の Learn block は `=== 6` を chip 押下後の枚数 (All = Solana + Ethereum、12 / 6 は content.ts を指すコメント付き) に書き換え、`#jupiter` deep link の chip 切替、screenshot 3 枚
+- 検証: web vitest 158 / 158 (24 files、Learn 13 本含む)、`pnpm typecheck` (web) と `pnpm -r typecheck` (5 workspace) green。content.ts の全 URL (site / docs / sources) を curl で確認: jito.network 3 本が 403 (bot 対策、Chrome では閲覧可)、hylo.so が 429 (rate limit) 以外は 200
+  - e2e (Opus 5.5 統合 subagent、`SOL_E2E=1`): 自前の BFF (3031) + vite (5174) 相手に **120 / 120**。Learn の 10 check 全部 green (1440 / 1280 で 3 枚 1 行、`#pendle` deep link と focus、Esc で閉じて hash 消去、chip 文言、Solana 12 / Ethereum 6 と https link、Ethereum 絞り込み中の `#jupiter` で Solana chip に切替、All chains で 18)。既に動いていた BFF (3030) 相手の 1 回目は `Deposited only` 1 本だけ落ちた (その BFF の子 process が死んでいた。別セッションの BFF Ethereum 変更に起因、Learn とは無関係)。e2e の修正 1 点: `learn-all-1440.png` の前に `window.scrollTo(0, 0)` (Esc で Pendle の Details に focus が戻ってスクロールし、浮遊ナビが 3 行目に被っていた。check は落ちていない)
+  - screenshot (`.screenshots/learn-{all,solana,ethereum}-1440.png`、`menu-1440.png`): chip は pill で押下中が濃色、3 列、All chains の 1 行目は Jupiter / Kamino / Solstice、12 枚の後に Ethereum 6 枚、全カードに logo (monogram 無し)、はみ出し無し。Menu の chip は見た目不変、Solana カードの右下に Learn。気づき: Ethereum カードだけ brand 色の上辺 4px と bullet 色が付く (Solana は中立)、Jito の logo は左端が欠けて見える (Menu と同じ画像、既存)
+- 未検証: 1280 / 1100 幅の chip と 6 行 grid の目視 (e2e は 1440 と 1280 の WIDTHS で枚数だけ見る)、mobile 幅
+- 範囲外 / 気づき (lib の fixture なので今回は触っていない、別タスク):
+  - Menu の Jupiter「JupSOL」pool (`jupiter_jupsol`、asset SOL) は route 上 **Jupiter Lend の SOL market (jlWSOL)** に入る。JupSOL LST を買うのではないので、`menu-listings.ts` の表示名を見直す余地 (Learn の文章では事実どおりに書いた) → 2026-10-10 に「SOL Main」へ改名 (下の section)
+  - Hylo は V2 (2026-07) で **sHYUSD を同じ mint のまま eHYUSD に改称** (`docs.hylo.so/security/onchain-addresses`: "eHYUSD (formerly sHYUSD)")。Menu の `hylo_shyusd` の表示名「sHYUSD Stability Pool」は旧称。Learn では「Menu は旧称のまま、同じ token」と明記した → 2026-10-10 に eHYUSD へ改称 (下の section)
+  - Solana の brand 色は `PROTOCOL_BRAND` に無いので Learn カードの上辺 accent は透明 (既存 test が中立表示を assert。今回は足していない)
+
+### 実機確認の 4 点: 承認画面の期限と状態 / 戻れない / EST. OUT の実値化 + MCP の経路 / EGL ログ (2026-10-08、未 commit、Opus 5.5 subagent 3 本で実装)
+- 背景 (2026-10-08 の Seeker 実機確認): (1) 承認画面の「Expires in 4:57」は 5 分の approval token の残りで、web が token を再発行する新契約では意味が無い。card は `plan.status` も読まず、web で却下されても Approved のまま。(2) 承認画面から戻れない。原因は `MenuDrawer` の BackHandler が `visible` の間ずっと有効で、下に開いたままの Menu 詳細が戻る操作を飲み込んでいた。(3) agent plan の EST. OUT が 0。simulate は mock registry (kamino の 30 日 APY 見込み、他は全部 "0") で、単位も入力 asset 表示。MCP `simulate_action` は metadata を運べず、Agent の plan では kVault / Meteora / Orca の deposit と全 withdraw が `/execute` で 422。simulate の oracle gate は `jupiter` を正規化せず素通り。(4) logcat の `EGLConsumer is not attached`
+- 判断 (ユーザー決定): 期限は plan の `expires_at` を出し状態も反映 / EST. OUT は既存の見積り元で実値化 / MCP の metadata 経路も今回直す
+- 契約 (lib): `SimulationResult` に `estimate_kind` (quote / exchange_rate / same_as_input / lp_position / pt_redeem / none)、受け取り単位 (`estimated_out_mint` / `_symbol` / `_decimals`)、`min_out`、`warnings` (fair value / 預入停止)、型付きの `failure_reason`。`estimated_out` / `estimated_fee` は optional (fee は署名なしで正直な値が無いので出さない)。表示文言は `lib/derive/simulation-display.ts` で web と Seeker が共有。`estimate_kind` の無い旧結果は従来どおり入力 asset の単位
+- BFF / MCP:
+  - simulate は `resolveSolanaRoute` の route ごとに見積る (`agent-plan-estimate.ts`): swap-earn = Jupiter quote (+ fair value は warning、拒否は従来どおり execute の builder)、Kamino reserve = 入力量そのまま、kVault / Save = 交換レート (`exchange-rate-math.ts` に bigint で切り出し、Menu の position 換算も同じ関数に)、Meteora / Orca / Exponent = 数値なし。route が無ければ 0 ではなく `unsupported_market`
+  - oracle は `resolveOracleMint` で全 route に掛ける (`jupiter` の素通りを修正)。metadata は strict に検証 (400 `invalid_action_metadata`)、小数 amount は 400。deposit で pool と asset が合わなければ `asset_mismatch` (pool_id を Agent が送れるようになったので、SOL pool に USDC 建て amount = 1000 倍の取り違えを防ぐ)。request-approval と approve は `unsupported_market` / `asset_mismatch` の plan を 422 で止める
+  - MCP: `compare_opportunities` の候補に `action_spec_template` / `route_kind` / `amount_decimals` / `amount_unit` (route の無い pool は外す)。`simulate_action` は `metadata` を受け、出力に `status: ok|failed` と見積り項目。withdraw は `seasonals://positions/{wallet}` の値を metadata で渡す
+  - autonomous (devnet の lamport 送金) は見積りに通さず `metadata.source = "autonomous_devnet_transfer"` だけ (USD を token 欄に入れていた偽値を削除)
+- Seeker: 承認画面に ✕ (`canGoBack` なら back、無ければ Home)、Menu の BackHandler は Home が focus の時だけ、cold start の push は処理後に消して同じ plan を 5 秒以内に二重で開かない。card は「Valid until」(plan の 24h 期限、過ぎたら fail-closed で Approve を出さない) と status ごとの 1 行 (Approved / Being signed / Sent + Solscan / Failed / Rejected / Expired)、Approve・Reject は simulated | pending_user の時だけ、画面表示中は live な status なら 5 秒で取り直す。水面の frame callback は Home が focus かつ foreground の時だけ回す
+- web: inbox の Estimated out / Minimum out / 理由 / 注意を共有 helper に。旧結果の fee (mock の lamports を入力 asset 建てと取り違えた値) は従来どおり出さない
+- 検証: lib 308 / BFF 668 / mobile 495 / MCP 29 / web 162 tests green、`pnpm -r typecheck` green、`verify:tx` 23 経路 要調査 0。MCP e2e (新 MCP server を stdio で spawn、dev BFF、署名なし) 15/15: jupiter USDC 1.0 → 「≈ 0.940502 jlUSDC」+ min_out、kVault deposit と実 position (jlUSDC) からの 0.1 withdraw が unsigned tx まで組める (以前は Agent 経由で 422)、未知 metadata key / 壊れた mint / 小数 amount の拒否、rotate → unsupported_market + request-approval 422
+- Seeker 実機: Menu の Perena 詳細を開いたまま承認画面を重ね、戻る操作と ✕ のどちらでも詳細に戻れる。「≈ 0.940502 jlUSDC」/ fee「—」/「Valid until 2026/10/09 03:21」。BFF 側で reject すると 4 秒で Rejected 表示になり Approve・Reject が消える。wallet 選択の取り消しは従来どおり
+- 実機で分かったこと:
+  - Metro (watchman の root が `~/Documents` 全体) が起動後に作られた lib の新 file を拾わず、bundle の build に失敗して端末は古い bundle のまま動いていた。古い card は fee の無い新形式 plan で Render Error。Metro の再起動で解消 (ユーザー)。lib に新 file を足した時は Metro の再起動が要る
+  - EGL ログは水面の描画中ずっと出る定常的なもの (再読込直後の素の Home でも 30 秒で 10 行前後)。今回の修正でアプリが裏にある間は 0 行・描画停止。前面での発生は Skia の TextureView の挙動 (Skia 自身が「無視してよい」と出す) なので範囲外
+- 範囲外 / 既知: Exponent PT の換算値 (JS Number の rate、式未検証)、fee の見積り、Save の交換レートが上流から取れない時に client が「1」で代用する既存の問題 (cToken 見積りが過大になり得る)、mainnet での署名・送金 (ユーザー)
+
+### Learn follow-up: Menu 表示名 (JupSOL → SOL Main / sHYUSD → eHYUSD)、Ethereum guide の tagline、e2e の BFF preflight と e2e:local (2026-10-10、plan と文章は Fable 5.1 / code は Opus 5.5 subagent 2 本)
+- 背景: 10-08 の Learn 拡張 (commit 3be9a50) の最終報告で挙げた 4 件。(1) Menu の Jupiter「JupSOL」は route も live overlay も Jupiter Lend の SOL market (jlWSOL) で JupSOL LST ではない。(2) Hylo は V2 (2026-07) で sHYUSD を同じ mint のまま eHYUSD に改称 (公式 onchain-addresses: "eHYUSD (formerly sHYUSD)") だが repo は `share_symbol: "sHYUSD"` で BFF の TVL overlay / test が symbol 引き。(3) Ethereum 6 件の Learn copy で tagline と keyPoints[0] がほぼ同文。(4) e2e は BFF が死んでいても Chrome を起動して後段で count 不一致 (`all=63 shown=0 held=0`) として落ち、環境障害とアプリ不具合の区別が付かない
+- 判断:
+  - pool_id (`jupiter_jupsol` / `hylo_shyusd`)、mint、icon file、変数名は据え置き (MCP の catalog と agent plan に出る id を変えない)。表示名と `share_symbol` だけ改める
+  - BFF の eHYUSD TVL overlay は symbol ではなく **mint で引く** (`findMarketByShareMint`)。symbol 改称で overlay が黙って fixture に fallback する事故を二度と起こさない
+  - Learn の差し替え文は Fable が plan に全文を書き、Opus は機械的に置換 (content.test の規則で担保)
+  - e2e: `/api/health` の preflight で BFF 不達は **exit 2** (check 失敗の exit 1 と区別、stdout には何も出さない)。`pnpm e2e:local` は空き port で自前の BFF + vite を立てて回し、終了時に process group ごと止める。他 session の 3030 / 5173 には触らない。`pnpm e2e` の挙動は preflight 以外そのまま
+  - 先に Learn 本体を 3be9a50 として commit (WORKLOG は自分の hunk だけを一時 index で stage)。follow-up は別 commit
+- 実装:
+  - (A) `menu-listings.ts`: `jupiter_jupsol` の name を「SOL Main」に (pool_id 据え置き、理由コメント)、`hylo_shyusd` を「eHYUSD Earn Pool」に。`swap-earn-markets.ts`: `share_symbol` を eHYUSD に (mint 不変)。BFF `server.ts`: eHYUSD の TVL overlay を `EHYUSD_MINT` 定数 + `findMarketByShareMint` で引く (symbol 引きを廃止)、error 文字列 / log label / コメントを eHYUSD に。`menu.test.ts` / mobile `deposited-breakdown.test.ts` の期待値、`vault-rows.ts` の `STABLE_ASSETS` に eHYUSD 追加 (sHYUSD は旧 symbol として残す)、`verify-tx-routes.mjs` の label、`fair-value.ts` / `jupiter-price.ts` / `deposited-breakdown.ts` のコメント。Learn `content.ts`: Jupiter / Hylo の `inSeasonals` 各 1 文と Ethereum 5 件の tagline + Uniswap の keyPoints[2] を plan の文で置換 (Fable 作、Opus が機械的に適用)
+  - (B) `e2e/run.mjs`: `chromium.launch` の前に `${WEB_URL}/api/health` の preflight (5 秒 timeout × 3 回)。不達なら stderr 1 行 (vite は居て BFF が居ない = `HTTP 500`、vite も居ない = `ECONNREFUSED`) で **exit 2**、Chrome は起動せず stdout にも出さない。成功時は `heliusConfigured` を表示、`SOL_E2E=1` で key 無しなら警告。Deposited only は失敗時だけ `.deposited-toggle` の「Could not check: …」と `.notice-warning` を detail に足す。`e2e/local.mjs` (新規、`pnpm e2e:local`): 空き port 2 つ (`net` の listen(0))、root の `node_modules/.bin/{tsx,vite}` を直接 detached で起動 (BFF は `cwd=artifacts/seasonals-bff` で `.env` / `.data/` を共有、vite は `--host 127.0.0.1 --strictPort` + `BFF_URL`)、`/health` と `/` を poll、`run.mjs` を `WEB_URL` 付きで子 process (detached にしない)、終了時 / throw / SIGINT / SIGTERM で process group ごと SIGTERM → 3 秒で SIGKILL。log は `e2e/.out/{bff,vite}.log`。`package.json` に `e2e:local`、README の e2e 行を 2 行に
+- 検証:
+  - (A) `pnpm -r test`: lib 308 / BFF 668 / mobile 495 / MCP 29 / web 162 green (BFF と mobile は並列だと timeout 4 本 (autonomous / agent-plan-lifecycle / queries の 30 秒・5 秒待ち) → workspace 単独で再実行して全 green、触った file とは無関係)。`pnpm -r typecheck` 5 workspace green。`verify:tx`: `OK swap-earn dep eHYUSD tx1 CU128197`、合計 23 経路 / simulate 成功 14 / 想定内の失敗 9 / 要調査 0、429 なし。`sHYUSD` の残りは pool_id / 変数名 / icon file / 「旧 symbol」コメント / Learn の履歴文だけ (grep で確認)
+  - (B) `node --check` 2 file OK。BFF 不達: 使い捨て vite (5199、`BFF_URL=http://127.0.0.1:1`) 相手の `pnpm e2e` が exit 2 + `(HTTP 500)` の 1 行、何も listen していない 5198 相手は exit 2 + `(ECONNREFUSED)`、stdout に JSON 無し、Chrome 起動なし、`.screenshots/` の mtime 不変。`pnpm e2e:local`: `SOL_E2E=1` で **120 / 120** (exit 0)、無しで 114 / 114 (Solana block 6 本は opt-in)。毎回 lsof で両 port が空、tsx / vite / headless Chrome の残りなし、他 session の 3030 / 5173 は無傷。Ctrl-C: `vite:` の後に `kill -INT` → `stopping servers…`、exit 130、server と run.mjs が全部消える。web vitest 162 / 162、typecheck green
+- 未検証: `e2e:local` を `SOL_E2E` 無しで回した初期の 2 回は headless Chrome が途中で死んだ (`Target page, context or browser has been closed`、L341 の Settings wallet block と L821 の reduced-motion block。同時刻にユーザーの Chrome が再起動していた、原因未特定、その後の 3 回は完走)、1 回は `glass follows the droplet mid-animation` が timing で落ちた (次の 2 回は pass)。`heliusConfigured=false` の警告行は key のある BFF では踏めない (stderr print のみ)。web `/menu` で「SOL Main」「eHYUSD Earn Pool」が出る目視は e2e の menu screenshot (`.screenshots/menu-1440.png`) で確認できるが、本 session では見ていない
 
 ### Seeker 版の API 利用量を multi-user 前提で削る (2026-10-12、branch perf/api-usage、Opus 5.5 subagent 5 本で実装)
 - 背景: 外部配布 (PR #38) で 1 台の BFF (Fly、Helius Free: 月 100 万 credit、DAS / Enhanced 2 rps) を複数の Seeker ユーザーが共有する。コードを読み切ると、`docs/external-release-api-handling.md` §3.1 の見積りより重く、同じデータを route ごと / リクエストごとに Helius へ取り直していた

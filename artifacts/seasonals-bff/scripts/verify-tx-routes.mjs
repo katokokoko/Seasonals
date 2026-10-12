@@ -62,7 +62,7 @@ const CASES = [
   ["swap-earn dep perena", "/protocols/swap-earn/deposit-tx", { shareMint: "star9agSpjiFe3M49B3RniVU4CMBBEK3Qnaqn3RGiFM", amount: "1000000" }],
   ["swap-earn dep solstice", "/protocols/swap-earn/deposit-tx", { shareMint: "3ThdFZQKM6kRyVGLG48kaPg5TRMhYMKY1iCRa9xop1WC", amount: "1000000" }],
   ["swap-earn dep hyloSOL", "/protocols/swap-earn/deposit-tx", { shareMint: "hy1oXYgrBW6PVcJ4s6s2FKavRdwgWTXdfE69AxT7kPT", amount: "10000000" }],
-  ["swap-earn dep sHYUSD", "/protocols/swap-earn/deposit-tx", { shareMint: "HnnGv3HrSqjRpgdFmx7vQGjntNEoex1SU4e9Lxcxuihz", amount: "1000000" }],
+  ["swap-earn dep eHYUSD", "/protocols/swap-earn/deposit-tx", { shareMint: "HnnGv3HrSqjRpgdFmx7vQGjntNEoex1SU4e9Lxcxuihz", amount: "1000000" }],
   ["kamino dep USDC", "/protocols/kamino/deposit-tx", { reserve: "D6q6wuQSrifJKZYpR1M8R4YawnLDtDsMmWM1NbBmgJ59", amount: "1000000" }],
   ["kamino dep SOL", "/protocols/kamino/deposit-tx", { reserve: "d4A2prbA2whesmvHaL88BH6Ewn5N4bTSU2Ze8P6Bc4Q", amount: "10000000" }],
   ["kamino dep JLP", "/protocols/kamino/deposit-tx", { reserve: "EAA3VVsxUuQB1Tm5x7TJkq9ATtiX5Qwq8ok7gXwim7oo", amount: "1000000" }],

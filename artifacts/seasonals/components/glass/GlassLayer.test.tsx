@@ -27,21 +27,39 @@ jest.mock("expo-router", () => ({
 // useTiltRoll モジュールを mock する。本テストの対象は GlassLayer の退避 gating
 // であり、useTiltRoll 内部 (focus / AppState) はここでは対象外
 let mockSensorAvailable = true;
+// 2026-10-08: senseActive = enabled && focused && foreground (useTiltRoll が計算)。
+// focus 外 / background を mockSenseActive=false で表す
+let mockSenseActive = true;
 jest.mock("./useTiltRoll", () => ({
   useTiltRoll: (enabled: boolean) => ({
     roll: { value: 0 },
     shake: { value: 0 },
     available: enabled ? mockSensorAvailable : null,
-    senseActive: enabled,
+    senseActive: enabled && mockSenseActive,
     reportAvailable: () => undefined,
   }),
   TiltSensorBridge: () => null,
 }));
 
+// frame callback の setActive を観察する (useFrameCallback だけ差し替え)
+const mockSetActive = jest.fn();
+jest.mock("react-native-reanimated", () => {
+  const actual = jest.requireActual("react-native-reanimated");
+  return new Proxy(actual, {
+    get(target, prop) {
+      if (prop === "useFrameCallback") {
+        return () => ({ setActive: mockSetActive, isActive: false, callbackId: 0 });
+      }
+      return target[prop];
+    },
+  });
+});
+
 describe("GlassLayer — 退避 (§2.4)", () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockSensorAvailable = true;
+    mockSenseActive = true;
     usePrefsStore.setState({ backgroundMode: "liquid" });
     jest
       .spyOn(AccessibilityInfo, "isReduceMotionEnabled")
@@ -89,5 +107,31 @@ describe("GlassLayer — 退避 (§2.4)", () => {
     // — 液面より上と液体越しにアプリ本来の背景が透ける
     expect(queryAllByTestId("skia-Rect")).toHaveLength(0);
     expect(queryAllByTestId("skia-RoundedRect")).toHaveLength(0);
+  });
+
+  describe("frame callback の gating (2026-10-08、EGLConsumer ログ / 発熱)", () => {
+    it("focus 中かつ foreground なら frame callback を回す", async () => {
+      const { queryByTestId } = render(<GlassLayer />);
+      await waitFor(() => expect(queryByTestId("glass-layer")).not.toBeNull());
+      expect(mockSetActive).toHaveBeenLastCalledWith(true);
+    });
+
+    it("focus 外 / background (senseActive=false) なら frame callback を止め、Canvas は mount したまま", async () => {
+      mockSenseActive = false;
+      const { queryByTestId } = render(<GlassLayer />);
+      await waitFor(() => expect(queryByTestId("glass-layer")).not.toBeNull());
+      expect(mockSetActive).toHaveBeenLastCalledWith(false);
+      expect(mockSetActive).not.toHaveBeenCalledWith(true);
+    });
+
+    it("focus 復帰で再開する", async () => {
+      mockSenseActive = false;
+      const { queryByTestId, rerender } = render(<GlassLayer />);
+      await waitFor(() => expect(queryByTestId("glass-layer")).not.toBeNull());
+      expect(mockSetActive).toHaveBeenLastCalledWith(false);
+      mockSenseActive = true;
+      rerender(<GlassLayer />);
+      await waitFor(() => expect(mockSetActive).toHaveBeenLastCalledWith(true));
+    });
   });
 });

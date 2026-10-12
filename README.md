@@ -141,7 +141,8 @@ pnpm -r typecheck
 pnpm --filter @seasonals/bff verify:tx     # 23 Solana tx routes simulated on mainnet, no signing (needs HELIUS_API_KEY)
 bash scripts/typecheck-baseline.sh
 pnpm --filter @seasonals/web build
-node artifacts/seasonals-web/e2e/run.mjs   # needs the web dev server; uses the system Chrome
+node artifacts/seasonals-web/e2e/run.mjs   # needs the web dev server + BFF (exit 2 if the BFF is unreachable); uses the system Chrome
+pnpm --filter @seasonals/web e2e:local     # starts its own BFF + vite on free ports, runs the e2e, stops them
 # production build through the Pages Function proxy (BFF on :3035):
 #   cd artifacts/seasonals-web && pnpm build && npx wrangler@4 pages dev dist --binding BFF_ORIGIN=http://127.0.0.1:3035 --port 8788
 #   WEB_URL=http://127.0.0.1:8788 node e2e/run.mjs

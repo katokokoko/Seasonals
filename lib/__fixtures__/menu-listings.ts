@@ -47,9 +47,11 @@ export const fixtureMenuListings: ProtocolMenuEntry[] = [
         tvl_usd: 320_000_000,
         borrowed_usd: 180_000_000,
       },
+      // 旧名 JupSOL。route / live overlay とも Jupiter Lend の SOL market (jlWSOL) で、JupSOL LST ではない (2026-10-10)。
+      // pool_id は互換のため据え置き。
       {
         pool_id: "jupiter_jupsol",
-        name: "JupSOL",
+        name: "SOL Main",
         category: PositionCategory.Lending,
         asset: "SOL",
         apy: 0.072,
@@ -407,11 +409,11 @@ export const fixtureMenuListings: ProtocolMenuEntry[] = [
       },
       {
         pool_id: "hylo_shyusd",
-        name: "sHYUSD Stability Pool",
+        name: "eHYUSD Earn Pool",
         category: PositionCategory.Stable,
         asset: "USDC",
         // APY: live ソース無し。2026-10-06 に api.exponent.finance/markets を確認したが
-        // underlying に sHYUSD は無い (hyUSD / srEHYUSD のみ) — Exponent hyUSD implied 近似のまま
+        // underlying に eHYUSD (旧 sHYUSD) は無い (hyUSD / srEHYUSD のみ) — Exponent hyUSD implied 近似のまま
         apy: 0.10,
         tvl_usd: 22_900_000, // 2026-10-06 実測 (live 失敗時の fallback)
       },

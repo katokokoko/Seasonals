@@ -34,6 +34,7 @@ jest.mock("expo-notifications", () => {
       };
     }),
     getLastNotificationResponseAsync: jest.fn(async () => null),
+    clearLastNotificationResponse: jest.fn(),
     scheduleNotificationAsync: jest.fn(async () => "notification_id_mock"),
     // SKR 確認通知 (services/cooldown-reminder.ts) が予約の照合 / 取消 / channel 作成に使う
     getAllScheduledNotificationsAsync: jest.fn(async () => []),

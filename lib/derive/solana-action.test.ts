@@ -9,10 +9,17 @@ import { SAVE_MARKETS } from "../config/save-markets";
 import { EXPONENT_MARKETS } from "../config/exponent-markets";
 import { METEORA_MARKETS } from "../config/meteora-markets";
 import { ORCA_MARKETS } from "../config/orca-markets";
+import { fixtureMenuListings } from "../__fixtures__";
+import { resolveAmountUnit } from "./amount-utils";
 import {
+  ACTION_METADATA_KEYS,
+  POOL_ID_RE,
+  assetMatchesRouteInput,
   canWithdrawEarnPosition,
   depositAction,
   resolveSolanaRoute,
+  routeInputSymbol,
+  validateActionMetadata,
   withdrawActionFromParams,
   withdrawActionFromPosition,
 } from "./solana-action";
@@ -146,5 +153,111 @@ describe("action builders", () => {
   it("depositAction は pool_id を metadata に入れる (無ければ metadata 無し)", () => {
     expect(depositAction("kamino", "USDC", "kamino_usdc")).toEqual({ action_type: "deposit", protocol: "kamino", asset: "USDC", amount: "", metadata: { pool_id: "kamino_usdc" } });
     expect(depositAction("kamino", "USDC", undefined).metadata).toBeUndefined();
+  });
+});
+
+describe("validateActionMetadata (BFF simulate / MCP の境界)", () => {
+  it("withdrawActionFromPosition / depositAction / withdrawActionFromParams が組む metadata は全部通る", () => {
+    expect(validateActionMetadata(withdrawActionFromPosition(position({})).metadata)).toEqual({ ok: true });
+    expect(validateActionMetadata(depositAction("kamino", "USDC", kVault.pool_id).metadata)).toEqual({ ok: true });
+    expect(validateActionMetadata(undefined)).toEqual({ ok: true });
+    const fromParams = withdrawActionFromParams({
+      protocol_id: "orca",
+      asset_symbol: "USDC",
+      shares: "1",
+      share_mint: "PosB1111111111111111111111111111111111111111",
+      share_decimals: "0",
+      underlying_decimals: "6",
+      underlying_amount: "2500000",
+    });
+    expect(validateActionMetadata(fromParams!.metadata)).toEqual({ ok: true });
+    // 組む側が使うキーは ACTION_METADATA_KEYS と一致する (片方だけ増やさない)
+    expect(Object.keys(withdrawActionFromPosition(position({})).metadata!).sort()).toEqual(
+      ACTION_METADATA_KEYS.filter((k) => k !== "pool_id").sort()
+    );
+  });
+  it("未知キー / 型違い / 不正値は field 名付きで拒否", () => {
+    expect(validateActionMetadata({ pool_id: "kamino_usdc_main", slippage: 1 })).toEqual({ ok: false, field: "slippage" });
+    expect(validateActionMetadata({ share_mint: "not-base58-0OIl" })).toEqual({ ok: false, field: "share_mint" });
+    expect(validateActionMetadata({ share_mint: 123 })).toEqual({ ok: false, field: "share_mint" });
+    expect(validateActionMetadata({ pool_id: "Kamino-USDC" })).toEqual({ ok: false, field: "pool_id" });
+    expect(validateActionMetadata({ pool_id: "a".repeat(65) })).toEqual({ ok: false, field: "pool_id" });
+    expect(validateActionMetadata({ share_decimals: 6.5 })).toEqual({ ok: false, field: "share_decimals" });
+    expect(validateActionMetadata({ underlying_decimals: 19 })).toEqual({ ok: false, field: "underlying_decimals" });
+    expect(validateActionMetadata({ share_decimals: "6" })).toEqual({ ok: false, field: "share_decimals" });
+    expect(validateActionMetadata({ underlying_amount: "1.5" })).toEqual({ ok: false, field: "underlying_amount" });
+    expect(validateActionMetadata(null)).toEqual({ ok: false, field: "metadata" });
+    expect(validateActionMetadata(["pool_id"])).toEqual({ ok: false, field: "metadata" });
+  });
+  it("POOL_ID_RE は registry と menu fixture の全 pool_id を通す", () => {
+    const ids = [
+      ...KAMINO_MARKETS.map((m) => m.pool_id),
+      ...KAMINO_VAULTS.map((v) => v.pool_id),
+      ...SAVE_MARKETS.map((m) => m.pool_id),
+      ...METEORA_MARKETS.map((m) => m.pool_id),
+      ...ORCA_MARKETS.map((m) => m.pool_id),
+      ...EXPONENT_MARKETS.map((m) => m.market_id),
+      ...fixtureMenuListings.flatMap((e) => e.pools.map((p) => p.pool_id)),
+    ];
+    expect(ids.length).toBeGreaterThan(20);
+    for (const id of ids) expect(id).toMatch(POOL_ID_RE);
+  });
+});
+
+describe("routeInputSymbol / assetMatchesRouteInput", () => {
+  it("deposit route は預け入れる token、withdraw route は null", () => {
+    expect(routeInputSymbol({ kind: "swap_earn_deposit", shareMint: jlUsdc.share_mint })).toEqual({
+      mint: jlUsdc.underlying_mint,
+      symbol: "USDC",
+      decimals: 6,
+    });
+    expect(routeInputSymbol({ kind: "kamino_deposit", reserve: kReserve.reserve })?.symbol).toBe(kReserve.underlying_symbol);
+    expect(routeInputSymbol({ kind: "kamino_vault_deposit", vault: kVault.vault })?.symbol).toBe(kVault.underlying_symbol);
+    expect(routeInputSymbol({ kind: "save_deposit", reserve: save.reserve })?.symbol).toBe(save.underlying_symbol);
+    expect(routeInputSymbol({ kind: "meteora_deposit", poolKey: met.pool_id })).toEqual({
+      mint: met.deposit_mint,
+      symbol: met.deposit_symbol,
+      decimals: met.deposit_decimals,
+    });
+    expect(routeInputSymbol({ kind: "orca_deposit", poolKey: orca.pool_id })?.symbol).toBe(orca.deposit_symbol);
+    expect(routeInputSymbol({ kind: "swap_earn_withdraw", shareMint: jlUsdc.share_mint })).toBeNull();
+    expect(routeInputSymbol({ kind: "exponent_redeem", ptMint: pt.pt_mint })).toBeNull();
+  });
+  it("大文字小文字と WSOL = SOL を吸収、asset 無しは不一致", () => {
+    const sol = { mint: "So11111111111111111111111111111111111111112", symbol: "SOL", decimals: 9 };
+    expect(assetMatchesRouteInput("SOL", sol)).toBe(true);
+    expect(assetMatchesRouteInput("WSOL", sol)).toBe(true);
+    expect(assetMatchesRouteInput("sol", sol)).toBe(true);
+    expect(assetMatchesRouteInput("USDC", sol)).toBe(false);
+    expect(assetMatchesRouteInput(undefined, sol)).toBe(false);
+  });
+  it("pool_id が asset と食い違う deposit を見分けられる (SOL pool + USDC = 桁ずれの元)", () => {
+    const solPool = KAMINO_MARKETS.find((m) => m.underlying_symbol === "SOL")!;
+    const route = resolveSolanaRoute(depositAction("kamino", "USDC", solPool.pool_id))!;
+    expect(route).toEqual({ kind: "kamino_deposit", reserve: solPool.reserve });
+    expect(assetMatchesRouteInput("USDC", routeInputSymbol(route)!)).toBe(false);
+  });
+});
+
+describe("MCP compare の deposit 雛形 (depositAction + resolveAmountUnit)", () => {
+  it("route の解決する menu pool は、入力単位の decimals が route の預け入れ token と一致する (桁ずれしない)", () => {
+    let checked = 0;
+    for (const entry of fixtureMenuListings) {
+      for (const pool of entry.pools) {
+        if (pool.display_only) continue;
+        const asset = pool.deposit_asset ?? pool.asset;
+        const tpl = depositAction(entry.protocol_id, asset, pool.pool_id);
+        const route = resolveSolanaRoute(tpl);
+        if (!route) continue;
+        const input = routeInputSymbol(route)!;
+        expect({ pool: pool.pool_id, decimals: resolveAmountUnit(tpl).decimals }).toEqual({
+          pool: pool.pool_id,
+          decimals: input.decimals,
+        });
+        expect(assetMatchesRouteInput(asset, input)).toBe(true);
+        checked++;
+      }
+    }
+    expect(checked).toBeGreaterThan(10);
   });
 });

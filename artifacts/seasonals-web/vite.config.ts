@@ -22,6 +22,8 @@ export default defineConfig({
   server: {
     port: 5173,
     strictPort: true,
+    // Cloudflare Quick Tunnel (trycloudflare.com) 経由のデモ用。Vite は知らない Host を拒否するので許可する
+    allowedHosts: [".trycloudflare.com"],
     proxy: {
       "/api": {
         target: bffUrl,

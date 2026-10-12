@@ -2,17 +2,24 @@
  * MCPApprovalPushCard — 仕様書 §8.7 (push tap → 専用 approval screen)
  *
  * push notification の deep link を踏んで開かれる full-screen approval。
- * WarningArea を必ず内蔵し、ApprovalToken があれば expires_at まで count-down を出す。
+ * WarningArea を必ず内蔵する (oracle warning 専用、CLAUDE.md §5)。
  *
  * agent-plan 契約 (2026-10): push は `{ type, plan_id }` だけで、approval token は
  * approve の応答 (`{ ...plan, approval_token }`) で初めて発行される。Seeker は承認まで、
- * 人が承認した plan の署名・送信は Seasonals web が行う (承認後にその案内を 1 行出す)。
+ * 人が承認した plan の署名・送信は Seasonals web が行う。
+ *
+ * 2026-10-08 (実機確認の修正):
+ * - approval token の TTL count-down (5 分) は撤去。web が token を再発行するので、
+ *   人に意味があるのは plan の 24h 期限 (`plan.expires_at`) だけ → 「Valid until <日時>」
+ * - `plan.status` を読んで 1 行で状態を出す (web で送信 / 却下されたら反映する。
+ *   承認画面は live な status の間 5 秒 polling — app/approval/[planId].tsx)
+ * - `expires_at` を過ぎたら、サーバーの status が未更新でも expired 扱い (fail-closed)
+ * - Est. out / fee は lib/derive/simulation-display の文言 (web の inbox と共通)
  *
  * 設計原則:
- * - oracle warning は CTA 直上に強警告として表示 (WarningArea に委譲)
- * - token (旧 deep link の ?token= / approve 応答) があれば TTL を 1 秒刻みで count-down。
- *   承認前に渡された token が 0 / 不正なら CTA disabled (fail-closed)
- * - token が無い (push から開いた) 場合は count-down を出さず、CTA は有効
+ * - oracle warning は CTA 直上に強警告として表示 (WarningArea に委譲)。
+ *   simulate の `warnings` (fair value 等) は oracle ではないので muted な 1 行で出す
+ * - Approve / Reject は `simulated | pending_user` かつ期限内の時だけ出す
  * - approve / reject 両方を内蔵 (services/queries の mutation 経由)
  * - bundle_hash 検証は BFF 側責務、本層では行わない
  *
@@ -21,7 +28,15 @@
  */
 
 import React, { useEffect, useRef, useState } from "react";
-import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import {
+  Linking,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  View,
+} from "react-native";
+import { format } from "date-fns";
 
 import {
   COLOR,
@@ -36,10 +51,13 @@ import {
   TOKEN_DECIMALS,
   toHumanReadable,
 } from "@workspace/lib/utils/numeric";
-import type {
-  AgentPlan,
-  ApprovalToken,
-} from "@workspace/lib/types";
+import { AgentPlanStatus, type AgentPlan } from "@workspace/lib/types";
+import {
+  describeSimulationFailure,
+  describeSimulationFee,
+  describeSimulationOut,
+  describeSimulationWarning,
+} from "@workspace/lib/derive/simulation-display";
 
 import {
   useApproveAgentPlan,
@@ -54,13 +72,22 @@ import {
 // Helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
-function formatRemaining(ms: number): string {
-  if (ms <= 0) return "0:00";
-  const totalSec = Math.floor(ms / 1000);
-  const mm = Math.floor(totalSec / 60);
-  const ss = totalSec % 60;
-  return `${mm}:${String(ss).padStart(2, "0")}`;
-}
+/** 承認 / 却下を受け付ける status (§11.7) */
+const APPROVABLE_STATUSES: ReadonlySet<AgentPlanStatus> = new Set([
+  AgentPlanStatus.Simulated,
+  AgentPlanStatus.PendingUser,
+]);
+
+/** 期限で expired に倒れない終端 status (BFF の expiry 判定と同じ) */
+const TERMINAL_STATUSES: ReadonlySet<AgentPlanStatus> = new Set([
+  AgentPlanStatus.Broadcasted,
+  AgentPlanStatus.Failed,
+  AgentPlanStatus.Rejected,
+  AgentPlanStatus.Expired,
+]);
+
+/** setTimeout の上限 (≈ 24.8 日)。これより先の期限は分割して待つ */
+const MAX_TIMEOUT_MS = 2 ** 31 - 1;
 
 /** §4.6 oracle 規約: 2-5% 乖離は warning、>5% は execute 側で拒否 (本画面に到達しない) */
 function deriveOracleWarnings(plan: AgentPlan): OracleWarning[] {
@@ -94,14 +121,81 @@ function resolveDecimals(asset?: string): number {
   return 6;
 }
 
+/**
+ * plan.expires_at の ms。無ければ null、parse 不能なら NaN
+ * (NaN は呼び手で expired 扱い = fail-closed。8.37 M3 と同じ方針)
+ */
+function planExpiresMs(plan: AgentPlan): number | null {
+  if (plan.expires_at === undefined) return null;
+  return new Date(plan.expires_at).getTime();
+}
+
+/**
+ * 画面に出す status。
+ * - 承認 / 却下の mutation が成功した直後は、refetch が追いつくまで local の結果を優先
+ * - 終端以外で expires_at を過ぎていれば expired (サーバー未更新でも止める、fail-closed)
+ */
+export function resolveDisplayStatus(
+  plan: AgentPlan,
+  nowMs: number,
+  local: { approved: boolean; rejected: boolean }
+): AgentPlanStatus {
+  let status = plan.status;
+  if (APPROVABLE_STATUSES.has(status)) {
+    if (local.rejected) status = AgentPlanStatus.Rejected;
+    else if (local.approved) status = AgentPlanStatus.Approved;
+  }
+  if (!TERMINAL_STATUSES.has(status)) {
+    const expiresMs = planExpiresMs(plan);
+    if (expiresMs !== null && (!Number.isFinite(expiresMs) || expiresMs <= nowMs)) {
+      return AgentPlanStatus.Expired;
+    }
+  }
+  return status;
+}
+
+/** status ごとの 1 行。承認待ち (simulated / pending_user) は出さない */
+function statusLine(status: AgentPlanStatus, plan: AgentPlan): string | null {
+  switch (status) {
+    case AgentPlanStatus.Approved:
+      return "Approved — sign & send from the Seasonals web app.";
+    case AgentPlanStatus.Executing:
+      return "Being signed in the web app…";
+    case AgentPlanStatus.Signed:
+      return "Signed — sending from the web app…";
+    case AgentPlanStatus.Broadcasted:
+      return "Sent";
+    case AgentPlanStatus.Failed:
+      return plan.failure_reason ? `Failed: ${plan.failure_reason}` : "Failed";
+    case AgentPlanStatus.Rejected:
+      return "Rejected";
+    case AgentPlanStatus.Expired:
+      return "Expired";
+    case AgentPlanStatus.Draft:
+      return "Waiting for the simulation";
+    default:
+      return null;
+  }
+}
+
+/**
+ * Solscan の tx URL。web 経由の送信は mainnet、autonomous は devnet の lamport 送金
+ * (BFF autonomous.ts) なので cluster を付ける
+ */
+function solscanTxUrl(signature: string, devnet: boolean): string {
+  return `https://solscan.io/tx/${signature}${devnet ? "?cluster=devnet" : ""}`;
+}
+
+function shortenSig(sig: string): string {
+  return sig.length > 12 ? `${sig.slice(0, 6)}…${sig.slice(-6)}` : sig;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Props
 // ─────────────────────────────────────────────────────────────────────────────
 
 export interface MCPApprovalPushCardProps {
   plan: AgentPlan;
-  /** 旧 deep link (?token=) 由来の token。無ければ approve 応答の token で TTL を出す */
-  token?: ApprovalToken;
   /** 現在時刻 (ms)。テスト用 override。default は () => Date.now() */
   now?: () => number;
   onApproveSuccess?: (updated: AgentPlan) => void;
@@ -121,7 +215,6 @@ export interface MCPApprovalPushCardProps {
 
 export function MCPApprovalPushCard({
   plan,
-  token,
   now = Date.now,
   onApproveSuccess,
   onApproveError,
@@ -134,72 +227,95 @@ export function MCPApprovalPushCard({
   const approve = useApproveAgentPlan();
   const reject = useRejectAgentPlan();
 
-  const [currentMs, setCurrentMs] = useState<number>(() => now());
-
-  // 承認後は応答の approval_token (BFF 発行、TTL 300 秒) を優先して TTL を出す
-  const approved = approve.isSuccess;
-  const activeToken: ApprovalToken | null =
-    approve.data?.approval_token ?? token ?? null;
-
-  // Phase 8.37 (M3): expires_at が不正/欠落だと getTime() が NaN になり
-  // 「NaN <= 0 === false」で TTL が無効化されていた — 不正は expired 扱い
-  // (fail-closed。TTL は §29.3 のセキュリティ制御)。token が無ければ TTL 判定なし
-  const expiresMs = activeToken
-    ? new Date(activeToken.expires_at).getTime()
-    : Number.NaN;
-  const remainingMs = Number.isFinite(expiresMs) ? expiresMs - currentMs : 0;
-  const isExpired = activeToken !== null && remainingMs <= 0;
-
-  // `now` は呼び手が inline arrow で渡し得るので ref 経由で読む (deps に入れると
-  // 毎 render で effect が回り、即時 setState と合わせて render loop になる)
+  // `now` は呼び手が inline arrow で渡し得るので ref 経由で読む (deps に入れない)
   const nowRef = useRef(now);
   nowRef.current = now;
-  const activeTokenId = activeToken?.token_id ?? null;
-  const hasActiveToken = activeToken !== null;
 
+  // 期限の瞬間に 1 回だけ再描画する (1 秒 interval の count-down はしない)。
+  // 期限前に開いた画面が、期限を過ぎても Approve を出し続けないため
+  const expiresMs = planExpiresMs(plan);
+  const [expiryTick, setExpiryTick] = useState(0);
   useEffect(() => {
-    if (!hasActiveToken || isExpired) return;
-    // token が差し替わった (approve 応答) 直後に現在時刻を取り直す
-    setCurrentMs(nowRef.current());
-    const id = setInterval(() => setCurrentMs(nowRef.current()), 1000);
-    return () => clearInterval(id);
-  }, [activeTokenId, hasActiveToken, isExpired]);
+    if (expiresMs === null || !Number.isFinite(expiresMs)) return;
+    const delay = expiresMs - nowRef.current();
+    if (delay <= 0) return;
+    const id = setTimeout(
+      () => setExpiryTick((t) => t + 1),
+      Math.min(delay + 50, MAX_TIMEOUT_MS)
+    );
+    return () => clearTimeout(id);
+  }, [expiresMs, expiryTick]);
+
+  const status = resolveDisplayStatus(plan, now(), {
+    approved: approve.isSuccess,
+    rejected: reject.isSuccess,
+  });
+  const canAct = APPROVABLE_STATUSES.has(status);
+  const line = statusLine(status, plan);
 
   const action = plan.selected_action;
   const sim = plan.simulation_result;
   const decimals = resolveDecimals(action?.asset);
+  const legacy = { decimals, unitSymbol: action?.asset ?? "" };
+  // 旧形式 (estimate_kind 無し) は入力 asset の単位で出すので asset 必須 (従来どおり)
+  const simDisplayable =
+    sim !== null && (sim.estimate_kind !== undefined || Boolean(action?.asset));
 
   const amountText =
     action?.amount && action.asset
       ? `${toHumanReadable(action.amount, decimals)} ${action.asset}`
       : "—";
   const estimatedOutText =
-    sim && action?.asset
-      ? `${toHumanReadable(sim.estimated_out, decimals)} ${action.asset}`
+    sim && sim.failure_reason !== undefined
+      ? describeSimulationFailure(sim.failure_reason)
+      : sim && simDisplayable
+      ? describeSimulationOut(sim, legacy) ?? "—"
       : "—";
   const feeText =
-    sim && action?.asset
-      ? `${toHumanReadable(sim.estimated_fee, decimals)} ${action.asset}`
-      : "—";
+    sim && simDisplayable ? describeSimulationFee(sim, legacy) ?? "—" : "—";
+  const simWarningsText =
+    sim?.warnings && sim.warnings.length > 0
+      ? sim.warnings.map(describeSimulationWarning).join(" · ")
+      : null;
+
+  const validUntilText =
+    expiresMs !== null &&
+    Number.isFinite(expiresMs) &&
+    status !== AgentPlanStatus.Broadcasted &&
+    status !== AgentPlanStatus.Failed &&
+    status !== AgentPlanStatus.Rejected
+      ? `Valid until ${format(new Date(expiresMs), "yyyy/MM/dd HH:mm")}`
+      : null;
+
+  const signatures =
+    status === AgentPlanStatus.Broadcasted
+      ? plan.execution?.signatures ?? []
+      : [];
+  const devnetExplorer = plan.execution?.via === "autonomous";
 
   const oracleWarnings = deriveOracleWarnings(plan);
 
   const isBusy = approve.isPending || reject.isPending;
 
   const handleApprove = () => {
-    if (isExpired || isBusy || approved) return;
+    if (!canAct || isBusy) return;
     approve.mutate(
       { plan_id: plan.plan_id },
       { onSuccess: onApproveSuccess, onError: onApproveError }
     );
   };
   const handleReject = () => {
-    if (isBusy) return;
+    if (!canAct || isBusy) return;
     reject.mutate(
       { plan_id: plan.plan_id },
       { onSuccess: onRejectSuccess, onError: onRejectError }
     );
   };
+
+  const isNegative =
+    status === AgentPlanStatus.Failed ||
+    status === AgentPlanStatus.Rejected ||
+    status === AgentPlanStatus.Expired;
 
   return (
     <ScrollView
@@ -249,12 +365,22 @@ export function MCPApprovalPushCard({
         </View>
       </View>
 
+      {simWarningsText !== null && (
+        <Text
+          style={styles.simWarnings}
+          testID={testID ? `${testID}-sim-warnings` : undefined}
+        >
+          {simWarningsText}
+        </Text>
+      )}
+
       <WarningArea
         oracleWarnings={oracleWarnings}
         hapticsEnabled={hapticsEnabled}
         grayoutMs={warningGrayoutMs}
         renderCta={({ disabled }) => {
-          const ctaDisabled = disabled || isExpired || isBusy || approved;
+          if (!canAct) return null;
+          const ctaDisabled = disabled || isBusy;
           return (
             <Pressable
               accessibilityRole="button"
@@ -264,13 +390,7 @@ export function MCPApprovalPushCard({
               testID={testID ? `${testID}-approve` : undefined}
             >
               <Text style={styles.ctaApproveText}>
-                {approve.isPending
-                  ? "Approving…"
-                  : approved
-                  ? "Approved"
-                  : isExpired
-                  ? "Expired"
-                  : "Approve"}
+                {approve.isPending ? "Approving…" : "Approve"}
               </Text>
             </Pressable>
           );
@@ -278,33 +398,55 @@ export function MCPApprovalPushCard({
         testID={testID ? `${testID}-warning` : undefined}
       />
 
-      {approved && (
+      {line !== null && (
         <Text
-          style={styles.webHint}
-          testID={testID ? `${testID}-web-hint` : undefined}
+          style={[styles.statusLine, isNegative && styles.statusNegative]}
+          testID={testID ? `${testID}-status` : undefined}
         >
-          Sign & send from the Seasonals web app.
+          {line}
         </Text>
       )}
 
-      <View style={styles.footer}>
+      {signatures.map((sig, i) => (
         <Pressable
-          accessibilityRole="button"
-          disabled={isBusy || approved}
-          onPress={handleReject}
-          style={[styles.ctaReject, (isBusy || approved) && styles.ctaDisabled]}
-          testID={testID ? `${testID}-reject` : undefined}
+          key={sig}
+          accessibilityRole="link"
+          onPress={() =>
+            Linking.openURL(solscanTxUrl(sig, devnetExplorer)).catch(
+              () => undefined
+            )
+          }
+          style={styles.sigLink}
+          testID={testID ? `${testID}-signature-${i}` : undefined}
         >
-          <Text style={styles.ctaRejectText}>
-            {reject.isPending ? "Rejecting…" : "Reject"}
+          <Text style={styles.sigLinkText}>
+            {`${shortenSig(sig)} · Solscan ↗`}
           </Text>
         </Pressable>
-        {activeToken && (
-          <Text
-            style={[styles.expiresText, isExpired && styles.expiresExpired]}
-            testID={testID ? `${testID}-expires` : undefined}
+      ))}
+
+      <View style={styles.footer}>
+        {canAct ? (
+          <Pressable
+            accessibilityRole="button"
+            disabled={isBusy}
+            onPress={handleReject}
+            style={[styles.ctaReject, isBusy && styles.ctaDisabled]}
+            testID={testID ? `${testID}-reject` : undefined}
           >
-            {isExpired ? "Expired" : `Expires in ${formatRemaining(remainingMs)}`}
+            <Text style={styles.ctaRejectText}>
+              {reject.isPending ? "Rejecting…" : "Reject"}
+            </Text>
+          </Pressable>
+        ) : (
+          <View />
+        )}
+        {validUntilText !== null && (
+          <Text
+            style={styles.validUntil}
+            testID={testID ? `${testID}-valid-until` : undefined}
+          >
+            {validUntilText}
           </Text>
         )}
       </View>
@@ -376,6 +518,11 @@ const styles = StyleSheet.create({
     fontWeight: WEIGHT.semibold,
     color: COLOR.textPrimary,
   },
+  simWarnings: {
+    fontSize: FONT_SIZE.caption,
+    fontFamily: FONT.body,
+    color: COLOR.textMuted,
+  },
   ctaApprove: {
     paddingVertical: SPACE.md,
     borderRadius: RADIUS.md,
@@ -392,6 +539,25 @@ const styles = StyleSheet.create({
   },
   ctaDisabled: {
     opacity: 0.5,
+  },
+  statusLine: {
+    fontSize: FONT_SIZE.bodySM,
+    fontFamily: FONT.body,
+    fontWeight: WEIGHT.semibold,
+    color: COLOR.textSubtitle,
+    textAlign: "center",
+  },
+  statusNegative: {
+    color: COLOR.cherryDark,
+  },
+  sigLink: {
+    alignSelf: "center",
+    paddingVertical: SPACE.xs,
+  },
+  sigLinkText: {
+    fontSize: FONT_SIZE.bodySM,
+    fontFamily: FONT.mono,
+    color: COLOR.sodaText,
   },
   footer: {
     flexDirection: "row",
@@ -418,22 +584,12 @@ const styles = StyleSheet.create({
     fontWeight: WEIGHT.semibold,
     color: COLOR.textSubtitle,
   },
-  expiresText: {
+  validUntil: {
     fontSize: FONT_SIZE.caption,
     fontFamily: FONT.body,
     fontWeight: WEIGHT.medium,
     color: COLOR.textMuted,
     textAlign: "right",
     flex: 1,
-  },
-  webHint: {
-    fontSize: FONT_SIZE.bodySM,
-    fontFamily: FONT.body,
-    color: COLOR.textSubtitle,
-    textAlign: "center",
-  },
-  expiresExpired: {
-    color: COLOR.cherryDark,
-    fontWeight: WEIGHT.bold,
   },
 });

@@ -3,11 +3,13 @@
  * 一覧は横 3 枚のコンパクトなカード (ロゴ / tagline / 要点 3 行 / Details / Open site)。
  * Details で詳細 (LearnDetail) がカードから拡大して開く。文章は learn/content.ts (公式 docs で裏取り済み)。
  * /learn#<id> で開くとその詳細を開いた状態にする (Menu カードの「Learn」から)。閉じたら hash を消す。
+ * 見出しの下に chain filter (All chains + SUPPORTED_CHAINS、learn/filter.ts)。All chains では chain ごとにまとめて並べる。
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useLocation, useNavigate } from "react-router";
 import { ProtocolBadge, brandStyle } from "../ui/ProtocolBadge";
 import { LEARN, type LearnEntry } from "./content";
+import { LEARN_CHAINS, chainLabel, learnEntries, type LearnChain } from "./filter";
 import { LearnDetail } from "./LearnDetail";
 import "./learn.css";
 
@@ -55,11 +57,18 @@ export default function LearnPage() {
   const { hash, pathname } = useLocation();
   const navigate = useNavigate();
   const [open, setOpen] = useState<Open | null>(null);
+  const [chain, setChain] = useState<LearnChain>("all");
 
-  // /learn#<id>: そのカードの詳細を開く (起点はカード、focus の戻り先は Details)
+  // /learn#<id>: そのカードの詳細を開く (起点はカード、focus の戻り先は Details)。
+  // hash の entry が今の filter で隠れていれば、その chain に切り替えてから (次の run で) scroll して開く
   useEffect(() => {
     const id = hash.replace(/^#/, "");
-    if (!id || !LEARN.some((e) => e.id === id)) return;
+    const target = id ? LEARN.find((e) => e.id === id) : undefined;
+    if (!target) return;
+    if (chain !== "all" && chain !== target.chain) {
+      setChain(target.chain);
+      return;
+    }
     const card = document.getElementById(id);
     card?.scrollIntoView({ block: "center" });
     setOpen({
@@ -67,7 +76,7 @@ export default function LearnPage() {
       origin: card?.getBoundingClientRect() ?? null,
       trigger: document.querySelector<HTMLElement>(`[data-learn-details="${id}"]`),
     });
-  }, [hash]);
+  }, [hash, chain]);
 
   const onDetails = useCallback(
     (card: HTMLElement, button: HTMLElement) => setOpen({ id: card.id, origin: card.getBoundingClientRect(), trigger: button }),
@@ -87,8 +96,15 @@ export default function LearnPage() {
         <h1 className="learn-title">Learn</h1>
         <p className="learn-sub">Plain-language guides to the protocols Seasonals reads. Live rates are on the Menu.</p>
       </header>
+      <div className="learn-chain" role="group" aria-label="Chain">
+        {LEARN_CHAINS.map((c) => (
+          <button key={c} type="button" className="filter-chip" aria-pressed={chain === c} onClick={() => setChain(c)}>
+            {chainLabel(c)}
+          </button>
+        ))}
+      </div>
       <div className="learn-grid">
-        {LEARN.map((e) => (
+        {learnEntries(chain).map((e) => (
           <LearnCard key={e.id} entry={e} onDetails={onDetails} />
         ))}
       </div>

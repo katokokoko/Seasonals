@@ -6,53 +6,95 @@
  *
  * ナビゲーション仕様 (agent-plan 契約 2026-10):
  *   - planId は dynamic segment (path)。BFF の push payload は `{ type, plan_id }` だけ
- *   - approval token は approve の応答で発行される (TTL は card が応答から表示)。
- *     旧 deep link の `?token=` があれば従来どおり fetch して TTL を出す
+ *   - approval token は approve の応答で発行される。旧 deep link の `?token=` は
+ *     URL としては受ける (開けなくしない) が、2026-10-08 から使わない
+ *     (token の TTL count-down は撤去。期限は plan の expires_at を card が出す)
  *   - 承認後の署名・送信は Seasonals web (Seeker は承認まで)
+ *   - live な status (pending_user / approved / executing) の間は 5 秒で polling し、
+ *     web での送信 / 却下を数秒で反映する (web の useSolanaAgentPlans と同じ間隔)
+ *   - header を出さない画面なので ✕ で閉じられる (2026-10-08 実機: 戻れなかった)
  *
  * @see CLAUDE.md §10 task #7
  * @see ../../components/action/MCPApprovalPushCard.tsx
  * @see ../../services/push.ts
  */
 
-import { ActivityIndicator, StyleSheet, Text, View } from "react-native";
+import {
+  ActivityIndicator,
+  Pressable,
+  StyleSheet,
+  Text,
+  View,
+} from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { Stack, useLocalSearchParams } from "expo-router";
+import { Stack, useLocalSearchParams, useRouter } from "expo-router";
 
 import {
   COLOR,
   FONT,
   FONT_SIZE,
+  RADIUS,
   SPACE,
   WEIGHT,
+  withAlpha,
 } from "@workspace/lib/design-system";
+import { AgentPlanStatus, type AgentPlan } from "@workspace/lib/types";
 
 import { MCPApprovalPushCard } from "../../components/action/MCPApprovalPushCard";
-import {
-  useAgentPlan,
-  useApprovalToken,
-} from "../../services/queries";
+import { useAgentPlan } from "../../services/queries";
+
+/** 状態が変わり得る status (web / Agent 側の操作待ち)。この間だけ polling する */
+const LIVE_PLAN_STATUSES: ReadonlySet<AgentPlanStatus> = new Set([
+  AgentPlanStatus.PendingUser,
+  AgentPlanStatus.Approved,
+  AgentPlanStatus.Executing,
+]);
+
+/** live な status の polling 間隔 (web の useSolanaAgentPlans と揃える) */
+const LIVE_POLL_MS = 5_000;
+
+function approvalRefetchInterval(
+  plan: AgentPlan | undefined
+): number | false {
+  return plan && LIVE_PLAN_STATUSES.has(plan.status) ? LIVE_POLL_MS : false;
+}
 
 export default function ApprovalScreen() {
+  const router = useRouter();
+  // `token` は旧 deep link 互換で受けるだけ (使わない)
   const params = useLocalSearchParams<{ planId: string; token?: string }>();
   const planId = typeof params.planId === "string" ? params.planId : null;
-  const tokenId = typeof params.token === "string" ? params.token : null;
 
-  const planQuery = useAgentPlan(planId);
-  // token は任意。無ければ useApprovalToken(null) は disabled query (fetch しない)
-  const tokenQuery = useApprovalToken(tokenId);
+  const planQuery = useAgentPlan(planId, {
+    refetchInterval: approvalRefetchInterval,
+  });
 
-  // Phase 8.37 (M2): disabled query の isPending は永久 true なので、
-  // token がある時だけ token fetch の pending / error を見る
-  const tokenPending = tokenId !== null && tokenQuery.isPending;
   // planId 欠落は useAgentPlan(null) も disabled なので、pending を待たず invalid 表示
-  const isPending = planId !== null && (planQuery.isPending || tokenPending);
-  const error =
-    planQuery.error ?? (tokenId !== null ? tokenQuery.error : null);
+  const isPending = planId !== null && planQuery.isPending;
+  // polling 中の一時的な取得失敗で card を消さない (data がある間は card を出し続ける)
+  const error = planQuery.data ? null : planQuery.error;
+
+  const handleClose = () => {
+    if (router.canGoBack()) router.back();
+    else router.replace("/");
+  };
 
   return (
     <SafeAreaView style={styles.safe} edges={["top", "bottom"]}>
       <Stack.Screen options={{ title: "Approval", headerShown: false }} />
+
+      <View style={styles.topBar}>
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel="Close"
+          onPress={handleClose}
+          hitSlop={12}
+          style={styles.closeBtn}
+          testID="approval-screen-close"
+        >
+          <Text style={styles.closeIcon}>✕</Text>
+        </Pressable>
+      </View>
 
       {isPending && (
         <View style={styles.center}>
@@ -78,10 +120,9 @@ export default function ApprovalScreen() {
         </View>
       )}
 
-      {!isPending && !error && planQuery.data && (
+      {!isPending && planQuery.data && (
         <MCPApprovalPushCard
           plan={planQuery.data}
-          token={tokenId !== null ? tokenQuery.data : undefined}
           testID="approval-screen-card"
         />
       )}
@@ -93,6 +134,26 @@ const styles = StyleSheet.create({
   safe: {
     flex: 1,
     backgroundColor: COLOR.bgPrimary,
+  },
+  topBar: {
+    flexDirection: "row",
+    justifyContent: "flex-end",
+    paddingHorizontal: SPACE.md,
+    paddingTop: SPACE.sm,
+  },
+  // ActionModal の ✕ と同じ見た目 (32×32 pill)
+  closeBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: RADIUS.pill,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: withAlpha(COLOR.textMuted, 0.12),
+  },
+  closeIcon: {
+    fontSize: 16,
+    color: COLOR.textSubtitle,
+    fontWeight: WEIGHT.bold,
   },
   center: {
     flex: 1,
