@@ -49,6 +49,11 @@ COPY lib ./lib
 COPY artifacts/seasonals-bff/src ./artifacts/seasonals-bff/src
 COPY artifacts/seasonals-bff/tsconfig.json ./artifacts/seasonals-bff/
 COPY artifacts/seasonals-bff/docker-entrypoint.sh /usr/local/bin/seasonals-entrypoint
+# context から COPY した file は手元の mode をそのまま持ち込む。開発機で 0600 になっていた
+# lib/types/enums.ts が node user (entrypoint が権限を落とす) から EACCES で読めず、初回 deploy が
+# 起動ループになった (2026-10-12)。source と設定は全部 world-readable に揃える (dir は a+X)。
+# node_modules は deps stage で root が umask 022 で書いたものなので触らない (chmod -R は layer を複製する)
+RUN chmod -R a+rX /app/lib /app/artifacts && chmod a+r /app/*.json /app/*.yaml /app/.npmrc
 # /app は read-only で動くので chown しない (node_modules を丸ごと複製する layer を作らない)。
 # /data は Fly volume の mount 先。mount は root 所有で image 側の所有権を隠すため、
 # entrypoint が起動時に node へ渡してから権限を落とす (docker-entrypoint.sh)。
