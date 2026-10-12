@@ -1,4 +1,5 @@
-# Seasonals BFF image の build context 除外 (Dockerfile / fly.toml の [build] ignorefile)。
+# Seasonals BFF image の build context 除外。fly.toml の [build] ignorefile で、BuildKit も Dockerfile と
+# 同じ dir の <Dockerfile 名>.dockerignore として自動で読む (docker build -f artifacts/seasonals-bff/Dockerfile .)。
 # context は repo root なので pattern も repo root 基準。
 # 秘密 (.env) と実行時 state (.data) を image / builder に送らないのが第一の目的。
 

@@ -126,11 +126,37 @@ API 以外で配布を阻んでいた点。詳細は各ファイルのコメン�
 
 構成: web = Cloudflare Pages (`seasonals.cafe`、`/api/*` は Pages Function が BFF へ proxy)、BFF = Fly.io (`api.seasonals.cafe`、volume 付き 1 machine、固定 egress IP)、APK = EAS `preview-onchain`。鍵は Fly の secrets と Pages の encrypted secret にだけ置く。
 
+### 9.0 手元の準備
+
+| 種類 | 用意するもの | 備考 |
+|---|---|---|
+| CLI | `brew install flyctl` → `fly auth login` | 必須。deploy は `pnpm deploy:bff` (Fly の remote builder で build するので Docker は不要) |
+| CLI | Docker Desktop か OrbStack | 任意。image を手元で確かめる時だけ (下の手順) |
+| CLI | `npx wrangler@4 login` | 任意。Pages の secret 投入 (`pages secret put`) とローカル e2e リハーサルに使う |
+| CLI | `npx eas-cli` | install 不要。Expo に owner でログイン済みか `npx eas-cli whoami` で確認。EAS project は `app.config.ts` の `extra.eas.projectId` で link 済み |
+| 既存 | node (`.nvmrc` は 24、開発機の 25 でも可) / pnpm 10.33.4 / gh / openssl / adb / JDK 17 | 揃っていることを確認 |
+| account | Cloudflare (Free)。Pages の GitHub 連携で Cloudflare の GitHub App に repo を許可 | |
+| account | Fly.io + カード登録 | machine 1 台 (1GB) + volume + 固定 egress IP で月 $10 弱 |
+| account | Helius: **本番用の新規 key** を 1 本 | Allowed IPs は egress IP が出た後に設定 |
+| registrar | Porkbun: nameserver を Cloudflare の 2 つに変更 | DNSSEC が有効なら先に off |
+| 秘密 | `BFF_PROXY_SECRET` / `ADMIN_TOKEN` / Helius 本番 key / EAS keystore のバックアップ | パスワード管理に入れる。chat や issue に貼らない |
+
 ```sh
-brew install flyctl && fly auth login
 openssl rand -hex 32   # BFF_PROXY_SECRET (Fly と Pages の両方に同じ値)
 openssl rand -hex 32   # ADMIN_TOKEN
 ```
+
+image を手元で確かめる (任意。**main を checkout した clean な作業ツリー**で。`fly deploy` も同じ tree から行う):
+
+```sh
+docker build -f artifacts/seasonals-bff/Dockerfile -t seasonals-bff:local --build-arg GIT_SHA=$(git rev-parse --short HEAD) .
+docker run --rm -p 3030:3030 -e SOLANA_EXECUTION_TARGET=disabled -v seasonals-data:/data seasonals-bff:local
+curl -s http://127.0.0.1:3030/health     # status ok、version、solana.executionTarget=disabled
+```
+
+- BuildKit が Dockerfile 横の `Dockerfile.dockerignore` を読むので context は数 MB で済む。2026-10-12 実測: image 625MB、起動 3 秒、`/tx/submit` 409 / `/autonomous/kill` 403 / `/user-policy` 403 / `/push-tokens` 503 / 不正 wallet 400 / 他 origin の CORS 不許可
+- 開発用の `.env` を `--env-file` で渡さない。`FEATURE_APPROVAL_MODE_AUTO` 等が入っていると production 起動ガードで exit 1 する (正しい挙動)
+- 起動ログの `bigint: Failed to load bindings` 2 行は pure JS fallback の警告で無害
 
 1. **Cloudflare zone**: Add a site → `seasonals.cafe` (Free) → 表示される nameserver 2 つを Porkbun の Nameservers に設定 (Porkbun 側の DNSSEC は先に off)。"Active" のメールを待つ
 2. **Pages**: Workers & Pages → Create → Pages → Connect to Git → `katokokoko/Seasonals`。production branch `main`、Root directory `artifacts/seasonals-web`、Build command `cd ../.. && pnpm install --frozen-lockfile --filter @seasonals/web... && pnpm --filter @seasonals/web build`、Output `dist`。project 名は **`seasonals-web`** (`wrangler.toml` の `name` と一致させる)。build 変数 `SKIP_DEPENDENCY_INSTALL=1` / `NODE_VERSION=24` / `PNPM_VERSION=10.33.4` は `wrangler.toml` の `[vars]` に入れてある (wrangler file がある project は dashboard で同じ項目を編集できない)。**初回 build log で自動 install が skip され Node 24 で動いたか確認**し、効いていなければ `SKIP_DEPENDENCY_INSTALL` だけ dashboard の secret として入れる。Settings → Environment variables に **secret** `BFF_PROXY_SECRET` (production / preview、または `npx wrangler@4 pages secret put BFF_PROXY_SECRET --project-name seasonals-web`)。Custom domains に `seasonals.cafe` (`www` も付けるなら追加)

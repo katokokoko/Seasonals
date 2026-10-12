@@ -3,7 +3,7 @@
 #
 # deploy は repo root から (build context = repo root。dockerfile / ignorefile は
 # この fly.toml からの相対 path として解決される):
-#   fly deploy --config artifacts/seasonals-bff/fly.toml --build-arg GIT_SHA=$(git rev-parse --short HEAD)
+#   pnpm deploy:bff   (= fly deploy --remote-only --build-arg GIT_SHA=<short sha>、root package.json)
 #
 # 秘密は [env] に書かず `fly secrets set` で入れる:
 #   HELIUS_API_KEY, ADMIN_TOKEN, BFF_PROXY_SECRET (Cloudflare Pages Function と同じ値)
@@ -15,7 +15,7 @@ primary_region = "nrt"
 
 [build]
   dockerfile = "Dockerfile"
-  ignorefile = ".dockerignore"
+  ignorefile = "Dockerfile.dockerignore"
 
 [env]
   NODE_ENV = "production"
