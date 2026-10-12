@@ -151,7 +151,71 @@ test("on-chain で失敗した tx は error として出す", async () => {
   fireEvent.change(screen.getByLabelText("Amount"), { target: { value: "1" } });
   await waitFor(() => expect(signButton().disabled).toBe(false));
   fireEvent.click(signButton());
-  expect((await screen.findByText(/Transaction 1 of 1 failed on-chain/)).textContent).toContain("6001");
+  const alert = await screen.findByText(/The transaction failed on-chain/);
+  expect(alert.textContent).toContain("6001");
+  expect(screen.getAllByRole("listitem").map((li) => li.textContent)).toEqual([expect.stringContaining("Failed")]);
+});
+
+test("複数 tx の 2 本目が on-chain で失敗したら、何本目かを出す", async () => {
+  await connect();
+  let n = 0;
+  installFakeBff(
+    bff({
+      "/protocols/save/deposit-tx": () => ({ json: { transactions: [b64([1]), b64([2])], reserve: save.reserve, ctokenMint: save.ctoken_mint, underlyingMint: "x" } }),
+      "/tx/submit": () => ({ json: { signature: ++n === 1 ? SIG1 : SIG2 } }),
+      "/tx/status": (p) => {
+        const sig = p.split("=")[1];
+        return { json: { signature: sig, status: sig === SIG2 ? "failed" : "confirmed", slot: 2, err: sig === SIG2 ? "boom" : null } };
+      },
+    })
+  );
+  renderPanel(depositAction("savefi", save.underlying_symbol, save.pool_id));
+  fireEvent.change(screen.getByLabelText("Amount"), { target: { value: "0.1" } });
+  await waitFor(() => expect(signButton().disabled).toBe(false));
+  fireEvent.click(signButton());
+  expect((await screen.findByText(/Transaction 2 of 2 failed on-chain/)).textContent).toContain("boom");
+});
+
+test("lastValidBlockHeight を超えても未着地なら expired (成功とも送信済みとも言わない)", async () => {
+  await connect();
+  installFakeBff(
+    bff({
+      "/protocols/swap-earn/deposit-tx": () => ({
+        json: { swapTransaction: b64([1, 2, 3]), lastValidBlockHeight: 1000, outAmount: "1", outputMint: "x", quote: {} },
+      }),
+      "/tx/status": (p) => ({ json: { signature: p.split("=")[1], status: "pending", slot: null, err: null, blockHeight: 1001 } }),
+    })
+  );
+  renderPanel(depositAction("jupiter", "USDC", "jupiter_usdc"));
+  fireEvent.change(screen.getByLabelText("Amount"), { target: { value: "1" } });
+  await waitFor(() => expect(signButton().disabled).toBe(false));
+  fireEvent.click(signButton());
+  // expired の確定は 2 回連続の poll (lib tx-confirm、間に pollMs 2 秒) なので既定の 1 秒では足りない
+  const alert = await screen.findByText(/expired before the network included it/, undefined, { timeout: 5000 });
+  expect(alert.textContent).toContain("Nothing moved");
+  expect(screen.queryByText("Confirmed on Solana mainnet.")).toBeNull();
+  expect(screen.queryByText(/Sent\. Confirmation is taking longer/)).toBeNull();
+});
+
+test("lastValidBlockHeight 以内で pending の間は確認を続け、着地したら success", async () => {
+  await connect();
+  let polls = 0;
+  installFakeBff(
+    bff({
+      "/protocols/swap-earn/deposit-tx": () => ({
+        json: { swapTransaction: b64([1, 2, 3]), lastValidBlockHeight: 1000, outAmount: "1", outputMint: "x", quote: {} },
+      }),
+      "/tx/status": (p) => ({
+        json: { signature: p.split("=")[1], status: ++polls < 2 ? "pending" : "confirmed", slot: 1, err: null, blockHeight: 990 },
+      }),
+    })
+  );
+  renderPanel(depositAction("jupiter", "USDC", "jupiter_usdc"));
+  fireEvent.change(screen.getByLabelText("Amount"), { target: { value: "1" } });
+  await waitFor(() => expect(signButton().disabled).toBe(false));
+  fireEvent.click(signButton());
+  await screen.findByText("Confirmed on Solana mainnet.", undefined, { timeout: 4000 });
+  expect(polls).toBe(2);
 });
 
 test("旧 BFF (/tx/status が無い) では送信済みとして終える", async () => {
@@ -162,6 +226,30 @@ test("旧 BFF (/tx/status が無い) では送信済みとして終える", asyn
   await waitFor(() => expect(signButton().disabled).toBe(false));
   fireEvent.click(signButton());
   await screen.findByText(/Sent\. Confirmation is taking longer/);
+});
+
+test("plans-only の BFF (/health executionTarget=disabled) では wallet を開く前に止める", async () => {
+  const w = await connect();
+  const calls = installFakeBff(
+    bff({ "/health": () => ({ json: { status: "ok", solana: { heliusConfigured: true, executionTarget: "disabled" } } }) })
+  );
+  renderPanel(depositAction("jupiter", "USDC", "jupiter_usdc"));
+  await screen.findByText("This server is read-only (plans only). Deposits and withdrawals are disabled.");
+  fireEvent.change(screen.getByLabelText("Amount"), { target: { value: "1" } });
+  await screen.findByText(/Wallet balance: 5 USDC/);
+  expect(signButton().disabled).toBe(true);
+  fireEvent.click(signButton());
+  expect(w.signFn).not.toHaveBeenCalled();
+  expect(calls.some((c) => c.path.startsWith("/protocols/"))).toBe(false);
+});
+
+test("executionTarget=mainnet なら従来通り署名できる (notice も出さない)", async () => {
+  await connect();
+  installFakeBff(bff({ "/health": () => ({ json: { status: "ok", solana: { heliusConfigured: true, executionTarget: "mainnet" } } }) }));
+  renderPanel(depositAction("jupiter", "USDC", "jupiter_usdc"));
+  fireEvent.change(screen.getByLabelText("Amount"), { target: { value: "1" } });
+  await waitFor(() => expect(signButton().disabled).toBe(false));
+  expect(screen.queryByText(/This server is read-only/)).toBeNull();
 });
 
 test("oracle が blocked なら CTA を押せず、理由を出す", async () => {

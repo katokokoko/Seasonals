@@ -13,6 +13,7 @@ import type {
   EthAgentProposal,
   EthProposalListResponse,
   ForkExecution,
+  HealthResponse,
   MenuHoldingsResponse,
   MenuProduct,
   OracleResult,
@@ -194,13 +195,6 @@ export const api = {
 
 function post<T>(path: string, body: unknown): Promise<T> {
   return request<T>(path, { method: "POST", body: JSON.stringify(body) });
-}
-
-export interface HealthResponse {
-  status: string;
-  timestamp?: string;
-  /** 旧 BFF には無い */
-  solana?: { heliusConfigured: boolean };
 }
 
 /** BFF src/ethereum/menu-actions.ts MenuPlanInput と同形 (amount は人が入力した decimal string) */

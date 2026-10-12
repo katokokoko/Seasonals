@@ -66,6 +66,7 @@ import { canWithdrawEarnPosition } from "@workspace/lib/derive/solana-action";
 
 import type { JupiterLendMarketDTO } from "../../services/api";
 import {
+  useHealth,
   useJupiterLendMarkets,
   useMenuListings,
   usePositions,
@@ -388,6 +389,10 @@ export function MenuDrawer({
   const { data: positions = [] } = usePositions(walletAddress);
   // Phase 8.6: Jupiter Lend live markets (drill-down で fixture pools を上書き)
   const { data: jlMarkets = [] } = useJupiterLendMarkets();
+  // 2026-10-13: plans-only server (`/health` の executionTarget = "disabled") では
+  // deposit が必ず 409 になるので、CTA を "Unavailable" にして ActionModal を開かせない
+  const { data: health } = useHealth();
+  const executionDisabled = health?.solana?.executionTarget === "disabled";
 
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<FilterKey>("all");
@@ -556,6 +561,8 @@ export function MenuDrawer({
     (entry: ProtocolMenuEntry, pool: ProtocolPool) => {
       // watch-only mode: 署名できないので ActionModal を開かない (CTA も disabled)
       if (readOnly) return;
+      // 2026-10-13: plans-only server も同じ理由で開かない (CTA は "Unavailable")
+      if (executionDisabled) return;
       // Phase 8.33: read-only listing (Exponent PT 等) は deposit 経路なし — tap 無効
       if (pool.display_only) return;
       // 8.51: 満杯 / 預入停止中も同様に落とす。BFF も 409 で弾くが、必ず失敗する
@@ -565,7 +572,7 @@ export function MenuDrawer({
       const asset = pool.deposit_asset ?? pool.asset;
       onStartAction?.(entry.protocol_id, asset, "deposit", pool.pool_id);
     },
-    [readOnly, onClose, onStartAction]
+    [readOnly, executionDisabled, onClose, onStartAction]
   );
 
   if (!visible && translateX.value >= DRAWER_WIDTH - 1) return null;
@@ -727,6 +734,7 @@ export function MenuDrawer({
                   onWithdrawPosition={readOnly ? undefined : onWithdrawPosition}
                   jlMarkets={jlMarkets}
                   readOnly={readOnly}
+                  executionDisabled={executionDisabled}
                   testID={testID ? `${testID}-detail` : undefined}
                 />
               )}
@@ -963,6 +971,8 @@ interface PoolDetailPaneProps {
   jlMarkets?: JupiterLendMarketDTO[];
   /** watch-only mode: CTA を無効化し、先頭に read-only banner */
   readOnly?: boolean;
+  /** 2026-10-13: plans-only server。Deposit CTA を "Unavailable" (disabled) にする */
+  executionDisabled?: boolean;
   testID?: string;
 }
 
@@ -982,6 +992,7 @@ function DefaultPoolDetailPane({
   positions,
   onWithdrawPosition,
   readOnly = false,
+  executionDisabled = false,
   testID,
 }: PoolDetailPaneProps) {
   const iconSrc = ICON_BY_ID[entry.icon_id];
@@ -1131,6 +1142,7 @@ function DefaultPoolDetailPane({
             onManage={() => handleManage(row)}
             protocolName={entry.display_name}
             readOnly={readOnly}
+            executionDisabled={executionDisabled}
             testID={testID ? `${testID}-pool-${row.key}` : undefined}
           />
         ))}
@@ -1153,6 +1165,7 @@ function DefaultPoolDetailPane({
               onManage={() => handleManage(row)}
               protocolName={entry.display_name}
               readOnly={readOnly}
+              executionDisabled={executionDisabled}
               testID={testID ? `${testID}-pool-${row.key}` : undefined}
             />
           ))}
@@ -1173,6 +1186,7 @@ function JupiterDetailPane({
   onWithdrawPosition,
   jlMarkets,
   readOnly = false,
+  executionDisabled = false,
   testID,
 }: PoolDetailPaneProps) {
   const iconSrc = ICON_BY_ID[entry.icon_id];
@@ -1310,6 +1324,7 @@ function JupiterDetailPane({
             onDeposit={() => handleDeposit(row)}
             onManage={() => handleManage(row)}
             readOnly={readOnly}
+            executionDisabled={executionDisabled}
             testID={
               testID ? `${testID}-vault-${row.assetSymbol}` : undefined
             }
@@ -1334,6 +1349,7 @@ function JupiterDetailPane({
               onDeposit={() => handleDeposit(row)}
               onManage={() => handleManage(row)}
               readOnly={readOnly}
+              executionDisabled={executionDisabled}
               testID={
                 testID ? `${testID}-vault-${row.assetSymbol}` : undefined
               }
@@ -1407,10 +1423,15 @@ function OthersExpanderRow({
  * 行下段の CTA を決める。優先順位:
  *   1. 保有あり かつ withdraw 経路あり → Manage (Exponent の満期済 PT は Redeem)
  *   2. read-only listing (8.33) → CTA なし (タイトルに "View only" バッジ)
- *   3. 預入不可 (8.51/8.52 満杯・停止中・上流都合) → 無効 CTA + 理由
- *   4. それ以外 → Deposit
+ *   3. plans-only server (2026-10-13、`/health` の executionTarget = "disabled")
+ *      → 無効 CTA "Unavailable" (capView.closed と同じ見た目)
+ *   4. 預入不可 (8.51/8.52 満杯・停止中・上流都合) → 無効 CTA + 理由
+ *   5. それ以外 → Deposit
  */
-function ctaForRow(row: VaultRow): {
+function ctaForRow(
+  row: VaultRow,
+  executionDisabled = false
+): {
   label: string;
   kind: "manage" | "deposit";
   disabled: boolean;
@@ -1421,6 +1442,9 @@ function ctaForRow(row: VaultRow): {
     return { label: redeem ? "Redeem" : "Manage", kind: "manage", disabled: false };
   }
   if (row.displayOnly) return null;
+  if (executionDisabled) {
+    return { label: "Unavailable", kind: "deposit", disabled: true };
+  }
   if (row.capView?.closed) {
     // 8.91: blocked (上流不具合) は Unavailable と区別して表示
     const label =
@@ -1456,6 +1480,7 @@ function VaultRowView({
   onManage,
   protocolName,
   readOnly = false,
+  executionDisabled = false,
   testID,
 }: {
   row: VaultRow;
@@ -1465,10 +1490,12 @@ function VaultRowView({
   protocolName?: string;
   /** watch-only mode: CTA (Deposit / Manage) を表示のまま無効化 */
   readOnly?: boolean;
+  /** 2026-10-13: plans-only server。Deposit を "Unavailable" に (Manage / Redeem はそのまま) */
+  executionDisabled?: boolean;
   testID?: string;
 }) {
   const deposited = row.isDeposited;
-  const cta = ctaForRow(row);
+  const cta = ctaForRow(row, executionDisabled);
   const ctaDisabled = cta ? cta.disabled || readOnly : true;
   return (
     <View

@@ -70,6 +70,16 @@ export default function SettingsScreen() {
             Solana RPC (Helius):{" "}
             {health.isPending ? "checking…" : health.data?.solana ? (health.data.solana.heliusConfigured ? "configured" : "not configured") : "unknown on this server"}
           </p>
+          <p className="muted small">
+            Solana execution:{" "}
+            {health.isPending
+              ? "checking…"
+              : health.data?.solana?.executionTarget === "disabled"
+                ? "disabled (plans only)"
+                : health.data?.solana?.executionTarget === "mainnet"
+                  ? "mainnet"
+                  : "unknown on this server"}
+          </p>
           {status.isError ? (
             <Notice tone="warning" title="Ethereum integration is not available on this server yet." />
           ) : status.isPending ? (

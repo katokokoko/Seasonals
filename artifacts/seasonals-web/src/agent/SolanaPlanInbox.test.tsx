@@ -11,7 +11,7 @@ import { useSession } from "../state/session";
 import { _resetSolanaWalletsForTest, connectSolanaWallet } from "../services/solanaWallet";
 import { fakeSolanaWallet, signedMarker, SOL_OTHER, SOL_OWNER, type FakeWalletOptions } from "../testing/fakeSolanaWallet";
 import { b64, installFakeBff, type FakeHandler } from "../testing/fakeBff";
-import { SolanaPlanInbox } from "./SolanaPlanInbox";
+import { builtFromPlan, SolanaPlanInbox } from "./SolanaPlanInbox";
 
 const SIG1 = "1".repeat(87);
 const SIG2 = "2".repeat(87);
@@ -42,7 +42,12 @@ function plan(over: Partial<AgentPlan> = {}, wallet = SOL_OWNER): AgentPlan {
 }
 
 /** 契約どおりの状態つき fake BFF。over は path の prefix で差し替える */
-function agentBff(initial: AgentPlan[], over: Partial<Record<string, FakeHandler>> = {}): FakeHandler {
+function agentBff(
+  initial: AgentPlan[],
+  over: Partial<Record<string, FakeHandler>> = {},
+  /** /execute の tx ごとの last_valid_block_height ([index 1, index 0] の順、省略 = 旧 BFF と同じく無し) */
+  heights?: [number | null, number | null]
+): FakeHandler {
   let plans = [...initial];
   let submits = 0;
   const patch = (id: string, p: Partial<AgentPlan>) => {
@@ -71,8 +76,8 @@ function agentBff(initial: AgentPlan[], over: Partial<Record<string, FakeHandler
               plan: patch(id, { status: AgentPlanStatus.Executing }),
               // index 順に並べ直して署名することを確かめるため、わざと逆順
               unsigned_transactions: [
-                { index: 1, label: "deposit", tx_base64: b64([4, 5]) },
-                { index: 0, label: "setup", tx_base64: b64([1, 2, 3]) },
+                { index: 1, label: "deposit", tx_base64: b64([4, 5]), ...(heights ? { last_valid_block_height: heights[0] } : {}) },
+                { index: 0, label: "setup", tx_base64: b64([1, 2, 3]), ...(heights ? { last_valid_block_height: heights[1] } : {}) },
               ],
             },
           };
@@ -223,6 +228,35 @@ test("Approve & sign: approve → execute (token, via web) → one wallet prompt
   const links = screen.getAllByRole("link").map((a) => a.getAttribute("href"));
   expect(links).toEqual([`https://solscan.io/tx/${SIG1}`, `https://solscan.io/tx/${SIG2}`]);
   expect(screen.queryByRole("button", { name: "Approve & sign" })).toBeNull();
+});
+
+test("builtFromPlan: index 順の tx と、最も早く切れる last_valid_block_height (無ければ null)", () => {
+  const tx = (index: number, h?: number | null) => ({ index, label: `t${index}`, tx_base64: b64([index]), ...(h !== undefined ? { last_valid_block_height: h } : {}) });
+  expect(builtFromPlan([tx(1, 900), tx(0, 1000)])).toEqual({ txs: [b64([0]), b64([1])], lastValidBlockHeight: 900 });
+  expect(builtFromPlan([tx(0, null), tx(1, 1000)])).toEqual({ txs: [b64([0]), b64([1])], lastValidBlockHeight: 1000 });
+  expect(builtFromPlan([tx(0), tx(1, null)])).toEqual({ txs: [b64([0]), b64([1])], lastValidBlockHeight: null });
+});
+
+test("past the plan's last_valid_block_height and still unseen → expired, reported to /failed (not /signatures)", async () => {
+  await connect();
+  const calls = installFakeBff(
+    agentBff(
+      [plan()],
+      { "/tx/status": (p) => ({ json: { signature: p.split("=")[1], status: "pending", slot: null, err: null, blockHeight: 1001 } }) },
+      [1000, null]
+    )
+  );
+  renderInbox();
+  fireEvent.click(await screen.findByRole("button", { name: "Approve & sign" }));
+  await waitFor(() => expect(tags()).toEqual(["Failed"]), { timeout: 5000 });
+  expect(posts(calls)).toEqual([
+    "/agent-plans/plan_1/approve",
+    "/agent-plans/plan_1/execute",
+    "/tx/submit",
+    "/tx/submit",
+    "/agent-plans/plan_1/failed",
+  ]);
+  expect((calls.find((c) => c.path.endsWith("/failed"))!.body as { reason: string }).reason).toMatch(/^expired: /);
 });
 
 test("wallet declines → reports /failed with a reason, nothing is sent", async () => {

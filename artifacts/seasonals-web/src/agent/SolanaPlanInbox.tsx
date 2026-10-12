@@ -21,7 +21,8 @@ import {
   describeSimulationOut,
   describeSimulationWarning,
 } from "@workspace/lib/derive/simulation-display";
-import { AgentPlanStatus, type AgentPlan, type OracleWarningKind } from "@workspace/lib/types";
+import { AgentPlanStatus, type AgentPlan, type AgentPlanUnsignedTransaction, type OracleWarningKind } from "@workspace/lib/types";
+import type { BuiltTxs } from "@workspace/lib/derive/tx-confirm";
 import { toHumanReadable } from "@workspace/lib/utils/numeric";
 import { api, ApiError } from "../services/api";
 import { useSolanaAgentPlans } from "../services/queries";
@@ -72,6 +73,22 @@ function errorMessage(e: unknown): string {
 }
 
 /** /failed に送る理由 (BFF の failure_reason。MCP の Agent が読む) */
+/**
+ * `/execute` の unsigned tx → lib `BuiltTxs`。index 順に署名・送信する。
+ * 全 tx は 1 回の承認で署名されるので、最も早く切れる `last_valid_block_height` が batch 全体の期限
+ * (それを超えて未着地なら expired を確定できる、lib tx-confirm)。どれにも無ければ null (時間切れで submitted)
+ */
+export function builtFromPlan(unsigned: readonly AgentPlanUnsignedTransaction[]): BuiltTxs {
+  const sorted = [...unsigned].sort((a, b) => a.index - b.index);
+  const heights = sorted
+    .map((t) => t.last_valid_block_height)
+    .filter((h): h is number => typeof h === "number" && Number.isFinite(h));
+  return {
+    txs: sorted.map((t) => t.tx_base64),
+    lastValidBlockHeight: heights.length > 0 ? Math.min(...heights) : null,
+  };
+}
+
 function failureReason(s: SignState): string {
   if (s.phase === "cancelled") return "user_cancelled";
   const code = s.code ?? (s.txs.length > 0 ? "submit_failed" : "sign_failed");
@@ -211,7 +228,7 @@ export function SolanaPlanCard({ plan: p }: { plan: AgentPlan }) {
     await sign.run(async () => {
       const r = await api.executeAgentPlan(p.plan_id, tokenId);
       executionId.current = r.execution_id;
-      return [...r.unsigned_transactions].sort((a, b) => a.index - b.index).map((t) => t.tx_base64);
+      return builtFromPlan(r.unsigned_transactions);
     });
   };
 

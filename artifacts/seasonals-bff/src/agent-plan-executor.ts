@@ -99,6 +99,21 @@ function pickTxs(
   return typeof v === "string" && v.length > 0 ? [v] : null;
 }
 
+/**
+ * 2026-10-13: Jupiter swap 系 builder (`/protocols/{swap-earn,jupiter-lend}/*-tx`、応答
+ * `SwapEarnTxResponse`) だけが blockhash の lastValidBlockHeight を返す。署名後の着地確認
+ * (lib/derive/tx-confirm.ts) が「期限切れ = もう取り込まれない」を確定するのに使う。
+ * 他の builder は持たないので null (呼び手は時間で打ち切る)
+ */
+function pickLastValidBlockHeight(
+  json: Record<string, unknown>,
+  key: TxBuildRequest["responseKey"]
+): number | null {
+  if (key !== "swapTransaction") return null;
+  const h = json.lastValidBlockHeight;
+  return typeof h === "number" && Number.isFinite(h) ? h : null;
+}
+
 /** "deposit SOL on jito" / 複数本なら "(1/2)" を付ける */
 function labelFor(action: ActionSpec, index: number, total: number): string {
   const base = `${action.action_type}${action.asset ? ` ${action.asset}` : ""} on ${action.protocol}`;
@@ -139,12 +154,14 @@ export async function buildPlanTransactions(
       body: { error: "execute_tx_build_failed", message: "Transaction builder returned no transactions", route: route.kind },
     };
   }
+  const last_valid_block_height = pickLastValidBlockHeight(json, req.responseKey);
   return {
     ok: true,
     transactions: txs.map((tx_base64, index) => ({
       index,
       label: labelFor(action, index, txs.length),
       tx_base64,
+      last_valid_block_height,
     })),
   };
 }
