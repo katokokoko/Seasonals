@@ -1,9 +1,10 @@
 /**
- * buildSolanaTxs — route ごとの builder 応答を { txs, lastValidBlockHeight } に揃える。
+ * buildSolanaTxs — route ごとの builder 応答を lib `BuiltTxs` ({ txs, lastValidBlockHeight }) に揃える。
  * swap-earn だけが lastValidBlockHeight を返す (着地確認で expired を確定できる、lib tx-confirm)。
  */
 import { SWAP_EARN_MARKETS } from "@workspace/lib/config/swap-earn-markets";
 import { SAVE_MARKETS } from "@workspace/lib/config/save-markets";
+import type { BuiltTxs } from "@workspace/lib/derive/tx-confirm";
 import { b64, installFakeBff } from "../testing/fakeBff";
 import { buildSolanaTxs } from "./buildTx";
 
@@ -59,8 +60,7 @@ test("swap-earn 以外 (Save の複数 tx) は lastValidBlockHeight = null", asy
       ? { json: { transactions: [b64([1]), b64([2])], reserve: save.reserve, ctokenMint: save.ctoken_mint, underlyingMint: "x" } }
       : undefined
   );
-  await expect(buildSolanaTxs({ kind: "save_deposit", reserve: save.reserve }, USER, "100000")).resolves.toEqual({
-    txs: [b64([1]), b64([2])],
-    lastValidBlockHeight: null,
-  });
+  // useSignAndSubmit.run が受ける lib の型そのもの (local な shape を持たない、CLAUDE.md §1)
+  const built: BuiltTxs = await buildSolanaTxs({ kind: "save_deposit", reserve: save.reserve }, USER, "100000");
+  expect(built).toEqual({ txs: [b64([1]), b64([2])], lastValidBlockHeight: null });
 });

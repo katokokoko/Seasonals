@@ -246,6 +246,12 @@ export interface AgentPlanUnsignedTransaction {
   label: string;
   /** base64 serialized (未署名、または ephemeral keypair の部分署名済み) */
   tx_base64: string;
+  /**
+   * 2026-10-13: tx の blockhash が有効な最終 block height (Jupiter swap 系の builder だけが持つ、他は null)。
+   * 署名後の着地確認 (lib/derive/tx-confirm.ts) が「期限切れ = もう取り込まれない」を確定するのに使う。
+   * 旧 BFF の応答には無い
+   */
+  last_valid_block_height?: number | null;
 }
 
 /**

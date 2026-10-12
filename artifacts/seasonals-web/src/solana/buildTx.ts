@@ -1,17 +1,13 @@
 /**
- * SolanaRoute → BFF の unsigned tx builder 1 本 → base64 tx の配列。
+ * SolanaRoute → BFF の unsigned tx builder 1 本 → lib `BuiltTxs` (base64 tx の配列 + lastValidBlockHeight)。
  * Seeker ActionModal の各 runOnchainTx(...) 分岐と同じ endpoint / body (応答の key 差もここで吸収する)。
  * swap-earn は `lastValidBlockHeight` も返す (着地確認で expired を確定できる、lib tx-confirm)。他は null。
  */
 import type { SolanaRoute } from "@workspace/lib/derive/solana-action";
+import type { BuiltTxs } from "@workspace/lib/derive/tx-confirm";
 import { api } from "../services/api";
 
-export interface BuiltSolanaTxs {
-  txs: string[];
-  lastValidBlockHeight: number | null;
-}
-
-export async function buildSolanaTxs(route: SolanaRoute, user: string, amount: string): Promise<BuiltSolanaTxs> {
+export async function buildSolanaTxs(route: SolanaRoute, user: string, amount: string): Promise<BuiltTxs> {
   if (route.kind === "swap_earn_deposit" || route.kind === "swap_earn_withdraw") {
     const r =
       route.kind === "swap_earn_deposit"

@@ -168,7 +168,7 @@ beforeEach(async () => {
   });
   mockSwapTx.mockResolvedValue({
     swapTransaction: "UNSIGNED_TX_B64",
-    lastValidBlockHeight: 1,
+    lastValidBlockHeight: 300_000_456,
   });
   // 0.1 SOL の deposit なら fair な受取は約 77,286,510 jitoSOL。既定 quote の
   // out 95,000,000 はそれより多い = ユーザー有利なので通る (§ ガードは不利方向のみ)
@@ -510,7 +510,8 @@ describe("approve → execute (unsigned tx を web が署名する)", () => {
     expect(out.execution_id).toMatch(/^exec_/);
     expect(out.plan.status).toBe("executing");
     expect(out.unsigned_transactions).toEqual([
-      { index: 0, label: "deposit SOL on jito", tx_base64: "UNSIGNED_TX_B64" },
+      // Jupiter swap builder の lastValidBlockHeight を透過 (web inbox の期限切れ確定用)
+      { index: 0, label: "deposit SOL on jito", tx_base64: "UNSIGNED_TX_B64", last_valid_block_height: 300_000_456 },
     ]);
     // 人と同じ swap-earn builder (slippage 50bps、wallet が user)
     expect(mockQuote).toHaveBeenCalledWith(
@@ -531,7 +532,8 @@ describe("approve → execute (unsigned tx を web が署名する)", () => {
   it("Kamino reserve deposit: resolveSolanaRoute → Kamino builder (human 単位に変換)", async () => {
     const { exec } = await executingPlan(KAMINO_DEPOSIT);
     expect(exec.unsigned_transactions).toEqual([
-      { index: 0, label: "deposit SOL on kamino", tx_base64: "KAMINO_DEP_TX" },
+      // Kamino builder は lastValidBlockHeight を返さない → null
+      { index: 0, label: "deposit SOL on kamino", tx_base64: "KAMINO_DEP_TX", last_valid_block_height: null },
     ]);
     expect(mockKaminoDeposit).toHaveBeenCalledWith(
       expect.objectContaining({ wallet: WALLET, reserve: KAMINO_SOL_RESERVE, amount: "2.5" })

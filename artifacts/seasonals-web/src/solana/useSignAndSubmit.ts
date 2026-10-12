@@ -18,6 +18,7 @@ import {
   describeConfirmOutcome,
   TX_CONFIRM_DEFAULTS,
   TxConfirmAbort,
+  type BuiltTxs,
   type TrackedTx,
 } from "@workspace/lib/derive/tx-confirm";
 import { api, ApiError } from "../services/api";
@@ -40,14 +41,12 @@ export type SignPhase =
   | "cancelled"
   | "error";
 
-/** 送信済 tx 1 本 (lib tx-confirm の TrackedTx そのもの) */
-export type SubmittedTx = TrackedTx;
-
 export interface SignState {
   phase: SignPhase;
   /** BFF が返した tx の本数 (署名前は 0) */
   total: number;
-  txs: SubmittedTx[];
+  /** 送信済 tx (lib tx-confirm の TrackedTx) */
+  txs: TrackedTx[];
   message: string | null;
   code: string | null;
 }
@@ -60,12 +59,6 @@ export interface SignOptions {
   /** 着地後に保有 / イベントを取り直すまでの待ち (indexer の反映待ち、Seeker は 5 秒) */
   settleMs?: number;
 }
-
-/**
- * builder の結果。`lastValidBlockHeight` (swap-earn 等が返す) があれば、現在高がそれを超えても
- * 未着地の tx を「期限切れ (expired)」と確定できる。無ければ時間切れで submitted に落とす
- */
-export type BuiltTxs = string[] | { txs: string[]; lastValidBlockHeight?: number | null };
 
 /** `/tx/status` を引く。旧 BFF (404) なら確認を続けても意味が無いので TxConfirmAbort */
 async function fetchStatus(signature: string): Promise<TxStatusResponse> {
@@ -109,19 +102,21 @@ export function useSignAndSubmit(owner: string, opts: SignOptions = {}) {
     }
   }, [qc, owner]);
 
+  /**
+   * `build` は lib `BuiltTxs` を返す。`lastValidBlockHeight` (swap-earn / agent plan の tx が返す) があれば、
+   * 現在高がそれを超えても未着地の tx を「期限切れ (expired)」と確定できる。null なら時間切れで submitted
+   */
   const run = useCallback(
     async (build: () => Promise<BuiltTxs>) => {
       if (isBusy(state.phase)) return;
       let stage: SignPhase = "building";
-      const txs: SubmittedTx[] = [];
+      const txs: TrackedTx[] = [];
       const update = (patch: Partial<SignState>) => {
         if (alive.current) setState((s) => ({ ...s, ...patch }));
       };
       setState({ ...INITIAL, phase: "building" });
       try {
-        const built = await build();
-        const b64 = Array.isArray(built) ? built : built.txs;
-        const lastValidBlockHeight = Array.isArray(built) ? null : (built.lastValidBlockHeight ?? null);
+        const { txs: b64, lastValidBlockHeight } = await build();
         if (b64.length === 0) throw new Error("The server returned no transaction to sign.");
         stage = "signing";
         update({ phase: "signing", total: b64.length });

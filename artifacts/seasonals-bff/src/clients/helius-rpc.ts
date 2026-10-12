@@ -172,29 +172,35 @@ export async function getMultipleAccountsBase64(pubkeys: string[]): Promise<Arra
  * getSignatureStatuses を 1 件だけ引いて要約する。
  * null (未着地 / 期限切れ) は pending — 呼び手が時間で打ち切る。
  *
- * 現在の block height (confirmed) も並行で引いて `blockHeight` に載せる。呼び手は
- * builder の lastValidBlockHeight と比べ、超えていれば「期限切れ (着地しない)」と
- * 確定できる。height は最適化に過ぎないので、取れなければ null で status は返す
- * (status 読み取りの失敗理由にしない)。両 call とも rpcReadWithRetry 経由で
- * heliusRpcFetch の列に並び、usage にも method 別に計数される
+ * status が pending の時だけ、続けて現在の block height (confirmed) を引いて
+ * `blockHeight` に載せる (confirmed / processed / failed は着地済みなので height は
+ * 不要で null、余計な RPC を打たない)。呼び手は builder の lastValidBlockHeight と比べ、
+ * 超えていれば「期限切れ (着地しない)」と確定できる。node 間の height のずれで 1 回の
+ * 読みが先走ることはあり得るが、client (lib `confirmSignatures`) は **2 回連続** で
+ * height > lastValidBlockHeight を見た時だけ expired と宣言するので、ここでは単発の
+ * 読みをそのまま返してよい。height は最適化に過ぎないので、取れなければ null で
+ * status は返す (status 読み取りの失敗理由にしない)。両 call とも rpcReadWithRetry
+ * 経由で heliusRpcFetch の列に並び、usage にも method 別に計数される
  */
 export async function getSignatureStatus(signature: string): Promise<TxStatusResponse> {
-  const [result, blockHeight] = await Promise.all([
-    rpcReadWithRetry<{
-      value?: Array<{ slot?: number; err?: unknown; confirmationStatus?: string | null } | null>;
-    }>("getSignatureStatuses", [[signature], { searchTransactionHistory: true }], { id: "seasonals-status" }),
-    rpcReadWithRetry<number>("getBlockHeight", [{ commitment: "confirmed" }], { id: "seasonals-status-height" }).then(
+  const result = await rpcReadWithRetry<{
+    value?: Array<{ slot?: number; err?: unknown; confirmationStatus?: string | null } | null>;
+  }>("getSignatureStatuses", [[signature], { searchTransactionHistory: true }], { id: "seasonals-status" });
+  const v = result?.value?.[0] ?? null;
+  if (!v) {
+    const blockHeight = await rpcReadWithRetry<number>("getBlockHeight", [{ commitment: "confirmed" }], {
+      id: "seasonals-status-height",
+    }).then(
       (h) => (typeof h === "number" && Number.isFinite(h) ? h : null),
       () => null
-    ),
-  ]);
-  const v = result?.value?.[0] ?? null;
-  if (!v) return { signature, status: "pending", slot: null, err: null, blockHeight };
+    );
+    return { signature, status: "pending", slot: null, err: null, blockHeight };
+  }
   const slot = typeof v.slot === "number" ? v.slot : null;
-  if (v.err != null) return { signature, status: "failed", slot, err: JSON.stringify(v.err), blockHeight };
+  if (v.err != null) return { signature, status: "failed", slot, err: JSON.stringify(v.err), blockHeight: null };
   const c = v.confirmationStatus;
   const status = c === "finalized" || c === "confirmed" || c === "processed" ? c : "processed";
-  return { signature, status, slot, err: null, blockHeight };
+  return { signature, status, slot, err: null, blockHeight: null };
 }
 
 // ── Phase 8.16: epoch info (LST 保有者向けの実 epoch 境界イベント用) ──────────

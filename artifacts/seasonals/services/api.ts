@@ -114,6 +114,22 @@ async function bffError(res: Response, fallbackPath: string): Promise<Error> {
 }
 
 /**
+ * BFF の coded error response (`{ error: code, message?: string }`) を `BffError` に変換。
+ * message は `message` → `error` → HTTP status の順。`code` は `error` (machine-readable、
+ * ActionModal が拒否 / 失敗を見分ける) をそのまま持つ。tx builder / `/tx/status` 共通
+ */
+async function bffCodedError(res: Response): Promise<BffError> {
+  const body = (await res.json().catch(() => ({}))) as {
+    error?: string;
+    message?: string;
+  };
+  return new BffError(
+    body.message ?? body.error ?? `HTTP ${res.status} ${res.statusText}`,
+    body.error
+  );
+}
+
+/**
  * API 効率化計画 Phase A-5: TanStack Query の queryFn context の `signal` を fetch に渡す。
  * wallet 切替 / unmount で observer が居なくなった取得は回線ごと abort される
  * (応答は元の key にしか書かれないので混ざりはしないが、帯域と BFF の credit を使う)。
@@ -545,14 +561,7 @@ export async function getTxStatus(
   const res = await (signal ? fetch(url, { signal }) : fetch(url));
   if (res.status === 404) throw new TxConfirmAbort();
   if (!res.ok) {
-    const body = (await res.json().catch(() => ({}))) as {
-      error?: string;
-      message?: string;
-    };
-    throw new BffError(
-      body.message ?? body.error ?? `HTTP ${res.status} ${res.statusText}`,
-      body.error
-    );
+    throw await bffCodedError(res);
   }
   return (await res.json()) as TxStatusResponse;
 }
@@ -582,14 +591,7 @@ export async function getJupiterDepositTx(input: {
     body: JSON.stringify(input),
   });
   if (!res.ok) {
-    const body = (await res.json().catch(() => ({}))) as {
-      error?: string;
-      message?: string;
-    };
-    throw new BffError(
-      body.message ?? body.error ?? `HTTP ${res.status} ${res.statusText}`,
-      body.error
-    );
+    throw await bffCodedError(res);
   }
   return (await res.json()) as JupiterDepositTxResponse;
 }
@@ -610,14 +612,7 @@ export async function getJupiterWithdrawTx(input: {
     body: JSON.stringify(input),
   });
   if (!res.ok) {
-    const body = (await res.json().catch(() => ({}))) as {
-      error?: string;
-      message?: string;
-    };
-    throw new BffError(
-      body.message ?? body.error ?? `HTTP ${res.status} ${res.statusText}`,
-      body.error
-    );
+    throw await bffCodedError(res);
   }
   return (await res.json()) as JupiterDepositTxResponse;
 }
@@ -644,14 +639,7 @@ export async function getSwapEarnDepositTx(input: {
     body: JSON.stringify(input),
   });
   if (!res.ok) {
-    const body = (await res.json().catch(() => ({}))) as {
-      error?: string;
-      message?: string;
-    };
-    throw new BffError(
-      body.message ?? body.error ?? `HTTP ${res.status} ${res.statusText}`,
-      body.error
-    );
+    throw await bffCodedError(res);
   }
   return (await res.json()) as JupiterDepositTxResponse;
 }
@@ -699,14 +687,7 @@ export async function getSwapEarnWithdrawTx(input: {
     body: JSON.stringify(input),
   });
   if (!res.ok) {
-    const body = (await res.json().catch(() => ({}))) as {
-      error?: string;
-      message?: string;
-    };
-    throw new BffError(
-      body.message ?? body.error ?? `HTTP ${res.status} ${res.statusText}`,
-      body.error
-    );
+    throw await bffCodedError(res);
   }
   return (await res.json()) as JupiterDepositTxResponse;
 }

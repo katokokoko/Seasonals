@@ -23,6 +23,7 @@ import {
 import { resolveOracleMints } from "@workspace/lib/derive/oracle-gate";
 import { describeSimulationWarning } from "@workspace/lib/derive/simulation-display";
 import { resolveSolanaRoute, routeInputSymbol, UNSUPPORTED_MARKET_MESSAGE } from "@workspace/lib/derive/solana-action";
+import type { TrackedTx } from "@workspace/lib/derive/tx-confirm";
 import { findMarketByShareMint } from "@workspace/lib/config/swap-earn-markets";
 import { useConnectedAddress } from "../state/session";
 import { useHealth, useSolanaWalletBalance, useSwapEarnQuote } from "../services/queries";
@@ -30,7 +31,7 @@ import { requestOpenWallet } from "../timeline/detailStore";
 import { shortAddress } from "../ui/format";
 import { buildSolanaTxs } from "./buildTx";
 import { OracleGate } from "./OracleGate";
-import { useSignAndSubmit, type SignState, type SubmittedTx } from "./useSignAndSubmit";
+import { useSignAndSubmit, type SignState } from "./useSignAndSubmit";
 import "./solana.css";
 
 function safeHuman(smallest: string | undefined, decimals: number): string {
@@ -235,7 +236,7 @@ export function SolanaExecutePanel({
   );
 }
 
-const STATUS_LABEL: Record<SubmittedTx["status"], string> = {
+const STATUS_LABEL: Record<TrackedTx["status"], string> = {
   submitted: "Sent",
   pending: "Pending",
   processed: "Processed",

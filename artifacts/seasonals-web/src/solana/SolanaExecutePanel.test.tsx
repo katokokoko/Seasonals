@@ -190,7 +190,8 @@ test("lastValidBlockHeight を超えても未着地なら expired (成功とも�
   fireEvent.change(screen.getByLabelText("Amount"), { target: { value: "1" } });
   await waitFor(() => expect(signButton().disabled).toBe(false));
   fireEvent.click(signButton());
-  const alert = await screen.findByText(/expired before the network included it/);
+  // expired の確定は 2 回連続の poll (lib tx-confirm、間に pollMs 2 秒) なので既定の 1 秒では足りない
+  const alert = await screen.findByText(/expired before the network included it/, undefined, { timeout: 5000 });
   expect(alert.textContent).toContain("Nothing moved");
   expect(screen.queryByText("Confirmed on Solana mainnet.")).toBeNull();
   expect(screen.queryByText(/Sent\. Confirmation is taking longer/)).toBeNull();
