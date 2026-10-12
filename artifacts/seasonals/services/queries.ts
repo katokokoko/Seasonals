@@ -24,6 +24,7 @@ import type {
   AutonomousExecutionRecord,
   AutonomousStatus,
   EarnPositionsResponse,
+  HealthResponse,
   OracleResult,
   Position,
   Protocol,
@@ -93,6 +94,8 @@ export const queryKeys = {
   jupiterLendMarkets: () => ["jupiter-lend-markets"] as const,
   /** Phase 8.14: underlying mint 別の oracle 判定 (§4.6) */
   oracleStatus: (mint: string) => ["oracle-status", mint] as const,
+  /** 2026-10-13: BFF の実行可否 (`/health` の solana.executionTarget) */
+  health: () => ["health"] as const,
   /** Phase 8.57: symbol 群の実 USD 価格 */
   prices: (symbols: readonly string[]) => ["prices", symbols.join(",")] as const,
   /** Phase 8.58: wallet tx から復元した過去の評価額 */
@@ -206,6 +209,21 @@ export function useOracleStatus(
     // 8.78: blocked の間だけ 15 秒間隔で再チェック。瞬断由来の block なら
     // シートを開いたままでも回復して CTA が戻る (従来は開き直すしかなかった)
     refetchInterval: (query) => oracleRefetchInterval(query.state.data),
+  });
+}
+
+/**
+ * 2026-10-13: BFF の `/health`。`solana.executionTarget === "disabled"` (公開 plans-only
+ * server) なら ActionModal / MenuDrawer が署名前に deposit / withdraw の CTA を止める。
+ * 設定は deploy 単位でしか変わらないので 60s stale、retry 1 (失敗 = 不明は gate しない —
+ * BFF の 409 が最終防衛線、ActionModal の isDeclined が "Stopped before signing" を出す)。
+ */
+export function useHealth(): UseQueryResult<HealthResponse, Error> {
+  return useQuery({
+    queryKey: queryKeys.health(),
+    queryFn: ({ signal }) => api.getHealth(signal),
+    staleTime: 60_000,
+    retry: 1,
   });
 }
 

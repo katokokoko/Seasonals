@@ -1,12 +1,20 @@
 /**
  * ActionModal — calendar / Menu から review → MWA sign → submit までの flow
  *
- * 5 phase の state machine:
+ * phase の state machine:
  *   review     : plan summary + 「署名して実行」 (default 表示)
  *   approving  : BFF から unsigned tx を取得 (非 onchain は POST /agent-plans/:id/approve)
- *   signing    : Seed Vault / wallet で sign-only → BFF /tx/submit
- *   success    : signature + Explorer link
- *   error      : 失敗詳細 + retry
+ *   signing    : Seed Vault / wallet で sign-only
+ *   submitting : 署名済 tx を BFF /tx/submit で broadcast (RPC 受理まで)
+ *   confirming : `/tx/status` を poll して着地 (confirmed / finalized) を見届ける
+ *   success    : 着地済 signature + Explorer link
+ *   submitted  : 送信はしたが時間内に着地を確認できなかった (失敗とは言わない、Solscan 導線)
+ *   error      : 失敗詳細 + retry (on-chain 失敗 / blockhash 期限切れを含む)
+ *
+ * 2026-10-13: 以前は `/tx/submit` が signature を返した時点 (= RPC 受理) で success を
+ * 出していたが、受理後に dropped (期限内に取り込まれない) になった USDC → jlUSDC deposit で
+ * 「success なのに残高も calendar も変わらない」が実機で起きた。web `useSignAndSubmit.ts`
+ * と同じく lib `confirmSignatures` で着地を確認してから success を名乗る。
  *
  * onchain の market 解決は lib `resolveSolanaRoute`、builder 呼び分けは
  * `services/solana-tx.ts` の `buildSolanaTxs` (web と同じ部品、CLAUDE.md §1)。
@@ -14,7 +22,7 @@
  * (Mobile 側に Connection を持たせない、CLAUDE.md §32.2 fail-closed safety 準拠)。
  */
 
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Dimensions,
@@ -52,6 +60,7 @@ import type { AgentPlan } from "@workspace/lib/types";
 
 import {
   useApproveAgentPlan,
+  useHealth,
   useJupiterQuote,
   useKaminoReserves,
   useOracleStatus,
@@ -80,7 +89,14 @@ import {
 import { signTransactions } from "../../services/mwa";
 import { USE_ONCHAIN } from "../../services/config";
 import * as api from "../../services/api";
-import { buildSolanaTxs } from "../../services/solana-tx";
+import { buildSolanaTxs, type BuiltSolanaTxs } from "../../services/solana-tx";
+// 2026-10-13: RPC 受理ではなく着地 (confirmed / finalized) を見届けてから成功を名乗る
+import {
+  confirmSignatures,
+  describeConfirmOutcome,
+  isLandedStatus,
+  type TrackedTx,
+} from "@workspace/lib/derive/tx-confirm";
 // 8.74: BFF の拒否 code を判別するため (失敗と拒否を見分ける)
 import { BffError } from "../../services/api";
 import { useQueryClient } from "@tanstack/react-query";
@@ -97,7 +113,16 @@ import {
 } from "../../stores/theme";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
-type Phase = "review" | "approving" | "signing" | "success" | "error";
+// 2026-10-13: submitting / confirming / submitted を追加 (着地確認、ファイル冒頭参照)
+type Phase =
+  | "review"
+  | "approving"
+  | "signing"
+  | "submitting"
+  | "confirming"
+  | "success"
+  | "submitted"
+  | "error";
 
 // Phase 6.4: backdrop fade-in + blur、sheet slide-up、別々アニメ
 const SCREEN_H = Dimensions.get("window").height;
@@ -142,6 +167,31 @@ export function ActionModal({
   // 8.74: BFF が返した machine-readable な code。「失敗」と「意図的な拒否」を
   // 区別して見せるために持つ
   const [errorCode, setErrorCode] = useState<string | null>(null);
+  // 2026-10-13: 送信済 tx の着地確認の進捗 (confirming の "n of m confirmed" 表示用)
+  const [trackedTxs, setTrackedTxs] = useState<TrackedTx[]>([]);
+
+  // 2026-10-13: 着地確認 (最大 75 秒) の途中で閉じられた / unmount / 別 plan に
+  // 切り替わったら poll を止め、古い結果で phase を書き換えない (誤った success を出さない)
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+  const planIdRef = useRef<string | null>(plan?.plan_id ?? null);
+  planIdRef.current = plan?.plan_id ?? null;
+  /** close ごとに進める世代番号。実行開始時の値と違えば、その実行の結果は捨てる */
+  const runIdRef = useRef(0);
+
+  // 2026-10-13: 公開 BFF (`SOLANA_EXECUTION_TARGET=disabled`) は全 `*-tx` route が 409。
+  // wallet を開く **前** に deposit / withdraw を止める (失敗してから知らせない)
+  const health = useHealth();
+  const executionDisabled = health.data?.solana?.executionTarget === "disabled";
+  const planIsDepositOrWithdraw =
+    plan?.selected_action?.action_type === "deposit" ||
+    plan?.selected_action?.action_type === "withdraw";
+  const executionBlocked = executionDisabled && planIsDepositOrWithdraw;
 
   const approveMutation = useApproveAgentPlan();
   // 署名は接続 wallet の authorization だけが使う (watch は authorization を書かない)
@@ -235,9 +285,12 @@ export function ActionModal({
   }, [plan, isDeposit, depositBalance, amountUnit]);
 
   const reset = useCallback(() => {
+    // 2026-10-13: 進行中の着地確認があれば結果を捨てさせる (isAlive が false になる)
+    runIdRef.current += 1;
     setPhase("review");
     setSignature(null);
     setErrorMsg(null);
+    setTrackedTxs([]);
   }, []);
 
   const handleClose = useCallback(() => {
@@ -250,8 +303,18 @@ export function ActionModal({
     // ここを抜けると !canOnchain で下の "Approve only" fallback (POST
     // /agent-plans/:id/approve → success 表示) に落ち、他人の address で偽成功になる
     if (addressMode === "watch") return;
+    // 2026-10-13: plans-only server (`/health` の executionTarget = "disabled")。CTA の
+    // disabled だけに頼らず watch と同じく硬く止める (builder → 409 → wallet 前で失敗、を避ける)
+    if (executionBlocked) return;
     if (!plan) return;
     setErrorMsg(null);
+    setErrorCode(null);
+    const runId = runIdRef.current;
+    const planId = plan.plan_id;
+    const isAlive = () =>
+      mountedRef.current &&
+      runIdRef.current === runId &&
+      planIdRef.current === planId;
 
     const action = plan.selected_action;
     // Phase 8.16: 編集済み金額 (validated smallest)。invalid は CTA が gate 済みだが、
@@ -271,7 +334,11 @@ export function ActionModal({
     // BFF が返す base64 unsigned v0 tx 群を MWA で **一括署名** (承認 1 回) → 順次
     // broadcast → refetch。Save は ATA 準備等で複数 tx になり得る (2 本目以降は
     // 先行 tx 未 confirm でも preflight 落ちしないよう skipPreflight)。
-    const signSubmitAndSettle = async (base64Txs: string[]) => {
+    // 2026-10-13: submit 後に `/tx/status` で着地を確認してから success (ファイル冒頭参照)。
+    const signSubmitAndSettle = async (
+      base64Txs: string[],
+      lastValidBlockHeight: number | null
+    ) => {
       setPhase("signing");
       const txs = base64Txs.map((b64) =>
         VersionedTransaction.deserialize(Buffer.from(b64, "base64"))
@@ -282,7 +349,8 @@ export function ActionModal({
       if (signedTxs.length !== txs.length || signedTxs.some((t) => !t)) {
         throw new Error("Wallet did not return all signed transactions.");
       }
-      let lastSignature: string | null = null;
+      if (isAlive()) setPhase("submitting");
+      const tracked: TrackedTx[] = [];
       for (let i = 0; i < signedTxs.length; i++) {
         const signedBase64 = Buffer.from(signedTxs[i]!.serialize()).toString(
           "base64"
@@ -290,24 +358,61 @@ export function ActionModal({
         const { signature } = await api.submitSignedTx(signedBase64, {
           skipPreflight: i > 0,
         });
-        lastSignature = signature;
+        // 2026-10-13: signature は RPC 受理の証拠でしかない (着地は下で確認する)
+        tracked.push({ index: i, signature, status: "submitted" });
       }
-      setSignature(lastSignature);
-      setPhase("success");
-      // Phase 8.8.2: 成功後に portfolio / earn / wallet tx を refetch (cache 反映待ち)。
+      const lastSignature = tracked[tracked.length - 1]?.signature ?? null;
+      // Phase 8.8.2: 送信後に portfolio / earn / wallet tx を refetch (cache 反映待ち)。
       // Phase A-3: prefix 一括ではなく **署名した wallet の key だけ** (他 wallet の
       // 保持 cache と fixture key は触らない)。8.8.2 で漏れていた portfolio-history も含める
+      // 2026-10-13: 着地確認の結果に関わらず (途中で閉じられても) 送信した時点で予約する。
+      // unknown は後から着地し得るし、failed / expired でも取り直しは無害
       setTimeout(() => {
         void invalidateWalletAfterTx(queryClient, signerAddress);
       }, 5000);
+      if (!isAlive()) return;
+      setSignature(lastSignature);
+      setTrackedTxs([...tracked]);
+      setPhase("confirming");
+      const outcome = await confirmSignatures(tracked, {
+        fetchStatus: (sig) => api.getTxStatus(sig),
+        lastValidBlockHeight,
+        isAlive,
+        onUpdate: (txs) => {
+          if (isAlive()) setTrackedTxs(txs);
+        },
+      });
+      // 閉じられた / 別 plan に切り替わった後の結果は表示しない
+      if (!isAlive()) return;
+      setTrackedTxs([...tracked]);
+      switch (outcome) {
+        case "landed":
+          setPhase("success");
+          return;
+        case "failed":
+          setErrorCode("tx_failed");
+          setErrorMsg(describeConfirmOutcome("failed", tracked));
+          setPhase("error");
+          return;
+        case "expired":
+          // 期限切れ = もう取り込まれない。何も動いていないので組み直して署名し直す
+          setErrorCode("expired");
+          setErrorMsg(describeConfirmOutcome("expired", tracked));
+          setPhase("error");
+          return;
+        case "unknown":
+          // 時間切れ / 旧 BFF (/tx/status 無し)。失敗とは言わず signature を見せる
+          setPhase("submitted");
+          return;
+      }
     };
 
     // approving → (fetch unsigned txns) → sign+submit を共通の error 処理で包む。
-    const runOnchainTx = async (fetchBase64: () => Promise<string | string[]>) => {
+    const runOnchainTx = async (fetchTxs: () => Promise<BuiltSolanaTxs>) => {
       setPhase("approving");
       try {
-        const result = await fetchBase64();
-        await signSubmitAndSettle(Array.isArray(result) ? result : [result]);
+        const { txs, lastValidBlockHeight } = await fetchTxs();
+        await signSubmitAndSettle(txs, lastValidBlockHeight);
       } catch (e) {
         // Phase 8.6.1: null / 空 message を可視化 (Phantom が無応答で戻った時等)
         const raw = e instanceof Error ? e.message : e == null ? "" : String(e);
@@ -363,6 +468,7 @@ export function ActionModal({
     }
   }, [
     addressMode,
+    executionBlocked,
     plan,
     isConnected,
     authorization,
@@ -480,6 +586,7 @@ export function ActionModal({
             amountError={amountValidation.ok ? null : amountValidation.error}
             depositBalance={depositBalance}
             onPressMax={handlePressMax}
+            executionDisabled={executionBlocked}
             testID={testID ? `${testID}-review` : undefined}
           />
         )}
@@ -488,6 +595,31 @@ export function ActionModal({
 
         {phase === "signing" && (
           <BusyBody label="Approve in your wallet to sign the transaction" />
+        )}
+
+        {/* 2026-10-13: RPC 受理 → 着地確認 (close は signing と同じく常に可。閉じた後の
+            結果は isAlive で捨てるので、誤った success にはならない) */}
+        {phase === "submitting" && <BusyBody label="Sending to Solana…" />}
+
+        {phase === "confirming" && (
+          <BusyBody
+            label="Confirming on Solana…"
+            detail={
+              trackedTxs.length > 1
+                ? `${trackedTxs.filter((t) => isLandedStatus(t.status)).length} of ${trackedTxs.length} confirmed`
+                : undefined
+            }
+            testID={testID ? `${testID}-confirming` : undefined}
+          />
+        )}
+
+        {phase === "submitted" && (
+          <SubmittedBody
+            signature={signature}
+            message={describeConfirmOutcome("unknown", trackedTxs)}
+            onClose={handleClose}
+            testID={testID ? `${testID}-submitted` : undefined}
+          />
         )}
 
         {phase === "success" && (
@@ -501,7 +633,13 @@ export function ActionModal({
         {phase === "error" && (
           <ErrorBody
             message={errorMsg ?? "unknown error"}
-            title={isDeclined(errorCode) ? "Stopped before signing" : undefined}
+            title={
+              isDeclined(errorCode)
+                ? "Stopped before signing"
+                : errorCode === "expired"
+                  ? "Transaction expired"
+                  : undefined
+            }
             note={
               isDeclined(errorCode)
                 ? "No funds moved — the transaction was never signed."
@@ -541,8 +679,14 @@ function phaseLabel(p: Phase): string {
       return "Preparing…";
     case "signing":
       return "Signing…";
+    case "submitting":
+      return "Sending…";
+    case "confirming":
+      return "Confirming…";
     case "success":
       return "Done";
+    case "submitted":
+      return "Submitted";
     case "error":
       return "Failed";
   }
@@ -562,6 +706,7 @@ function ReviewBody({
   amountError,
   depositBalance,
   onPressMax,
+  executionDisabled,
   testID,
 }: {
   plan: AgentPlan;
@@ -576,6 +721,8 @@ function ReviewBody({
   amountError: string | null;
   depositBalance: string | null;
   onPressMax: () => void;
+  /** 2026-10-13: plans-only server (deposit / withdraw のみ渡す)。CTA を止めて理由を出す */
+  executionDisabled: boolean;
   testID?: string;
 }) {
   const styles = useThemedStyles(makeStyles);
@@ -774,6 +921,20 @@ function ReviewBody({
         )
       )}
 
+      {/* 2026-10-13: plans-only server の注記。oracle warning ではないので WarningArea
+          (oracle warning の唯一の入口) は使わない。署名経路は handleExecute が止める */}
+      {executionDisabled && (
+        <View
+          style={styles.noticeMuted}
+          testID={testID ? `${testID}-execution-disabled` : undefined}
+        >
+          <Text style={styles.noticeMutedText}>
+            This server is read-only (plans only). Deposits and withdrawals are
+            disabled.
+          </Text>
+        </View>
+      )}
+
       {/* Phase 8.14: oracle warning (2-5% 乖離 / Pyth stale) は WarningArea が CTA 直上に
           強警告 + 1s grayout。blocked / 確認中 / 未接続を含め CTA disabled を統合制御。 */}
       <WarningArea
@@ -786,6 +947,7 @@ function ReviewBody({
           const ctaDisabled =
             disabled ||
             watchOnly ||
+            executionDisabled ||
             oracleBlocked ||
             oracleChecking ||
             amountInvalid;
@@ -801,7 +963,9 @@ function ReviewBody({
               <Text style={styles.ctaPrimaryText}>
                 {watchOnly
                   ? "Connect a wallet to sign"
-                  : oracleBlocked
+                  : executionDisabled
+                    ? "Unavailable"
+                    : oracleBlocked
                     ? "Blocked (oracle)"
                     : oracleChecking
                       ? "Checking oracle…"
@@ -860,15 +1024,86 @@ function JupiterQuoteCard({
   );
 }
 
-// ─── Busy (approving / signing) ──────────────────────────────────────────────
+// ─── Busy (approving / signing / submitting / confirming) ────────────────────
 
-function BusyBody({ label }: { label: string }) {
+function BusyBody({
+  label,
+  detail,
+  testID,
+}: {
+  label: string;
+  /** 2026-10-13: 複数 tx の着地進捗 ("1 of 2 confirmed") */
+  detail?: string;
+  testID?: string;
+}) {
   const styles = useThemedStyles(makeStyles);
   const themeColors = useThemeColors();
   return (
-    <View style={styles.busyBody}>
+    <View style={styles.busyBody} testID={testID}>
       <ActivityIndicator color={themeColors.sodaText} size="large" />
       <Text style={styles.busyLabel}>{label}</Text>
+      {detail && <Text style={styles.busyDetail}>{detail}</Text>}
+    </View>
+  );
+}
+
+// ─── Submitted (送信済・着地未確認) ───────────────────────────────────────────
+
+/**
+ * 2026-10-13: 時間内に着地を確認できなかった (lib confirmSignatures の "unknown")。
+ * 失敗とも成功とも言わない — signature と Solscan への導線を出し、wallet で確認させる。
+ */
+function SubmittedBody({
+  signature,
+  message,
+  onClose,
+  testID,
+}: {
+  signature: string | null;
+  message: string;
+  onClose: () => void;
+  testID?: string;
+}) {
+  const styles = useThemedStyles(makeStyles);
+  const solscanUrl = signature ? `https://solscan.io/tx/${signature}` : null;
+  return (
+    <View style={styles.body} testID={testID}>
+      <Text style={styles.successTitle}>Not confirmed yet</Text>
+      <Text
+        style={styles.successHint}
+        testID={testID ? `${testID}-message` : undefined}
+      >
+        {message}
+      </Text>
+      {signature && (
+        <View style={styles.signatureCard}>
+          <Text style={styles.signatureLabel}>Transaction Signature</Text>
+          <Text
+            style={styles.signatureValue}
+            selectable
+            testID={testID ? `${testID}-signature` : undefined}
+          >
+            {shortenSig(signature)}
+          </Text>
+        </View>
+      )}
+      {solscanUrl && (
+        <Pressable
+          accessibilityRole="button"
+          onPress={() => Linking.openURL(solscanUrl).catch(() => undefined)}
+          style={styles.ctaSecondary}
+          testID={testID ? `${testID}-solscan` : undefined}
+        >
+          <Text style={styles.ctaSecondaryText}>View on Solscan ↗</Text>
+        </Pressable>
+      )}
+      <Pressable
+        accessibilityRole="button"
+        onPress={onClose}
+        style={styles.ctaPrimary}
+      >
+        <Text style={styles.ctaPrimaryText}>Close</Text>
+      </Pressable>
     </View>
   );
 }
@@ -1235,6 +1470,21 @@ function makeStyles(c: ThemeColors) {
       color: c.caramel,
       lineHeight: 18,
     },
+    // 2026-10-13: plans-only server の注記 (警告ではない事実の説明なので muted)
+    noticeMuted: {
+      paddingHorizontal: SPACE.md,
+      paddingVertical: SPACE.sm,
+      borderRadius: RADIUS.md,
+      backgroundColor: withAlpha(c.textMuted, 0.1),
+      borderWidth: 1,
+      borderColor: withAlpha(c.textMuted, 0.3),
+    },
+    noticeMutedText: {
+      fontSize: FONT_SIZE.bodySM,
+      fontFamily: FONT.body,
+      color: c.textMuted,
+      lineHeight: 18,
+    },
     busyBody: {
       paddingVertical: SPACE.xxl,
       alignItems: "center",
@@ -1245,6 +1495,11 @@ function makeStyles(c: ThemeColors) {
       fontFamily: FONT.heading,
       fontWeight: WEIGHT.semibold,
       color: c.textSubtitle,
+    },
+    busyDetail: {
+      fontSize: FONT_SIZE.bodySM,
+      fontFamily: FONT.body,
+      color: c.textMuted,
     },
     successIconWrap: {
       alignSelf: "center",

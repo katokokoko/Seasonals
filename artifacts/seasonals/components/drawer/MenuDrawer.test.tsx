@@ -177,6 +177,39 @@ describe("MenuDrawer — readOnly (watch-only mode)", () => {
   });
 });
 
+/**
+ * 2026-10-13: plans-only server (`/health` の executionTarget = "disabled") では deposit が
+ * 必ず 409 になるので、Deposit CTA を "Unavailable" (disabled) にして ActionModal を開かせない
+ */
+describe("MenuDrawer — plans-only server (executionTarget = disabled)", () => {
+  afterEach(() => jest.restoreAllMocks());
+
+  it("Deposit CTA は 'Unavailable' で disabled、押しても onStartAction を呼ばない", async () => {
+    jest.spyOn(api, "getHealth").mockResolvedValue({
+      status: "ok",
+      solana: { heliusConfigured: true, executionTarget: "disabled" },
+    });
+    const onStartAction = jest.fn();
+    render(
+      wrap(
+        <MenuDrawer
+          visible
+          onClose={() => {}}
+          onStartAction={onStartAction}
+          testID="menu"
+        />
+      )
+    );
+    fireEvent.press(await screen.findByTestId("menu-card-jito"));
+    await waitFor(() => expect(screen.getByText("Unavailable")).toBeTruthy());
+    expect(screen.queryByText("Deposit")).toBeNull();
+    const cta = screen.getByTestId(/^menu-detail-pool-.*-cta-deposit$/);
+    expect(cta.props.accessibilityState?.disabled).toBe(true);
+    fireEvent.press(cta);
+    expect(onStartAction).not.toHaveBeenCalled();
+  });
+});
+
 describe("MenuDrawer — Android back (2026-10-08)", () => {
   afterEach(() => {
     mockFocused = true;

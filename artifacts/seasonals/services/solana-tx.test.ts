@@ -3,6 +3,8 @@
  *
  * どの builder を呼ぶか / body / 応答 key (`swapTransaction` / `transaction` /
  * `transactions`) の吸収を route ごとに検証する (web buildTx と同じ観点)。
+ * 2026-10-13: 戻り値は `{ txs, lastValidBlockHeight }`。期限は swap-earn だけが返す
+ * (着地確認の expired 判定用)、他 builder は null。
  */
 import type { SolanaRoute } from "@workspace/lib/derive/solana-action";
 
@@ -10,8 +12,14 @@ import { buildSolanaTxs, SWAP_EARN_SLIPPAGE_BPS } from "./solana-tx";
 import * as api from "./api";
 
 jest.mock("./api", () => ({
-  getSwapEarnDepositTx: jest.fn(async () => ({ swapTransaction: "SWAP_DEP" })),
-  getSwapEarnWithdrawTx: jest.fn(async () => ({ swapTransaction: "SWAP_WD" })),
+  getSwapEarnDepositTx: jest.fn(async () => ({
+    swapTransaction: "SWAP_DEP",
+    lastValidBlockHeight: 300_000_100,
+  })),
+  getSwapEarnWithdrawTx: jest.fn(async () => ({
+    swapTransaction: "SWAP_WD",
+    lastValidBlockHeight: 300_000_200,
+  })),
   getKaminoDepositTx: jest.fn(async () => ({ transaction: "KAM_DEP" })),
   getKaminoWithdrawTx: jest.fn(async () => ({ transaction: "KAM_WD" })),
   getKaminoVaultDepositTx: jest.fn(async () => ({ transaction: "KV_DEP" })),
@@ -40,6 +48,8 @@ type Case = {
   fn: string;
   body: Record<string, unknown>;
   out: string[];
+  /** builder 応答の lastValidBlockHeight (無い builder は null) */
+  lastValid: number | null;
 };
 
 const CASES: Case[] = [
@@ -48,78 +58,91 @@ const CASES: Case[] = [
     fn: "getSwapEarnDepositTx",
     body: { user: USER, shareMint: "SHARE_A", amount: AMOUNT, slippageBps: 50 },
     out: ["SWAP_DEP"],
+    lastValid: 300_000_100,
   },
   {
     route: { kind: "swap_earn_withdraw", shareMint: "SHARE_B" },
     fn: "getSwapEarnWithdrawTx",
     body: { user: USER, shareMint: "SHARE_B", amount: AMOUNT, slippageBps: 50 },
     out: ["SWAP_WD"],
+    lastValid: 300_000_200,
   },
   {
     route: { kind: "kamino_deposit", reserve: "RESERVE_1" },
     fn: "getKaminoDepositTx",
     body: { user: USER, reserve: "RESERVE_1", amount: AMOUNT },
     out: ["KAM_DEP"],
+    lastValid: null,
   },
   {
     route: { kind: "kamino_withdraw", reserve: "RESERVE_2" },
     fn: "getKaminoWithdrawTx",
     body: { user: USER, reserve: "RESERVE_2", amount: AMOUNT },
     out: ["KAM_WD"],
+    lastValid: null,
   },
   {
     route: { kind: "kamino_vault_deposit", vault: "VAULT_1" },
     fn: "getKaminoVaultDepositTx",
     body: { user: USER, vault: "VAULT_1", amount: AMOUNT },
     out: ["KV_DEP"],
+    lastValid: null,
   },
   {
     route: { kind: "kamino_vault_withdraw", vault: "VAULT_2" },
     fn: "getKaminoVaultWithdrawTx",
     body: { user: USER, vault: "VAULT_2", amount: AMOUNT },
     out: ["KV_WD"],
+    lastValid: null,
   },
   {
     route: { kind: "meteora_deposit", poolKey: "MET_POOL" },
     fn: "getMeteoraDepositTxns",
     body: { user: USER, poolKey: "MET_POOL", amount: AMOUNT },
     out: ["MET_1", "MET_2"],
+    lastValid: null,
   },
   {
     route: { kind: "meteora_withdraw", position: "MET_POS" },
     fn: "getMeteoraWithdrawTxns",
     body: { user: USER, position: "MET_POS", amount: AMOUNT },
     out: ["METW_1"],
+    lastValid: null,
   },
   {
     route: { kind: "orca_deposit", poolKey: "ORCA_POOL" },
     fn: "getOrcaDepositTxns",
     body: { user: USER, poolKey: "ORCA_POOL", amount: AMOUNT },
     out: ["ORCA_SWAP", "ORCA_OPEN"],
+    lastValid: null,
   },
   {
     route: { kind: "orca_withdraw", position: "ORCA_POS" },
     fn: "getOrcaWithdrawTxns",
     body: { user: USER, position: "ORCA_POS", amount: AMOUNT },
     out: ["ORCAW_1"],
+    lastValid: null,
   },
   {
     route: { kind: "save_deposit", reserve: "SAVE_RESERVE" },
     fn: "getSaveDepositTxns",
     body: { user: USER, reserve: "SAVE_RESERVE", amount: AMOUNT },
     out: ["SAVE_ATA", "SAVE_DEP"],
+    lastValid: null,
   },
   {
     route: { kind: "save_withdraw", ctokenMint: "CTOKEN" },
     fn: "getSaveWithdrawTxns",
     body: { user: USER, ctokenMint: "CTOKEN", amount: AMOUNT },
     out: ["SAVE_WD"],
+    lastValid: null,
   },
   {
     route: { kind: "exponent_redeem", ptMint: "PT_MINT" },
     fn: "getExponentRedeemTx",
     body: { user: USER, ptMint: "PT_MINT", amount: AMOUNT },
     out: ["EXP_REDEEM"],
+    lastValid: null,
   },
 ];
 
@@ -135,10 +158,10 @@ describe("buildSolanaTxs", () => {
   });
 
   it.each(CASES.map((c) => [c.route.kind, c] as const))(
-    "%s → 対応する builder 1 本だけを正しい body で呼び、base64 配列を返す",
+    "%s → 対応する builder 1 本だけを正しい body で呼び、base64 配列 + 期限を返す",
     async (_kind, c) => {
       const out = await buildSolanaTxs(c.route, USER, AMOUNT);
-      expect(out).toEqual(c.out);
+      expect(out).toEqual({ txs: c.out, lastValidBlockHeight: c.lastValid });
       expect(mocked[c.fn]).toHaveBeenCalledTimes(1);
       expect(mocked[c.fn]).toHaveBeenCalledWith(c.body);
       for (const [name, fn] of Object.entries(mocked)) {

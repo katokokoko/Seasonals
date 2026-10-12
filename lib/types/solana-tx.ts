@@ -84,6 +84,27 @@ export interface TxStatusResponse {
   slot: number | null;
   /** 失敗時の on-chain error (JSON 文字列化)。成功 / 未着地なら null */
   err: string | null;
+  /**
+   * 問い合わせ時点の現在 block height (getBlockHeight)。client は builder が返した
+   * `lastValidBlockHeight` と比べ、超えていてまだ pending なら「期限切れ = 着地しない」と
+   * 確定できる (lib/derive/tx-confirm.ts)。旧 BFF には無いので optional
+   */
+  blockHeight?: number | null;
+}
+
+/** `GET /health` — Fly の health check と client の実行可否判定 (key / URL は返さない) */
+export type SolanaExecutionTarget = "mainnet" | "disabled";
+export interface HealthResponse {
+  status: string;
+  timestamp?: string;
+  /** build の commit (GIT_SHA)。未設定なら null */
+  version?: string | null;
+  /** 旧 BFF には無い */
+  solana?: {
+    heliusConfigured: boolean;
+    /** "disabled" = plans-only server。client は署名前に実行 CTA を止める (server.ts /health) */
+    executionTarget?: SolanaExecutionTarget;
+  };
 }
 
 /**
