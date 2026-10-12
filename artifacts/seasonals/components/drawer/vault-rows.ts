@@ -21,6 +21,9 @@ import { partitionPositions } from "@workspace/lib/derive/earn-positions";
 // 対応付けは Web と共有するため lib へ移した (挙動は同一)。既存の import 元を保つため re-export
 export { poolIdForPosition, partitionPositions, type PositionPartition } from "@workspace/lib/derive/earn-positions";
 
+import { canWithdrawEarnPosition } from "@workspace/lib/derive/solana-action";
+import { findExponentMarketByPtMint } from "@workspace/lib/config/exponent-markets";
+
 import { depositCapView, type DepositCapView } from "./deposit-cap";
 
 /** カード行 1 つ分の表示モデル (Jupiter / 他 protocol 共通) */
@@ -227,3 +230,63 @@ export function visibleFilters(rows: VaultRow[]): VaultFilter[] {
 
 /** この行数を超えたら残りを "Others" に畳む (Jupiter の primary/others と同趣旨) */
 export const VISIBLE_ROW_LIMIT = 6;
+
+/** カード行の CTA 1 つ分 */
+export interface RowCta {
+  label: string;
+  disabled: boolean;
+}
+
+/**
+ * 行下段の CTA を決める (2026-10-13: 保有行にも Deposit を出す = 買い増し)。
+ *
+ * manage (Withdraw / Redeem):
+ *   - 保有あり かつ withdraw 経路あり → "Withdraw"
+ *   - Exponent PT (pt_mint で registry を引く。withdraw 経路は満期後のみ) → "Redeem"
+ *   - plans-only server (`/health` の executionTarget = "disabled") は disabled
+ *     (BFF は withdraw-tx も含む全 tx route を 409 にする)
+ *
+ * deposit (保有の有無に関係なく同じ規則、Exponent PT 行には出さない):
+ *   1. read-only listing (8.33) / pool 無し → 出さない (タイトルに "View only" バッジ)
+ *   2. plans-only server → 無効 CTA "Unavailable" (capView.closed と同じ見た目)
+ *   3. 預入不可 (8.51/8.52 満杯・停止中・上流都合) → 無効 CTA + 理由
+ *   4. それ以外 → "Deposit"
+ *
+ * readOnly (watch-only) はここでは扱わない — 表示したまま VaultRowView が無効化する。
+ */
+export function ctaForRow(
+  row: VaultRow,
+  executionDisabled = false
+): { deposit?: RowCta; manage?: RowCta } {
+  const out: { deposit?: RowCta; manage?: RowCta } = {};
+  const position = row.isDeposited ? row.earnPosition : undefined;
+  // display_only は汎用 flag (Sanctum / Jito restaking 等) なので PT 判定には使わない
+  const isPt = position !== undefined && findExponentMarketByPtMint(position.share_mint) !== undefined;
+  if (position && canWithdrawEarnPosition(position)) {
+    out.manage = { label: isPt ? "Redeem" : "Withdraw", disabled: executionDisabled };
+  }
+  const deposit = isPt ? undefined : depositCtaForRow(row, executionDisabled);
+  if (deposit) out.deposit = deposit;
+  return out;
+}
+
+function depositCtaForRow(
+  row: VaultRow,
+  executionDisabled: boolean
+): RowCta | undefined {
+  if (row.displayOnly || !row.pool) return undefined;
+  if (executionDisabled) return { label: "Unavailable", disabled: true };
+  if (row.capView?.closed) {
+    // 8.91: blocked (上流不具合) は Unavailable と区別して表示
+    const label =
+      row.capView.reason === "paused"
+        ? "Paused"
+        : row.capView.reason === "full"
+          ? "Full"
+          : row.capView.reason === "blocked"
+            ? "Blocked"
+            : "Unavailable";
+    return { label, disabled: true };
+  }
+  return { label: "Deposit", disabled: false };
+}

@@ -96,8 +96,10 @@ import {
   applyVaultFilter,
   buildPoolVaultRows,
   computeVaultSummary,
+  ctaForRow,
   visibleFilters,
   VISIBLE_ROW_LIMIT,
+  type RowCta,
   type VaultFilter,
   type VaultRow,
   type VaultSummary,
@@ -791,6 +793,7 @@ export function MenuDrawer({
                   jlMarkets={jlMarkets}
                   readOnly={readOnly}
                   executionDisabled={executionDisabled}
+                  walletHoldings={walletHoldings}
                   testID={testID ? `${testID}-detail` : undefined}
                 />
               )}
@@ -1027,8 +1030,13 @@ interface PoolDetailPaneProps {
   jlMarkets?: JupiterLendMarketDTO[];
   /** watch-only mode: CTA を無効化し、先頭に read-only banner */
   readOnly?: boolean;
-  /** 2026-10-13: plans-only server。Deposit CTA を "Unavailable" (disabled) にする */
+  /** 2026-10-13: plans-only server。Deposit / Withdraw CTA を disabled にする */
   executionDisabled?: boolean;
+  /**
+   * 2026-10-13: MenuDrawer が handlePoolTap 用に memo した wallet holdings。
+   * "Pay with X" ラベルと tap 時の funding 判定を同じ値から出す
+   */
+  walletHoldings: WalletHolding[];
   testID?: string;
 }
 
@@ -1239,11 +1247,11 @@ function JupiterDetailPane({
   onBack,
   onPoolTap,
   earnPositions,
-  positions,
   onWithdrawPosition,
   jlMarkets,
   readOnly = false,
   executionDisabled = false,
+  walletHoldings,
   testID,
 }: PoolDetailPaneProps) {
   const iconSrc = ICON_BY_ID[entry.icon_id];
@@ -1257,16 +1265,15 @@ function JupiterDetailPane({
   // 2026-10-13: underlying が無く funding token だけ持つ行は "Pay with USDC" を添える
   // (Deposit tap は handlePoolTap が同じ判定で funding deposit を開く)
   const payWithByKey = useMemo(() => {
-    const holdings = walletHoldingsFromPositions(positions);
     const out = new Map<string, string>();
     for (const r of rows) {
       // 保有行も Deposit (買い増し) を出すので同じく添える
       if (!r.pool) continue;
-      const f = depositFundingForPool(entry.protocol_id, r.pool, holdings);
+      const f = depositFundingForPool(entry.protocol_id, r.pool, walletHoldings);
       if (f?.choice.kind === "funding") out.set(r.key, f.choice.token.symbol);
     }
     return out;
-  }, [rows, positions, entry.protocol_id]);
+  }, [rows, walletHoldings, entry.protocol_id]);
   const summary = useMemo(() => computeVaultSummary(rows), [rows]);
   const filteredRows = useMemo(
     () => applyVaultFilter(rows, filter),
@@ -1491,65 +1498,6 @@ function OthersExpanderRow({
 // Phase 8.54: 共有カード行 — Jupiter / 他 protocol で **1 つの視覚定義**を使う
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** カード行の CTA 1 つ分 */
-interface RowCta {
-  label: string;
-  disabled: boolean;
-}
-
-/**
- * 行下段の CTA を決める (2026-10-13: 保有行にも Deposit を出す = 買い増し)。
- *
- * manage (Withdraw / Redeem):
- *   - 保有あり かつ withdraw 経路あり → "Withdraw"
- *   - Exponent の満期済 PT (displayOnly + 保有 + 満期) → "Redeem" **だけ** (deposit 経路なし)
- *
- * deposit (保有の有無に関係なく同じ規則):
- *   1. read-only listing (8.33) / pool 無し → 出さない (タイトルに "View only" バッジ)
- *   2. plans-only server (`/health` の executionTarget = "disabled")
- *      → 無効 CTA "Unavailable" (capView.closed と同じ見た目)
- *   3. 預入不可 (8.51/8.52 満杯・停止中・上流都合) → 無効 CTA + 理由
- *   4. それ以外 → "Deposit"
- *
- * readOnly (watch-only) はここでは扱わない — 表示したまま VaultRowView が無効化する。
- * @internal export は MenuDrawer.test.tsx の CTA matrix 用
- */
-export function ctaForRow(
-  row: VaultRow,
-  executionDisabled = false
-): { deposit?: RowCta; manage?: RowCta } {
-  const out: { deposit?: RowCta; manage?: RowCta } = {};
-  if (row.isDeposited && row.earnPosition && canWithdrawPosition(row.earnPosition)) {
-    // Exponent PT: displayOnly で withdraw 経路があるのは満期済のみ
-    if (row.displayOnly) return { manage: { label: "Redeem", disabled: false } };
-    out.manage = { label: "Withdraw", disabled: false };
-  }
-  const deposit = depositCtaForRow(row, executionDisabled);
-  if (deposit) out.deposit = deposit;
-  return out;
-}
-
-function depositCtaForRow(
-  row: VaultRow,
-  executionDisabled: boolean
-): RowCta | undefined {
-  if (row.displayOnly || !row.pool) return undefined;
-  if (executionDisabled) return { label: "Unavailable", disabled: true };
-  if (row.capView?.closed) {
-    // 8.91: blocked (上流不具合) は Unavailable と区別して表示
-    const label =
-      row.capView.reason === "paused"
-        ? "Paused"
-        : row.capView.reason === "full"
-          ? "Full"
-          : row.capView.reason === "blocked"
-            ? "Blocked"
-            : "Unavailable";
-    return { label, disabled: true };
-  }
-  return { label: "Deposit", disabled: false };
-}
-
 /**
  * 保有が無い行の下段に出すメタ (稼働率 / 借入)。無ければ既定文言。
  * **預入枠はここに混ぜない** — CTA と同じ行で幅を取り合って省略される。
@@ -1626,7 +1574,7 @@ function VaultRowView({
   protocolName?: string;
   /** watch-only mode: CTA (Deposit / Withdraw) を表示のまま無効化 */
   readOnly?: boolean;
-  /** 2026-10-13: plans-only server。Deposit を "Unavailable" に (Withdraw / Redeem はそのまま) */
+  /** 2026-10-13: plans-only server。Deposit は "Unavailable"、Withdraw / Redeem も disabled */
   executionDisabled?: boolean;
   testID?: string;
 }) {
@@ -1700,8 +1648,8 @@ function VaultRowView({
       </View>
 
       {/* 8.51/8.52: 預入枠は CTA と幅を取り合わせず独立行で出す (省略させない)。
-          2026-10-13: 保有行も Deposit (買い増し) を出すので同じく表示 */}
-      {row.capView && (!deposited || cta.deposit) && (
+          2026-10-13: 保有行は Deposit (買い増し) が押せる時だけ表示 */}
+      {row.capView && (!deposited || (cta.deposit && !cta.deposit.disabled)) && (
         <Text
           style={[
             styles.jupVaultCapLine,
@@ -1714,8 +1662,9 @@ function VaultRowView({
         </Text>
       )}
 
-      {/* 2026-10-13: Deposit はこの token で支払う (Jupiter が 1 tx で share に route) */}
-      {payWithSymbol && (!deposited || cta.deposit) && (
+      {/* 2026-10-13: Deposit はこの token で支払う (Jupiter が 1 tx で share に route)。
+          Deposit が押せない (Unavailable / Paused 等) 時は出さない */}
+      {payWithSymbol && cta.deposit && !cta.deposit.disabled && (
         <Text
           style={styles.jupVaultCapLine}
           numberOfLines={1}
