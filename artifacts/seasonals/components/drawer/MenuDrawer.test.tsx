@@ -14,8 +14,11 @@ import { act, fireEvent, render, screen, waitFor } from "@testing-library/react-
 import { BackHandler, Linking } from "react-native";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { fixtureMenuListings } from "@workspace/lib/__fixtures__";
+import type { EarnPosition } from "@workspace/lib/types";
+import { EXPONENT_MARKETS } from "@workspace/lib/config/exponent-markets";
 
-import { MenuDrawer } from "./MenuDrawer";
+import { MenuDrawer, ctaForRow } from "./MenuDrawer";
+import type { VaultRow } from "./vault-rows";
 import { createQueryClient } from "../../services/queryClient";
 import * as api from "../../services/api";
 
@@ -376,5 +379,265 @@ describe("MenuDrawer — funding deposit (Jupiter Lend JupUSD)", () => {
       "deposit",
       "jl_JupUSD",
     ]);
+  });
+});
+
+/**
+ * 2026-10-13: 保有行にも Deposit (買い増し) を出す。旧 "Manage" は "Withdraw" に改名し、
+ * Deposit と並べる。Exponent の満期済 PT は deposit 経路が無いので "Redeem" だけ
+ */
+describe("MenuDrawer — 保有行の Deposit + Withdraw (2026-10-13)", () => {
+  const { findMarketByProtocolAsset } = jest.requireActual(
+    "@workspace/lib/config/swap-earn-markets"
+  ) as typeof import("@workspace/lib/config/swap-earn-markets");
+  const MARKET = findMarketByProtocolAsset("jupiter_lend", "JupUSD")!;
+
+  const JUPUSD_MARKET: api.JupiterLendMarketDTO = {
+    jlMint: MARKET.share_mint,
+    jlSymbol: "jlJupUSD",
+    jlDecimals: 6,
+    underlyingMint: MARKET.underlying_mint,
+    underlyingSymbol: "jupUSD",
+    underlyingDecimals: 6,
+    underlyingPriceUsd: 1,
+    supplyRateBps: 800,
+    rewardsRateBps: 0,
+    totalRateBps: 800,
+    tvlUnderlying: "1000000000000",
+  };
+
+  const JL_POSITION: EarnPosition = {
+    protocol_id: "jupiter_lend",
+    protocol_name: "Jupiter Lend",
+    market_symbol: "JupUSD",
+    share_mint: MARKET.share_mint,
+    shares: "1000000",
+    share_decimals: 6,
+    asset_symbol: "JupUSD",
+    underlying_amount: "1000000",
+    underlying_decimals: 6,
+    underlying_usd: "1.00000000",
+    supply_rate_bps: 800,
+    accrued_yield_amount: "0",
+    accrued_yield_sign: "unknown",
+    cost_basis_amount: null,
+  };
+
+  const DEPOSIT_ID = "menu-detail-vault-JupUSD-cta-deposit";
+  const MANAGE_ID = "menu-detail-vault-JupUSD-cta-manage";
+
+  afterEach(() => jest.restoreAllMocks());
+
+  async function openDepositedJupUsd(opts: {
+    onStartAction?: jest.Mock;
+    onWithdrawPosition?: jest.Mock;
+    readOnly?: boolean;
+  }) {
+    jest.spyOn(api, "getJupiterLendMarkets").mockResolvedValue([JUPUSD_MARKET]);
+    render(
+      wrap(
+        <MenuDrawer
+          visible
+          onClose={() => {}}
+          onStartAction={opts.onStartAction}
+          onWithdrawPosition={opts.onWithdrawPosition}
+          earnPositions={{ jupiterLend: [JL_POSITION], kaminoBestEffort: [] }}
+          readOnly={opts.readOnly}
+          testID="menu"
+        />
+      )
+    );
+    fireEvent.press(await screen.findByTestId("menu-card-jupiter"));
+    await screen.findByTestId(MANAGE_ID);
+  }
+
+  it("保有行に Deposit と Withdraw が並び、Manage は出ない", async () => {
+    await openDepositedJupUsd({});
+    expect(screen.getByTestId(DEPOSIT_ID)).toBeTruthy();
+    expect(screen.getByText("Withdraw")).toBeTruthy();
+    expect(screen.queryByText("Manage")).toBeNull();
+    // "You: …" 行は残る
+    expect(screen.getByText(/^You: .* JupUSD · Earned — USD$/)).toBeTruthy();
+  });
+
+  it("Deposit はその pool の deposit を開き、Withdraw は position の withdraw を開く", async () => {
+    const onStartAction = jest.fn();
+    const onWithdrawPosition = jest.fn();
+    await openDepositedJupUsd({ onStartAction, onWithdrawPosition });
+    fireEvent.press(screen.getByTestId(DEPOSIT_ID));
+    expect(onStartAction).toHaveBeenCalledWith(
+      "jupiter",
+      "JupUSD",
+      "deposit",
+      "jl_JupUSD"
+    );
+    expect(onWithdrawPosition).not.toHaveBeenCalled();
+    fireEvent.press(screen.getByTestId(MANAGE_ID));
+    expect(onWithdrawPosition).toHaveBeenCalledWith(JL_POSITION);
+  });
+
+  it("plans-only server: Deposit は 'Unavailable' で disabled、Withdraw は押せる", async () => {
+    jest.spyOn(api, "getHealth").mockResolvedValue({
+      status: "ok",
+      solana: { heliusConfigured: true, executionTarget: "disabled" },
+    });
+    const onStartAction = jest.fn();
+    const onWithdrawPosition = jest.fn();
+    await openDepositedJupUsd({ onStartAction, onWithdrawPosition });
+    await waitFor(() => expect(screen.getByText("Unavailable")).toBeTruthy());
+    const deposit = screen.getByTestId(DEPOSIT_ID);
+    expect(deposit.props.accessibilityState?.disabled).toBe(true);
+    fireEvent.press(deposit);
+    expect(onStartAction).not.toHaveBeenCalled();
+    const withdraw = screen.getByTestId(MANAGE_ID);
+    expect(withdraw.props.accessibilityState?.disabled).toBe(false);
+    fireEvent.press(withdraw);
+    expect(onWithdrawPosition).toHaveBeenCalledWith(JL_POSITION);
+  });
+
+  it("readOnly (watch-only): 両方とも表示したまま disabled", async () => {
+    const onStartAction = jest.fn();
+    const onWithdrawPosition = jest.fn();
+    await openDepositedJupUsd({ onStartAction, onWithdrawPosition, readOnly: true });
+    const deposit = screen.getByTestId(DEPOSIT_ID);
+    const withdraw = screen.getByTestId(MANAGE_ID);
+    expect(deposit.props.accessibilityState?.disabled).toBe(true);
+    expect(withdraw.props.accessibilityState?.disabled).toBe(true);
+    fireEvent.press(deposit);
+    fireEvent.press(withdraw);
+    expect(onStartAction).not.toHaveBeenCalled();
+    expect(onWithdrawPosition).not.toHaveBeenCalled();
+  });
+});
+
+/** ctaForRow の CTA matrix (render を介さず判断だけ固定する) */
+describe("ctaForRow — CTA matrix (2026-10-13)", () => {
+  const POOL = {
+    pool_id: "kamino_usdc_main",
+    name: "USDC Main Market",
+    category: "stable",
+    asset: "USDC",
+    apy: 0.05,
+    tvl_usd: 1_000_000,
+  } as VaultRow["pool"];
+
+  const WITHDRAWABLE: EarnPosition = {
+    protocol_id: "meteora", // canWithdrawEarnPosition: meteora は常に true
+    protocol_name: "Meteora",
+    market_symbol: "USDC",
+    share_mint: "11111111111111111111111111111111",
+    shares: "1",
+    share_decimals: 6,
+    asset_symbol: "USDC",
+    underlying_amount: "1000000",
+    underlying_decimals: 6,
+    underlying_usd: "1.00000000",
+    supply_rate_bps: null,
+    accrued_yield_amount: "0",
+    accrued_yield_sign: "unknown",
+    cost_basis_amount: null,
+  };
+  const PT = EXPONENT_MARKETS[0]!;
+  const ptPosition = (maturityIso: string): EarnPosition => ({
+    ...WITHDRAWABLE,
+    protocol_id: "exponent",
+    protocol_name: "Exponent",
+    share_mint: PT.pt_mint,
+    maturity_at: maturityIso,
+  });
+  // withdraw 経路を解決できない position (未知 protocol)
+  const NO_ROUTE: EarnPosition = { ...WITHDRAWABLE, protocol_id: "unknown_protocol" };
+
+  function row(over: Partial<VaultRow>): VaultRow {
+    return {
+      key: "k",
+      assetSymbol: "USDC",
+      subtitle: "s",
+      apyBps: 500,
+      tvlUsd: 1,
+      pool: POOL,
+      displayOnly: false,
+      capView: null,
+      isDeposited: false,
+      userUnderlyingHuman: 0,
+      userUnderlyingUsd: 0,
+      userEarnedUsd: 0,
+      userEarnedKnown: false,
+      ...over,
+    };
+  }
+  const deposited = (position: EarnPosition, over: Partial<VaultRow> = {}) =>
+    row({ isDeposited: true, earnPosition: position, userUnderlyingHuman: 1, ...over });
+  const closedCap = (reason: "paused" | "full" | "blocked" | "unavailable") => ({
+    label: "Cap reached",
+    ratio: 1,
+    closed: true,
+    reason,
+  });
+
+  it("未保有: Deposit だけ", () => {
+    expect(ctaForRow(row({}))).toEqual({
+      deposit: { label: "Deposit", disabled: false },
+    });
+  });
+
+  it("保有 + withdraw 経路あり: Deposit + Withdraw", () => {
+    expect(ctaForRow(deposited(WITHDRAWABLE))).toEqual({
+      deposit: { label: "Deposit", disabled: false },
+      manage: { label: "Withdraw", disabled: false },
+    });
+  });
+
+  it("保有 + withdraw 経路なし: Deposit だけ (Withdraw は出さない)", () => {
+    expect(ctaForRow(deposited(NO_ROUTE))).toEqual({
+      deposit: { label: "Deposit", disabled: false },
+    });
+  });
+
+  it("保有 + plans-only server: Deposit は Unavailable (disabled)、Withdraw はそのまま", () => {
+    expect(ctaForRow(deposited(WITHDRAWABLE), true)).toEqual({
+      deposit: { label: "Unavailable", disabled: true },
+      manage: { label: "Withdraw", disabled: false },
+    });
+  });
+
+  it.each([
+    ["paused", "Paused"],
+    ["full", "Full"],
+    ["blocked", "Blocked"],
+    ["unavailable", "Unavailable"],
+  ] as const)("保有 + capView closed (%s): Deposit は '%s' で disabled", (reason, label) => {
+    expect(ctaForRow(deposited(WITHDRAWABLE, { capView: closedCap(reason) }))).toEqual({
+      deposit: { label, disabled: true },
+      manage: { label: "Withdraw", disabled: false },
+    });
+  });
+
+  it("pool が無い保有行: Withdraw だけ", () => {
+    expect(ctaForRow(deposited(WITHDRAWABLE, { pool: undefined }))).toEqual({
+      manage: { label: "Withdraw", disabled: false },
+    });
+  });
+
+  it("Exponent 満期済 PT: Redeem だけ (deposit 経路なし)", () => {
+    const matured = deposited(ptPosition("2000-01-01T00:00:00.000Z"), {
+      displayOnly: true,
+    });
+    expect(ctaForRow(matured)).toEqual({
+      manage: { label: "Redeem", disabled: false },
+    });
+    // plans-only でも Redeem は変わらない
+    expect(ctaForRow(matured, true)).toEqual({
+      manage: { label: "Redeem", disabled: false },
+    });
+  });
+
+  it("Exponent 未満期 PT / 未保有の View only: CTA なし", () => {
+    expect(
+      ctaForRow(
+        deposited(ptPosition("2999-01-01T00:00:00.000Z"), { displayOnly: true })
+      )
+    ).toEqual({});
+    expect(ctaForRow(row({ displayOnly: true }))).toEqual({});
   });
 });

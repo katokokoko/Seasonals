@@ -871,7 +871,7 @@ function formatApyBps(bps: number | null): string {
  *   Kamino kVault (8.15d): share_mint = vault address (share 建て withdraw)
  * いずれにも hit しない (Kamino best-effort 等) は withdraw disable のまま。
  *
- * 8.54: カード行の CTA (Manage / Redeem) と "Your Positions" 行で共用する。
+ * 8.54: カード行の CTA (Withdraw / Redeem) と "Your Positions" 行で共用する。
  */
 function canWithdrawPosition(position: EarnPosition): boolean {
   // 判定は lib に移設 (Web の Menu / Dashboard と共有、same source of truth)
@@ -1260,7 +1260,8 @@ function JupiterDetailPane({
     const holdings = walletHoldingsFromPositions(positions);
     const out = new Map<string, string>();
     for (const r of rows) {
-      if (!r.pool || r.isDeposited) continue;
+      // 保有行も Deposit (買い増し) を出すので同じく添える
+      if (!r.pool) continue;
       const f = depositFundingForPool(entry.protocol_id, r.pool, holdings);
       if (f?.choice.kind === "funding") out.set(r.key, f.choice.token.symbol);
     }
@@ -1490,32 +1491,50 @@ function OthersExpanderRow({
 // Phase 8.54: 共有カード行 — Jupiter / 他 protocol で **1 つの視覚定義**を使う
 // ─────────────────────────────────────────────────────────────────────────────
 
+/** カード行の CTA 1 つ分 */
+interface RowCta {
+  label: string;
+  disabled: boolean;
+}
+
 /**
- * 行下段の CTA を決める。優先順位:
- *   1. 保有あり かつ withdraw 経路あり → Manage (Exponent の満期済 PT は Redeem)
- *   2. read-only listing (8.33) → CTA なし (タイトルに "View only" バッジ)
- *   3. plans-only server (2026-10-13、`/health` の executionTarget = "disabled")
+ * 行下段の CTA を決める (2026-10-13: 保有行にも Deposit を出す = 買い増し)。
+ *
+ * manage (Withdraw / Redeem):
+ *   - 保有あり かつ withdraw 経路あり → "Withdraw"
+ *   - Exponent の満期済 PT (displayOnly + 保有 + 満期) → "Redeem" **だけ** (deposit 経路なし)
+ *
+ * deposit (保有の有無に関係なく同じ規則):
+ *   1. read-only listing (8.33) / pool 無し → 出さない (タイトルに "View only" バッジ)
+ *   2. plans-only server (`/health` の executionTarget = "disabled")
  *      → 無効 CTA "Unavailable" (capView.closed と同じ見た目)
- *   4. 預入不可 (8.51/8.52 満杯・停止中・上流都合) → 無効 CTA + 理由
- *   5. それ以外 → Deposit
+ *   3. 預入不可 (8.51/8.52 満杯・停止中・上流都合) → 無効 CTA + 理由
+ *   4. それ以外 → "Deposit"
+ *
+ * readOnly (watch-only) はここでは扱わない — 表示したまま VaultRowView が無効化する。
+ * @internal export は MenuDrawer.test.tsx の CTA matrix 用
  */
-function ctaForRow(
+export function ctaForRow(
   row: VaultRow,
   executionDisabled = false
-): {
-  label: string;
-  kind: "manage" | "deposit";
-  disabled: boolean;
-} | null {
-  if (row.isDeposited && row.earnPosition) {
-    if (!canWithdrawPosition(row.earnPosition)) return null;
-    const redeem = row.displayOnly; // Exponent PT: 満期済のみここに来る
-    return { label: redeem ? "Redeem" : "Manage", kind: "manage", disabled: false };
+): { deposit?: RowCta; manage?: RowCta } {
+  const out: { deposit?: RowCta; manage?: RowCta } = {};
+  if (row.isDeposited && row.earnPosition && canWithdrawPosition(row.earnPosition)) {
+    // Exponent PT: displayOnly で withdraw 経路があるのは満期済のみ
+    if (row.displayOnly) return { manage: { label: "Redeem", disabled: false } };
+    out.manage = { label: "Withdraw", disabled: false };
   }
-  if (row.displayOnly) return null;
-  if (executionDisabled) {
-    return { label: "Unavailable", kind: "deposit", disabled: true };
-  }
+  const deposit = depositCtaForRow(row, executionDisabled);
+  if (deposit) out.deposit = deposit;
+  return out;
+}
+
+function depositCtaForRow(
+  row: VaultRow,
+  executionDisabled: boolean
+): RowCta | undefined {
+  if (row.displayOnly || !row.pool) return undefined;
+  if (executionDisabled) return { label: "Unavailable", disabled: true };
   if (row.capView?.closed) {
     // 8.91: blocked (上流不具合) は Unavailable と区別して表示
     const label =
@@ -1526,9 +1545,9 @@ function ctaForRow(
           : row.capView.reason === "blocked"
             ? "Blocked"
             : "Unavailable";
-    return { label, kind: "deposit", disabled: true };
+    return { label, disabled: true };
   }
-  return { label: "Deposit", kind: "deposit", disabled: false };
+  return { label: "Deposit", disabled: false };
 }
 
 /**
@@ -1543,6 +1562,49 @@ function metaLineForRow(row: VaultRow): string {
     parts.push(`borrowed ${formatBorrowedUsd(row.borrowedUsd)}`);
   }
   return parts.length > 0 ? parts.join("  ·  ") : "No deposit yet";
+}
+
+/** カード行の CTA pill 1 つ (deposit = soda / manage = melon、無効時は中立色) */
+function VaultRowCta({
+  cta,
+  kind,
+  readOnly,
+  onPress,
+  testID,
+}: {
+  cta: RowCta;
+  kind: "deposit" | "manage";
+  readOnly: boolean;
+  onPress: () => void;
+  testID?: string;
+}) {
+  const disabled = cta.disabled || readOnly;
+  return (
+    <Pressable
+      accessibilityRole={disabled ? "none" : "button"}
+      disabled={disabled}
+      accessibilityState={{ disabled }}
+      onPress={onPress}
+      style={[
+        styles.jupVaultCta,
+        kind === "manage" ? styles.jupVaultCtaManage : styles.jupVaultCtaDeposit,
+        disabled && styles.jupVaultCtaDisabled,
+      ]}
+      testID={testID}
+    >
+      <Text
+        style={[
+          styles.jupVaultCtaText,
+          kind === "manage"
+            ? styles.jupVaultCtaTextManage
+            : styles.jupVaultCtaTextDeposit,
+          disabled && styles.jupVaultCtaTextDisabled,
+        ]}
+      >
+        {cta.label}
+      </Text>
+    </Pressable>
+  );
 }
 
 function VaultRowView({
@@ -1562,15 +1624,39 @@ function VaultRowView({
   payWithSymbol?: string;
   /** externalUrl の導線ラベル ("Open <protocol> ↗") に使う protocol 表示名 */
   protocolName?: string;
-  /** watch-only mode: CTA (Deposit / Manage) を表示のまま無効化 */
+  /** watch-only mode: CTA (Deposit / Withdraw) を表示のまま無効化 */
   readOnly?: boolean;
-  /** 2026-10-13: plans-only server。Deposit を "Unavailable" に (Manage / Redeem はそのまま) */
+  /** 2026-10-13: plans-only server。Deposit を "Unavailable" に (Withdraw / Redeem はそのまま) */
   executionDisabled?: boolean;
   testID?: string;
 }) {
   const deposited = row.isDeposited;
   const cta = ctaForRow(row, executionDisabled);
-  const ctaDisabled = cta ? cta.disabled || readOnly : true;
+  // 2 つ並ぶ時 (保有行の Deposit + Withdraw) は "You: …" を潰さないよう CTA を独立行にする
+  // (drawer 幅 ≤ 360 で pill 2 つ + 1 行テキストは収まらない)
+  const ctaOwnRow = cta.deposit !== undefined && cta.manage !== undefined;
+  const ctaButtons = (
+    <>
+      {cta.deposit && (
+        <VaultRowCta
+          cta={cta.deposit}
+          kind="deposit"
+          readOnly={readOnly}
+          onPress={onDeposit}
+          testID={testID ? `${testID}-cta-deposit` : undefined}
+        />
+      )}
+      {cta.manage && (
+        <VaultRowCta
+          cta={cta.manage}
+          kind="manage"
+          readOnly={readOnly}
+          onPress={onManage}
+          testID={testID ? `${testID}-cta-manage` : undefined}
+        />
+      )}
+    </>
+  );
   return (
     <View
       style={[
@@ -1613,8 +1699,9 @@ function VaultRowView({
         </View>
       </View>
 
-      {/* 8.51/8.52: 預入枠は CTA と幅を取り合わせず独立行で出す (省略させない) */}
-      {!deposited && row.capView && (
+      {/* 8.51/8.52: 預入枠は CTA と幅を取り合わせず独立行で出す (省略させない)。
+          2026-10-13: 保有行も Deposit (買い増し) を出すので同じく表示 */}
+      {row.capView && (!deposited || cta.deposit) && (
         <Text
           style={[
             styles.jupVaultCapLine,
@@ -1628,7 +1715,7 @@ function VaultRowView({
       )}
 
       {/* 2026-10-13: Deposit はこの token で支払う (Jupiter が 1 tx で share に route) */}
-      {!deposited && payWithSymbol && (
+      {payWithSymbol && (!deposited || cta.deposit) && (
         <Text
           style={styles.jupVaultCapLine}
           numberOfLines={1}
@@ -1661,35 +1748,10 @@ function VaultRowView({
               }`
             : metaLineForRow(row)}
         </Text>
-        {cta && (
-          <Pressable
-            accessibilityRole={ctaDisabled ? "none" : "button"}
-            disabled={ctaDisabled}
-            accessibilityState={{ disabled: ctaDisabled }}
-            onPress={cta.kind === "manage" ? onManage : onDeposit}
-            style={[
-              styles.jupVaultCta,
-              cta.kind === "manage"
-                ? styles.jupVaultCtaManage
-                : styles.jupVaultCtaDeposit,
-              ctaDisabled && styles.jupVaultCtaDisabled,
-            ]}
-            testID={testID ? `${testID}-cta-${cta.kind}` : undefined}
-          >
-            <Text
-              style={[
-                styles.jupVaultCtaText,
-                cta.kind === "manage"
-                  ? styles.jupVaultCtaTextManage
-                  : styles.jupVaultCtaTextDeposit,
-                ctaDisabled && styles.jupVaultCtaTextDisabled,
-              ]}
-            >
-              {cta.label}
-            </Text>
-          </Pressable>
-        )}
+        {!ctaOwnRow && ctaButtons}
       </View>
+
+      {ctaOwnRow && <View style={styles.jupVaultCtaRow}>{ctaButtons}</View>}
 
       {/* 8.26: 満杯市場は withdraw が滞る可能性を明示 */}
       {row.utilization != null && row.utilization >= 0.95 && (
@@ -2390,6 +2452,12 @@ const styles = StyleSheet.create({
     fontSize: FONT_SIZE.bodySM,
     fontFamily: FONT.body,
     color: COLOR.textMuted,
+  },
+  // 2026-10-13: 保有行の Deposit + Withdraw を "You: …" の下に右寄せで並べる
+  jupVaultCtaRow: {
+    flexDirection: "row",
+    justifyContent: "flex-end",
+    gap: SPACE.sm,
   },
   jupVaultCta: {
     paddingHorizontal: SPACE.md,
