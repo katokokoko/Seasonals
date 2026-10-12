@@ -170,6 +170,29 @@ describe("buildSolanaTxs", () => {
     }
   );
 
+  it("funding deposit (swap_earn_deposit + inputMint) は inputMint を body に載せる", async () => {
+    const USDC = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v";
+    const out = await buildSolanaTxs(
+      { kind: "swap_earn_deposit", shareMint: "SHARE_JUPUSD", inputMint: USDC },
+      USER,
+      AMOUNT
+    );
+    expect(out).toEqual({ txs: ["SWAP_DEP"], lastValidBlockHeight: 300_000_100 });
+    expect(mocked.getSwapEarnDepositTx).toHaveBeenCalledWith({
+      user: USER,
+      shareMint: "SHARE_JUPUSD",
+      amount: AMOUNT,
+      slippageBps: 50,
+      inputMint: USDC,
+    });
+  });
+
+  it("underlying deposit (inputMint なし) の body に inputMint key を含めない", async () => {
+    await buildSolanaTxs({ kind: "swap_earn_deposit", shareMint: "SHARE_A" }, USER, AMOUNT);
+    const body = mocked.getSwapEarnDepositTx!.mock.calls[0]![0] as Record<string, unknown>;
+    expect("inputMint" in body).toBe(false);
+  });
+
   it("builder の error (plain Error) をそのまま伝搬する", async () => {
     mocked.getKaminoDepositTx!.mockRejectedValueOnce(new Error("reserve_paused"));
     await expect(

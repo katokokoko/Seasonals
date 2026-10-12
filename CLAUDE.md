@@ -294,7 +294,7 @@ PR / コードレビュー前の pitch claim ↔ 実装の対応表は
   - Wave 2: mobile の watch-only address mode (web の watchlist の移植) は PR #46 で完了 (`services/useActiveAddress.ts` が読み取り address の起点、watch 中は `ActionModal.handleExecute` が署名経路を止める)。Helius Enhanced Tx → Parsed Events 移行は PR #39 / #40 で flag 導入済み (既定 enhanced、parity 後に flip)
 - **依存リフレッシュ** (残り 1 種): major 跨ぎ (`@types/node` / `date-fns` / `@fastify/cors` / **TypeScript 6.0** — SDK 57 期待、`expo.install.exclude` で保留中)。
   ✅ Expo SDK 57 + newArch + native module 群 + MWA 2.2.9 は Phase 8.87 で完了 (経緯は docs/expo57-upgrade.md)
-  - SDK 更新時は §8.1 完了ゲートに加えて **`pnpm --filter @seasonals/bff verify:tx`** (全 23 経路 mainnet simulate、署名なし) を必ず通す
+  - SDK 更新時は §8.1 完了ゲートに加えて **`pnpm --filter @seasonals/bff verify:tx`** (全 25 経路 mainnet simulate、署名なし) を必ず通す
   - root pnpm override 3 点 (`rpc-websockets` / `utf-8-validate` / skia の `onlyBuiltDependencies`) は **load-bearing、外さない** (経緯は package.json `//overrides` と backlog.md §E)
   - `@solendprotocol/solend-sdk` の global fetch 上書き問題 → orca-tx.ts / meteora-tx.ts の undici 明示利用は**継続が必要**
 - **Exponent PT 売買 (buy)** (優先度中): 着手条件は Jupiter が PT mint を route し始めるか Exponent TS SDK の npm 公開。それまで menu は `display_only` で agent 候補からも除外 (fail-closed)

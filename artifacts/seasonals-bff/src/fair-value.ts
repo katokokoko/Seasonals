@@ -139,8 +139,8 @@ export function evaluateFairValue(p: {
   return { status: "ok", deviation_bps: deviationBps };
 }
 
-/** bps → "6.20%" (表示専用。判定側は bigint のまま) */
-function bpsToPercent(bps: number): string {
+/** bps → "6.20%" (表示専用。判定側は bigint のまま)。funding-fair-value.ts も使う */
+export function bpsToPercent(bps: number): string {
   return `${(bps / 100).toFixed(2)}%`;
 }
 

@@ -10,7 +10,7 @@
  */
 import React, { type ReactNode } from "react";
 import { QueryClientProvider, type QueryClient } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react-native";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react-native";
 import { BackHandler, Linking } from "react-native";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { fixtureMenuListings } from "@workspace/lib/__fixtures__";
@@ -252,5 +252,129 @@ describe("MenuDrawer — 保有 positions は Home と同じ wallet key で引�
     render(wrap(<MenuDrawer visible onClose={() => {}} walletAddress={A} testID="menu" />));
     await waitFor(() => expect(spy).toHaveBeenCalled());
     expect(spy.mock.calls.every(([address]) => address === A)).toBe(true);
+  });
+});
+
+/**
+ * 2026-10-13: funding-token deposit。Jupiter Lend JupUSD は registry の funding allowlist で
+ * USDC を受け付ける。underlying (JupUSD) が無く USDC だけ持つなら USDC 払いで開く
+ * (asset = "USDC" + { shareMint })、JupUSD を持つなら従来どおり underlying (shareMint なし)
+ */
+describe("MenuDrawer — funding deposit (Jupiter Lend JupUSD)", () => {
+  // lib registry から引く (mint を test に直書きしない)
+  const { findMarketByProtocolAsset } = jest.requireActual(
+    "@workspace/lib/config/swap-earn-markets"
+  ) as typeof import("@workspace/lib/config/swap-earn-markets");
+  const MARKET = findMarketByProtocolAsset("jupiter_lend", "JupUSD")!;
+  const USDC_MINT = MARKET.funding![0]!.mint;
+
+  const JUPUSD_MARKET: api.JupiterLendMarketDTO = {
+    jlMint: MARKET.share_mint,
+    jlSymbol: "jlJupUSD",
+    jlDecimals: 6,
+    underlyingMint: MARKET.underlying_mint,
+    // Jupiter API は "jupUSD" 表記 (Menu の行は displayJupiterAsset で "JupUSD")
+    underlyingSymbol: "jupUSD",
+    underlyingDecimals: 6,
+    underlyingPriceUsd: 1,
+    supplyRateBps: 800,
+    rewardsRateBps: 0,
+    totalRateBps: 800,
+    tvlUnderlying: "1000000000000",
+  };
+
+  function walletRow(symbol: string, mint: string, amount: string) {
+    return {
+      position_id: `helius_x_${mint}`,
+      protocol_id: "wallet_stable",
+      asset_symbol: symbol,
+      current_amount: amount,
+      raw_state: { mint, source: "helius_das", decimals: 6 },
+    } as unknown as import("@workspace/lib/types").Position;
+  }
+
+  afterEach(() => jest.restoreAllMocks());
+
+  async function tapJupUsdDeposit(
+    positions: import("@workspace/lib/types").Position[],
+    onStartAction: jest.Mock
+  ) {
+    jest.spyOn(api, "getJupiterLendMarkets").mockResolvedValue([JUPUSD_MARKET]);
+    jest.spyOn(api, "getPositions").mockResolvedValue(positions);
+    render(
+      wrap(
+        <MenuDrawer
+          visible
+          onClose={() => {}}
+          onStartAction={onStartAction}
+          testID="menu"
+        />
+      )
+    );
+    fireEvent.press(await screen.findByTestId("menu-card-jupiter"));
+    const cta = await screen.findByTestId("menu-detail-vault-JupUSD-cta-deposit");
+    return cta;
+  }
+
+  it("USDC だけ保有 → 'Pay with USDC' を添え、asset 'USDC' + { shareMint } で開く", async () => {
+    const onStartAction = jest.fn();
+    const cta = await tapJupUsdDeposit(
+      [walletRow("USDC", USDC_MINT, "5000000")],
+      onStartAction
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId(`pool-paywith-${MARKET.share_mint}`)).toBeTruthy()
+    );
+    expect(screen.getByText("Pay with USDC")).toBeTruthy();
+    fireEvent.press(cta);
+    expect(onStartAction).toHaveBeenCalledWith(
+      "jupiter",
+      "USDC",
+      "deposit",
+      "jl_JupUSD",
+      { shareMint: MARKET.share_mint }
+    );
+  });
+
+  it("JupUSD を保有 (DAS 表記 'jupUSD') → 従来どおり asset 'JupUSD'、shareMint なし、sub-label なし", async () => {
+    const onStartAction = jest.fn();
+    const cta = await tapJupUsdDeposit(
+      [
+        walletRow("jupUSD", MARKET.underlying_mint, "2000000"),
+        walletRow("USDC", USDC_MINT, "5000000"),
+      ],
+      onStartAction
+    );
+    // positions 取得後も sub-label は出ない (underlying 優先)
+    await waitFor(() => expect(api.getPositions).toHaveBeenCalled());
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    expect(screen.queryByTestId(`pool-paywith-${MARKET.share_mint}`)).toBeNull();
+    fireEvent.press(cta);
+    expect(onStartAction).toHaveBeenCalledTimes(1);
+    expect(onStartAction.mock.calls[0]).toEqual([
+      "jupiter",
+      "JupUSD",
+      "deposit",
+      "jl_JupUSD",
+    ]);
+  });
+
+  it("どちらも無い → 従来どおり asset 'JupUSD' で開く (ActionModal が Insufficient + hint を出す)", async () => {
+    const onStartAction = jest.fn();
+    const cta = await tapJupUsdDeposit([], onStartAction);
+    await waitFor(() => expect(api.getPositions).toHaveBeenCalled());
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 0));
+    });
+    expect(screen.queryByTestId(`pool-paywith-${MARKET.share_mint}`)).toBeNull();
+    fireEvent.press(cta);
+    expect(onStartAction.mock.calls[0]).toEqual([
+      "jupiter",
+      "JupUSD",
+      "deposit",
+      "jl_JupUSD",
+    ]);
   });
 });

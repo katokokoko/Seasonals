@@ -8,14 +8,15 @@ import { Link } from "react-router";
 import { LEARN } from "../learn/content";
 import { SUPPORTED_CHAINS, chainInfo, type ChainId } from "@workspace/lib/config/chains";
 import { heldPoolKeys } from "@workspace/lib/derive/earn-positions";
-import { canWithdrawEarnPosition, depositAction, resolveSolanaRoute } from "@workspace/lib/derive/solana-action";
+import { canWithdrawEarnPosition, depositAction, fundedDepositAction, resolveSolanaRoute } from "@workspace/lib/derive/solana-action";
+import { depositAcceptedSymbols } from "@workspace/lib/derive/deposit-funding";
 import type { EarnPosition, MenuHolding, MenuProduct, PositionCategory, ProtocolMenuEntry, ProtocolPool } from "@workspace/lib/types";
 import { useEthMenu, useMenuHoldings, useMenuListings, type MenuHoldingsData } from "../services/queries";
 import { requestOpenWallet } from "../timeline/detailStore";
 import { ethHoldingText, solHoldingText } from "./holdingText";
 import { MenuActionPanel, actionLabel, menuActionable, type MenuAction } from "./MenuActionPanel";
 import { useActiveAddresses, useConnectedAddress } from "../state/session";
-import { SolanaActionPanel } from "./SolanaActionPanel";
+import { SolanaActionPanel, fundableMarket } from "./SolanaActionPanel";
 import { fmtDate, fmtMetric } from "../ui/format";
 import { ChainIcon } from "../ui/ChainIcon";
 import { fmtCompactUsd, fmtRatio } from "../ui/format";
@@ -215,10 +216,17 @@ export function MenuCard({ item, held, owner, mine }: { item: MenuItem; held?: E
   const [open, setOpen] = useState(false);
   const [panel, setPanel] = useState<MenuAction | null>(null);
   const avail = availability(pool);
+  const fundable = useMemo(() => fundableMarket(protocol.protocol_id, pool.deposit_asset ?? pool.asset), [protocol.protocol_id, pool.deposit_asset, pool.asset]);
+  // funding deposit (USDC で jlJupUSD 等) の template も routable として数える (どちらで払うかは panel が保有で決める)
   const routable = useMemo(
-    () => resolveSolanaRoute(depositAction(protocol.protocol_id, pool.deposit_asset ?? pool.asset, pool.pool_id)) !== null,
-    [protocol.protocol_id, pool.deposit_asset, pool.asset, pool.pool_id]
+    () =>
+      resolveSolanaRoute(depositAction(protocol.protocol_id, pool.deposit_asset ?? pool.asset, pool.pool_id)) !== null ||
+      (fundable?.funding ?? []).some(
+        (f) => resolveSolanaRoute(fundedDepositAction(protocol.protocol_id, f.symbol, fundable!.share_mint, pool.pool_id)) !== null
+      ),
+    [protocol.protocol_id, pool.deposit_asset, pool.asset, pool.pool_id, fundable]
   );
+  const accepts = fundable && routable ? depositAcceptedSymbols(fundable) : null;
   const depositReason = pool.display_only || pool.deposit_open === false ? avail?.label : !routable ? "Seasonals cannot build deposits for this pool yet" : null;
   const withdrawable = mine.some((p) => canWithdrawEarnPosition(p));
   const withdrawReason = withdrawable ? null : owner ? "Nothing withdrawable at the connected wallet" : "Connect a Solana wallet to withdraw";
@@ -243,6 +251,12 @@ export function MenuCard({ item, held, owner, mine }: { item: MenuItem; held?: E
           <dt>Asset</dt>
           <dd>{pool.asset}</dd>
         </div>
+        {accepts && (
+          <div>
+            <dt>Pay with</dt>
+            <dd>{accepts.join(" or ")}</dd>
+          </div>
+        )}
         <div>
           <dt>TVL</dt>
           <dd>{fmtCompactUsd(pool.tvl_usd)}</dd>
@@ -268,7 +282,7 @@ export function MenuCard({ item, held, owner, mine }: { item: MenuItem; held?: E
             </p>
           ) : (
             <p>
-              {protocol.display_name} {pool.name} accepts {pool.deposit_asset ?? pool.asset}. Deposits and withdrawals are signed in your Solana wallet and
+              {protocol.display_name} {pool.name} accepts {accepts ? accepts.join(" or ") : (pool.deposit_asset ?? pool.asset)}. Deposits and withdrawals are signed in your Solana wallet and
               sent to mainnet through the Seasonals server.
             </p>
           )}

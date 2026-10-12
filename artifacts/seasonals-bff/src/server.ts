@@ -51,6 +51,9 @@ import {
   Urgency,
   type AgentPlan,
   type EarnPosition,
+  type OracleResult,
+  type SwapEarnQuoteRequest,
+  type SwapEarnQuoteResponse,
   type EarnPositionsResponse,
   type Position,
   type PortfolioHistoryResponse,
@@ -116,7 +119,9 @@ import {
 import { fetchLstSolValues } from "./clients/lst-rates";
 // 8.72: swap quote の償還価値ガード (LST の NAV から不利方向に外れたら署名前に止める)
 import { fairValueBlockMessage, fairValueGuardBps } from "./fair-value";
-import { evaluateSwapFairValue } from "./swap-fair-value";
+import { evaluateFundingFairValue, evaluateSwapFairValue } from "./swap-fair-value";
+// 2026-10-13: funding token deposit (USDC → jlJupUSD) の cross-asset 償還価値ガード
+import { fundingFairValueBlockMessage } from "./funding-fair-value";
 // 2026-10-08: kVault / Save の交換レート換算 (positions 表示と simulate 見積りで共有)
 import {
   kvaultSharesToUnderlying,
@@ -143,6 +148,9 @@ import {
   SWAP_EARN_MARKETS,
   findMarketByShareMint,
   jupiterLendUnderlyingToShare,
+  swapEarnDepositInput,
+  type SwapEarnDepositInput,
+  type SwapEarnMarket,
 } from "@workspace/lib/config/swap-earn-markets";
 import {
   KAMINO_MAIN_MARKET,
@@ -292,7 +300,10 @@ import {
   routeInputSymbol,
   validateActionMetadata,
 } from "@workspace/lib/derive/solana-action";
-import { resolveOracleMint } from "@workspace/lib/derive/oracle-gate";
+import {
+  mergeOracleResults,
+  resolveOracleMints,
+} from "@workspace/lib/derive/oracle-gate";
 import { fetchPerenaTriStableTvlUsd } from "./clients/perena";
 import {
   adminToken,
@@ -1040,16 +1051,21 @@ const COST_BASIS_SHARE_TO_UNDERLYING: Record<string, string> = {
  * mobile 側にも `oracleBlockLabel` があるが、あちらは CTA 前の事前表示用。
  * execute 時の 409 は error 画面に落ちるので、こちらでも文章を持つ。
  */
-function oracleBlockMessage(reason: string | null | undefined): string {
+function oracleBlockMessage(
+  reason: string | null | undefined,
+  /** 2026-10-13: funding deposit は 2 asset を gate するので、止めた asset を名指しする */
+  assetSymbol?: string
+): string {
+  const asset = assetSymbol ? `${assetSymbol} ` : "";
   switch (reason) {
     case "oracle_both_stale":
-      return "The price sources are stale, so the price can't be trusted. Stopped before signing.";
+      return `The ${asset}price sources are stale, so the price can't be trusted. Stopped before signing.`;
     case "oracle_divergence_too_large":
-      return "The price sources disagree by more than 5%. Stopped before signing.";
+      return `The ${asset}price sources disagree by more than 5%. Stopped before signing.`;
     case "oracle_unavailable":
-      return "Price oracle unavailable, so this action can't be checked. Stopped before signing.";
+      return `${assetSymbol ? `${assetSymbol} price` : "Price"} oracle unavailable, so this action can't be checked. Stopped before signing.`;
     default:
-      return "Oracle check failed. Stopped before signing.";
+      return `${assetSymbol ? `${assetSymbol} oracle` : "Oracle"} check failed. Stopped before signing.`;
   }
 }
 
@@ -1073,7 +1089,69 @@ function swapInputTokenMeta(mint: string): { symbol: string; decimals: number } 
       decimals: byUnderlying.underlying_decimals,
     };
   }
+  // 2026-10-13: funding token (USDC で jlJupUSD を買う等) も deposit の input になる
+  for (const m of SWAP_EARN_MARKETS) {
+    const f = m.funding?.find((x) => x.mint === mint);
+    if (f) return { symbol: f.symbol, decimals: f.decimals };
+  }
   return { symbol: "tokens", decimals: 0 };
+}
+
+/** ["SOL"] → "SOL"、["JupUSD", "USDC"] → "JupUSD or USDC"、3 つ以上は "A, B or C" */
+function orList(items: string[]): string {
+  if (items.length <= 1) return items[0] ?? "";
+  return `${items.slice(0, -1).join(", ")} or ${items[items.length - 1]}`;
+}
+
+/**
+ * 2026-10-13: swap-earn deposit の入力 token を body の inputMint から解決する
+ * (deposit-tx と quote で共有)。省略 = market の underlying、underlying でも allowlist の
+ * funding でもない mint (形式不正を含む) は 400 unsupported_input_mint + 受け付ける mint 一覧。
+ */
+function resolveSwapEarnDepositInput(
+  market: SwapEarnMarket,
+  inputMint: unknown
+):
+  | { ok: true; input: SwapEarnDepositInput }
+  | { ok: false; body: Record<string, unknown> } {
+  const reject = (echo: boolean) => ({
+    ok: false as const,
+    body: {
+      error: "unsupported_input_mint",
+      message: `${market.share_symbol} deposits can be paid with ${orList([
+        market.underlying_symbol,
+        ...(market.funding ?? []).map((f) => f.symbol),
+      ])}`,
+      // 形式不正の値は echo しない (base58 address だけ返す)
+      ...(echo ? { inputMint } : {}),
+      allowed: [market.underlying_mint, ...(market.funding ?? []).map((f) => f.mint)],
+    },
+  });
+  if (inputMint === undefined || inputMint === null || inputMint === "") {
+    return { ok: true, input: swapEarnDepositInput(market)! };
+  }
+  // base58 address 形式 (wallet と同じ validator、lib/config/chains.ts isSolanaAddress)
+  if (!isWalletAddress(inputMint)) return reject(false);
+  const input = swapEarnDepositInput(market, inputMint.trim());
+  return input ? { ok: true, input } : reject(true);
+}
+
+/** deposit の oracle gate 対象: funding deposit は [underlying, funding]、通常は [underlying] */
+function swapEarnDepositOracleMints(
+  market: SwapEarnMarket,
+  input: SwapEarnDepositInput
+): string[] {
+  return input.isFunding ? [market.underlying_mint, input.mint] : [market.underlying_mint];
+}
+
+/** getOracleResults の結果を mints の順に並べる (欠けは getOracleResult と同じく throw) */
+async function oracleResultsInOrder(mints: string[]): Promise<OracleResult[]> {
+  const byMint = await getOracleResults(mints);
+  return mints.map((m) => {
+    const r = byMint.get(m);
+    if (!r) throw new Error("oracle: result missing");
+    return r;
+  });
 }
 
 /**
@@ -1089,7 +1167,11 @@ async function buildSwapEarnTx(
     user: string;
     inputMint: string;
     outputMint: string;
-    oracleMint: string;
+    /**
+     * fail-closed 判定する mint 群 (§4.6)。通常は underlying 1 本、funding deposit は
+     * [underlying, funding] の 2 本 — どちらかが blocked なら止める (2026-10-13)
+     */
+    oracleMints: string[];
     amount: string;
     slippageBps?: number;
     /**
@@ -1097,6 +1179,11 @@ async function buildSwapEarnTx(
      * 渡らない market (jlToken / USD* 等) は参照が無いので対象外
      */
     fairValue?: { direction: "deposit" | "withdraw"; shareSymbol: string };
+    /**
+     * 2026-10-13: funding token で支払う deposit。fairValue (LST) の代わりに cross-asset の
+     * 償還価値ガード (funding-fair-value.ts) を掛ける。価格は上の oracle gate の結果を使う
+     */
+    funding?: { market: SwapEarnMarket; input: SwapEarnDepositInput };
   }
 ): Promise<Record<string, unknown>> {
   // Phase 8.37 (B3): §4.5 API boundary — 他の全 tx-build family と同じ検証。
@@ -1105,14 +1192,18 @@ async function buildSwapEarnTx(
     reply.code(400);
     return { error: "invalid_amount", amount: p.amount };
   }
-  const oracle = await getOracleResult(p.oracleMint);
+  const oracleResults = await oracleResultsInOrder(p.oracleMints);
+  const oracle = mergeOracleResults(oracleResults);
+  if (!oracle) throw new Error("oracle: no mint to gate");
   if (oracle.status === "blocked") {
+    // 止めた asset を名指しする (funding deposit は USDC / JupUSD のどちらで止まったかが要る)
+    const blocked = oracleResults.find((r) => r.status === "blocked");
     reply.code(409);
     return {
       error: "oracle_blocked",
       block_reason: oracle.block_reason,
       // 8.74: fair value と同じ理由で message を添える (生 code を見せない)
-      message: oracleBlockMessage(oracle.block_reason),
+      message: oracleBlockMessage(oracle.block_reason, blocked?.asset_symbol),
       oracle,
     };
   }
@@ -1141,8 +1232,16 @@ async function buildSwapEarnTx(
       slippageBps: p.slippageBps ?? 50,
     });
     // 8.72: quote が LST の償還価値からユーザー不利方向に外れていないか。
-    // oracle gate と同じ「署名前に止める」層で、tx を組む前に判定する
-    const fv = await evaluateSwapFairValue(req.log, quote, p.fairValue);
+    // oracle gate と同じ「署名前に止める」層で、tx を組む前に判定する。
+    // 2026-10-13: funding deposit は cross-asset (funding → underlying → share) の参照で判定する
+    const fv = p.funding
+      ? await evaluateFundingFairValue(req.log, quote, {
+          market: p.funding.market,
+          input: p.funding.input,
+          underlyingOracle: oracleResults[p.oracleMints.indexOf(p.funding.market.underlying_mint)],
+          fundingOracle: oracleResults[p.oracleMints.indexOf(p.funding.input.mint)],
+        })
+      : await evaluateSwapFairValue(req.log, quote, p.fairValue);
     if (fv.status === "blocked") {
       reply.code(409);
       return {
@@ -1152,12 +1251,23 @@ async function buildSwapEarnTx(
         guard_bps: fairValueGuardBps(),
         // 8.74: mobile はこの message をそのまま出す。無いと生の code が
         // ユーザーに見えてしまう
-        message: fairValueBlockMessage(
-          fv.reason,
-          p.fairValue?.shareSymbol ?? "this token",
-          fv.deviation_bps,
-          fairValueGuardBps()
-        ),
+        message: p.funding
+          ? fundingFairValueBlockMessage({
+              reason: fv.reason,
+              deviationBps: fv.deviation_bps,
+              guardBps: fairValueGuardBps(),
+              inAmount: quote.inAmount,
+              fundingSymbol: p.funding.input.symbol,
+              fundingDecimals: p.funding.input.decimals,
+              shareSymbol: p.funding.market.share_symbol,
+              underlyingSymbol: p.funding.market.underlying_symbol,
+            })
+          : fairValueBlockMessage(
+              fv.reason,
+              p.fairValue?.shareSymbol ?? "this token",
+              fv.deviation_bps,
+              fairValueGuardBps()
+            ),
       };
     }
 
@@ -1172,11 +1282,19 @@ async function buildSwapEarnTx(
       lastValidBlockHeight: tx.lastValidBlockHeight,
       outAmount: quote.outAmount,
       outputMint: p.outputMint,
+      // 2026-10-13: 実際に支払った mint (funding deposit なら funding token)
+      inputMint: p.inputMint,
       quote,
     };
   } catch (err) {
     req.log.error(
-      { err: (err as Error).message, ...p },
+      {
+        err: (err as Error).message,
+        user: p.user,
+        inputMint: p.inputMint,
+        outputMint: p.outputMint,
+        amount: p.amount,
+      },
       "swap-earn tx build failed"
     );
     reply.code(502);
@@ -3093,7 +3211,12 @@ export function applyMenuLiveOverlays(
         // MenuDrawer の client 側 override (Phase 8.6) と同じ換算式。
         // 8.26: jl API は SOL market を "WSOL" で返すため alias で match
         // (mobile 側 MenuDrawer と同じ規約)
-        const norm = (sym: string) => (sym === "WSOL" ? "SOL" : sym);
+        // 2026-10-13: 大文字小文字も無視する (jl API は JupUSD market を "jupUSD" で返しうる。
+        // registry / fixture は "JupUSD" — jupiter_jupusd pool に live APY を載せるため)
+        const norm = (sym: string) => {
+          const u = sym.toUpperCase();
+          return u === "WSOL" ? "SOL" : u;
+        };
         const m = s.jupiterMarkets.find(
           (mk) => norm(mk.underlyingSymbol) === norm(pool.asset)
         );
@@ -4963,7 +5086,7 @@ export async function buildServer(
       user,
       inputMint: jlMint,
       outputMint,
-      oracleMint: outputMint,
+      oracleMints: [outputMint],
       amount,
       slippageBps,
     });
@@ -5011,7 +5134,7 @@ export async function buildServer(
       user,
       inputMint,
       outputMint,
-      oracleMint: inputMint,
+      oracleMints: [inputMint],
       amount,
       slippageBps,
     });
@@ -5021,7 +5144,12 @@ export async function buildServer(
    * Phase 8.15: protocol 汎用 swap-earn deposit-tx。Jupiter Lend で実証済の
    * "deposit = underlying→share の Jupiter Swap" を SWAP_EARN_MARKETS で一般化。
    * shareMint で market を解決 → input=underlying, output=share, oracle=underlying。
-   *   body: { user, shareMint, amount: underlying smallest unit, slippageBps? }
+   *   body: { user, shareMint, amount: input smallest unit, slippageBps?, inputMint? }
+   *
+   * 2026-10-13: `inputMint` に market の funding token (allowlist、例: jlJupUSD に USDC) を
+   * 渡すと funding deposit (funding → share の 1 swap)。oracle は underlying と funding の両方、
+   * 償還価値ガードは cross-asset (funding-fair-value.ts)、残高 gate は支払う token に掛ける。
+   * allowlist 外は 400 unsupported_input_mint + allowed (受け付ける mint)。
    */
   app.post<{
     Body: {
@@ -5029,9 +5157,10 @@ export async function buildServer(
       shareMint: string;
       amount: string;
       slippageBps?: number;
+      inputMint?: string;
     };
   }>("/protocols/swap-earn/deposit-tx", async (req, reply) => {
-    const { user, shareMint, amount, slippageBps } = req.body ?? {};
+    const { user, shareMint, amount, slippageBps, inputMint } = req.body ?? {};
     if (!user || !shareMint || !amount) {
       reply.code(400);
       return {
@@ -5052,18 +5181,126 @@ export async function buildServer(
         shareMint,
       };
     }
-    // deposit: underlying → share。oracle gate は underlying に掛ける。
+    const resolved = resolveSwapEarnDepositInput(market, inputMint);
+    if (!resolved.ok) {
+      reply.code(400);
+      return resolved.body;
+    }
+    const input = resolved.input;
+    // deposit: input (underlying か funding) → share。oracle gate は underlying (+ funding) に掛ける。
     return buildSwapEarnTx(req, reply, {
       user,
-      inputMint: market.underlying_mint,
+      inputMint: input.mint,
       outputMint: market.share_mint,
-      oracleMint: market.underlying_mint,
+      oracleMints: swapEarnDepositOracleMints(market, input),
       amount,
       slippageBps,
-      // 8.72: LST なら償還価値ガードが効く (それ以外は参照が無いので素通り)
-      fairValue: { direction: "deposit", shareSymbol: market.share_symbol },
+      ...(input.isFunding
+        ? { funding: { market, input } }
+        : // 8.72: LST なら償還価値ガードが効く (それ以外は参照が無いので素通り)
+          { fairValue: { direction: "deposit" as const, shareSymbol: market.share_symbol } }),
     });
   });
+
+  /**
+   * 2026-10-13: swap-earn deposit の見積りだけを返す (tx は組まない、"Receive ≈" 表示用)。
+   * body / response は lib の SwapEarnQuoteRequest / SwapEarnQuoteResponse。
+   * deposit-tx と同じ入力解決 (unsupported_share_mint / unsupported_input_mint / invalid_amount) と
+   * 同じ slippage 既定 (50bps) で Jupiter quote を取り、償還価値ガードの判定を **情報として** 返す
+   * (funding → cross-asset、LST → 8.72、それ以外 → no_reference)。残高 gate・oracle 409 は無い —
+   * 止めるのは deposit-tx (execute) の役目。read-only なので plans-only サーバの 409
+   * (PROTOCOL_TX_BUILDER_RE は `-tx` で終わる path だけ) にも掛からない。
+   */
+  app.post<{ Body: Partial<SwapEarnQuoteRequest> }>(
+    "/protocols/swap-earn/quote",
+    // 上流 (Jupiter quote + oracle RPC) を消費する read route なので wallet read と同じ per-IP 上限
+    WALLET_READ_LIMIT,
+    async (req, reply) => {
+      const { shareMint, inputMint, amount, slippageBps } = req.body ?? {};
+      if (!shareMint || !amount) {
+        reply.code(400);
+        return { error: "missing_required_field", required: ["shareMint", "amount"] };
+      }
+      // §4.5 API boundary。"0" も見積る意味が無いので弾く
+      if (!isValidTokenAmount(amount) || amount === "0") {
+        reply.code(400);
+        return { error: "invalid_amount", amount };
+      }
+      if (
+        slippageBps !== undefined &&
+        !(Number.isInteger(slippageBps) && slippageBps >= 0 && slippageBps <= 10_000)
+      ) {
+        reply.code(400);
+        return { error: "invalid_slippage_bps", slippageBps };
+      }
+      const market = typeof shareMint === "string" ? findMarketByShareMint(shareMint) : undefined;
+      if (!market) {
+        reply.code(400);
+        return {
+          error: "unsupported_share_mint",
+          message: "No swap-earn market registered for this share mint",
+          shareMint,
+        };
+      }
+      const resolved = resolveSwapEarnDepositInput(market, inputMint);
+      if (!resolved.ok) {
+        reply.code(400);
+        return resolved.body;
+      }
+      const input = resolved.input;
+      const slippage = slippageBps ?? 50;
+
+      // funding の判定材料 (価格) は quote と並行で取る。取れなければ判定が unavailable になるだけ
+      const oraclesP: Promise<OracleResult[] | null> = input.isFunding
+        ? oracleResultsInOrder(swapEarnDepositOracleMints(market, input)).catch((err) => {
+            req.log.warn(
+              { err: (err as Error).message, share: market.share_symbol },
+              "swap-earn quote: oracle read failed"
+            );
+            return null;
+          })
+        : Promise.resolve(null);
+      let quote: Awaited<ReturnType<typeof fetchSwapQuote>>;
+      try {
+        quote = await fetchSwapQuote({
+          inputMint: input.mint,
+          outputMint: market.share_mint,
+          amount,
+          slippageBps: slippage,
+        });
+      } catch (err) {
+        req.log.warn(
+          { err: (err as Error).message, share: market.share_symbol, input: input.symbol },
+          "swap-earn quote failed"
+        );
+        reply.code(502);
+        return { error: "jupiter_swap_failed", message: readableUpstreamError(err, "Jupiter API") };
+      }
+      const oracles = await oraclesP;
+      const fairValue = input.isFunding
+        ? await evaluateFundingFairValue(req.log, quote, {
+            market,
+            input,
+            underlyingOracle: oracles?.[0],
+            fundingOracle: oracles?.[1],
+          })
+        : await evaluateSwapFairValue(req.log, quote, {
+            direction: "deposit",
+            shareSymbol: market.share_symbol,
+          });
+      const res: SwapEarnQuoteResponse = {
+        inputMint: input.mint,
+        outputMint: market.share_mint,
+        inAmount: quote.inAmount,
+        outAmount: quote.outAmount,
+        minOut: quote.otherAmountThreshold,
+        priceImpactPct: quote.priceImpactPct,
+        slippageBps: slippage,
+        fairValue,
+      };
+      return res;
+    }
+  );
 
   /**
    * Phase 8.15: protocol 汎用 swap-earn withdraw-tx。share→underlying の Jupiter Swap。
@@ -5104,7 +5341,7 @@ export async function buildServer(
       user,
       inputMint: market.share_mint,
       outputMint: market.underlying_mint,
-      oracleMint: market.underlying_mint,
+      oracleMints: [market.underlying_mint],
       amount,
       slippageBps,
       // 8.72: LST なら償還価値ガードが効く (それ以外は参照が無いので素通り)
@@ -5663,7 +5900,7 @@ export async function buildServer(
    *   4. route 無し → 200 + estimate_kind "none" / unsupported_market (request-approval が 422 で止める)
    *   5. deposit で pool_id の market と asset が食い違う → asset_mismatch (同上。桁ずれ防止)
    *   6. amount 無し / "0" → amount_required (見積りは呼ばない)
-   *   7. oracle (§4.6、resolveOracleMint で全 route) と見積りを並行。両 stale / 未取得は 409、
+   *   7. oracle (§4.6、resolveOracleMints で全 route。funding deposit は 2 本を merge) と見積りを並行。両 stale / 未取得は 409、
    *      >5% 乖離は通す + 強警告 (execute 側が拒否)
    */
   app.post<{
@@ -5761,13 +5998,23 @@ export async function buildServer(
       }
 
       // 7. oracle と見積りを並行 (oracle mint は jupiter → jupiter_lend の正規化込みで全 route を解決)
-      const oracleMint = resolveOracleMint(action);
-      const [oracle, estimate] = await Promise.all([
-        oracleMint ? getOracleResult(oracleMint) : Promise.resolve(null),
+      // 2026-10-13: funding deposit (USDC → jlJupUSD) は [underlying, funding] の 2 本を gate し、
+      // 結果は mergeOracleResults で 1 つにまとめる (最悪値が勝つ)。見積りの cross-asset 償還価値
+      // チェックは同じ結果の価格を使う (再取得しない)
+      const oracleMints = resolveOracleMints(action);
+      const oracleResultsP: Promise<OracleResult[]> =
+        oracleMints.length > 0 ? oracleResultsInOrder(oracleMints) : Promise.resolve([]);
+      const [oracleResults, estimate] = await Promise.all([
+        oracleResultsP,
         preFailure
           ? Promise.resolve<PlanEstimate>({ estimate_kind: "none", failure_reason: preFailure })
-          : estimatePlanAction(route, amount as string, req.log),
+          : estimatePlanAction(route, amount as string, req.log, {
+              oracleByMint: oracleResultsP
+                .then((rs) => new Map(oracleMints.map((m, i) => [m, rs[i]!] as const)))
+                .catch(() => new Map<string, OracleResult>()),
+            }),
       ]);
+      const oracle = mergeOracleResults(oracleResults);
 
       // Phase 8.37 (B2): oracle 健全性は捏造 stub でなく **実 getOracleResult** を
       // 反映する (§4.6)。simulate の decision table: 両 stale / 両未取得は 409 拒否、

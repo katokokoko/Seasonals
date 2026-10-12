@@ -367,6 +367,8 @@ export async function runAutonomousCycle(
       // Phase 8.52: 預入停止中 / 上流都合で預入不能な pool も同様に除外
       // (execute は 409 で止まるが、実行できない候補で plan を作らせない)
       if (pool.deposit_open === false) continue;
+      // 2026-10-13: funding token deposit (USDC で jlJupUSD を買う等) は自律経路の対象外。
+      // 候補の asset は pool の underlying のまま (funding の選択は人が Menu で行う)
       const asset = pool.deposit_asset ?? pool.asset;
       if (opts.asset && asset !== opts.asset) continue;
       candidates.push({ entry, pool, c: toCandidate(entry, pool, policy.max_tx_amount) });

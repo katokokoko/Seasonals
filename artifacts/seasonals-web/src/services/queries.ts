@@ -6,7 +6,7 @@
  * (Calendar / Timeline / 詳細カード / Dashboard の共通 source)。
  * 部分失敗は source ごとの状態として返し、架空データで埋めない。
  */
-import { keepPreviousData, useQueries, useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useQueries, useQuery, type Query } from "@tanstack/react-query";
 import { useMemo } from "react";
 import { fromCustomEvent, fromUnifiedTimeEventDTO, mergeTimelineEvents, sortTimeline } from "@workspace/lib/derive/timeline";
 import { allEarnPositions, heldPoolKeys } from "@workspace/lib/derive/earn-positions";
@@ -23,9 +23,13 @@ import type {
   PortfolioHistoryResponse,
   PortfolioHoldingsResponse,
   ProtocolMenuEntry,
+  OracleResult,
+  Position,
+  SwapEarnQuoteRequest,
   TimelineEvent,
   TimelineEventsResponse,
 } from "@workspace/lib/types";
+import type { WalletHolding } from "@workspace/lib/derive/deposit-funding";
 import { useActiveAddresses, type ActiveAddress } from "../state/session";
 import { useCustomEvents } from "../state/customEvents";
 import { AgentPlanStatus, type AgentPlan } from "@workspace/lib/types";
@@ -45,6 +49,7 @@ export const queryKeys = {
   ethAgentProposals: (a: string) => ["eth", "agent-proposals", a.toLowerCase()] as const,
   solPositions: (a: string) => ["sol", "positions", a] as const,
   oracleStatus: (mint: string) => ["oracle-status", mint] as const,
+  swapEarnQuote: (q: SwapEarnQuoteRequest) => ["swap-earn-quote", q.shareMint, q.inputMint ?? "", q.amount] as const,
   health: ["health"] as const,
 };
 
@@ -349,36 +354,89 @@ export function useHealth() {
 
 /**
  * §4.6 oracle gate (Pyth push → RedStone push、on-chain feed)。blocked の間だけ 15 秒おきに再確認 (Seeker 8.78 と同じ)。
- * mint = null は gate 対象外 (registry 外の asset)
+ * mint ごとに 1 query (cache は mint 単位で共有)。funding deposit (USDC → jlJupUSD) は [underlying, funding] の 2 本で、
+ * 呼び出し側が lib mergeOracleResults で 1 つにまとめる。空配列 = gate 対象外 (registry 外の asset)
  */
-export function useOracleStatus(mint: string | null) {
-  return useQuery({
-    queryKey: queryKeys.oracleStatus(mint ?? ""),
-    queryFn: () => api.oracleStatus(mint!),
-    enabled: Boolean(mint),
-    staleTime: 10_000,
-    retry: 1,
-    refetchInterval: (q) => oracleRefetchInterval(q.state.data),
+export function useOracleStatuses(mints: string[]) {
+  return useQueries({
+    queries: mints.map((mint) => ({
+      queryKey: queryKeys.oracleStatus(mint),
+      queryFn: () => api.oracleStatus(mint),
+      staleTime: 10_000,
+      retry: 1,
+      refetchInterval: (q: Query<OracleResult, Error>) => oracleRefetchInterval(q.state.data),
+    })),
   });
+}
+
+/** `/positions` の生の行 (deposit 残高と funding 判定で cache を共有する) */
+function useSolanaPositionsQuery(owner: string | null, enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.solPositions(owner ?? ""),
+    queryFn: () => api.solanaPositions(owner!),
+    enabled: Boolean(owner) && enabled,
+    staleTime: 30_000,
+    retry: 1,
+  });
+}
+
+function isWalletRow(p: Position): boolean {
+  return p.protocol_id.startsWith("wallet_");
+}
+
+function rowMint(p: Position): string | undefined {
+  const m = (p.raw_state as { mint?: unknown } | undefined)?.mint;
+  return typeof m === "string" ? m : undefined;
 }
 
 /**
  * deposit の残高 (smallest unit string)。`wallet_*` 行の current_amount (Seeker ActionModal 8.80 と同じ)。
+ * mint を渡せば `raw_state.mint` で先に引く (DAS の symbol 表記揺れ jupUSD / JupUSD に強い)、無ければ symbol で。
  * - 取得成功で行が無い = "0" (DAS は保有 token を全部返す)
  * - 未取得 / 失敗 = null (不明。誤ブロックせず BFF の insufficient_balance に任せる)
  */
-export function useSolanaWalletBalance(owner: string | null, asset: string | undefined): { balance: string | null; isLoading: boolean } {
-  const q = useQuery({
-    queryKey: queryKeys.solPositions(owner ?? ""),
-    queryFn: () => api.solanaPositions(owner!),
-    enabled: Boolean(owner) && Boolean(asset),
-    staleTime: 30_000,
-    retry: 1,
-  });
+export function useSolanaWalletBalance(
+  owner: string | null,
+  asset: string | undefined,
+  mint?: string
+): { balance: string | null; isLoading: boolean } {
+  const q = useSolanaPositionsQuery(owner, Boolean(asset));
   if (!owner || !asset) return { balance: null, isLoading: false };
   if (!q.isSuccess) return { balance: null, isLoading: q.isPending };
-  const row = q.data.find((p) => p.asset_symbol === asset && p.protocol_id.startsWith("wallet_"));
+  const row =
+    (mint ? q.data.find((p) => isWalletRow(p) && rowMint(p) === mint) : undefined) ??
+    q.data.find((p) => p.asset_symbol === asset && isWalletRow(p));
   return { balance: row ? row.current_amount : "0", isLoading: false };
+}
+
+/**
+ * wallet が持つ token (mint + smallest unit)。Menu の deposit がどの token で払うかを
+ * lib chooseDepositFunding で決める材料 (2026-10-13)。未取得 / 失敗 = null (underlying 払いのまま)
+ */
+export function useSolanaWalletHoldings(owner: string | null): { holdings: WalletHolding[] | null; isLoading: boolean } {
+  const q = useSolanaPositionsQuery(owner);
+  if (!owner) return { holdings: null, isLoading: false };
+  if (!q.isSuccess) return { holdings: null, isLoading: q.isPending };
+  const holdings: WalletHolding[] = [];
+  for (const p of q.data) {
+    const mint = rowMint(p);
+    if (isWalletRow(p) && mint) holdings.push({ mint, amount: p.current_amount });
+  }
+  return { holdings, isLoading: false };
+}
+
+/**
+ * swap-earn deposit の見積り (POST /protocols/swap-earn/quote)。funding deposit の "Receive ≈" 表示と
+ * cross-asset fair value の事前判定に使う。req = null で無効。旧 BFF (404) はエラーのまま (CTA は止めない)
+ */
+export function useSwapEarnQuote(req: SwapEarnQuoteRequest | null) {
+  return useQuery({
+    queryKey: req ? queryKeys.swapEarnQuote(req) : ["swap-earn-quote", "off"],
+    queryFn: () => api.solanaSwapEarnQuote(req!),
+    enabled: req !== null,
+    staleTime: 5_000,
+    retry: false,
+  });
 }
 
 export interface SolanaPositionRow {

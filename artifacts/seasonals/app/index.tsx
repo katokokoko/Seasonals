@@ -55,6 +55,8 @@ import { MonthPager } from "../components/calendar/MonthPager";
 import { DailyView } from "../components/calendar/DailyView";
 import { EventDayModal } from "../components/calendar/EventDayModal";
 import { syntheticPlanFromEventAction } from "@workspace/lib/derive/event-action";
+// 2026-10-13: funding deposit の pool_id は lib の書式 (POOL_ID_RE) を満たす時だけ載せる
+import { POOL_ID_RE } from "@workspace/lib/derive/solana-action";
 import { ActionModal } from "../components/action/ActionModal";
 import { PortfolioSummary } from "../components/portfolio/PortfolioSummary";
 import { isCooldownCalendarEvent } from "../components/portfolio/cooldown-display";
@@ -313,7 +315,10 @@ export default function HomeScreen() {
     protocol: string,
     asset: string,
     actionType: "deposit",
-    poolId?: string
+    poolId?: string,
+    // 2026-10-13: funding deposit (例: USDC で Jupiter Lend JupUSD を買う)。
+    // asset = 支払う token、shareMint で market を固定する (lib resolveSolanaRoute)
+    opts?: { shareMint?: string }
   ) => {
     // Phase 8.5: synthetic AgentPlan を生成 — fixture からの lookup は廃止し、
     // pool tap context (protocol / asset / actionType) を直接 plan に詰める。
@@ -325,6 +330,16 @@ export default function HomeScreen() {
       SOL: "1000000",      // 0.001 SOL
     };
     const amount = defaultAmountByAsset[asset] ?? "100000";
+    // share_mint 固定時、pool_id は表示 / 互換用の任意 key。Menu が合成する `jl_JupUSD`
+    // のような大文字入りは lib validateActionMetadata (POOL_ID_RE) に落ちるので載せない
+    const metadata = opts?.shareMint
+      ? {
+          share_mint: opts.shareMint,
+          ...(poolId && POOL_ID_RE.test(poolId) ? { pool_id: poolId } : {}),
+        }
+      : poolId
+        ? { pool_id: poolId }
+        : undefined;
 
     const syntheticPlan = {
       plan_id: `synthetic_${Date.now()}`,
@@ -337,7 +352,8 @@ export default function HomeScreen() {
         action_type: actionType,
         amount,
         // Phase 8.15d: 同一 asset の reserve/vault pool を判別する dispatch キー
-        metadata: poolId ? { pool_id: poolId } : undefined,
+        // (funding deposit は share_mint で market を固定)
+        metadata,
       },
       simulation_result: null,
       created_at: new Date().toISOString(),

@@ -5,6 +5,8 @@
  * - 金額は lib の amount-utils (toSmallestUnit 経由、§4.5) で smallest unit にする。Number は使わない
  * - route は lib resolveSolanaRoute。解決しなければ CTA を出さない (fail-closed、Seeker 8.37)
  * - 署名できるのは接続中の wallet の address だけ。watch 中の address は読み取りのみ
+ * - funding deposit (USDC で jlJupUSD 等、lib fundedDepositAction): 残高は支払う token で見て、oracle は 2 本 gate、
+ *   BFF の見積り (/protocols/swap-earn/quote) で受取量を出す。cross-asset fair value が blocked なら署名させない
  * - BFF が plans-only (`/health` の solana.executionTarget = "disabled") なら wallet を開く前に止める
  * - mainnet に実際に送る。送信は BFF /tx/submit (Helius)。Seasonals は秘密鍵を扱わない (CLAUDE.md §5)
  */
@@ -18,10 +20,12 @@ import {
   validateAmountInput,
   validateDepositAgainstBalance,
 } from "@workspace/lib/derive/amount-utils";
-import { resolveOracleMint } from "@workspace/lib/derive/oracle-gate";
-import { resolveSolanaRoute, UNSUPPORTED_MARKET_MESSAGE } from "@workspace/lib/derive/solana-action";
+import { resolveOracleMints } from "@workspace/lib/derive/oracle-gate";
+import { describeSimulationWarning } from "@workspace/lib/derive/simulation-display";
+import { resolveSolanaRoute, routeInputSymbol, UNSUPPORTED_MARKET_MESSAGE } from "@workspace/lib/derive/solana-action";
+import { findMarketByShareMint } from "@workspace/lib/config/swap-earn-markets";
 import { useConnectedAddress } from "../state/session";
-import { useHealth, useSolanaWalletBalance } from "../services/queries";
+import { useHealth, useSolanaWalletBalance, useSwapEarnQuote } from "../services/queries";
 import { requestOpenWallet } from "../timeline/detailStore";
 import { shortAddress } from "../ui/format";
 import { buildSolanaTxs } from "./buildTx";
@@ -68,10 +72,14 @@ export function SolanaExecutePanel({
   const isDeposit = action.action_type === "deposit";
   const unit = useMemo(() => resolveAmountUnit(action), [action]);
   const route = useMemo(() => resolveSolanaRoute(action), [action]);
-  const oracleMint = useMemo(() => resolveOracleMint(action), [action]);
+  const oracleMints = useMemo(() => resolveOracleMints(action), [action]);
+  /** deposit で実際に支払う token (funding deposit なら USDC 等)。残高は mint で引き、無ければ action.asset (= 支払う symbol) で */
+  const input = useMemo(() => (route ? routeInputSymbol(route) : null), [route]);
+  /** funding deposit (underlying 以外で支払う swap-earn deposit) の受け取り側 market */
+  const fundedMarket = route?.kind === "swap_earn_deposit" && route.inputMint ? findMarketByShareMint(route.shareMint) : undefined;
   const [amount, setAmount] = useState(() => (isDeposit ? "" : safeHuman(action.amount, unit.decimals)));
   const canSign = Boolean(owner) && owner === connected;
-  const { balance } = useSolanaWalletBalance(isDeposit && canSign ? owner : null, action.asset);
+  const { balance } = useSolanaWalletBalance(isDeposit && canSign ? owner : null, action.asset, input?.mint);
   const sign = useSignAndSubmit(owner ?? "");
   const health = useHealth();
   /** 公開 BFF は plans-only。署名しても送れないので CTA ごと止める (旧 BFF は executionTarget 無し = 従来通り) */
@@ -90,6 +98,13 @@ export function SolanaExecutePanel({
     }
     return null;
   })();
+  const quoteReq =
+    fundedMarket && route?.kind === "swap_earn_deposit" && canSign && format.ok && format.smallest !== "0" && !/^0+$/.test(format.smallest)
+      ? { shareMint: route.shareMint, inputMint: route.inputMint, amount: format.smallest }
+      : null;
+  const quote = useSwapEarnQuote(quoteReq);
+  const fairValue = quoteReq ? quote.data?.fairValue : undefined;
+  const fairBlocked = fairValue?.status === "blocked";
   const valid = format.ok && !limitError;
   const max = isDeposit ? (balance ? depositMaxSmallest(balance, action.asset) : null) : (action.amount ?? null);
   const approx = !isDeposit && unit.unitSymbol !== action.asset ? approxUnderlying(action, format.ok ? format.smallest : null) : null;
@@ -170,14 +185,30 @@ export function SolanaExecutePanel({
               {limitError}
             </p>
           )}
-          <OracleGate mint={oracleMint}>
+          {fundedMarket && (
+            <p className="muted small">
+              Paying with {unit.unitSymbol}, swapped to {fundedMarket.share_symbol} by Jupiter
+              {quoteReq &&
+                (quote.data
+                  ? ` · Receive ≈ ${safeHuman(quote.data.outAmount, fundedMarket.share_decimals) || "0"} ${fundedMarket.share_symbol}`
+                  : quote.isPending
+                    ? " · Getting a quote…"
+                    : " · Quote unavailable")}
+            </p>
+          )}
+          {fairValue?.status === "blocked" && (
+            <p className="menu-warning small" role="alert">
+              <strong>Blocked for safety: {describeSimulationWarning(fairValue.reason)}.</strong> Signing is disabled for this amount.
+            </p>
+          )}
+          <OracleGate mints={oracleMints}>
             {(oracleOk) => (
               <div className="menu-action-buttons">
                 <button
                   type="button"
                   className="btn btn-primary"
-                  disabled={readOnly || !oracleOk || !valid || locked}
-                  onClick={() => !readOnly && format.ok && route && sign.run(() => buildSolanaTxs(route, owner!, format.smallest))}
+                  disabled={readOnly || !oracleOk || !valid || fairBlocked || locked}
+                  onClick={() => !readOnly && !fairBlocked && format.ok && route && sign.run(() => buildSolanaTxs(route, owner!, format.smallest))}
                 >
                   {sign.busy ? "Working…" : "Sign in wallet"}
                 </button>

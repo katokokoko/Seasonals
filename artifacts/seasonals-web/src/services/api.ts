@@ -24,6 +24,8 @@ import type {
   OrcaTxResponse,
   Position,
   SaveTxResponse,
+  SwapEarnQuoteRequest,
+  SwapEarnQuoteResponse,
   SwapEarnTxResponse,
   TxStatusResponse,
   TxSubmitResponse,
@@ -156,8 +158,11 @@ export const api = {
   solanaPositions: (wallet: string) => request<Position[]>(`/positions?wallet=${encodeURIComponent(wallet)}`),
   /** §4.6 oracle gate (Pyth push → RedStone push、on-chain feed、fail-closed) */
   oracleStatus: (mint: string) => request<OracleResult>(`/oracle/status?mint=${encodeURIComponent(mint)}`),
-  solanaSwapEarnDepositTx: (b: { user: string; shareMint: string; amount: string; slippageBps?: number }) =>
+  /** inputMint = funding token (USDC で jlJupUSD 等) で支払う時だけ渡す。省略 = market の underlying */
+  solanaSwapEarnDepositTx: (b: { user: string; shareMint: string; amount: string; inputMint?: string; slippageBps?: number }) =>
     post<SwapEarnTxResponse>("/protocols/swap-earn/deposit-tx", { slippageBps: 50, ...b }),
+  /** tx を組まずに見積りだけ ("Receive ≈" 表示 + cross-asset fair value の判定、2026-10-13) */
+  solanaSwapEarnQuote: (b: SwapEarnQuoteRequest) => post<SwapEarnQuoteResponse>("/protocols/swap-earn/quote", { slippageBps: 50, ...b }),
   solanaSwapEarnWithdrawTx: (b: { user: string; shareMint: string; amount: string; slippageBps?: number }) =>
     post<SwapEarnTxResponse>("/protocols/swap-earn/withdraw-tx", { slippageBps: 50, ...b }),
   solanaKaminoDepositTx: (b: { user: string; reserve: string; amount: string }) => post<KaminoTxResponse>("/protocols/kamino/deposit-tx", b),

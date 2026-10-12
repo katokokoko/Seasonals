@@ -48,8 +48,11 @@ import {
 import {
   POOL_ID_RE,
   depositAction,
+  fundedDepositAction,
+  normalizeSolanaProtocol,
   resolveSolanaRoute,
 } from "@workspace/lib/derive/solana-action";
+import { findFundingToken, findMarketByProtocolAsset } from "@workspace/lib/config/swap-earn-markets";
 import { resolveAmountUnit } from "@workspace/lib/derive/amount-utils";
 import { isSolanaAddress } from "@workspace/lib/config/chains";
 
@@ -104,7 +107,10 @@ const ACTION_METADATA = z
     share_mint: z
       .string()
       .refine(isSolanaAddress, "base58 Solana address")
-      .describe("Withdraw: position.share_mint from seasonals://positions/{wallet}"),
+      .describe(
+        "Withdraw: position.share_mint. Deposit paid with a listed funding token " +
+          "(e.g. USDC into jlJupUSD): the market's share_mint from action_spec_template."
+      ),
     share_decimals: DECIMALS.describe("Withdraw: position.share_decimals"),
     underlying_decimals: DECIMALS.describe("Withdraw: position.underlying_decimals"),
     underlying_amount: z
@@ -118,6 +124,15 @@ const ACTION_METADATA = z
 
 /** compare_opportunities の候補に載せる deposit の雛形 (wallet_id / amount は Agent が足す) */
 type ActionSpecTemplate = Omit<ReturnType<typeof depositAction>, "amount">;
+
+/** compare_opportunities の候補 (ランク前)。funded = funding token で払う deposit (USDC → jlJupUSD) */
+interface DepositCandidate {
+  entry: ProtocolMenuEntry;
+  pool: ProtocolMenuEntry["pools"][number];
+  template: ActionSpecTemplate;
+  route: NonNullable<ReturnType<typeof resolveSolanaRoute>>;
+  funded: { paid: string; into: string } | null;
+}
 
 /** tool 応答は JSON text content (MCP の標準形) */
 function jsonContent(value: unknown) {
@@ -216,11 +231,19 @@ export function buildMcpServer(
         "amount_unit/amount_decimals. To deposit, pass action_spec = {...action_spec_template, " +
         "wallet_id, amount} to simulate_action, where amount is in smallest units of amount_unit " +
         "(e.g. 1.5 USDC with amount_decimals 6 = \"1500000\"). Keep metadata.pool_id as is. " +
+        "A market that accepts a funding token (e.g. Jupiter Lend JupUSD paid with USDC) is " +
+        "also listed for that token: its template has asset = the token paid and " +
+        "metadata.share_mint pinning the market — keep both. " +
         "Follow with simulate_action → request_user_approval (the user approves, signs and " +
         "sends in the Seasonals web app; execute_approved_action is only for policy auto-approved plans).",
       inputSchema: {
         objective: z.enum(OBJECTIVES),
-        asset: z.string().describe('Deposit asset symbol, e.g. "USDC" or "SOL"'),
+        asset: z
+          .string()
+          .describe(
+            'Deposit asset symbol (the token you pay with), e.g. "USDC" or "SOL". ' +
+              "Markets that accept it as a funding token are included too."
+          ),
         constraints: z
           .object({
             min_tvl: z.number().optional(),
@@ -245,7 +268,6 @@ export function buildMcpServer(
             // Phase 8.52: 預入停止中 / 上流都合で預入不能な pool も候補から外す
             // (BFF は execute を 409 で止めるが、Agent に無駄な plan を作らせない)
             .filter((p) => p.deposit_open !== false)
-            .filter((p) => (p.deposit_asset ?? p.asset) === asset)
             .filter((p) =>
               constraints?.min_tvl !== undefined
                 ? p.tvl_usd >= constraints.min_tvl
@@ -259,14 +281,35 @@ export function buildMcpServer(
             )
             // 2026-10-08: lib の resolveSolanaRoute (execute と同じ 13 route) に解決する pool だけ。
             // 解決しない pool は simulate で unsupported_market、承認で 422 になるので最初から出さない
-            .flatMap((p) => {
-              const { amount: _blank, ...template } = depositAction(
+            .flatMap((p): DepositCandidate[] => {
+              const depositAsset = p.deposit_asset ?? p.asset;
+              if (depositAsset === asset) {
+                const { amount: _blank, ...template } = depositAction(
+                  entry.protocol_id,
+                  depositAsset,
+                  p.pool_id
+                );
+                const route = resolveSolanaRoute(template);
+                return route ? [{ entry, pool: p, template, route, funded: null }] : [];
+              }
+              // 2026-10-13: underlying が別 asset でも、swap-earn market の funding allowlist に
+              // 要求 asset があれば候補にする (USDC → jlJupUSD)。asset = 支払う token、market は share_mint で固定
+              const market = findMarketByProtocolAsset(
+                normalizeSolanaProtocol(entry.protocol_id),
+                depositAsset
+              );
+              const funding = market ? findFundingToken(market, asset) : undefined;
+              if (!market || !funding) return [];
+              const { amount: _blank, ...template } = fundedDepositAction(
                 entry.protocol_id,
-                p.deposit_asset ?? p.asset,
+                funding.symbol,
+                market.share_mint,
                 p.pool_id
               );
               const route = resolveSolanaRoute(template);
-              return route ? [{ entry, pool: p, template, route }] : [];
+              return route
+                ? [{ entry, pool: p, template, route, funded: { paid: funding.symbol, into: market.underlying_symbol } }]
+                : [];
             })
         );
         // ランク: safety_first は TVL 優先、それ以外は APY 優先
@@ -275,7 +318,7 @@ export function buildMcpServer(
             ? b.pool.tvl_usd - a.pool.tvl_usd
             : b.pool.apy - a.pool.apy
         );
-        const ranked = pools.slice(0, 8).map(({ entry, pool, template, route }, i) => {
+        const ranked = pools.slice(0, 8).map(({ entry, pool, template, route, funded }, i) => {
           const reasoning: string[] = [
             `APY ${(pool.apy * 100).toFixed(2)}%`,
             `TVL $${Math.round(pool.tvl_usd).toLocaleString()}`,
@@ -283,6 +326,11 @@ export function buildMcpServer(
           if (pool.utilization !== undefined && pool.utilization >= 0.95) {
             reasoning.push(
               `WARNING: utilization ${(pool.utilization * 100).toFixed(0)}% — withdrawals may be limited`
+            );
+          }
+          if (funded) {
+            reasoning.push(
+              `Paid with ${funded.paid}, swapped to ${funded.into} via Jupiter (cross-asset fair-value guard applies)`
             );
           }
           // amount は amount_unit の smallest unit (resolveAmountUnit = Seeker / web の入力単位と同じ)
@@ -326,6 +374,9 @@ export function buildMcpServer(
         "types return status \"failed\" with failure_reason \"unsupported_market\"). " +
         "DEPOSIT: pass a candidate's action_spec_template from compare_opportunities plus " +
         "wallet_id and amount (smallest units of that candidate's amount_unit). " +
+        "A funded deposit (paid with a listed funding token, e.g. USDC into jlJupUSD) keeps " +
+        "asset = the token paid and pins the market with metadata.share_mint; amount is in " +
+        "the token paid. Both price oracles are checked and a cross-asset fair-value guard applies. " +
         "WITHDRAW: read the resource seasonals://positions/{wallet} and, for one position, send " +
         "action_type \"withdraw\", protocol = position.protocol_id, asset = position.asset_symbol, " +
         "amount = position.shares (or less, smallest units), and metadata = {share_mint, " +

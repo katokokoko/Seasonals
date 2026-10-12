@@ -7,7 +7,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import type { SolanaActionInput } from "@workspace/lib/types";
 import { SWAP_EARN_MARKETS } from "@workspace/lib/config/swap-earn-markets";
 import { SAVE_MARKETS } from "@workspace/lib/config/save-markets";
-import { depositAction } from "@workspace/lib/derive/solana-action";
+import { depositAction, fundedDepositAction } from "@workspace/lib/derive/solana-action";
 import { useSession } from "../state/session";
 import { _resetSolanaWalletsForTest, connectSolanaWallet } from "../services/solanaWallet";
 import { fakeSolanaWallet, signedMarker, SOL_OTHER, SOL_OWNER, type FakeWalletOptions } from "../testing/fakeSolanaWallet";
@@ -333,4 +333,95 @@ test("secondary が stale なら強警告を出し、1 秒後に押せる", asyn
   expect(await screen.findByText(/Secondary price source is stale/)).toBeTruthy();
   expect(signButton().disabled).toBe(true);
   await waitFor(() => expect(signButton().disabled).toBe(false), { timeout: 2000 });
+});
+
+// ── funding deposit (2026-10-13): USDC で払って jlJupUSD を受け取る ──
+describe("funding deposit (USDC → jlJupUSD)", () => {
+  const jupUsd = SWAP_EARN_MARKETS.find((m) => m.share_symbol === "jlJupUSD")!;
+  const usdc = jupUsd.funding![0]!;
+  const funded = () => fundedDepositAction("jupiter", "USDC", jupUsd.share_mint, "jupiter_jupusd");
+  const QUOTE = {
+    inputMint: usdc.mint,
+    outputMint: jupUsd.share_mint,
+    inAmount: "1000000",
+    outAmount: "960781",
+    minOut: "955977",
+    priceImpactPct: "0",
+    slippageBps: 50,
+    fairValue: { status: "ok", deviation_bps: 3 },
+  };
+  const fundedBff = (over: Partial<Record<string, FakeHandler>> = {}) =>
+    bff({
+      "/positions?": () => ({ json: [{ protocol_id: "wallet_stable", asset_symbol: "USDC", current_amount: "5000000", raw_state: { mint: usdc.mint } }] }),
+      "/protocols/swap-earn/quote": () => ({ json: QUOTE }),
+      ...over,
+    });
+
+  test("2 mint の oracle を gate し、受取見込みを出し、inputMint 付きで組ませる", async () => {
+    await connect();
+    const calls = installFakeBff(fundedBff());
+    renderPanel(funded());
+    await screen.findByText(/Wallet balance: 5 USDC/);
+    fireEvent.change(screen.getByLabelText("Amount"), { target: { value: "1" } });
+    await screen.findByText("Paying with USDC, swapped to jlJupUSD by Jupiter · Receive ≈ 0.960781 jlJupUSD");
+    await waitFor(() => expect(signButton().disabled).toBe(false));
+
+    const oracleMints = calls.filter((c) => c.path.startsWith("/oracle/status")).map((c) => decodeURIComponent(c.path.split("mint=")[1]!));
+    expect(new Set(oracleMints)).toEqual(new Set([jupUsd.underlying_mint, usdc.mint]));
+    const quote = calls.find((c) => c.path === "/protocols/swap-earn/quote")!;
+    expect(quote.body).toEqual({ slippageBps: 50, shareMint: jupUsd.share_mint, inputMint: usdc.mint, amount: "1000000" });
+
+    fireEvent.click(signButton());
+    await screen.findByText("Confirmed on Solana mainnet.");
+    const build = calls.find((c) => c.path === "/protocols/swap-earn/deposit-tx")!;
+    expect(build.body).toEqual({ slippageBps: 50, user: SOL_OWNER, shareMint: jupUsd.share_mint, amount: "1000000", inputMint: usdc.mint });
+  });
+
+  test("funding 側 (USDC) の oracle だけが blocked でも署名させない", async () => {
+    await connect();
+    installFakeBff(
+      fundedBff({
+        "/oracle/status": (p) =>
+          p.includes(usdc.mint)
+            ? { json: { ...OK_ORACLE, status: "blocked", block_reason: "oracle_both_stale", warnings: [] } }
+            : { json: { ...OK_ORACLE, asset_symbol: "JupUSD" } },
+      })
+    );
+    renderPanel(funded());
+    fireEvent.change(screen.getByLabelText("Amount"), { target: { value: "1" } });
+    await screen.findByText(/Blocked for safety: Price sources are stale/);
+    expect(signButton().disabled).toBe(true);
+  });
+
+  test("cross-asset fair value が blocked なら理由を出して署名させない", async () => {
+    const w = await connect();
+    const calls = installFakeBff(
+      fundedBff({ "/protocols/swap-earn/quote": () => ({ json: { ...QUOTE, fairValue: { status: "blocked", reason: "fair_value_deviation", deviation_bps: 420 } } }) })
+    );
+    renderPanel(funded());
+    fireEvent.change(screen.getByLabelText("Amount"), { target: { value: "1" } });
+    const alert = await screen.findByText(/The swap price is far from the redemption value/);
+    expect(alert.closest("[role=alert]")?.textContent).toContain("Signing is disabled for this amount.");
+    // oracle の 1 秒グレーアウト等が明けても押せないまま
+    await new Promise((r) => setTimeout(r, 50));
+    expect(signButton().disabled).toBe(true);
+    fireEvent.click(signButton());
+    expect(w.signFn).not.toHaveBeenCalled();
+    expect(calls.some((c) => c.path === "/protocols/swap-earn/deposit-tx")).toBe(false);
+  });
+
+  test("underlying 払い (JupUSD) は見積り行も inputMint も出さない", async () => {
+    await connect();
+    const calls = installFakeBff(
+      bff({ "/positions?": () => ({ json: [{ protocol_id: "wallet_stable", asset_symbol: "JupUSD", current_amount: "5000000" }] }) })
+    );
+    renderPanel(depositAction("jupiter", "JupUSD", "jupiter_jupusd"));
+    fireEvent.change(screen.getByLabelText("Amount"), { target: { value: "1" } });
+    await waitFor(() => expect(signButton().disabled).toBe(false));
+    expect(screen.queryByText(/Paying with/)).toBeNull();
+    expect(calls.some((c) => c.path === "/protocols/swap-earn/quote")).toBe(false);
+    fireEvent.click(signButton());
+    await screen.findByText("Confirmed on Solana mainnet.");
+    expect(calls.find((c) => c.path === "/protocols/swap-earn/deposit-tx")!.body).not.toHaveProperty("inputMint");
+  });
 });

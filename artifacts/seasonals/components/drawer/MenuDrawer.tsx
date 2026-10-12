@@ -59,10 +59,24 @@ import {
   type ProtocolPool,
 } from "@workspace/lib/types";
 import { TOKEN_DECIMALS, formatUsd } from "@workspace/lib/utils/numeric";
-import { heldSwapEarnPositions } from "@workspace/lib/config/swap-earn-markets";
+import {
+  findMarketByProtocolAsset,
+  heldSwapEarnPositions,
+  type SwapEarnMarket,
+} from "@workspace/lib/config/swap-earn-markets";
 import { KAMINO_MARKETS } from "@workspace/lib/config/kamino-markets";
 import { heldSavePositions } from "@workspace/lib/config/save-markets";
-import { canWithdrawEarnPosition } from "@workspace/lib/derive/solana-action";
+import {
+  canWithdrawEarnPosition,
+  normalizeSolanaProtocol,
+} from "@workspace/lib/derive/solana-action";
+// 2026-10-13: underlying が無く funding token (USDC) だけ持つ時は funding deposit を開く
+import {
+  chooseDepositFunding,
+  type DepositFundingChoice,
+  type WalletHolding,
+} from "@workspace/lib/derive/deposit-funding";
+import { walletHoldingsOf } from "../../services/wallet-holdings";
 
 import type { JupiterLendMarketDTO } from "../../services/api";
 import {
@@ -318,6 +332,24 @@ function formatHumanAmount(amount: number): string {
 }
 
 /**
+ * 2026-10-13: funding token を受け付ける swap-earn market (registry `funding`) の pool なら、
+ * 保有 (mint 基準) からどの token で deposit するかを決める。funding の無い market は null
+ * (= 従来どおり underlying で開く)
+ */
+function depositFundingForPool(
+  protocolId: string,
+  pool: ProtocolPool,
+  holdings: WalletHolding[]
+): { market: SwapEarnMarket; choice: DepositFundingChoice } | null {
+  const market = findMarketByProtocolAsset(
+    normalizeSolanaProtocol(protocolId),
+    pool.deposit_asset ?? pool.asset
+  );
+  if (!market?.funding?.length) return null;
+  return { market, choice: chooseDepositFunding(market, holdings) };
+}
+
+/**
  * Jupiter のチップは **常に 4 つ固定** (8.11 の設計、vault 数が多く常に選ぶ意味がある)。
  * 他 protocol は `visibleFilters()` で内容に応じて出し分ける (8.54)。
  */
@@ -347,7 +379,12 @@ export interface MenuDrawerProps {
     protocol: string,
     asset: string,
     actionType: "deposit",
-    poolId?: string
+    poolId?: string,
+    /**
+     * 2026-10-13: funding deposit (underlying 無し + funding token 保有) の時だけ渡す。
+     * asset = 支払う token (USDC)、shareMint で market を固定する
+     */
+    opts?: { shareMint: string }
   ) => void;
   /** Phase 8.9: Your Positions row tap で withdraw */
   onWithdrawPosition?: (position: EarnPosition) => void;
@@ -387,6 +424,11 @@ export function MenuDrawer({
 
   const { data: listings = [] } = useMenuListings();
   const { data: positions = [] } = usePositions(walletAddress);
+  // 2026-10-13: deposit の支払い token 判定用 (mint 基準、Home と同じ positions cache)
+  const walletHoldings = useMemo(
+    () => walletHoldingsOf(positions as Position[]),
+    [positions]
+  );
   // Phase 8.6: Jupiter Lend live markets (drill-down で fixture pools を上書き)
   const { data: jlMarkets = [] } = useJupiterLendMarkets();
   // 2026-10-13: plans-only server (`/health` の executionTarget = "disabled") では
@@ -570,9 +612,23 @@ export function MenuDrawer({
       if (pool.deposit_open === false) return;
       onClose();
       const asset = pool.deposit_asset ?? pool.asset;
+      // 2026-10-13: underlying (JupUSD) が無く funding token (USDC) を持つなら、その token で
+      // 支払う deposit を開く。underlying 保有 / どちらも無い は従来どおり (無い時は
+      // ActionModal が "Insufficient …" と受け付ける token の hint を出す)
+      const funding = depositFundingForPool(entry.protocol_id, pool, walletHoldings);
+      if (funding?.choice.kind === "funding") {
+        onStartAction?.(
+          entry.protocol_id,
+          funding.choice.token.symbol,
+          "deposit",
+          pool.pool_id,
+          { shareMint: funding.market.share_mint }
+        );
+        return;
+      }
       onStartAction?.(entry.protocol_id, asset, "deposit", pool.pool_id);
     },
-    [readOnly, executionDisabled, onClose, onStartAction]
+    [readOnly, executionDisabled, onClose, onStartAction, walletHoldings]
   );
 
   if (!visible && translateX.value >= DRAWER_WIDTH - 1) return null;
@@ -1183,6 +1239,7 @@ function JupiterDetailPane({
   onBack,
   onPoolTap,
   earnPositions,
+  positions,
   onWithdrawPosition,
   jlMarkets,
   readOnly = false,
@@ -1197,6 +1254,18 @@ function JupiterDetailPane({
     () => buildJupiterVaultRows(jlMarkets ?? [], earnPositions),
     [jlMarkets, earnPositions]
   );
+  // 2026-10-13: underlying が無く funding token だけ持つ行は "Pay with USDC" を添える
+  // (Deposit tap は handlePoolTap が同じ判定で funding deposit を開く)
+  const payWithByKey = useMemo(() => {
+    const holdings = walletHoldingsOf(positions);
+    const out = new Map<string, string>();
+    for (const r of rows) {
+      if (!r.pool || r.isDeposited) continue;
+      const f = depositFundingForPool(entry.protocol_id, r.pool, holdings);
+      if (f?.choice.kind === "funding") out.set(r.key, f.choice.token.symbol);
+    }
+    return out;
+  }, [rows, positions, entry.protocol_id]);
   const summary = useMemo(() => computeVaultSummary(rows), [rows]);
   const filteredRows = useMemo(
     () => applyVaultFilter(rows, filter),
@@ -1325,6 +1394,7 @@ function JupiterDetailPane({
             onManage={() => handleManage(row)}
             readOnly={readOnly}
             executionDisabled={executionDisabled}
+            payWithSymbol={payWithByKey.get(row.key)}
             testID={
               testID ? `${testID}-vault-${row.assetSymbol}` : undefined
             }
@@ -1350,6 +1420,7 @@ function JupiterDetailPane({
               onManage={() => handleManage(row)}
               readOnly={readOnly}
               executionDisabled={executionDisabled}
+              payWithSymbol={payWithByKey.get(row.key)}
               testID={
                 testID ? `${testID}-vault-${row.assetSymbol}` : undefined
               }
@@ -1481,11 +1552,14 @@ function VaultRowView({
   protocolName,
   readOnly = false,
   executionDisabled = false,
+  payWithSymbol,
   testID,
 }: {
   row: VaultRow;
   onDeposit: () => void;
   onManage: () => void;
+  /** 2026-10-13: underlying 未保有で funding token だけ持つ時の支払い token ("Pay with USDC") */
+  payWithSymbol?: string;
   /** externalUrl の導線ラベル ("Open <protocol> ↗") に使う protocol 表示名 */
   protocolName?: string;
   /** watch-only mode: CTA (Deposit / Manage) を表示のまま無効化 */
@@ -1550,6 +1624,17 @@ function VaultRowView({
           testID={`pool-cap-${row.key}`}
         >
           {row.capView.label}
+        </Text>
+      )}
+
+      {/* 2026-10-13: Deposit はこの token で支払う (Jupiter が 1 tx で share に route) */}
+      {!deposited && payWithSymbol && (
+        <Text
+          style={styles.jupVaultCapLine}
+          numberOfLines={1}
+          testID={`pool-paywith-${row.key}`}
+        >
+          {`Pay with ${payWithSymbol}`}
         </Text>
       )}
 

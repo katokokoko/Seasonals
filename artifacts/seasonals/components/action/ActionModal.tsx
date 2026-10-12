@@ -56,7 +56,7 @@ import {
   formatPercentage,
   toHumanReadable,
 } from "@workspace/lib/utils/numeric";
-import type { AgentPlan } from "@workspace/lib/types";
+import type { AgentPlan, OracleResult } from "@workspace/lib/types";
 
 import {
   useApproveAgentPlan,
@@ -65,6 +65,7 @@ import {
   useKaminoReserves,
   useOracleStatus,
   usePositions,
+  useSwapEarnQuote,
 } from "../../services/queries";
 import {
   depositMaxSmallest,
@@ -75,11 +76,34 @@ import {
   type AmountValidation,
 } from "@workspace/lib/derive/amount-utils";
 import { WarningArea } from "./WarningArea";
-import { oracleBlockLabel, resolveOracleMint } from "@workspace/lib/derive/oracle-gate";
 import {
+  mergeOracleResults,
+  oracleBlockLabel,
+  resolveOracleMints,
+} from "@workspace/lib/derive/oracle-gate";
+import {
+  normalizeSolanaProtocol,
   resolveSolanaRoute,
+  routeInputSymbol,
   UNSUPPORTED_MARKET_MESSAGE,
+  type SolanaRoute,
 } from "@workspace/lib/derive/solana-action";
+// 2026-10-13: funding deposit (USDC を支払って jlJupUSD を受け取る等)
+import {
+  findMarketByProtocolAsset,
+  findMarketByShareMint,
+  type SwapEarnMarket,
+} from "@workspace/lib/config/swap-earn-markets";
+import {
+  chooseDepositFunding,
+  depositAcceptedSymbols,
+} from "@workspace/lib/derive/deposit-funding";
+import { describeSimulationWarning } from "@workspace/lib/derive/simulation-display";
+import {
+  findWalletRow,
+  holdsMint,
+  walletHoldingsOf,
+} from "../../services/wallet-holdings";
 import { useWallet } from "../../services/useWallet";
 // watch-only mode: 読み取り address と mode (watch 中は署名経路に入らない)
 import {
@@ -141,6 +165,27 @@ function shortenAddress(addr: string): string {
 }
 
 
+/**
+ * 2026-10-13: deposit が向かう swap-earn market。metadata.share_mint で固定された market を
+ * 優先し (funding deposit)、無ければ (protocol, asset) で引く。deposit 以外 / 非 swap-earn は null
+ */
+function depositSwapEarnMarket(
+  action: AgentPlan["selected_action"] | undefined
+): SwapEarnMarket | null {
+  if (!action || action.action_type !== "deposit") return null;
+  const protocolId = normalizeSolanaProtocol(action.protocol);
+  const shareMint = action.metadata?.share_mint;
+  const pinned =
+    typeof shareMint === "string" ? findMarketByShareMint(shareMint) : undefined;
+  if (pinned && pinned.protocol_id === protocolId) return pinned;
+  if (!action.asset) return null;
+  return findMarketByProtocolAsset(protocolId, action.asset) ?? null;
+}
+
+function sameSymbolCI(a: string, b: string): boolean {
+  return a.trim().toUpperCase() === b.trim().toUpperCase();
+}
+
 export interface ActionModalProps {
   /** 表示中の AgentPlan。null なら modal 非表示 */
   plan: AgentPlan | null;
@@ -199,12 +244,39 @@ export function ActionModal({
   const { address: activeAddress, mode: addressMode } = useActiveAddress();
   const queryClient = useQueryClient();
 
-  // ── Phase 8.16: 金額入力 ──
-  // 編集単位 (deposit=underlying / withdraw=経路別 share or underlying) は plan から解決。
-  const amountUnit = useMemo(
-    () => resolveAmountUnit(plan?.selected_action),
-    [plan]
+  // ── 2026-10-13: "Pay with" (funding deposit) ──
+  // 支払い token の選択は plan_id に紐付けて持つ (別 plan に切り替わったら既定に戻る)。
+  // 既定 = plan の selected_action.asset (Menu が保有から決めた token)
+  const [payWith, setPayWith] = useState<{ planId: string; symbol: string } | null>(
+    null
   );
+  const baseAction = plan?.selected_action ?? null;
+  const fundingMarket = useMemo(() => depositSwapEarnMarket(baseAction), [baseAction]);
+  /** 実際に route / 単位 / 残高 / oracle を解決する action (toggle で asset と share_mint を差し替え) */
+  const action = useMemo(() => {
+    if (!baseAction || !fundingMarket || !payWith || payWith.planId !== plan?.plan_id) {
+      return baseAction;
+    }
+    return {
+      ...baseAction,
+      asset: payWith.symbol,
+      metadata: { ...(baseAction.metadata ?? {}), share_mint: fundingMarket.share_mint },
+    };
+  }, [baseAction, fundingMarket, payWith, plan?.plan_id]);
+  const workingPlan = useMemo(
+    () =>
+      plan && action !== plan.selected_action
+        ? { ...plan, selected_action: action }
+        : plan,
+    [plan, action]
+  );
+  const route = useMemo(() => resolveSolanaRoute(action), [action]);
+  const routeInput = useMemo(() => (route ? routeInputSymbol(route) : null), [route]);
+
+  // ── Phase 8.16: 金額入力 ──
+  // 編集単位 (deposit=underlying / withdraw=経路別 share or underlying) は action から解決。
+  // 2026-10-13: share_mint 固定の funding deposit は支払い token (USDC) の単位
+  const amountUnit = useMemo(() => resolveAmountUnit(action), [action]);
   const [amountInput, setAmountInput] = useState("");
   // plan が変わったら既存 amount (default 0.1 USDC 等 / withdraw 全量) を初期値に。
   useEffect(() => {
@@ -229,44 +301,75 @@ export function ActionModal({
 
   // deposit の残高 (wallet 系 raw position、TanStack cache 再利用)。
   // watch-only mode: watch address の保有も同じ key で読む (表示のみ、署名はしない)
-  const isDeposit = plan?.selected_action?.action_type === "deposit";
+  const isDeposit = action?.action_type === "deposit";
   const onchainWallet = activeAddress;
   const { data: rawPositions = [], isSuccess: positionsLoaded } =
     usePositions(onchainWallet);
   const depositBalance = useMemo(() => {
-    const asset = plan?.selected_action?.asset;
+    const asset = action?.asset;
     if (!isDeposit || !asset) return null;
-    const p = rawPositions.find(
-      (pos) =>
-        pos.asset_symbol === asset && pos.protocol_id.startsWith("wallet_")
-    );
+    // 2026-10-13: route の入力 mint で引く (DAS の symbol 表記揺れ jupUSD / JupUSD に強い)。
+    // 引けなければ従来どおり symbol
+    const p = findWalletRow(rawPositions, routeInput, asset);
     if (p) return p.current_amount;
     // 8.80: onchain 接続済みで positions が取得**成功**しているのに行が無い =
     // 保有ゼロ (DAS は保有 token を全部返す)。"0" を返して残高検証を効かせる。
     // query 未完 / 失敗 / 未接続は従来どおり null (= 不明、誤ブロックしない)
     if (onchainWallet && positionsLoaded) return "0";
     return null;
-  }, [isDeposit, plan, rawPositions, onchainWallet, positionsLoaded]);
+  }, [isDeposit, action, routeInput, rawPositions, onchainWallet, positionsLoaded]);
+
+  // 2026-10-13: funding を受け付ける market で、保有から出す toggle / hint。
+  // toggle = underlying と funding token の両方を持つ時だけ (片方なら Menu が既に決めている)。
+  // hint = どちらも無い時 (positions 取得成功時のみ。不明なら出さない)
+  const fundingUi = useMemo(() => {
+    if (!isDeposit || !fundingMarket?.funding?.length) return null;
+    const holdings = walletHoldingsOf(rawPositions);
+    const heldFunding = fundingMarket.funding.filter((f) => holdsMint(holdings, f.mint));
+    const payOptions =
+      holdsMint(holdings, fundingMarket.underlying_mint) && heldFunding.length > 0
+        ? [fundingMarket.underlying_symbol, ...heldFunding.map((f) => f.symbol)]
+        : null;
+    const knownEmpty =
+      Boolean(onchainWallet) &&
+      positionsLoaded &&
+      chooseDepositFunding(fundingMarket, holdings).kind === "none";
+    const others = depositAcceptedSymbols(fundingMarket).filter(
+      (sym) => !sameSymbolCI(sym, amountUnit.unitSymbol)
+    );
+    const acceptsHint =
+      knownEmpty && others.length > 0
+        ? `This market also accepts ${others.join(", ")}`
+        : null;
+    return { payOptions, acceptsHint };
+  }, [isDeposit, fundingMarket, rawPositions, onchainWallet, positionsLoaded, amountUnit]);
+
+  const handleSelectPayWith = useCallback(
+    (symbol: string) => {
+      if (!plan) return;
+      setPayWith({ planId: plan.plan_id, symbol });
+    },
+    [plan]
+  );
 
   // 8.80: 書式 OK でも保有残高を超える deposit は error にする。
   // 残高ゼロの JupUSD deposit が Phantom 警告 → broadcast 0x1789 まで素通りした
   // 実例の再発防止 (BFF 側 insufficient_balance gate と二重の fail-closed)
   const amountValidation = useMemo((): AmountValidation => {
     if (!formatValidation.ok || !isDeposit) return formatValidation;
-    const asset = plan?.selected_action?.asset ?? "";
+    // 2026-10-13: 単位ラベルは resolveAmountUnit (funding deposit なら支払い token)
     const balanceCheck = validateDepositAgainstBalance(
       formatValidation.smallest,
       depositBalance,
-      asset,
+      amountUnit.unitSymbol || (action?.asset ?? ""),
       amountUnit.decimals
     );
     return balanceCheck.ok
       ? formatValidation
       : { ok: false, error: balanceCheck.error };
-  }, [formatValidation, isDeposit, plan, depositBalance, amountUnit]);
+  }, [formatValidation, isDeposit, action, depositBalance, amountUnit]);
 
   const handlePressMax = useCallback(() => {
-    const action = plan?.selected_action;
     if (!action) return;
     try {
       if (isDeposit) {
@@ -282,7 +385,7 @@ export function ActionModal({
     } catch {
       // 変換不能 (不正 balance 等) は無視
     }
-  }, [plan, isDeposit, depositBalance, amountUnit]);
+  }, [action, isDeposit, depositBalance, amountUnit]);
 
   const reset = useCallback(() => {
     // 2026-10-13: 進行中の着地確認があれば結果を捨てさせる (isAlive が false になる)
@@ -316,7 +419,7 @@ export function ActionModal({
       runIdRef.current === runId &&
       planIdRef.current === planId;
 
-    const action = plan.selected_action;
+    // 2026-10-13: toggle を反映した working action (funding deposit なら asset = 支払い token)
     // Phase 8.16: 編集済み金額 (validated smallest)。invalid は CTA が gate 済みだが、
     // 念のため plan の元 amount に fallback (fallback memo path は amount 不使用)。
     const execAmount = amountValidation.ok
@@ -325,7 +428,7 @@ export function ActionModal({
     // §1 same source of truth: market 解決 (swap-earn → Kamino reserve → kVault →
     // Meteora → Orca → Save → Exponent の順) は lib の resolveSolanaRoute が canonical。
     // web (seasonals-web/src/solana/buildTx.ts) と同じ route を同じ builder に写す。
-    const route = resolveSolanaRoute(action);
+    // (route は working action から上で解決済み。funding deposit なら inputMint 付き)
     const canOnchain = Boolean(USE_ONCHAIN && isConnected && authorization);
     const isDepositOrWithdraw =
       action?.action_type === "deposit" || action?.action_type === "withdraw";
@@ -470,6 +573,8 @@ export function ActionModal({
     addressMode,
     executionBlocked,
     plan,
+    action,
+    route,
     isConnected,
     authorization,
     approveMutation,
@@ -575,7 +680,13 @@ export function ActionModal({
 
         {plan && phase === "review" && (
           <ReviewBody
-            plan={plan}
+            plan={workingPlan ?? plan}
+            route={route}
+            quoteAmount={amountValidation.ok ? amountValidation.smallest : null}
+            payOptions={fundingUi?.payOptions ?? null}
+            payActive={routeInput?.symbol ?? action?.asset ?? null}
+            onSelectPayWith={handleSelectPayWith}
+            acceptsHint={fundingUi?.acceptsHint ?? null}
             onExecute={handleExecute}
             isConnected={isConnected}
             mode={addressMode}
@@ -696,6 +807,12 @@ function phaseLabel(p: Phase): string {
 
 function ReviewBody({
   plan,
+  route,
+  quoteAmount,
+  payOptions,
+  payActive,
+  onSelectPayWith,
+  acceptsHint,
   onExecute,
   isConnected,
   mode,
@@ -710,6 +827,17 @@ function ReviewBody({
   testID,
 }: {
   plan: AgentPlan;
+  /** 2026-10-13: working action の route (funding deposit なら inputMint 付き) */
+  route: SolanaRoute | null;
+  /** 検証済みの入力額 (smallest unit)。invalid は null (= 見積りを撃たない) */
+  quoteAmount: string | null;
+  /** "Pay with" toggle の選択肢 (underlying + 保有 funding token)。出さない時は null */
+  payOptions: string[] | null;
+  /** 選択中の支払い token symbol */
+  payActive: string | null;
+  onSelectPayWith: (symbol: string) => void;
+  /** どちらも保有していない時の「他の token でも預けられる」注記 */
+  acceptsHint: string | null;
   onExecute: () => void;
   isConnected: boolean;
   /** watch-only mode: "watch" なら read-only (CTA / 金額入力を止める) */
@@ -784,10 +912,41 @@ function ReviewBody({
       ? formatPercentage(candidate.estimated_apy)
       : "—";
   // §4.6: 実 oracle 判定 (Pyth push → RedStone push)。mock simulation_result.oracle は使わない。
-  const oracleMint = resolveOracleMint(action);
-  const { data: oracle, isLoading: oracleLoading } = useOracleStatus(oracleMint);
-  const oracleChecking = Boolean(oracleMint) && oracleLoading;
+  // 2026-10-13: funding deposit は [underlying, funding] の 2 mint を両方 gate する
+  // (hook は無条件に 2 本呼び、mint が無い側は disabled)。どちらかが確認中なら未確定 =
+  // 従来の 1 mint の loading と同じく CTA を止め、結果は最悪値に merge する
+  const oracleMints = resolveOracleMints(action);
+  const primaryMint = oracleMints[0] ?? null;
+  const fundingMint = oracleMints[1] ?? null;
+  const primaryOracle = useOracleStatus(primaryMint);
+  const fundingOracle = useOracleStatus(fundingMint);
+  const oracleChecking =
+    (Boolean(primaryMint) && primaryOracle.isLoading) ||
+    (Boolean(fundingMint) && fundingOracle.isLoading);
+  const oracle = useMemo(() => {
+    const loaded: OracleResult[] = [];
+    if (primaryMint && primaryOracle.data) loaded.push(primaryOracle.data);
+    if (fundingMint && fundingOracle.data) loaded.push(fundingOracle.data);
+    return mergeOracleResults(loaded);
+  }, [primaryMint, fundingMint, primaryOracle.data, fundingOracle.data]);
   const oracleBlocked = oracle?.status === "blocked";
+
+  // 2026-10-13: funding deposit の見積り ("Receive ≈ … jlJupUSD via Jupiter")。
+  // fair value が blocked なら BFF の builder も 409 で止めるので、CTA を先に止める
+  const fundedRoute =
+    route?.kind === "swap_earn_deposit" && route.inputMint ? route : null;
+  const fundedMarket = fundedRoute ? findMarketByShareMint(fundedRoute.shareMint) : undefined;
+  const quote = useSwapEarnQuote(
+    fundedRoute && quoteAmount
+      ? {
+          shareMint: fundedRoute.shareMint,
+          inputMint: fundedRoute.inputMint,
+          amount: quoteAmount,
+        }
+      : null
+  );
+  const fairValueBlocked =
+    fundedRoute !== null && quote.data?.fairValue.status === "blocked";
   const oracleWarnings = oracleBlocked ? [] : oracle?.warnings ?? [];
 
   // Kamino reserve metadata (lending action 時のみ表示)
@@ -818,6 +977,37 @@ function ReviewBody({
           <Text style={styles.summaryProtocol}>{action?.protocol ?? "—"}</Text>
           <Text style={styles.summaryAction}>{action?.action_type ?? "—"}</Text>
         </View>
+        {/* 2026-10-13: underlying と funding token の両方を持つ時だけ支払い token を選ばせる */}
+        {payOptions && (
+          <View style={styles.payWithRow} testID={testID ? `${testID}-pay-with` : undefined}>
+            <Text style={styles.metaLabel}>Pay with</Text>
+            <View style={styles.segment}>
+              {payOptions.map((sym) => {
+                const active = payActive !== null && sameSymbolCI(sym, payActive);
+                return (
+                  <Pressable
+                    key={sym}
+                    accessibilityRole="button"
+                    accessibilityState={{ selected: active, disabled: watchOnly }}
+                    disabled={watchOnly}
+                    onPress={() => onSelectPayWith(sym)}
+                    style={[styles.segmentOption, active && styles.segmentOptionActive]}
+                    testID={testID ? `${testID}-pay-with-${sym}` : undefined}
+                  >
+                    <Text
+                      style={[
+                        styles.segmentText,
+                        active ? styles.segmentTextActive : styles.segmentTextInactive,
+                      ]}
+                    >
+                      {sym}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+          </View>
+        )}
         {/* Phase 8.16: 金額入力 (旧 read-only summaryAmount を置換) */}
         <View style={styles.amountInputRow}>
           <TextInput
@@ -830,10 +1020,19 @@ function ReviewBody({
             placeholderTextColor={c.textMuted}
             testID={testID ? `${testID}-amount-input` : undefined}
           />
-          <Text style={styles.amountUnit}>{amountUnit.unitSymbol}</Text>
+          <Text
+            style={styles.amountUnit}
+            testID={testID ? `${testID}-amount-unit` : undefined}
+          >
+            {amountUnit.unitSymbol}
+          </Text>
         </View>
         <View style={styles.balanceRow}>
-          <Text style={styles.balanceText} numberOfLines={1}>
+          <Text
+            style={styles.balanceText}
+            numberOfLines={1}
+            testID={testID ? `${testID}-balance` : undefined}
+          >
             {balanceText}
             {approxText ? `  ·  ${approxText}` : ""}
           </Text>
@@ -855,6 +1054,29 @@ function ReviewBody({
           >
             {amountError}
           </Text>
+        )}
+        {acceptsHint && (
+          <Text
+            style={styles.singleSourceNote}
+            testID={testID ? `${testID}-accepts-hint` : undefined}
+          >
+            {acceptsHint}
+          </Text>
+        )}
+        {fundedRoute && routeInputSymbol(fundedRoute) && fundedMarket && (
+          <FundingReceiveLine
+            paySymbol={routeInputSymbol(fundedRoute)!.symbol}
+            shareSymbol={fundedMarket.share_symbol}
+            shareDecimals={fundedMarket.share_decimals}
+            amountReady={quoteAmount !== null}
+            loading={quote.isLoading}
+            failed={quote.isError && !quote.data}
+            outAmount={quote.data?.outAmount ?? null}
+            blockedReason={
+              quote.data?.fairValue.status === "blocked" ? quote.data.fairValue.reason : null
+            }
+            testID={testID ? `${testID}-funding` : undefined}
+          />
         )}
         <View style={styles.metaRow}>
           <Text style={styles.metaLabel}>Est. APY</Text>
@@ -950,6 +1172,7 @@ function ReviewBody({
             executionDisabled ||
             oracleBlocked ||
             oracleChecking ||
+            fairValueBlocked ||
             amountInvalid;
           return (
             <Pressable
@@ -967,6 +1190,8 @@ function ReviewBody({
                     ? "Unavailable"
                     : oracleBlocked
                     ? "Blocked (oracle)"
+                    : fairValueBlocked
+                    ? "Blocked (price check)"
                     : oracleChecking
                       ? "Checking oracle…"
                       : isConnected
@@ -977,6 +1202,65 @@ function ReviewBody({
           );
         }}
       />
+    </View>
+  );
+}
+
+/**
+ * 2026-10-13: funding deposit の 1 行サマリ ("Pay with USDC · Receive ≈ 0.9608 jlJupUSD via Jupiter")。
+ * 見積りは BFF `POST /protocols/swap-earn/quote` (useSwapEarnQuote)、表示は toHumanReadable だけ
+ * (§4.5、Number() を使わない)。fair value が blocked なら理由を cherryDark で出す (CTA は ReviewBody が止める)
+ */
+function FundingReceiveLine({
+  paySymbol,
+  shareSymbol,
+  shareDecimals,
+  amountReady,
+  loading,
+  failed,
+  outAmount,
+  blockedReason,
+  testID,
+}: {
+  paySymbol: string;
+  shareSymbol: string;
+  shareDecimals: number;
+  /** 入力額が検証済み (= 見積りを撃てる) か */
+  amountReady: boolean;
+  loading: boolean;
+  failed: boolean;
+  outAmount: string | null;
+  blockedReason: "fair_value_deviation" | "fair_value_unavailable" | null;
+  testID?: string;
+}) {
+  const styles = useThemedStyles(makeStyles);
+  let receive: string | null = null;
+  if (amountReady && outAmount) {
+    try {
+      receive = `Receive ≈ ${toHumanReadable(outAmount, shareDecimals)} ${shareSymbol} via Jupiter`;
+    } catch {
+      receive = null; // 不正な outAmount は出さない
+    }
+  }
+  const detail = !amountReady
+    ? `Receive ${shareSymbol} via Jupiter`
+    : receive
+      ? receive
+      : loading
+        ? "Fetching Jupiter quote…"
+        : failed
+          ? "Quote unavailable"
+          : `Receive ${shareSymbol} via Jupiter`;
+  return (
+    <View testID={testID}>
+      <Text style={styles.singleSourceNote} testID={testID ? `${testID}-line` : undefined}>
+        {`Pay with ${paySymbol} · ${detail}`}
+      </Text>
+      {blockedReason && (
+        <Text style={styles.amountError} testID={testID ? `${testID}-blocked` : undefined}>
+          {describeSimulationWarning(blockedReason)}
+        </Text>
+      )}
     </View>
   );
 }
@@ -1361,6 +1645,38 @@ function makeStyles(c: ThemeColors) {
     singleSourceNote: {
       fontSize: FONT_SIZE.bodySM,
       fontFamily: FONT.body,
+      color: c.textMuted,
+    },
+    // 2026-10-13: "Pay with" segmented control (支払い token の選択)
+    payWithRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      justifyContent: "space-between",
+    },
+    segment: {
+      flexDirection: "row",
+      gap: SPACE.xs,
+    },
+    segmentOption: {
+      paddingHorizontal: SPACE.sm,
+      paddingVertical: 4,
+      borderRadius: RADIUS.sm,
+      borderWidth: 1,
+      borderColor: c.border,
+    },
+    segmentOptionActive: {
+      backgroundColor: withAlpha(c.sodaText, 0.12),
+      borderColor: c.sodaText,
+    },
+    segmentText: {
+      fontSize: FONT_SIZE.bodySM,
+      fontFamily: FONT.body,
+      fontWeight: WEIGHT.bold,
+    },
+    segmentTextActive: {
+      color: c.sodaText,
+    },
+    segmentTextInactive: {
       color: c.textMuted,
     },
     maxButton: {
