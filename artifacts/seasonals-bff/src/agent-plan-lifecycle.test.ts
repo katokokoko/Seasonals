@@ -30,7 +30,7 @@ import { txBuildRequestFor } from "./agent-plan-executor";
 import { fetchSwapQuote, fetchSwapTransaction } from "./clients/jupiter-swap";
 import { getOracleResult, getOracleResults } from "./clients/oracle";
 import { fetchLstSolValues } from "./clients/lst-rates";
-import { getWalletBalanceSmallest } from "./clients/helius-rpc";
+import { getWalletBalanceSmallest, refreshUnsignedTxBlockhash } from "./clients/helius-rpc";
 import { fetchEarnMarkets } from "./clients/jupiter-lend";
 import {
   fetchKaminoDepositCaps,
@@ -146,6 +146,10 @@ const KAMINO_WITHDRAW: ActionSpec = {
 let app: FastifyInstance;
 
 beforeEach(async () => {
+  // 2026-10-13: blockhash 差し替えは auto-mock だと undefined を返すので素通しにする (差し替え自体は tx-status.test.ts)
+  (refreshUnsignedTxBlockhash as jest.MockedFunction<typeof refreshUnsignedTxBlockhash>).mockImplementation(
+    async (txBase64, lastValidBlockHeight) => ({ txBase64, lastValidBlockHeight, refreshed: false })
+  );
   jest.clearAllMocks();
   // B3: routes は getOracleResults (batch) を使う — 既存の getOracleResult stub から組み立てる
   (getOracleResults as jest.Mock).mockImplementation(async (mints: string[]) =>

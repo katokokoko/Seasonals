@@ -5,7 +5,7 @@
  */
 import type { FastifyInstance } from "fastify";
 import { buildServer } from "./server";
-import { _setSleepForTest, BlockhashExpiredError, sendTransactionViaHelius, SUBMIT_BLOCKHASH_RETRIES } from "./clients/helius-rpc";
+import { _setSleepForTest, BlockhashExpiredError, refreshUnsignedTxBlockhash, sendTransactionViaHelius, SUBMIT_BLOCKHASH_RETRIES } from "./clients/helius-rpc";
 
 const SIG = "5".repeat(87);
 let app: FastifyInstance;
@@ -195,5 +195,49 @@ describe("sendTransactionViaHelius の maxRetries", () => {
     const spy = mockSend();
     await sendTransactionViaHelius("AAAA", { maxRetries: 5, skipPreflight: true });
     expect(sendOpts(spy)).toMatchObject({ maxRetries: 5, skipPreflight: true, preflightCommitment: "confirmed" });
+  });
+});
+
+describe("refreshUnsignedTxBlockhash (2026-10-13: Jupiter の blockhash は残り ~46 秒しか無い)", () => {
+  const { Keypair, TransactionMessage, VersionedTransaction } = jest.requireActual("@solana/web3.js") as typeof import("@solana/web3.js");
+  const OLD = "GHtXQBsoZHVnNFa9YevAzFr17DJjgHXk3ycTKD5xD3Zi";
+  const NEW = "6ckoxazW8suCggdwKYc4HBbnrqzQBNTDgYdG1vSw176U";
+  const payer = Keypair.generate();
+  type VTx = InstanceType<typeof VersionedTransaction>;
+  function unsigned(): VTx {
+    return new VersionedTransaction(
+      new TransactionMessage({ payerKey: payer.publicKey, recentBlockhash: OLD, instructions: [] }).compileToV0Message()
+    );
+  }
+  const b64 = (t: VTx) => Buffer.from(t.serialize()).toString("base64");
+  const latest = (blockhash: string, lastValidBlockHeight: number) =>
+    jest.spyOn(global, "fetch").mockImplementation(async () =>
+      new Response(JSON.stringify({ jsonrpc: "2.0", id: "x", result: { context: { slot: 1 }, value: { blockhash, lastValidBlockHeight } } }), { status: 200 })
+    );
+  const blockhashOf = (s: string) => VersionedTransaction.deserialize(Buffer.from(s, "base64")).message.recentBlockhash;
+
+  test("未署名 tx は最新 blockhash (confirmed) に差し替え、lastValidBlockHeight も更新", async () => {
+    const spy = latest(NEW, 1150);
+    const r = await refreshUnsignedTxBlockhash(b64(unsigned()), 1116);
+    expect(r).toMatchObject({ refreshed: true, lastValidBlockHeight: 1150 });
+    expect(blockhashOf(r.txBase64)).toBe(NEW);
+    expect(rpcBody(spy.mock.calls[0]![1] as RequestInit)).toMatchObject({ method: "getLatestBlockhash", params: [{ commitment: "confirmed" }] });
+  });
+
+  test("署名済 tx / 新しくない blockhash / RPC 失敗 / 壊れた tx は元のまま", async () => {
+    const signed = unsigned();
+    signed.sign([payer]);
+    let spy = latest(NEW, 1150);
+    expect(await refreshUnsignedTxBlockhash(b64(signed), 1116)).toMatchObject({ refreshed: false, txBase64: b64(signed) });
+    expect(spy).not.toHaveBeenCalled();
+    spy.mockRestore();
+
+    spy = latest(NEW, 1100);
+    expect(await refreshUnsignedTxBlockhash(b64(unsigned()), 1116)).toMatchObject({ refreshed: false, lastValidBlockHeight: 1116 });
+    spy.mockRestore();
+
+    jest.spyOn(global, "fetch").mockImplementation(async () => new Response("boom", { status: 500 }));
+    expect(await refreshUnsignedTxBlockhash(b64(unsigned()), 1116)).toMatchObject({ refreshed: false });
+    expect(await refreshUnsignedTxBlockhash("not-a-tx", 1)).toEqual({ txBase64: "not-a-tx", lastValidBlockHeight: 1, refreshed: false });
   });
 });

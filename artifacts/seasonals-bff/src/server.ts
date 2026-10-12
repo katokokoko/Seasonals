@@ -102,6 +102,7 @@ import {
   getWalletBalanceSmallest,
   sendTransactionViaHelius,
   BlockhashExpiredError,
+  refreshUnsignedTxBlockhash,
   getSignatureStatus,
   type StakeAccountInfo,
 } from "./clients/helius-rpc";
@@ -1287,9 +1288,12 @@ async function buildSwapEarnTx(
       prioritizationFeeLamports: "auto",
       dynamicComputeUnitLimit: true,
     });
+    // 2026-10-13: Jupiter の blockhash は残り ~46 秒しかなく Seed Vault の署名中に失効する。
+    // 未署名 tx の blockhash を最新 (confirmed) に差し替えて猶予を ~60 秒に (失敗時は元のまま)
+    const fresh = await refreshUnsignedTxBlockhash(tx.swapTransaction, tx.lastValidBlockHeight);
     return {
-      swapTransaction: tx.swapTransaction,
-      lastValidBlockHeight: tx.lastValidBlockHeight,
+      swapTransaction: fresh.txBase64,
+      lastValidBlockHeight: fresh.lastValidBlockHeight,
       outAmount: quote.outAmount,
       outputMint: p.outputMint,
       // 2026-10-13: 実際に支払った mint (funding deposit なら funding token)

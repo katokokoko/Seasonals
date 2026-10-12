@@ -131,6 +131,54 @@ async function isBlockhashValid(blockhash: string): Promise<boolean | null> {
   }
 }
 
+/**
+ * 2026-10-13: Jupiter `/swap/v1/swap` が返す tx の blockhash は受け取った時点で ~34 block 古く、
+ * 残り ~116 block (≈ 46 秒) しかない (実測)。Seed Vault は確認 + 指紋で 30〜40 秒かかるため、
+ * 送信時に失効していた ("Blockhash not found" → "expired")。未署名の tx なら blockhash を
+ * Helius の最新 (confirmed) に差し替えて、署名の猶予を ~150 block (≈ 60 秒) に戻す。
+ *
+ * - 既に署名 (非ゼロ signature) がある tx は触らない (差し替えると署名が無効になる)
+ * - 最新 blockhash が取れない / 古くない時は元の tx をそのまま返す (best effort、悪化させない)
+ */
+export async function refreshUnsignedTxBlockhash(
+  txBase64: string,
+  lastValidBlockHeight: number
+): Promise<{ txBase64: string; lastValidBlockHeight: number; refreshed: boolean }> {
+  const unchanged = { txBase64, lastValidBlockHeight, refreshed: false };
+  let tx: VersionedTransaction;
+  try {
+    tx = VersionedTransaction.deserialize(Buffer.from(txBase64, "base64"));
+  } catch {
+    return unchanged;
+  }
+  if (tx.signatures.some((sig) => sig.some((b) => b !== 0))) return unchanged;
+  let latest: { blockhash?: string; lastValidBlockHeight?: number } | undefined;
+  try {
+    latest = (
+      await rpcReadWithRetry<{ value?: { blockhash?: string; lastValidBlockHeight?: number } }>(
+        "getLatestBlockhash",
+        [{ commitment: "confirmed" }],
+        { id: "seasonals-fresh-blockhash" }
+      )
+    )?.value;
+  } catch {
+    return unchanged;
+  }
+  if (
+    !latest?.blockhash ||
+    typeof latest.lastValidBlockHeight !== "number" ||
+    latest.lastValidBlockHeight <= lastValidBlockHeight
+  ) {
+    return unchanged;
+  }
+  tx.message.recentBlockhash = latest.blockhash;
+  return {
+    txBase64: Buffer.from(tx.serialize()).toString("base64"),
+    lastValidBlockHeight: latest.lastValidBlockHeight,
+    refreshed: true,
+  };
+}
+
 export async function sendTransactionViaHelius(
   signedTxBase64: string,
   opts: {
