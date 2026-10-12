@@ -291,7 +291,7 @@ PR / コードレビュー前の pitch claim ↔ 実装の対応表は
 詳細 (経緯 / program ID / バージョン実測) は `docs/backlog.md` §E (local-only) が canonical。
 
 - **外部配布 (seasonals.cafe)**: web = Cloudflare Pages (`/api/*` は Pages Function が BFF へ proxy)、BFF = Fly.io `api.seasonals.cafe`、APK = EAS `preview-onchain` / `production-onchain` (EAS 管理 keystore)。公開 BFF の env (`SOLANA_EXECUTION_TARGET` / `CORS_ALLOWED_ORIGINS` / `RATE_LIMIT_MAX` / `ADMIN_TOKEN` / `BFF_PROXY_SECRET`) と運用手順は `docs/external-release-api-handling.md` §9。初回 EAS build 後に `assetlinks.json` の SHA-256 を埋めるまで APK を配らない
-  - Wave 2 (未着手): mobile の watch-only address mode (web の watchlist の移植)、Helius Enhanced Tx → Parsed Events 移行 (credit 10 分の 1)
+  - Wave 2: mobile の watch-only address mode (web の watchlist の移植) は PR #46 で完了 (`services/useActiveAddress.ts` が読み取り address の起点、watch 中は `ActionModal.handleExecute` が署名経路を止める)。Helius Enhanced Tx → Parsed Events 移行は PR #39 / #40 で flag 導入済み (既定 enhanced、parity 後に flip)
 - **依存リフレッシュ** (残り 1 種): major 跨ぎ (`@types/node` / `date-fns` / `@fastify/cors` / **TypeScript 6.0** — SDK 57 期待、`expo.install.exclude` で保留中)。
   ✅ Expo SDK 57 + newArch + native module 群 + MWA 2.2.9 は Phase 8.87 で完了 (経緯は docs/expo57-upgrade.md)
   - SDK 更新時は §8.1 完了ゲートに加えて **`pnpm --filter @seasonals/bff verify:tx`** (全 23 経路 mainnet simulate、署名なし) を必ず通す

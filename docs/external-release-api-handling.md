@@ -96,7 +96,7 @@ Seeker 版に関係するもの。web 版だけが使う Infura / Etherscan / Un
 - [x] `AUTONOMOUS_*` と `FEATURE_APPROVAL_MODE_AUTO` が公開 BFF の env に **無い** ことを確認 (PR: `NODE_ENV=production` では起動ガードが拒否)
 - [ ] `ANTHROPIC_API_KEY` を置くか決めた (置くなら上限あり)
 - [x] `.data/` の置き場 (volume) を決めた (PR: fly.toml `[mounts]` → `/data`、production で書けなければ起動しない)
-- [ ] `scripts/check-no-secrets.sh` を配布 build に対しても走らせた
+- [x] `scripts/check-no-secrets.sh` を配布 build に対しても走らせた (2026-10-13: EAS `preview-onchain` の APK を展開し、Hermes bundle (`assets/index.android.bundle`) と `assets/app.config` に `~/.config/seasonals/secrets.env` / BFF `.env` の値が無いことを確認。bundle に入る URL は `api.seasonals.cafe` と `seasonals.cafe` のみ)
 - [x] README / `.env.example` の §4 項目を埋めた (PR: README「Solana / Seeker app」、`.env.example` Public deployment 節、`docs/mobile-runbook.md`、LICENSE Apache-2.0、`.nvmrc`)
 - [ ] Helius usage の通知を設定した
 
@@ -108,7 +108,7 @@ API 以外で配布を阻んでいた点。詳細は各ファイルのコメン�
 - **https 必須**: cleartext 許可は debug manifest のみ。release は http の BFF に繋がらない
 - **署名** (PR): `android/app/build.gradle` の release が `signingConfigs.debug`。dApp Store は debug 署名を拒否。release keystore を作り、`eas credentials` か `credentials.json` で管理、`*.keystore` / `credentials.json` を gitignore。以後の update は同じ鍵が必須、Google Play に出すなら別鍵
 - **MWA identity** (PR、SHA-256 は初回 EAS build 後): `services/mwa.ts` の `https://seasonals.app` は他人のドメイン (seasonaljob.app へ redirect)。`https://seasonals.cafe` に変え、`/.well-known/assetlinks.json` に `app.seasonals.onchain` / `app.seasonals.mobile` と release 証明書の SHA-256 を置く (MWA 仕様はこれで dApp を検証し、無いと authorization 拒否を推奨)
-- **versionCode**: 現在 1。dApp Store は update 毎に +1 必須。eas.json production の remote autoIncrement に寄せる
+- **versionCode**: eas.json の remote autoIncrement が効いている (初回 `preview-onchain` build で 2)。`build.gradle` の `versionCode 1` は EAS が build 時に上書きするので手で上げない
 - **ABI** (PR、EAS profile の gradleCommand で arm64 のみ): 8 月の debug APK は 334 MB で x86 同梱。`reactNativeArchitectures=arm64-v8a` (+ 必要なら armeabi-v7a) に絞る
 - **targetSdk 36 / minSdk 24** は Seeker (Android 16) と dApp Store 要件を満たす
 - **dApp Store**: release 署名 APK、Publisher Portal で KYC/KYB、約 0.2 SOL、icon 512×512、短い説明 30 文字以内、screenshot 1080px 以上で同じ向きと比率、動画 mp4 720p 以上、privacy policy とデータ削除窓口 (Publisher Policy。URL は `https://seasonals.cafe/privacy/`、末尾スラッシュ付き。`/privacy` は Pages が 308 で転送)、審査 3〜5 営業日
@@ -176,8 +176,8 @@ fly certs add api.seasonals.cafe --app seasonals-bff && fly ips list --app seaso
 4. **DNS** (Cloudflare): `A api → <v4>`、`AAAA api → <v6>` を **DNS only (灰色雲)** で作る。`fly certs check api.seasonals.cafe` → `curl -s https://api.seasonals.cafe/health` に `version` と `solana.executionTarget` が出る
 5. **Helius**: dashboard → prod 鍵 → Access Control → Allowed IPs に egress IP。`/positions?wallet=<任意の address>` が 200 を返す
 6. **web 経由**: `curl -s https://seasonals.cafe/api/health` → `WEB_URL=https://seasonals.cafe node artifacts/seasonals-web/e2e/run.mjs`
-7. **EAS**: `cd artifacts/seasonals && npx eas-cli login && npx eas-cli build -p android --profile preview-onchain` (keystore 生成 = Yes)。`npx eas-cli credentials -p android` で SHA-256 fingerprint を控え、keystore をダウンロードしてパスワード管理に保存
-8. **assetlinks**: `artifacts/seasonals-web/public/.well-known/assetlinks.json` の `REPLACE_WITH_EAS_SHA256` 2 箇所を置き換える PR → merge → Pages 再デプロイ。`https://digitalassetlinks.googleapis.com/v1/statements:list?source.web.site=https://seasonals.cafe&relation=delegate_permission/common.handle_all_urls` で statement を確認。**ここまで済ませる前に APK を配らない**
+7. **EAS**: `cd artifacts/seasonals && npx eas-cli login && npx eas-cli build -p android --profile preview-onchain` (keystore 生成 = Yes、対話が要るのは初回だけ)。`npx eas-cli credentials -p android` で keystore をダウンロードしてパスワード管理に保存。SHA-256 は同じ画面か `apksigner verify --print-certs` で読む
+8. **assetlinks**: `artifacts/seasonals-web/public/.well-known/assetlinks.json` に署名証明書の SHA-256 を入れる PR → merge → Pages 再デプロイ (2026-10-13 済み、`app.seasonals.onchain` のみ)。`https://digitalassetlinks.googleapis.com/v1/statements:list?source.web.site=https://seasonals.cafe&relation=delegate_permission/common.handle_all_urls` で statement を確認。**ここまで済ませる前に APK を配らない**
 9. **Seeker**: EAS の install link か `adb install -r` → MWA connect で `seasonals.cafe` の identity → Portfolio が api.seasonals.cafe 経由で載る → `adb logcat -s ReactNativeJS` にエラー無し。実行を開けるなら `fly secrets set SOLANA_EXECUTION_TARGET=mainnet`
 
 ### 9.1 公開後に見るもの

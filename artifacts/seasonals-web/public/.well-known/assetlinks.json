@@ -4,15 +4,7 @@
     "target": {
       "namespace": "android_app",
       "package_name": "app.seasonals.onchain",
-      "sha256_cert_fingerprints": ["REPLACE_WITH_EAS_SHA256"]
-    }
-  },
-  {
-    "relation": ["delegate_permission/common.handle_all_urls"],
-    "target": {
-      "namespace": "android_app",
-      "package_name": "app.seasonals.mobile",
-      "sha256_cert_fingerprints": ["REPLACE_WITH_EAS_SHA256"]
+      "sha256_cert_fingerprints": ["4D:BD:60:E1:76:24:B3:C5:11:93:E0:67:EF:1B:A8:DF:B7:9E:51:1D:21:D4:C8:DD:29:CD:F4:5F:95:32:CD:54"]
     }
   }
 ]

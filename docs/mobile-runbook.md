@@ -64,6 +64,8 @@ npx eas-cli login
 npx eas-cli build -p android --profile preview-onchain     # 初回は "Generate a new Android Keystore?" → Yes
 ```
 
+- EAS project は `kayhapticss-team` account の `seasonals` (`app.config.ts` の `extra.eas.projectId`)。初回 build (2026-10-13、`preview-onchain`) で keystore 生成、`appBuildVersion` は remote autoIncrement で 1 → 2 になった (bare project でも `build.gradle` の `versionCode 1` を EAS が上書きする)。2 回目以降は `--non-interactive --no-wait` で回せる
+
 - 完成すると EAS の build ページに install link / QR が出る。URL を知っていれば誰でも落とせるので、絞るなら expo.dev の project settings で "Unauthenticated access to internal builds" を off にする
 - ABI は `gradleCommand` で arm64-v8a に絞っている (Seeker は arm64)。`gradle.properties` の ABI は触らない (ローカル emulator の x86_64 を残すため)
 - ローカルで `./gradlew assembleRelease` すると credentials が無いので **unsigned** APK になる (仕様)。配布用は EAS で作る
@@ -73,19 +75,19 @@ npx eas-cli build -p android --profile preview-onchain     # 初回は "Generate
 - **EAS が生成・保管する**。repo には置かない (`*.keystore` / `*.jks` / `credentials.json` は gitignore。tracked の `android/app/debug.keystore` は debug 専用の公開鍵)
 - バックアップ: `npx eas-cli credentials -p android` → `app.seasonals.onchain` → Keystore → Download。`.jks` とパスワードはパスワード管理に保存する。**失うと以後の update を出せない**
 - dApp Store の update は毎回同じ鍵が必須。Google Play にも出すなら別の鍵を使う (同じ鍵は使えない)
-- SHA-256 fingerprint は同じ画面の "SHA256 Fingerprint" に出る (大文字コロン区切り)
+- SHA-256 fingerprint は同じ画面の "SHA256 Fingerprint" に出る (大文字コロン区切り)。APK からも読める: `~/Library/Android/sdk/build-tools/<ver>/apksigner verify --print-certs <apk>` (debug keystore の `FA:C6:17:45:…` と違うことを確認する)
 
 ## 6. MWA identity と assetlinks.json
 
 `services/mwa.ts` の identity は `https://seasonals.cafe` (icon は `/icon.png`)。MWA 対応ウォレットはこの URI の `/.well-known/assetlinks.json` を読み、呼び出し元 APK の package 名と署名証明書が載っているかで dApp を検証する。載っていないと authorization を拒否するウォレットがある。
 
-初回 EAS build の後に 1 回だけ:
+初回 EAS build の後に 1 回だけ (2026-10-13 に実施済み、`app.seasonals.onchain` の release 証明書を登録):
 
 1. §5 の SHA-256 を控える
-2. `artifacts/seasonals-web/public/.well-known/assetlinks.json` の `REPLACE_WITH_EAS_SHA256` (2 箇所) を置き換える PR を出す → merge で Cloudflare Pages が再デプロイ
+2. `artifacts/seasonals-web/public/.well-known/assetlinks.json` に package と fingerprint を入れる PR を出す → merge で Cloudflare Pages が再デプロイ。fixture variant (`app.seasonals.mobile`) は配らないので載せていない。placeholder を残すと Google の statement API が invalid 扱いにするので、載せるのは実際に署名した証明書だけ
 3. 確認: `curl -s https://seasonals.cafe/.well-known/assetlinks.json` と
    `https://digitalassetlinks.googleapis.com/v1/statements:list?source.web.site=https://seasonals.cafe&relation=delegate_permission/common.handle_all_urls`
-4. **ここまで済ませてから APK を配る**
+4. **ここまで済ませてから APK を配る**。鍵を作り直した時 (EAS の credentials を削除した時) も同じ手順で更新する
 
 privacy policy は `https://seasonals.cafe/privacy/` (末尾スラッシュ。`/privacy` は 308 で転送されるので app 内リンクはそのままでよいが、dApp Store の listing にはスラッシュ付きを書く)
 
