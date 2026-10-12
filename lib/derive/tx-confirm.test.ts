@@ -76,7 +76,7 @@ describe("confirmSignatures", () => {
     expect(describeConfirmOutcome(out, txs)).toMatch(/Transaction 2 of 2 failed on-chain: .*6001/);
   });
 
-  it("現在高が lastValidBlockHeight を超えてまだ pending なら expired (確定、時間切れを待たない)", async () => {
+  it("現在高が lastValidBlockHeight を超えてまだ pending が 2 回続いたら expired (確定、時間切れを待たない)", async () => {
     const txs = [tx(SIG_A)];
     const c = clock();
     const out = await confirmSignatures(txs, {
@@ -84,6 +84,7 @@ describe("confirmSignatures", () => {
         [SIG_A]: [
           status(SIG_A, "pending", { blockHeight: 100 }),
           status(SIG_A, "pending", { blockHeight: 151 }),
+          status(SIG_A, "pending", { blockHeight: 152 }),
         ],
       }),
       lastValidBlockHeight: 150,
@@ -92,8 +93,35 @@ describe("confirmSignatures", () => {
       timeoutMs: 75_000,
     });
     expect(out).toBe("expired");
-    expect(c.now()).toBe(2000);
+    expect(c.now()).toBe(4000);
     expect(describeConfirmOutcome(out, txs)).toMatch(/expired/);
+  });
+
+  it("高さ超過が 1 回だけで次の poll で confirmed になれば landed (status node の遅れを期限切れと誤認しない)", async () => {
+    const txs = [tx(SIG_A)];
+    const out = await confirmSignatures(txs, {
+      fetchStatus: scripted({
+        [SIG_A]: [status(SIG_A, "pending", { blockHeight: 151 }), status(SIG_A, "confirmed", { blockHeight: 152 })],
+      }),
+      lastValidBlockHeight: 150,
+      ...clock(),
+    });
+    expect(out).toBe("landed");
+  });
+
+  it("複数 tx で 1 本が landed 済なら expired にせず unknown (『Nothing moved』を嘘にしない)", async () => {
+    const txs = [tx(SIG_A, 0), tx(SIG_B, 1)];
+    const out = await confirmSignatures(txs, {
+      fetchStatus: scripted({
+        [SIG_A]: [status(SIG_A, "confirmed", { blockHeight: 151 })],
+        [SIG_B]: [status(SIG_B, "pending", { blockHeight: 151 })],
+      }),
+      lastValidBlockHeight: 150,
+      ...clock(),
+      pollMs: 10_000,
+      timeoutMs: 30_000,
+    });
+    expect(out).toBe("unknown");
   });
 
   it("processed (RPC が見ている) なら高さ超過でも expired にしない", async () => {

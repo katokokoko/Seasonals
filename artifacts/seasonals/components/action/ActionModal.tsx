@@ -89,12 +89,13 @@ import {
 import { signTransactions } from "../../services/mwa";
 import { USE_ONCHAIN } from "../../services/config";
 import * as api from "../../services/api";
-import { buildSolanaTxs, type BuiltSolanaTxs } from "../../services/solana-tx";
+import { buildSolanaTxs } from "../../services/solana-tx";
 // 2026-10-13: RPC 受理ではなく着地 (confirmed / finalized) を見届けてから成功を名乗る
 import {
   confirmSignatures,
   describeConfirmOutcome,
   isLandedStatus,
+  type BuiltTxs,
   type TrackedTx,
 } from "@workspace/lib/derive/tx-confirm";
 // 8.74: BFF の拒否 code を判別するため (失敗と拒否を見分ける)
@@ -128,6 +129,11 @@ type Phase =
 const SCREEN_H = Dimensions.get("window").height;
 const ENTER_MS = 240;
 const EXIT_MS = 200;
+/**
+ * 2026-10-13 (PR #48 review): 着地 / on-chain 失敗が確定してから cache を取り直すまでの待ち
+ * (indexer の追いつき分。web `useSignAndSubmit` の settleMs と同値)
+ */
+export const POST_SETTLE_INVALIDATE_MS = 4000;
 
 function shortenSig(sig: string): string {
   if (sig.length <= 14) return sig;
@@ -298,6 +304,14 @@ export function ActionModal({
     onClose();
   }, [onClose, reset]);
 
+  // 2026-10-13 (PR #48 review): 親が実行中 (submitting / confirming 等) に別 plan へ差し替えたら
+  // 旧 run を捨てて review に戻す。isAlive は plan_id 不一致で false になるが、phase を戻す人が
+  // いないと新 plan が spinner のまま固まる (reset が runId も進める)
+  const currentPlanId = plan?.plan_id ?? null;
+  useEffect(() => {
+    reset();
+  }, [currentPlanId, reset]);
+
   const handleExecute = useCallback(async () => {
     // watch-only mode: 署名できない。CTA の disabled だけに頼らず硬く止める —
     // ここを抜けると !canOnchain で下の "Approve only" fallback (POST
@@ -339,6 +353,8 @@ export function ActionModal({
       base64Txs: string[],
       lastValidBlockHeight: number | null
     ) => {
+      // 2026-10-13 (PR #48 review): 閉じられた / 別 plan に切り替わった run は wallet を開かない
+      if (!isAlive()) return;
       setPhase("signing");
       const txs = base64Txs.map((b64) =>
         VersionedTransaction.deserialize(Buffer.from(b64, "base64"))
@@ -346,6 +362,9 @@ export function ActionModal({
       // 署名した wallet (5 秒後の invalidate 対象。その間に切替えられても取り違えない)
       const signerAddress = authorization!.address;
       const signedTxs = await signTransactions(authorization!, txs);
+      // wallet prompt 中に閉じられた run は broadcast しない (署名済でも未送信なら無害)。
+      // ここを抜けると、閉じた sheet の裏で黙って資金が動く
+      if (!isAlive()) return;
       if (signedTxs.length !== txs.length || signedTxs.some((t) => !t)) {
         throw new Error("Wallet did not return all signed transactions.");
       }
@@ -370,6 +389,13 @@ export function ActionModal({
       setTimeout(() => {
         void invalidateWalletAfterTx(queryClient, signerAddress);
       }, 5000);
+      // 2026-10-13 (PR #48 review): 5 秒より後に着地した tx も反映するよう、着地 / on-chain 失敗の
+      // 確定後にもう一度取り直す (indexer の追いつき待ちで短く置く、web useSignAndSubmit と同じ 4 秒)
+      const invalidateAfterSettle = () => {
+        setTimeout(() => {
+          void invalidateWalletAfterTx(queryClient, signerAddress);
+        }, POST_SETTLE_INVALIDATE_MS);
+      };
       if (!isAlive()) return;
       setSignature(lastSignature);
       setTrackedTxs([...tracked]);
@@ -382,6 +408,9 @@ export function ActionModal({
           if (isAlive()) setTrackedTxs(txs);
         },
       });
+      // 確定した結果は (閉じられた後でも) cache に反映する。expired / unknown は何も動いていない
+      // か未確定なので、送信時の 5 秒後 invalidate だけで足りる
+      if (outcome === "landed" || outcome === "failed") invalidateAfterSettle();
       // 閉じられた / 別 plan に切り替わった後の結果は表示しない
       if (!isAlive()) return;
       setTrackedTxs([...tracked]);
@@ -408,12 +437,16 @@ export function ActionModal({
     };
 
     // approving → (fetch unsigned txns) → sign+submit を共通の error 処理で包む。
-    const runOnchainTx = async (fetchTxs: () => Promise<BuiltSolanaTxs>) => {
+    const runOnchainTx = async (fetchTxs: () => Promise<BuiltTxs>) => {
       setPhase("approving");
       try {
         const { txs, lastValidBlockHeight } = await fetchTxs();
+        // 2026-10-13 (PR #48 review): "Preparing…" 中に閉じられたら wallet を開かない
+        if (!isAlive()) return;
         await signSubmitAndSettle(txs, lastValidBlockHeight);
       } catch (e) {
+        // 閉じた後の失敗で review 以外の phase に書き換えない
+        if (!isAlive()) return;
         // Phase 8.6.1: null / 空 message を可視化 (Phantom が無応答で戻った時等)
         const raw = e instanceof Error ? e.message : e == null ? "" : String(e);
         // 8.74: 構造化された拒否 (oracle / fair value) は message が完結しているので、

@@ -19,6 +19,17 @@ import type { TxConfirmationStatus, TxStatusResponse } from "../types/solana-tx"
 
 export type TxConfirmOutcome = "landed" | "failed" | "expired" | "unknown";
 
+/**
+ * builder 群 (mobile `services/solana-tx.ts` / web `solana/buildTx.ts` / agent plan execute) が返す
+ * 「署名する tx の列 + 期限」。lastValidBlockHeight は Jupiter swap 系だけが持つ (他は null)。
+ * Seeker / web で同じ形を使う (CLAUDE.md §1: client で型をローカル定義しない)
+ */
+export interface BuiltTxs {
+  /** base64 の unsigned (or 部分署名済) v0 tx */
+  txs: string[];
+  lastValidBlockHeight: number | null;
+}
+
 /** 送信済 tx 1 本の追跡状態。`submitted` = RPC 受理のみ (status 未取得) */
 export interface TrackedTx {
   index: number;
@@ -97,6 +108,11 @@ export async function confirmSignatures(
       ? opts.lastValidBlockHeight
       : null;
   const deadline = now() + timeoutMs;
+  // expired の確定は **2 回連続** の poll で「現在高 > lastValid かつ RPC が 1 本も見ていない」が
+  // 続いた時だけ。status と height は別 RPC 読み (別 node に当たり得る) なので、1 回だけだと
+  // 「直前の block に着地したが status node がまだ index していない」を期限切れと誤認し、
+  // 「Nothing moved — sign again」で二重 deposit を誘発する (code review #48 の指摘)
+  let expiredStreak = 0;
 
   while (isAlive() && now() < deadline) {
     const open = openTxs(txs);
@@ -121,9 +137,13 @@ export async function confirmSignatures(
     }
     if (txs.some((t) => t.status === "failed")) return "failed";
     if (txs.every((t) => isLandedStatus(t.status))) return "landed";
-    // 期限切れの確定: 現在高が lastValidBlockHeight を超えても RPC が見ていない tx が残っている
-    if (lastValid !== null && blockHeight !== null && blockHeight > lastValid && txs.some(isUnseen)) {
-      return "expired";
+    // 期限切れの確定: 現在高が lastValidBlockHeight を超え、かつ **全 tx** を RPC がまだ見ていない
+    // (1 本でも landed / processed なら「Nothing moved」は嘘になるので unknown に落とす)
+    if (lastValid !== null && blockHeight !== null && blockHeight > lastValid && txs.every(isUnseen)) {
+      expiredStreak += 1;
+      if (expiredStreak >= 2) return "expired";
+    } else {
+      expiredStreak = 0;
     }
     await sleep(pollMs);
   }

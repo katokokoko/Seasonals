@@ -31,7 +31,7 @@ function rpcBody(init: RequestInit | undefined): { method: string; params: unkno
 }
 
 /**
- * getSignatureStatuses と getBlockHeight は並行で飛ぶので method で応答を振り分ける。
+ * getSignatureStatuses の後、pending の時だけ getBlockHeight が飛ぶ。method で応答を振り分ける。
  * height が "fail" なら getBlockHeight だけ 500 を返す (status は成功させる)
  */
 function mockRpc(value: unknown, height: number | "fail" = HEIGHT) {
@@ -58,47 +58,49 @@ test("signature の形でなければ 400 で、RPC を呼ばない", async () =
   expect(spy).not.toHaveBeenCalled();
 });
 
-test("未着地 (null) は pending", async () => {
+test("未着地 (null) は pending で、続けて block height を引く (2 call)", async () => {
   const spy = mockRpc(null);
   const res = await app.inject({ method: "GET", url: `/tx/status?signature=${SIG}` });
   expect(res.json()).toEqual({ signature: SIG, status: "pending", slot: null, err: null, blockHeight: HEIGHT });
   expect(statusCall(spy).params).toEqual([[SIG], { searchTransactionHistory: true }]);
+  // status が先、height はその後 (confirmed)
+  expect(spy).toHaveBeenCalledTimes(2);
+  expect(spy.mock.calls.map((c) => rpcBody(c[1] as RequestInit).method)).toEqual([
+    "getSignatureStatuses",
+    "getBlockHeight",
+  ]);
+  expect(rpcBody(spy.mock.calls[1]![1] as RequestInit).params).toEqual([{ commitment: "confirmed" }]);
 });
 
-test("confirmationStatus をそのまま、err があれば failed", async () => {
-  mockRpc({ slot: 123, err: null, confirmationStatus: "confirmed" });
+test("着地済み (confirmed) は height を引かず blockHeight: null (1 call)、err があれば failed", async () => {
+  const spy = mockRpc({ slot: 123, err: null, confirmationStatus: "confirmed" });
   expect((await app.inject({ method: "GET", url: `/tx/status?signature=${SIG}` })).json()).toEqual({
     signature: SIG,
     status: "confirmed",
     slot: 123,
     err: null,
-    blockHeight: HEIGHT,
+    blockHeight: null,
   });
+  expect(spy).toHaveBeenCalledTimes(1);
   jest.restoreAllMocks();
-  mockRpc({ slot: 124, err: { InstructionError: [0, { Custom: 6001 }] }, confirmationStatus: "confirmed" });
+  const failedSpy = mockRpc({ slot: 124, err: { InstructionError: [0, { Custom: 6001 }] }, confirmationStatus: "confirmed" });
   const failed = (await app.inject({ method: "GET", url: `/tx/status?signature=${SIG}` })).json();
   expect(failed.status).toBe("failed");
   expect(failed.err).toContain("6001");
+  expect(failed.blockHeight).toBeNull();
+  expect(failedSpy).toHaveBeenCalledTimes(1);
 });
 
-test("現在の block height を confirmed で並行して引き、blockHeight に載せる", async () => {
-  const spy = mockRpc(null);
-  const res = await app.inject({ method: "GET", url: `/tx/status?signature=${SIG}` });
-  expect(res.json().blockHeight).toBe(HEIGHT);
-  const heightCall = spy.mock.calls.find((c) => rpcBody(c[1] as RequestInit).method === "getBlockHeight");
-  expect(rpcBody(heightCall![1] as RequestInit).params).toEqual([{ commitment: "confirmed" }]);
-  expect(spy).toHaveBeenCalledTimes(2);
-});
-
-test("block height の取得失敗は blockHeight: null で、status はそのまま返す", async () => {
-  mockRpc({ slot: 125, err: null, confirmationStatus: "finalized" }, "fail");
+test("pending で block height の取得が失敗しても blockHeight: null で、status はそのまま返す", async () => {
+  mockRpc(null, "fail");
   const res = await app.inject({ method: "GET", url: `/tx/status?signature=${SIG}` });
   expect(res.statusCode).toBe(200);
-  expect(res.json()).toEqual({ signature: SIG, status: "finalized", slot: 125, err: null, blockHeight: null });
+  expect(res.json()).toEqual({ signature: SIG, status: "pending", slot: null, err: null, blockHeight: null });
 });
 
 test("RPC 失敗は 502 で、応答に key を含めない", async () => {
-  jest.spyOn(global, "fetch").mockResolvedValue(new Response("boom", { status: 500 }));
+  // call ごとに新しい Response を返す (Response の body は 1 度しか読めない)
+  jest.spyOn(global, "fetch").mockImplementation(async () => new Response("boom", { status: 500 }));
   const res = await app.inject({ method: "GET", url: `/tx/status?signature=${SIG}` });
   expect(res.statusCode).toBe(502);
   expect(res.body).not.toContain("test-key");

@@ -14,24 +14,24 @@
  *   確定するのに使う。他 builder は null (= 時間切れで unknown に落ちる)
  */
 import type { SolanaRoute } from "@workspace/lib/derive/solana-action";
+import type { BuiltTxs } from "@workspace/lib/derive/tx-confirm";
 
 import * as api from "./api";
 
 /** swap-earn builder に渡す slippage (旧 ActionModal 8.15 と同値) */
 export const SWAP_EARN_SLIPPAGE_BPS = 50;
 
-/** builder 1 本分の結果 (base64 unsigned tx 群 + 着地確認用の期限) */
-export interface BuiltSolanaTxs {
-  txs: string[];
-  /** blockhash の有効期限 (block height)。builder が返さない経路は null */
-  lastValidBlockHeight: number | null;
-}
+/**
+ * builder 1 本分の結果 (base64 unsigned tx 群 + 着地確認用の期限)。
+ * 型は lib `BuiltTxs` が canonical (web / agent plan execute と同じ形、CLAUDE.md §1)
+ */
+export type { BuiltTxs };
 
 export async function buildSolanaTxs(
   route: SolanaRoute,
   user: string,
   amount: string
-): Promise<BuiltSolanaTxs> {
+): Promise<BuiltTxs> {
   switch (route.kind) {
     case "swap_earn_deposit": {
       const r = await api.getSwapEarnDepositTx({
@@ -127,6 +127,6 @@ export async function buildSolanaTxs(
 }
 
 /** `lastValidBlockHeight` を返さない builder 用 (期限は分からない → confirm は時間切れで判定) */
-function noExpiry(txs: string[]): BuiltSolanaTxs {
+function noExpiry(txs: string[]): BuiltTxs {
   return { txs, lastValidBlockHeight: null };
 }
