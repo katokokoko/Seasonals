@@ -65,6 +65,10 @@ export interface ProtocolPool {
    * 消費側 (autonomous / MCP の候補除外) は `deposit_open` だけを見続ける。
    */
   deposit_closed_reason?: "full" | "suspended" | "blocked";
+  /** カード詳細に出す補足 (1〜2 文)。例: 旧 token の扱い */
+  note?: string;
+  /** protocol 公式 app への link (Seasonals で扱えない操作の案内先) */
+  external_url?: string;
 }
 
 /**

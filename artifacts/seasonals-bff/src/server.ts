@@ -21,13 +21,19 @@ import Fastify, {
   type FastifyRequest,
 } from "fastify";
 import cors from "@fastify/cors";
+import rateLimit from "@fastify/rate-limit";
 import { registerEthRoutes } from "./routes/eth";
+import { registerSkrStakingRoutes } from "./routes/skr-staking";
+import { registerAdminRoutes } from "./routes/admin";
+import { VersionedTransaction } from "@solana/web3.js";
+import { TtlCache } from "./cache/ttl-cache";
 import {
-  Connection,
-  PublicKey,
-  Transaction,
-  TransactionInstruction,
-} from "@solana/web3.js";
+  invalidateWalletSnapshot,
+  loadWalletSnapshot,
+  snapshotAgeMs,
+  type Settled,
+  type WalletSnapshot,
+} from "./wallet-snapshot";
 
 import {
   fixtureUnifiedTimeEvents,
@@ -46,12 +52,17 @@ import {
   type AgentPlan,
   type EarnPosition,
   type EarnPositionsResponse,
+  type OracleSourceId,
   type Position,
+  type PortfolioHistoryResponse,
+  type PortfolioHoldingsResponse,
   type UnifiedTimeEventDTO,
 } from "@workspace/lib/types";
 import {
   fromBigInt,
   isValidTokenAmount,
+  SIGNED_TOKEN_AMOUNT_REGEX,
+  signedToBigInt,
   toBigInt,
   toHumanReadable,
   toSmallestUnit,
@@ -71,32 +82,34 @@ import {
   type JupiterLendMarket,
 } from "./clients/jupiter-lend";
 import {
-  fetchEnhancedTransactions,
-  fetchEnhancedTransactionsPage,
+  fetchWalletTxPage,
+  walletTxBackend,
   type HeliusEnhancedTx,
   type HeliusTokenBalanceChange,
-} from "./clients/helius-tx";
+  type WalletTx,
+  type WalletTxCursor,
+} from "./clients/tx-history";
 import {
   fetchSwapQuote,
   fetchSwapTransaction,
 } from "./clients/jupiter-swap";
 import {
-  fetchStakeAccounts,
   getEpochInfo,
   getTokenSupplyUi,
   getWalletBalanceSmallest,
   sendTransactionViaHelius,
+  getSignatureStatus,
   type StakeAccountInfo,
 } from "./clients/helius-rpc";
 import {
   getOracleResult,
+  getOracleResults,
   oracleMintForSymbol,
   pythFeedIdForSymbol,
 } from "./clients/oracle";
 // 8.58: 過去価格 (Pyth Benchmarks) と履歴組み立ての純関数
 import {
   fetchPriceSeries,
-  priceAtOrBefore,
   type PriceSeries,
 } from "./clients/pyth-history";
 // 8.73: LST の交換レートを protocol 自身の実データから取る (Sanctum の集計値は
@@ -114,17 +127,18 @@ import {
 import { anchorSeries, fetchLlamaPriceSeries } from "./clients/llama-history";
 // 8.78: 上流 timeout を「ユーザーが中断した」と読める生文言のまま出さない
 import { readableUpstreamError } from "./clients/http";
+import { HeliusRpcError } from "./clients/helius-limiter";
 import { isDepositedMint } from "@workspace/lib/config/deposited-mints";
 import {
-  buildHistorySeries,
-  firstFundedTime,
-  replayBalances,
-  sampleTimestamps,
-  HISTORY_PRICE_LAG_SEC,
   type BalanceDelta,
   type HistoryAsset,
-  type HistoryPoint,
 } from "./portfolio-history";
+import {
+  createHistoryEngine,
+  type HistoryInputs,
+  type HistoryInputsCursor,
+} from "./portfolio/engine";
+import { createInputsStore } from "./portfolio/inputs-store";
 import {
   SWAP_EARN_MARKETS,
   findMarketByProtocolAsset,
@@ -144,12 +158,10 @@ import {
   fetchKaminoDepositCaps,
   fetchKaminoDepositTx,
   fetchKaminoObligationPnl,
-  fetchKaminoObligations,
   fetchKaminoReserveMetrics,
   fetchKaminoVaultDepositTx,
   fetchKaminoVaultMetrics,
   fetchKaminoVaultPnl,
-  fetchKaminoVaultUserPositions,
   fetchKaminoVaultWithdrawTx,
   fetchKaminoWithdrawTx,
   type KaminoObligationPnl,
@@ -166,8 +178,12 @@ import {
   fetchJupiterRateOut,
   fetchLstApys,
   fetchPerenaUsdStarApy,
+  fetchPerenaUsdStarPrice,
+  fetchSanctumTvls,
   type ExponentFullMarket,
 } from "./clients/rates";
+import { fetchSaveReserveTotals, type SaveReserveTotal } from "./clients/save-reserve";
+import { fetchJupiterUsdPrices } from "./clients/jupiter-price";
 import {
   EXPONENT_MARKETS,
   exponentMaturityIso,
@@ -240,6 +256,9 @@ import {
 } from "./autonomous";
 import type {
   ActionSpec,
+  AgentPlanApprovalStatus,
+  AgentPlanExecuteResponse,
+  AgentPlanExecutionVia,
   CandidateAction,
   ProtocolMenuEntry,
   ProtocolPool,
@@ -249,63 +268,37 @@ import {
   computeBundleHash,
   createPlan,
   getLatestTokenForPlan,
+  getPendingExecution,
   getStoredPlan,
   getStoredToken,
+  isTerminalPlanStatus,
   issueApprovalToken,
   listPushTokens,
   listStoredPlans,
+  peekApprovalToken,
   registerPushToken,
+  startPlanExecution,
   updatePlan,
   validateAndConsumeToken,
 } from "./plan-store";
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Solana 接続 (Devnet) — approve endpoint で memo tx を構築するため
-// ─────────────────────────────────────────────────────────────────────────────
-
-const SOLANA_RPC_URL =
-  process.env.SOLANA_RPC_URL ?? "https://api.devnet.solana.com";
-const MEMO_PROGRAM_ID = new PublicKey(
-  "MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr"
-);
-
-let cachedConnection: Connection | null = null;
-function getConnection(): Connection {
-  if (!cachedConnection) {
-    cachedConnection = new Connection(SOLANA_RPC_URL, "confirmed");
-  }
-  return cachedConnection;
-}
-
-/**
- * 指定 wallet (feePayer) を signer とする Memo Program transaction を構築。
- * memo に "Seasonals approve <plan_id> @<timestamp>" を書き込む。
- * 成功すると base64 serialized tx を返す。
- *
- * NOTE: 実 production では §11.7 simulate_action で構築した bundle (lending /
- * staking / etc. の実 instruction) をここに置換する。本実装は MWA round-trip
- * を end-to-end で検証するための stub。
- */
-async function buildMemoTransaction(
-  feePayer: string,
-  planId: string
-): Promise<string> {
-  const conn = getConnection();
-  const { blockhash } = await conn.getLatestBlockhash();
-  const memoText = `Seasonals approve ${planId} @${new Date().toISOString()}`;
-  const ix = new TransactionInstruction({
-    programId: MEMO_PROGRAM_ID,
-    keys: [],
-    data: Buffer.from(memoText, "utf-8"),
-  });
-  const tx = new Transaction({
-    feePayer: new PublicKey(feePayer),
-    recentBlockhash: blockhash,
-  }).add(ix);
-  // signer なしで serialize (mobile 側で MWA 経由で sign される)
-  const serialized = tx.serialize({ requireAllSignatures: false });
-  return Buffer.from(serialized).toString("base64");
-}
+import { buildPlanTransactions } from "./agent-plan-executor";
+import { resolveSolanaRoute } from "@workspace/lib/derive/solana-action";
+import { fetchPerenaTriStableTvlUsd } from "./clients/perena";
+import {
+  adminToken,
+  corsOrigins,
+  gitSha,
+  proxySecret,
+  pushEnabled,
+  rateLimitConfig,
+  solanaExecutionTarget,
+} from "./flags";
+import {
+  EXECUTION_DISABLED,
+  isAdminAuthorized,
+  isWalletAddress,
+  rateLimitKey,
+} from "./public-guards";
 
 /**
  * Phase 8.1: Helius DAS asset 配列を Position[] に正規化する。
@@ -403,71 +396,200 @@ export function normalizeJup8DecimalUsd(
 }
 
 // ── Phase 8.58: portfolio history (tx 遡り + 過去価格) ───────────────────────
+//
+// 逆算・値付け・cache / SWR は chain 非依存の portfolio/engine.ts に切り出した
+// (Ethereum も同じエンジンを使う)。ここに残るのは Solana 固有の
+// 「現在残高 + tx 差分の取り方」と「過去価格の出所」だけ。
 
-/** wallet+days 単位の応答 cache (5 分)。過去価格自体は pyth-history が別途保持 */
 /** native SOL は DAS が WSOL mint の synthetic entry で返す (helius.ts:151) */
 const WSOL_MINT = "So11111111111111111111111111111111111111112";
 
-const historyCache = new Map<
-  string,
-  { at: number; data: PortfolioHistoryResponse }
->();
-const HISTORY_CACHE_TTL_MS = 5 * 60_000;
 /** tx ページングの安全弁 (100 件 × 10 = 1000 tx) */
 const HISTORY_MAX_TX_PAGES = 10;
 
+const protocolCategoryById = new Map(
+  fixtureProtocols.map((p) => [p.protocol_id, p.category] as const)
+);
+
+type OracleLookup = Awaited<ReturnType<typeof getOracleResult>>;
+
 /**
- * 8.60: wallet 単位の上流キャッシュ。range が違っても「現在残高 + tx 差分」は
- * 同じなので、90/365/730 で Helius DAS と tx ページングを 3 回やり直していた。
- * range をまたいで共有する (価格系列は pyth-history 側が別途 cache)。
+ * B3: 複数 mint の oracle 判定を 1 回の getOracleResults (Pyth + RedStone を 1 回の
+ * getMultipleAccounts) で引く。batch が throw したら従来の per-mint 読み (失敗した mint は null)
+ * に戻す。判定 (fail-closed / TTL) は oracle.ts 側で不変 — ここは呼び方をまとめるだけ
  */
-interface WalletHistoryInputs {
-  current: Map<string, bigint>;
-  assets: HistoryAsset[];
+async function oracleResultsOrNull(
+  mints: string[]
+): Promise<Map<string, OracleLookup | null>> {
+  const unique = [...new Set(mints)];
+  try {
+    const batch = await getOracleResults(unique);
+    return new Map(unique.map((m) => [m, batch.get(m) ?? null] as const));
+  } catch {
+    const each = await Promise.all(
+      unique.map(async (m) => [m, await getOracleResult(m).catch(() => null)] as const)
+    );
+    return new Map(each);
+  }
+}
+
+/** B3: snapshot 由来 route の鮮度ヘッダー (ms) */
+function setDataAgeHeader(reply: FastifyReply, snap: WalletSnapshot): void {
+  reply.header("X-Seasonals-Data-Age-Ms", String(snapshotAgeMs(snap)));
+}
+
+/** B3: Settled / PromiseSettledResult の失敗理由を log 用 message に揃える */
+function settledReason(r: Settled<unknown> | PromiseSettledResult<unknown>): string | undefined {
+  if (r.status !== "rejected") return undefined;
+  return typeof r.reason === "string" ? r.reason : (r.reason as Error | undefined)?.message;
+}
+
+/** tx 1 件から wallet の符号付き差分 (native SOL は wallet 口座の lamports 変化、token は owner = wallet) */
+function walletDeltasOfTx(tx: WalletTx, wallet: string): BalanceDelta[] {
+  const out: BalanceDelta[] = [];
+  for (const account of tx.accountData ?? []) {
+    // native SOL: wallet 自身の account の lamports 変化 (fee 込みの実変化)
+    if (account.account === wallet && account.nativeBalanceChange) {
+      out.push({
+        timestamp: tx.timestamp,
+        mint: WSOL_MINT,
+        amount: BigInt(account.nativeBalanceChange),
+      });
+    }
+    for (const change of account.tokenBalanceChanges ?? []) {
+      if (change.userAccount !== wallet) continue;
+      const raw = change.rawTokenAmount?.tokenAmount;
+      if (typeof raw !== "string" || !SIGNED_TOKEN_AMOUNT_REGEX.test(raw)) continue;
+      out.push({ timestamp: tx.timestamp, mint: change.mint, amount: signedToBigInt(raw) });
+    }
+  }
+  return out;
+}
+
+/** 再試行しても通らなかった上流の混雑 / 障害 (429 / 5xx / network)。cursor 不正の 4xx や parse は含めない */
+function isTransientHeliusError(err: unknown): boolean {
+  if (!(err instanceof HeliusRpcError)) return false;
+  if (err.kind === "network") return true;
+  return err.kind === "http" && (err.status === undefined || err.status === 429 || err.status >= 500);
+}
+
+interface CollectedDeltas {
   deltas: BalanceDelta[];
   oldestSeen: number;
-  /** この差分が何日前まで遡れているか (これより長い range は再取得が要る) */
+  complete: boolean;
   fetchedDays: number;
-}
-const walletInputsCache = new Map<
-  string,
-  { at: number; data: WalletHistoryInputs }
->();
-
-export function _clearPortfolioHistoryCacheForTest(): void {
-  historyCache.clear();
-  walletInputsCache.clear();
-}
-
-export interface PortfolioHistoryResponse {
-  points: HistoryPoint[];
-  /** 残高を保証できる最も古い時刻 (unix 秒、tx window の制約)。空なら null */
-  oldest_at: number | null;
-  /** その日の実価格が無く現在価格で近似した asset */
-  approximated_symbols: string[];
+  newestSignature?: string;
 }
 
 /**
- * 8.60: 「現在残高 + tx 差分」を wallet 単位で取得・キャッシュする。
- * 要求 range より短い期間しか遡っていない cache は再取得する。
+ * Phase C: tx を cutoff まで遡って符号付き差分を集める (cursor 連鎖なので直列)。
+ * parsed backend は `time.gte = cutoff` で server 側が window で止まる (最終 page の後の空 page で終端)。
+ * enhanced は従来どおり `before` で遡り、最古が cutoff を越えたら止める
  */
-async function loadWalletHistoryInputs(
+async function collectWalletDeltasFull(
   wallet: string,
   days: number,
   nowSeconds: number
-): Promise<WalletHistoryInputs | null> {
-  const cached = walletInputsCache.get(wallet);
-  if (
-    cached &&
-    Date.now() - cached.at < HISTORY_CACHE_TTL_MS &&
-    cached.data.fetchedDays >= days
-  ) {
-    return cached.data;
+): Promise<CollectedDeltas> {
+  const cutoff = nowSeconds - days * 86_400;
+  const deltas: BalanceDelta[] = [];
+  let oldestSeen = nowSeconds;
+  let newestSignature: string | undefined;
+  const timeBounded = walletTxBackend() === "parsed";
+  let cursor: WalletTxCursor = { limit: 100, ...(timeBounded ? { timeGte: cutoff } : {}) };
+  const done = (complete: boolean): CollectedDeltas => ({
+    deltas,
+    oldestSeen,
+    complete,
+    fetchedDays: days,
+    ...(newestSignature ? { newestSignature } : {}),
+  });
+  for (let page = 0; page < HISTORY_MAX_TX_PAGES; page++) {
+    const { txs, nextCursor } = await fetchWalletTxPage(wallet, cursor);
+    newestSignature ??= txs[0]?.signature;
+    for (const tx of txs) {
+      oldestSeen = Math.min(oldestSeen, tx.timestamp);
+      deltas.push(...walletDeltasOfTx(tx, wallet));
+    }
+    if (!nextCursor) {
+      // time.gte で取り切った = cutoff まで遡れている (window 内に tx が無くても同じ)。
+      // enhanced は cutoff より古い tx が見えるので oldestSeen が自然に cutoff を越える。
+      // これが無いと window 内 tx ゼロの wallet で「証明できる期間」が 0 になり点が出ない
+      if (timeBounded) oldestSeen = Math.min(oldestSeen, cutoff);
+      return done(true);
+    }
+    if (oldestSeen <= cutoff) return done(true);
+    cursor = nextCursor;
   }
+  // page 上限で打ち切り = これより前の残高は不明
+  return done(false);
+}
 
+/**
+ * Phase C (parsed のみ): 前回分 `prev` より新しい tx だけを `afterSignature` + `time.gte = window 先頭` で
+ * 取り、差分を merge する (新しい tx が無ければ空 page 1 回 = 10 credit。window より前の tx は server 側で
+ * 打ち切るので page に載らない)。signature で重複を除き、`fetchedDays` は前回のまま。window より古い差分は
+ * 捨てる (replay / funding 判定は window 内しか見ない)。`complete` は前回の flag を写さず merge 時に決め直す
+ * (review #40: page 上限 / 保存時の切り詰めで一度 false になると、window が `oldestSeen` を越えた後も
+ * false のままだった)。増分が page 上限を越えたら null (呼び手が全件取り直す)
+ */
+async function collectWalletDeltasSince(
+  wallet: string,
+  prev: HistoryInputsCursor & { newestSignature: string },
+  nowSeconds: number
+): Promise<CollectedDeltas | null> {
+  const keepAfter = nowSeconds - prev.fetchedDays * 86_400;
+  const fresh: WalletTx[] = [];
+  let cursor: WalletTxCursor | undefined = {
+    limit: 100,
+    afterSignature: prev.newestSignature,
+    timeGte: keepAfter,
+  };
+  for (let page = 0; cursor; page++) {
+    if (page >= HISTORY_MAX_TX_PAGES) return null;
+    const res = await fetchWalletTxPage(wallet, cursor);
+    fresh.push(...res.txs);
+    cursor = res.nextCursor;
+  }
+  const seen = new Set<string>([prev.newestSignature]);
+  const added: BalanceDelta[] = [];
+  let oldestSeen = prev.oldestSeen;
+  for (const tx of fresh) {
+    if (seen.has(tx.signature)) continue;
+    seen.add(tx.signature);
+    oldestSeen = Math.min(oldestSeen, tx.timestamp);
+    added.push(...walletDeltasOfTx(tx, wallet));
+  }
+  return {
+    deltas: [...added, ...prev.deltas.filter((d) => d.timestamp > keepAfter)],
+    oldestSeen,
+    // window の先頭まで差分が揃っていれば (= 前回の時点で取り切れていた、または前回の最古が window の
+    // 外に出た) complete
+    complete: prev.complete || prev.oldestSeen <= keepAfter,
+    fetchedDays: prev.fetchedDays,
+    // afterSignature + 新しい順: 先頭 page の先頭が最新
+    newestSignature: fresh[0]?.signature ?? prev.newestSignature,
+  };
+}
+
+/**
+ * 8.60: 「現在残高 + tx 差分」を取得する (cache は engine 側)。
+ * Phase C: `prev` (engine が渡す期限切れの前回分 / 永続化から戻した分) があり backend が parsed なら、
+ * 差分は増分だけ取る。現在残高 (DAS) は毎回読み直す
+ */
+async function loadSolanaHistoryInputs(
+  wallet: string,
+  days: number,
+  nowSeconds: number,
+  prev?: HistoryInputsCursor
+): Promise<HistoryInputs | null> {
   // 1. 現在残高 (DAS)。native SOL は WSOL mint の synthetic entry で入る。
   // 8.70: jlToken の単価は DAS ではなく protocol の交換レートを使う (取得失敗は
   // DAS に degrade)。ここを直さないと 8.64 のアンカーが誤差を系列全体に広げる
+  // review #39: history は DAS だけ要るので wallet snapshot を起こさない (snapshot 経由だと
+  // 単独の history 呼び出しが Meteora / Orca / Kamino / stake まで読み、最大 2 分古い残高に
+  // anchor していた)。fetchAssetsByOwner は 30s cache + in-flight dedupe + tx 後の invalidate を
+  // snapshot の assets source と共有するので、同時に走っても DAS は 1 回。失敗は従来どおり throw
   const [assets, jupiterMarketsForPrice] = await Promise.all([
     fetchAssetsByOwner(wallet),
     fetchEarnMarkets().catch(() => [] as JupiterLendMarket[]),
@@ -485,6 +607,9 @@ async function loadWalletHistoryInputs(
     const symbol =
       known?.asset_symbol ?? asset.token_info?.symbol ?? asset.id.slice(0, 4);
     const priceFloat = asset.token_info?.price_info?.price_per_token;
+    // holdings 用の protocol / category は /positions (mapAssetsToPositions) と
+    // 同じ規則 → mobile の aggregateAllocation と同じ category に落ちる
+    const protocolId = known?.protocol_id ?? deriveWalletProtocol(symbol);
     current.set(asset.id, toBigInt(balance));
     historyAssets.push({
       mint: asset.id,
@@ -498,6 +623,11 @@ async function loadWalletHistoryInputs(
         (typeof priceFloat === "number" && Number.isFinite(priceFloat)
           ? priceFloat.toFixed(8)
           : undefined),
+      protocolId,
+      category:
+        protocolCategoryById.get(protocolId) ??
+        known?.category ??
+        PositionCategory.Other,
     });
   }
   if (historyAssets.length === 0) return null;
@@ -506,154 +636,75 @@ async function loadWalletHistoryInputs(
   // oracle の現在価格を currentUsd8 に入れておく (/prices と同じ出所)。
   // 8.83: pagination の入力には不要なので、tx 遡りと並走させる (直列だと
   // oracle round-trip の分だけ cold start が延びる)
-  const fillOraclePrices = Promise.all(
-    historyAssets
+  // B3: 必要な mint をまとめて 1 回の getOracleResults で読む (失敗した mint は null)
+  const fillOraclePrices = (async () => {
+    const targets = historyAssets
       .filter((a) => !a.currentUsd8 && a.feedId)
-      .map(async (a) => {
-        const mint = oracleMintForSymbol(a.symbol);
-        if (!mint) return;
-        const result = await getOracleResult(mint).catch(() => null);
-        if (result && result.status !== "blocked" && result.price_usd) {
-          a.currentUsd8 = result.price_usd;
-        }
-      })
-  );
-
-  // 2. tx を cutoff まで遡って符号付き差分を集める (cursor 連鎖なので直列)
-  const cutoff = nowSeconds - days * 86_400;
-  const collectDeltas = async (): Promise<{
-    deltas: BalanceDelta[];
-    oldestSeen: number;
-  }> => {
-    const deltas: BalanceDelta[] = [];
-    let before: string | undefined;
-    let oldestSeen = nowSeconds;
-    for (let page = 0; page < HISTORY_MAX_TX_PAGES; page++) {
-      const txs = await fetchEnhancedTransactionsPage(wallet, {
-        limit: 100,
-        ...(before ? { before } : {}),
-      });
-      if (txs.length === 0) break;
-      for (const tx of txs) {
-        oldestSeen = Math.min(oldestSeen, tx.timestamp);
-        for (const account of tx.accountData ?? []) {
-          // native SOL: wallet 自身の account の lamports 変化 (fee 込みの実変化)
-          if (account.account === wallet && account.nativeBalanceChange) {
-            deltas.push({
-              timestamp: tx.timestamp,
-              mint: WSOL_MINT,
-              amount: BigInt(account.nativeBalanceChange),
-            });
-          }
-          for (const change of account.tokenBalanceChanges ?? []) {
-            if (change.userAccount !== wallet) continue;
-            const raw = change.rawTokenAmount?.tokenAmount;
-            if (typeof raw !== "string" || !/^-?[0-9]+$/.test(raw)) continue;
-            deltas.push({
-              timestamp: tx.timestamp,
-              mint: change.mint,
-              amount: BigInt(raw),
-            });
-          }
-        }
+      .map((a) => [a, oracleMintForSymbol(a.symbol)] as const)
+      .filter((t): t is readonly [HistoryAsset, string] => Boolean(t[1]));
+    if (targets.length === 0) return;
+    const results = await oracleResultsOrNull(targets.map(([, mint]) => mint));
+    for (const [a, mint] of targets) {
+      const result = results.get(mint);
+      if (result && result.status !== "blocked" && result.price_usd) {
+        a.currentUsd8 = result.price_usd;
       }
-      before = txs[txs.length - 1]?.signature;
-      if (!before || oldestSeen <= cutoff) break;
     }
-    return { deltas, oldestSeen };
+  })();
+
+  // 2. tx の符号付き差分。parsed + 前回分ありなら増分。上限超過 / cursor・shape の失敗は全件取り直し。
+  // review #40: 429 / 5xx / network (retry 後) は取り直さずに throw — 同じ rate limit に最大 10 page を
+  // 重ねない。route は従来どおり 503 portfolio_history_unavailable (SWR の裏の再計算なら旧値が残る)
+  const collectDeltas = async (): Promise<CollectedDeltas> => {
+    const since = prev?.newestSignature;
+    if (prev && since && prev.fetchedDays >= days && walletTxBackend() === "parsed") {
+      let merged: CollectedDeltas | null = null;
+      try {
+        merged = await collectWalletDeltasSince(
+          wallet,
+          { ...prev, newestSignature: since },
+          nowSeconds
+        );
+      } catch (err) {
+        const transient = isTransientHeliusError(err);
+        // eslint-disable-next-line no-console
+        console.warn(
+          `[portfolio-history] incremental tx sync failed (${(err as Error)?.message ?? String(err)}); ` +
+            (transient ? "not refetching the full window" : "refetching the full window")
+        );
+        if (transient) throw err;
+      }
+      if (merged) return merged;
+    }
+    return collectWalletDeltasFull(wallet, days, nowSeconds);
   };
 
-  const [{ deltas, oldestSeen }] = await Promise.all([
-    collectDeltas(),
-    fillOraclePrices,
-  ]);
+  const [collected] = await Promise.all([collectDeltas(), fillOraclePrices]);
 
-  const data: WalletHistoryInputs = {
+  return {
     current,
     assets: historyAssets,
-    deltas,
-    oldestSeen,
-    fetchedDays: days,
+    deltas: collected.deltas,
+    oldestSeen: collected.oldestSeen,
+    fetchedDays: collected.fetchedDays,
+    complete: collected.complete,
+    ...(collected.newestSignature ? { newestSignature: collected.newestSignature } : {}),
   };
-  walletInputsCache.set(wallet, { at: Date.now(), data });
-  return data;
 }
 
-/** 8.83: SWR の背景再計算が同一 key で多重に走らないためのガード */
-const historyRefreshing = new Set<string>();
-
-export async function buildPortfolioHistory(
-  wallet: string,
-  days: number,
-  nowSeconds = Math.floor(Date.now() / 1000)
-): Promise<PortfolioHistoryResponse> {
-  const cacheKey = `${wallet}|${days}`;
-  const cached = historyCache.get(cacheKey);
-  if (cached) {
-    if (Date.now() - cached.at < HISTORY_CACHE_TTL_MS) {
-      return cached.data;
-    }
-    // 8.83: stale-while-revalidate — TTL 超過でも即返し、裏で作り直す。
-    // チャートは display-only なので bounded staleness は許容 (§4.6 の
-    // oracle fail-closed 系とは別経路で、実行判定には一切使われない)
-    if (!historyRefreshing.has(cacheKey)) {
-      historyRefreshing.add(cacheKey);
-      void computePortfolioHistory(wallet, days, Math.floor(Date.now() / 1000))
-        .then((data) => {
-          historyCache.set(cacheKey, { at: Date.now(), data });
-        })
-        .catch(() => undefined)
-        .finally(() => {
-          historyRefreshing.delete(cacheKey);
-        });
-    }
-    return cached.data;
-  }
-
-  const data = await computePortfolioHistory(wallet, days, nowSeconds);
-  historyCache.set(cacheKey, { at: Date.now(), data });
-  return data;
-}
-
-async function computePortfolioHistory(
-  wallet: string,
-  days: number,
-  nowSeconds: number
-): Promise<PortfolioHistoryResponse> {
-  const cutoff = nowSeconds - days * 86_400;
-  const inputs = await loadWalletHistoryInputs(wallet, days, nowSeconds);
-  if (!inputs) {
-    return { points: [], oldest_at: null, approximated_symbols: [] };
-  }
-  const { current, assets: historyAssets, deltas, oldestSeen } = inputs;
-
-  // 3. 描画する時刻の並び → 残高の逆算
-  //
-  // 8.59: 刻みは **実際に描ける期間** から決める。要求 range から決めると、
-  // 履歴が range より短い wallet で密度が落ちる (1Y 指定なのに描けるのが 80 日
-  // しかない場合、4 日刻みで 20 点にしかならず 3M より粗くなっていた)。
-  // 最初に資産を持った時刻より前は差分から何も言えないので下限にする。
-  // 途中のゼロ期間は 0 の点として描かれる (8.60)
-  const fundedFrom = firstFundedTime(current, deltas, cutoff);
-  const oldestProvable = Math.max(oldestSeen, cutoff, fundedFrom ?? 0);
-  const provableDays = Math.max(1, (nowSeconds - oldestProvable) / 86_400);
-  const stamps1 = sampleTimestamps(
-    Math.min(days, provableDays),
-    nowSeconds
-  ).filter((at) => at >= oldestProvable);
-  if (stamps1.length === 0) {
-    return { points: [], oldest_at: null, approximated_symbols: [] };
-  }
-  const balancesByTime = replayBalances(current, deltas, stamps1);
-
-  // 4. その時点の実価格。8.59: **symbol ごとに 1 リクエスト**で範囲全体の系列を
-  // 取り、各点は「その時刻以前の直近」を引く。点ごとに個別取得すると ~90 本の
-  // リクエストになり rate limit で大半が落ちていた (実機で平坦線として露見)
-  const step = stamps1.length > 1 ? stamps1[1]! - stamps1[0]! : 86_400;
-  // 先頭の点にも「その時刻以前の bar」が要るので刻み 2 個分手前から
-  // (D 解像度は UTC 深夜境界なので、padding が無いと初日が近似落ちする)
-  const priceFrom = stamps1[0]! - 2 * step;
-  const priceTo = stamps1[stamps1.length - 1]!;
+/**
+ * 8.59 / 8.64: 過去価格。Pyth feed がある asset は **symbol ごとに 1 リクエスト**で
+ * 範囲全体の系列を取り (点ごとに取ると ~90 本で rate limit に落ちた)、feed が無い
+ * asset (jlUSDC / LST / vault share) は DeFiLlama から。これが無いと利回りで単価が
+ * 上がる token の過去が全部「現在価格」になり、Deposited のグラフが横一直線になる。
+ * 価格マップは **mint キー** で合流させる (8.64)。
+ */
+export async function solanaPriceSeries(
+  historyAssets: HistoryAsset[],
+  priceFrom: number,
+  priceTo: number,
+  step: number
+): Promise<Map<string, PriceSeries>> {
   const pricedSymbols = [
     ...new Set(
       historyAssets
@@ -661,9 +712,6 @@ async function computePortfolioHistory(
         .map((a) => (a.symbol === "WSOL" ? "SOL" : a.symbol))
     ),
   ];
-  // 8.64: Pyth feed が無い asset (jlUSDC / LST / vault share) は DeFiLlama から。
-  // これが無いと利回りで単価が上がる token の過去が全部「現在価格」になり、
-  // Deposited のグラフが横一直線になっていた
   const feedlessMints = historyAssets
     .filter((a) => !a.feedId)
     .map((a) => a.mint);
@@ -680,43 +728,84 @@ async function computePortfolioHistory(
     fetchLlamaPriceSeries(feedlessMints, priceFrom, priceTo, step),
   ]);
 
-  // 8.64: 価格マップは **mint キー**。Pyth (symbol 単位) / llama (mint 単位) の
-  // どちらの出所もここで同じ形に合流する
+  // 2026-10: Pyth Benchmarks が 404 を返すようになった。feed のある asset でも series が
+  // 取れなければ DefiLlama に落とす (取れない asset を「現在価格の横一直線」にしない)
+  // fetchPriceSeries は失敗を空 series で返すので、点が無いものを欠けとして扱う
+  const hasPythSeries = (a: HistoryAsset) => (seriesBySymbol.get(a.symbol === "WSOL" ? "SOL" : a.symbol)?.t.length ?? 0) > 0;
+  const pythMissing = historyAssets.filter((a) => a.feedId && !hasPythSeries(a)).map((a) => a.mint);
+  if (pythMissing.length > 0) {
+    const fallback = await fetchLlamaPriceSeries(pythMissing, priceFrom, priceTo, step).catch(
+      () => new Map<string, PriceSeries>()
+    );
+    for (const [mint, series] of fallback) llamaByMint.set(mint, series);
+  }
+
   const seriesByMint = new Map<string, PriceSeries>();
   for (const asset of historyAssets) {
     if (asset.feedId) {
       const symbol = asset.symbol === "WSOL" ? "SOL" : asset.symbol;
       const series = seriesBySymbol.get(symbol);
-      if (series) seriesByMint.set(asset.mint, series);
-      continue;
+      if (series && series.t.length > 0) {
+        seriesByMint.set(asset.mint, series);
+        continue;
+      }
     }
     const llama = llamaByMint.get(asset.mint);
     // 見出しの現在値 (DAS 価格) と chart の右端を揃える。形は観測値のまま
     if (llama) seriesByMint.set(asset.mint, anchorSeries(llama, asset.currentUsd8));
   }
-  const pricesByTime = new Map<number, Map<string, string>>();
-  for (const at of stamps1) {
-    const forPoint = new Map<string, string>();
-    for (const [mint, series] of seriesByMint) {
-      const usd8 = priceAtOrBefore(series, at);
-      if (usd8) forPoint.set(mint, usd8);
-    }
-    if (forPoint.size > 0) pricesByTime.set(at, forPoint);
-  }
+  return seriesByMint;
+}
 
-  const series = buildHistorySeries(
-    stamps1,
-    balancesByTime,
-    historyAssets,
-    pricesByTime,
-    WSOL_MINT
-  );
-  // cache 書き込みは buildPortfolioHistory (SWR wrapper) 側の責務 (8.83)
+/** Phase C: history 入力の volume 永続化 (SEASONALS_DATA_DIR 未設定 = jest では no-op) */
+const solanaHistoryInputsStore = createInputsStore();
+
+const solanaHistoryEngine = createHistoryEngine(
+  {
+    chain: "solana",
+    nativePriceKey: WSOL_MINT,
+    loadInputs: loadSolanaHistoryInputs,
+    priceSeries: solanaPriceSeries,
+  },
+  {
+    hydrate: (address) => solanaHistoryInputsStore.hydrate(address),
+    persist: (address, inputs) => solanaHistoryInputsStore.persist(address, inputs),
+  }
+);
+
+export function _clearPortfolioHistoryCacheForTest(): void {
+  solanaHistoryEngine.clear();
+}
+
+/** test 専用: history 入力の永続化 store (onClose で flush されることの確認用) */
+export function _solanaHistoryInputsStoreForTest(): typeof solanaHistoryInputsStore {
+  return solanaHistoryInputsStore;
+}
+
+/**
+ * Solana の履歴。応答は lib の `PortfolioHistoryResponse` に、mobile 互換の
+ * `sol` / `deposited_sol` alias (= native) を足したもの。
+ */
+export async function buildPortfolioHistory(
+  wallet: string,
+  days: number,
+  nowSeconds = Math.floor(Date.now() / 1000)
+): Promise<PortfolioHistoryResponse> {
+  const res = await solanaHistoryEngine.history(wallet, days, nowSeconds);
   return {
-    points: series.points,
-    oldest_at: series.points[0]?.at ?? null,
-    approximated_symbols: series.approximatedSymbols,
+    ...res,
+    points: res.points.map((p) => ({
+      ...p,
+      sol: p.native,
+      deposited_sol: p.deposited_native,
+    })),
   };
+}
+
+export function buildPortfolioHoldings(
+  wallet: string
+): Promise<PortfolioHoldingsResponse> {
+  return solanaHistoryEngine.holdings(wallet);
 }
 
 /**
@@ -944,9 +1033,9 @@ const COST_BASIS_SHARE_TO_UNDERLYING: Record<string, string> = {
 function oracleBlockMessage(reason: string | null | undefined): string {
   switch (reason) {
     case "oracle_both_stale":
-      return "Both Pyth and Switchboard are stale (>60s), so the price can't be trusted. Stopped before signing.";
+      return "The price sources are stale, so the price can't be trusted. Stopped before signing.";
     case "oracle_divergence_too_large":
-      return "Pyth and Switchboard disagree by more than 5%. Stopped before signing.";
+      return "The price sources disagree by more than 5%. Stopped before signing.";
     case "oracle_unavailable":
       return "Price oracle unavailable, so this action can't be checked. Stopped before signing.";
     default:
@@ -2949,6 +3038,16 @@ export interface MenuLiveSources {
   meteoraStats?: Map<string, MeteoraPoolStats>;
   /** Phase 8.26: eUSX 総供給 × syExchangeRate (表示専用 USD) */
   solsticeTvlUsd?: number;
+  /** 2026-10: Perena 新 USD* 総供給 × api.perena.org の単価 (表示専用 USD) */
+  perenaUsdStarTvlUsd?: number;
+  /** 2026-10: Perena Tri-Stable Pool の vault 残高合計 (旧 USD* の pool、表示専用 USD) */
+  perenaTriStableTvlUsd?: number;
+  /** 2026-10: LST symbol → TVL (lamports、Sanctum /v1/tvl/current)。USD 換算は solPriceUsd */
+  lstTvlLamports?: Map<string, bigint>;
+  /** 2026-10: Save reserve address → 供給総量 (smallest unit、on-chain reserve decode) */
+  saveReserveTotals?: Map<string, SaveReserveTotal>;
+  /** 2026-10: sHYUSD 総供給 × Jupiter Price v3 単価 (表示専用 USD) */
+  shyusdTvlUsd?: number;
   /**
    * Phase 8.33: Exponent PT markets (live)。undefined = fetch 失敗 → lib registry
    * snapshot へ degrade (どちらも buildExponentMenuPools が maturity filter する)。
@@ -2974,7 +3073,18 @@ export const LST_POOL_SYMBOLS: Record<string, string> = {
   solstice_eusx: "eUSX", // Exponent underlyingApy (8.24)
   perena_usd_star: "USD*", // Perena app の非公開 endpoint (8.25)
   hylo_hylosol: "hyloSOL", // Exponent underlyingApy (8.27)
+  // hylo_shyusd は対象外: Exponent markets に sHYUSD の underlying が無い (2026-10-06 確認)
 };
+
+/**
+ * 2026-10: Sanctum /v1/tvl/current で TVL を引く LST symbol (SOL 建て LST のみ)。
+ * eUSX / USD* は Sanctum LST ではないので除外 (それぞれ別ソースで TVL を出す)。
+ */
+export const LST_TVL_SYMBOLS: string[] = [
+  ...new Set(
+    Object.values(LST_POOL_SYMBOLS).filter((s) => s !== "eUSX" && s !== "USD*")
+  ),
+];
 
 /** 有限 number のみ採用 (不正値は fixture 維持)。 */
 function finite(n: number): number | null {
@@ -2985,8 +3095,9 @@ function finite(n: number): number | null {
  * fixture menu listing に live APY/TVL を pool 単位で overlay する純関数。
  * apy (0..1 fraction) / tvl_usd / borrowed_usd (USD number) は ProtocolPool の
  * documented display carve-out (§3) — smallest-unit string 規約の適用外。
- * 対応 protocol: jupiter / kamino (reserve + kVault) / savefi / orca。
- * それ以外 (LST / meteora / perena / solstice) は live ソースが無く fixture 値。
+ * 対応 protocol: jupiter / kamino (reserve + kVault) / savefi / orca / meteora /
+ * LST 系 (sanctum / marinade / jito / hylo) / perena / solstice。
+ * live ソースの無い pool (savefi_turbo_sol / jito_restaking_vault 等) は fixture 値。
  * Phase 8.33: exponent entry のみ patch でなく pools **置換** (market 世代交代対応)。
  */
 export function applyMenuLiveOverlays(
@@ -3076,15 +3187,43 @@ export function applyMenuLiveOverlays(
         const vm = vault ? s.kaminoVaults?.get(vault.vault) : undefined;
         if (vm) {
           const apy = finite(Number(vm.apy));
-          if (apy !== null) out.apy = apy; // TVL は metrics に無く fixture 維持
+          if (apy !== null) out.apy = apy;
+          // 2026-10: TVL = 投下済み + 未投下 (metrics の USD decimal string、§3 表示専用)。
+          // どちらか欠落 / 不正なら fixture 維持
+          if (vm.tokensInvestedUsd !== undefined && vm.tokensAvailableUsd !== undefined) {
+            const invested = finite(Number(vm.tokensInvestedUsd));
+            const available = finite(Number(vm.tokensAvailableUsd));
+            if (invested !== null && available !== null && invested + available > 0) {
+              out.tvl_usd = invested + available;
+            }
+          }
         }
-      } else if (entry.protocol_id === "savefi" && s.saveRates) {
+      } else if (entry.protocol_id === "savefi") {
         const mkt = SAVE_MARKETS.find((mk) => mk.pool_id === pool.pool_id);
-        const rate = mkt
-          ? s.saveRates.find((r) => r.reserve === mkt.reserve)
-          : undefined;
+        const rate =
+          mkt && s.saveRates
+            ? s.saveRates.find((r) => r.reserve === mkt.reserve)
+            : undefined;
         const apy = rate ? finite(rate.supply_apy) : null;
         if (apy !== null) out.apy = apy;
+        // 2026-10: TVL = on-chain reserve の供給総量 × 単価 (USDC は 1、SOL は oracle)。
+        // §3 display carve-out — bigint の総量を表示直前にだけ Number 化する
+        const totals = mkt ? s.saveReserveTotals?.get(mkt.reserve) : undefined;
+        const price =
+          mkt?.underlying_symbol === "USDC"
+            ? 1
+            : mkt?.underlying_symbol === "SOL"
+              ? s.solPriceUsd
+              : undefined;
+        if (
+          totals &&
+          price !== undefined &&
+          Number.isFinite(price) &&
+          price > 0
+        ) {
+          const tvl = finite((Number(totals.total) / 10 ** totals.decimals) * price);
+          if (tvl !== null && tvl > 0) out.tvl_usd = tvl;
+        }
       } else if (entry.protocol_id === "orca" && s.orcaStats) {
         const mkt = ORCA_MARKETS.find((mk) => mk.pool_id === pool.pool_id);
         const stats = mkt ? s.orcaStats.get(mkt.pool_address) : undefined;
@@ -3100,13 +3239,34 @@ export function applyMenuLiveOverlays(
           entry.protocol_id === "sanctum" ||
           entry.protocol_id === "solstice" ||
           entry.protocol_id === "perena" ||
-          entry.protocol_id === "hylo") &&
-        s.lstApys
+          entry.protocol_id === "hylo")
       ) {
-        // Phase 8.23/8.24: yield token APY (TVL は原則ソース無し、fixture 維持)
+        // Phase 8.23/8.24: yield token APY。TVL は 2026-10 から各ソースで live
+        // (APY ソースの成否と独立 — どれかが落ちても他は overlay される)
         const sym = LST_POOL_SYMBOLS[pool.pool_id];
-        const apy = sym !== undefined ? s.lstApys.get(sym) : undefined;
+        const apy = sym !== undefined ? s.lstApys?.get(sym) : undefined;
         if (apy !== undefined && finite(apy) !== null) out.apy = apy;
+        // 2026-10: SOL 建て LST の TVL = Sanctum TVL (lamports) × SOL oracle 価格
+        // (§3 display carve-out — bigint の lamports を表示直前にだけ Number 化)
+        const lamports = sym !== undefined ? s.lstTvlLamports?.get(sym) : undefined;
+        if (
+          lamports !== undefined &&
+          s.solPriceUsd !== undefined &&
+          Number.isFinite(s.solPriceUsd) &&
+          s.solPriceUsd > 0
+        ) {
+          const tvl = finite((Number(lamports) / 1e9) * s.solPriceUsd);
+          if (tvl !== null && tvl > 0) out.tvl_usd = tvl;
+        }
+        // 2026-10: sHYUSD = 総供給 × Jupiter 単価
+        if (
+          pool.pool_id === "hylo_shyusd" &&
+          s.shyusdTvlUsd !== undefined &&
+          finite(s.shyusdTvlUsd) !== null &&
+          s.shyusdTvlUsd > 0
+        ) {
+          out.tvl_usd = s.shyusdTvlUsd;
+        }
         // Phase 8.26: solstice のみ供給 × syRate で実 TVL
         if (
           pool.pool_id === "solstice_eusx" &&
@@ -3127,6 +3287,16 @@ export function applyMenuLiveOverlays(
           if (tvl !== null && tvl > 0) out.tvl_usd = tvl;
         }
       }
+      // Perena の TVL は APY の有無と独立に live (取れなければ fixture のまま)
+      if (entry.protocol_id === "perena") {
+        const tvl =
+          pool.pool_id === "perena_usd_star"
+            ? s.perenaUsdStarTvlUsd
+            : pool.pool_id === "perena_tri_stable"
+              ? s.perenaTriStableTvlUsd
+              : undefined;
+        if (tvl !== undefined && finite(tvl) !== null && tvl > 0) out.tvl_usd = tvl;
+      }
       return out;
     }),
     };
@@ -3136,6 +3306,29 @@ export function applyMenuLiveOverlays(
 export interface ServerOptions {
   /** Fastify logger config (test では false にして noise を抑制) */
   logger?: boolean;
+  /**
+   * IP 単位の rate limit。既定は env (`RATE_LIMIT_MAX`、flags.ts rateLimitConfig)。
+   * `false` / `null` で plugin を登録しない (route の `config.rateLimit` は無視される)。
+   */
+  rateLimit?: { max: number; timeWindowMs: number } | false | null;
+}
+
+/** 上流 credit を消費する wallet 読み取り route の per-IP 上限 (docs/external-release-api-handling.md §3.3) */
+const WALLET_READ_LIMIT = { config: { rateLimit: { max: 60, timeWindow: "1 minute" } } };
+/** 署名済み tx の broadcast (Helius sendTransaction は 1 rps 枠) */
+const TX_SUBMIT_LIMIT = { config: { rateLimit: { max: 10, timeWindow: "1 minute" } } };
+
+/**
+ * plans-only サーバ (SOLANA_EXECUTION_TARGET=disabled) で 409 にする POST route。
+ * builder (`/protocols/<p>/<x>-tx`) も含める: tester が Seed Vault を開く **前に** 断る。
+ */
+const PROTOCOL_TX_BUILDER_RE = /^\/protocols\/[a-z-]+\/[a-z-]+-tx$/;
+function isSolanaExecutionRoute(url: string): boolean {
+  return (
+    url === "/tx/submit" ||
+    url === "/agent-plans/:planId/execute" ||
+    PROTOCOL_TX_BUILDER_RE.test(url)
+  );
 }
 
 /**
@@ -3147,18 +3340,71 @@ export async function buildServer(
 ): Promise<FastifyInstance> {
   const app = Fastify({ logger: opts.logger ?? false });
 
+  // Phase C / review #40: 間引きで保留中の history 入力と進行中の async 書き込みを shutdown 前に書き切る
+  // (index.ts の SIGTERM / SIGINT → app.close())。store は module 単位なので複数 instance でも害は無い
+  app.addHook("onClose", async () => {
+    await solanaHistoryInputsStore.flush();
+  });
+
+  // ── 公開 BFF の入口 guard (docs/external-release-api-handling.md §3.3) ──────
+  // rate limit は **全 route より先に** 登録する (onRoute hook なので後続 route にだけ効く)。
+  // key は public-guards.ts rateLimitKey: proxy 鍵が一致した時だけ proxy の client IP、
+  // 次に Fly の fly-client-ip、最後に socket。trustProxy / x-forwarded-for は使わない。
+  const limit = opts.rateLimit === undefined ? rateLimitConfig() : opts.rateLimit;
+  if (limit) {
+    const secret = proxySecret();
+    await app.register(rateLimit, {
+      global: true,
+      max: limit.max,
+      timeWindow: limit.timeWindowMs,
+      keyGenerator: (req) => rateLimitKey(req, secret),
+      // CLAUDE.md の snake_case error code に揃える (Fastify 既定は "Too Many Requests")
+      errorResponseBuilder: (_req, ctx) => ({
+        statusCode: ctx.statusCode,
+        error: "rate_limited",
+        message: `Rate limit exceeded, retry in ${ctx.after}`,
+      }),
+    });
+  }
+
   await app.register(cors, {
-    // dev は any origin で OK (Mobile emulator は IP/host 多様)
-    origin: true,
+    // CORS_ALLOWED_ORIGINS 未設定は any origin (dev: Mobile emulator / LAN IP が多様)。
+    // 公開時は https://seasonals.cafe に絞る。ただし web は Cloudflare Pages Function が
+    // same-origin で proxy するので、これは保険 (belt-and-braces)。Mobile (RN fetch) は
+    // Origin を送らないので allowlist の影響を受けない。
+    origin: corsOrigins(),
+  });
+
+  // plans-only サーバ: Solana の tx build / broadcast route を route 解決直後に 409。
+  // body 解析 / Helius / Jupiter に触れる前に止める (fail-closed、CLAUDE.md §4)。
+  // /autonomous/tick は body の dry_run を見るので handler 側で判定する。
+  app.addHook("onRequest", async (req, reply) => {
+    if (req.method !== "POST" || solanaExecutionTarget() !== "disabled") return;
+    const url = req.routeOptions.url ?? "";
+    if (isSolanaExecutionRoute(url)) {
+      return reply.code(409).send(EXECUTION_DISABLED);
+    }
   });
 
   // ── Ethereum (docs/web/WORKLOG.md Stage B、読み取り + unsigned plan のみ) ──
   await registerEthRoutes(app);
+  await registerAdminRoutes(app); // B1: GET /admin/helius-usage (ADMIN_TOKEN 必須)
+
+  // ── SKR staking cooldown の読取 (docs/skr-r0-implementation.md §3、read-only) ──
+  await registerSkrStakingRoutes(app);
 
   // ── health ────────────────────────────────────────────────────────────
-  app.get("/health", async () => ({
+  // solana.heliusConfigured: Web Settings が Solana 実行可否を出すための boolean のみ (key / URL は返さない)
+  // solana.executionTarget: "disabled" なら client は実行 CTA を出さない (plans-only)
+  // version: build の commit (GIT_SHA)。Fly の health check が叩くので rate limit 対象外
+  app.get("/health", { config: { rateLimit: false } }, async () => ({
     status: "ok",
     timestamp: new Date().toISOString(),
+    version: gitSha(),
+    solana: {
+      heliusConfigured: Boolean(process.env.HELIUS_API_KEY),
+      executionTarget: solanaExecutionTarget(),
+    },
   }));
 
   // ── time events / positions / wallets / protocols / user policy ──────
@@ -3172,29 +3418,35 @@ export async function buildServer(
    */
   app.get<{ Querystring: { wallet?: string } }>(
     "/positions",
+    WALLET_READ_LIMIT,
     async (req, reply) => {
       const wallet = req.query?.wallet?.trim();
       // Phase 8.4: production cleanup — wallet 無指定なら空配列を返す。
       // 接続済 wallet があれば Helius DAS 経由で実 positions を返す path に行く。
       if (!wallet) return [] as Position[];
 
-      // 簡易 base58 validation (44 chars max、空白なし)。詳細は @solana/web3.js
-      // PublicKey の方が確実だが BFF deps を増やしたくないので長さで guard。
-      if (wallet.length < 32 || wallet.length > 44 || /\s/.test(wallet)) {
+      // base58 32..44 文字 (lib/config/chains.ts isSolanaAddress)。不正値で Helius
+      // credit を消費しない (docs/external-release-api-handling.md §3.3)。
+      if (!isWalletAddress(wallet)) {
         reply.code(400);
         return { error: "invalid_wallet_address", wallet };
       }
 
       try {
+        // B3: DAS は wallet snapshot (3 route 共有、60s + SWR 60s) から。assets だけ待つので
+        // Meteora / Orca 等の読みは同じ snapshot の中で続く。DAS 失敗は従来どおり 502
+        const snap = loadWalletSnapshot(wallet);
         // 8.70: jlToken は DAS 価格ではなく protocol 自身の交換レートで評価する。
         // markets は 30s cache 済で追加の上流コストはほぼ無い。取得に失敗しても
         // DAS 価格に degrade するだけ (positions 自体は返す)
-        const [assets, markets] = await Promise.all([
-          fetchAssetsByOwner(wallet),
+        const [assetsR, markets] = await Promise.all([
+          snap.assets,
           fetchEarnMarkets().catch(() => [] as JupiterLendMarket[]),
         ]);
+        if (assetsR.status === "rejected") throw new Error(assetsR.reason);
+        setDataAgeHeader(reply, snap);
         return mapAssetsToPositions(
-          assets,
+          assetsR.value,
           wallet,
           jlSharePriceOverrides(markets)
         );
@@ -3218,9 +3470,14 @@ export async function buildServer(
   app.get("/user-policy", async () => getCurrentPolicy());
 
   /** Phase 8.29: policy 編集 (auto 設定 / caps)。§6.4 の editable フィールドのみ。 */
+  // policy は単一 tenant (全 client 共有) なので、公開 BFF では ADMIN_TOKEN 保持者だけが編集できる
   app.patch<{ Body: Record<string, unknown> }>(
     "/user-policy",
     async (req, reply) => {
+      if (!isAdminAuthorized(req, adminToken())) {
+        reply.code(403);
+        return { error: "admin_token_required" };
+      }
       try {
         return patchCurrentPolicy(req.body ?? {});
       } catch (err) {
@@ -3240,30 +3497,36 @@ export async function buildServer(
    */
   app.get<{ Querystring: { wallet?: string } }>(
     "/time-events/wallet",
+    WALLET_READ_LIMIT,
     async (req, reply) => {
       const wallet = req.query?.wallet?.trim();
       if (!wallet) {
         reply.code(400);
         return { error: "wallet_required" };
       }
-      if (wallet.length < 32 || wallet.length > 44 || /\s/.test(wallet)) {
+      if (!isWalletAddress(wallet)) {
         reply.code(400);
         return { error: "invalid_wallet_address", wallet };
       }
       // Phase 8.16: tx 履歴 (入出金イベント) + epoch (LST 保有時) + Kamino health を
       // 並列取得。source 単位で graceful degrade (全滅でも 200 + 部分結果)。
       // Phase 8.20: LP fee (claim) + native stake (lockup_end) を追加。
-      const [txsR, assetsR, epochR, obligR, orcaR, meteoraR, stakeR, expMktR] =
-        await Promise.allSettled([
-          fetchEnhancedTransactions(wallet),
-          fetchAssetsByOwner(wallet),
-          getEpochInfo(),
-          fetchKaminoObligations(KAMINO_MAIN_MARKET, wallet),
-          fetchOrcaPositions(wallet),
-          fetchMeteoraPositions(wallet),
-          fetchStakeAccounts(wallet),
-          // Phase 8.33: PT maturity 解決用 (失敗しても registry backstop がある)
-          fetchExponentFullMarkets(),
+      // B3: wallet 由来の 6 source は wallet snapshot (3 route 共有) から、wallet 非依存の
+      // epoch / Exponent markets はここで読む。source 単位の degrade は従来どおり
+      const snap = loadWalletSnapshot(wallet);
+      const [[epochR, expMktR], txsR, assetsR, obligR, orcaR, meteoraR, stakeR] =
+        await Promise.all([
+          Promise.allSettled([
+            getEpochInfo(),
+            // Phase 8.33: PT maturity 解決用 (失敗しても registry backstop がある)
+            fetchExponentFullMarkets(),
+          ]),
+          snap.txs,
+          snap.assets,
+          snap.kaminoObligations,
+          snap.orca,
+          snap.meteora,
+          snap.stake,
         ]);
       for (const [r, label] of [
         [txsR, "helius tx"],
@@ -3277,11 +3540,12 @@ export async function buildServer(
       ] as const) {
         if (r.status === "rejected") {
           req.log.warn(
-            { err: (r.reason as Error).message, wallet },
+            { err: settledReason(r), wallet },
             `${label} fetch failed (wallet events degrade)`
           );
         }
       }
+      setDataAgeHeader(reply, snap);
 
       const events: UnifiedTimeEventDTO[] =
         txsR.status === "fulfilled"
@@ -3362,13 +3626,16 @@ export async function buildServer(
    * mobile は getMenuListings → useMenuListings (staleTime 60s) で既に配線済み。
    * 全ソース allSettled — 失敗した protocol は fixture 値のまま 200 を返す。
    * 組み立て結果は 60s cache (buildServer instance 単位 — テスト間で漏れない)。
+   * B3: TtlCache 化 — 同時の cold request は 1 回の組み立てに合流し、期限後 60s は
+   * 旧値を返しつつ裏で 1 回だけ組み直す (SWR。表示専用で実行系は読まない)
    */
-  let menuCache: { at: number; data: ProtocolMenuEntry[] } | null = null;
-  const MENU_CACHE_TTL_MS = 60_000;
-  app.get("/menu-listings", async (req) => {
-    if (menuCache && Date.now() - menuCache.at < MENU_CACHE_TTL_MS) {
-      return menuCache.data;
-    }
+  const menuCache = new TtlCache<ProtocolMenuEntry[]>({
+    name: "menu.listings",
+    ttlMs: 60_000,
+    staleWhileRevalidateMs: 60_000,
+    maxEntries: 1,
+  });
+  const buildMenuListings = async (req: FastifyRequest): Promise<ProtocolMenuEntry[]> => {
     const [
       jupR,
       kaminoR,
@@ -3382,6 +3649,11 @@ export async function buildServer(
       solTvlR,
       expMktR,
       solPriceR,
+      perenaTvlR,
+      perenaTriTvlR,
+      lstTvlR,
+      saveTotalsR,
+      shyusdTvlR,
     ] = await Promise.allSettled([
         fetchEarnMarkets(),
         fetchKaminoReserveMetrics(KAMINO_MAIN_MARKET),
@@ -3413,6 +3685,31 @@ export async function buildServer(
         // Phase 8.33: Exponent PT markets + SOL 価格 (SOL quote market の TVL 換算用)
         fetchExponentFullMarkets(),
         getOracleResult("So11111111111111111111111111111111111111112"),
+        // 2026-10: Perena USD* TVL = 新 mint の総供給 × Perena API の単価 (eUSX と同じ型)
+        (async () => {
+          const usdStar = SWAP_EARN_MARKETS.find((m) => m.protocol_id === "perena");
+          if (!usdStar) throw new Error("perena market not registered");
+          const [supply, price] = await Promise.all([getTokenSupplyUi(usdStar.share_mint), fetchPerenaUsdStarPrice()]);
+          return supply * price;
+        })(),
+        // 2026-10: Perena Tri-Stable Pool (旧 USD* の pool) TVL = vault 残高の合計
+        fetchPerenaTriStableTvlUsd(),
+        // 2026-10: SOL 建て LST の TVL (lamports、Sanctum extra-api)
+        fetchSanctumTvls(LST_TVL_SYMBOLS),
+        // 2026-10: Save reserve の供給総量 (on-chain、getMultipleAccounts 1 回)
+        fetchSaveReserveTotals(SAVE_MARKETS.map((m) => m.reserve)),
+        // 2026-10: sHYUSD TVL = 総供給 × Jupiter Price v3 単価 (eUSX / USD* と同じ型)
+        (async () => {
+          const shy = SWAP_EARN_MARKETS.find((m) => m.share_symbol === "sHYUSD");
+          if (!shy) throw new Error("sHYUSD market not registered");
+          const [supply, prices] = await Promise.all([
+            getTokenSupplyUi(shy.share_mint),
+            fetchJupiterUsdPrices([shy.share_mint]),
+          ]);
+          const price = prices.get(shy.share_mint);
+          if (price === undefined) throw new Error("no sHYUSD usdPrice");
+          return supply * price;
+        })(),
       ]);
     for (const [r, label] of [
       [jupR, "jupiter lend markets"],
@@ -3424,6 +3721,11 @@ export async function buildServer(
       [metR, "meteora stats"],
       [perenaR, "perena apy"],
       [solTvlR, "solstice tvl"],
+      [perenaTvlR, "perena tvl"],
+      [perenaTriTvlR, "perena tri-stable tvl"],
+      [lstTvlR, "sanctum lst tvl"],
+      [saveTotalsR, "save reserve totals"],
+      [shyusdTvlR, "shyusd tvl"],
       [expMktR, "exponent pt markets"],
       [solPriceR, "sol oracle price"],
     ] as const) {
@@ -3472,6 +3774,16 @@ export async function buildServer(
       lstApys: yieldApys.size > 0 ? yieldApys : undefined,
       meteoraStats: metR.status === "fulfilled" ? metR.value : undefined,
       solsticeTvlUsd: solTvlR.status === "fulfilled" ? solTvlR.value : undefined,
+      perenaUsdStarTvlUsd: perenaTvlR.status === "fulfilled" ? perenaTvlR.value : undefined,
+      perenaTriStableTvlUsd: perenaTriTvlR.status === "fulfilled" ? perenaTriTvlR.value : undefined,
+      // 2026-10: instanceof guard は不正 resolve (mock 未設定等) 対策 — yieldApys と同じ
+      lstTvlLamports:
+        lstTvlR.status === "fulfilled" && lstTvlR.value instanceof Map ? lstTvlR.value : undefined,
+      saveReserveTotals:
+        saveTotalsR.status === "fulfilled" && saveTotalsR.value instanceof Map
+          ? saveTotalsR.value
+          : undefined,
+      shyusdTvlUsd: shyusdTvlR.status === "fulfilled" ? shyusdTvlR.value : undefined,
       // Phase 8.33: Exponent (失敗時は undefined → registry snapshot へ degrade)
       exponentMarkets: expMktR.status === "fulfilled" ? expMktR.value : undefined,
       solPriceUsd:
@@ -3481,9 +3793,11 @@ export async function buildServer(
           ? Number(solPriceR.value.price_usd) // §3 display carve-out (menu TVL 換算のみ)
           : undefined,
     });
-    menuCache = { at: Date.now(), data };
     return data;
-  });
+  };
+  app.get("/menu-listings", async (req) =>
+    menuCache.getOrLoad("all", () => buildMenuListings(req))
+  );
 
   /**
    * Phase 8.2: 接続済 wallet の Jupiter Lend / Kamino earn positions を返す。
@@ -3493,13 +3807,14 @@ export async function buildServer(
    */
   app.get<{ Querystring: { wallet?: string } }>(
     "/positions/earn",
+    WALLET_READ_LIMIT,
     async (req, reply) => {
       const wallet = req.query?.wallet?.trim();
       if (!wallet) {
         reply.code(400);
         return { error: "wallet_required" };
       }
-      if (wallet.length < 32 || wallet.length > 44 || /\s/.test(wallet)) {
+      if (!isWalletAddress(wallet)) {
         reply.code(400);
         return { error: "invalid_wallet_address", wallet };
       }
@@ -3509,12 +3824,13 @@ export async function buildServer(
       // 全 position が accrued_yield_sign:"unknown" に graceful degrade (フェイク 0 を出さない)。
       // Phase 8.15d: kVault 保有 + 登録 vault の metrics (main の allSettled と並走)。
       // 失敗は graceful degrade (positions → 空、metrics → shares のみ表示)。
+      // B3: wallet 由来の読み (DAS / tx 履歴 / Jupiter Lend / Kamino obligation / kVault /
+      // Meteora / Orca) は wallet snapshot (3 route 共有、60s + SWR 60s) から。degrade 規則は不変
+      const snap = loadWalletSnapshot(wallet);
       const kvaultPosPromise: Promise<KaminoVaultUserPosition[]> =
-        fetchKaminoVaultUserPositions(wallet).catch((err) => {
-          req.log.warn(
-            { err: (err as Error).message },
-            "kvault positions fetch failed"
-          );
+        snap.kvaultPositions.then((r) => {
+          if (r.status === "fulfilled") return r.value;
+          req.log.warn({ err: r.reason }, "kvault positions fetch failed");
           return [];
         });
       const kvaultMetricsPromise = Promise.allSettled(
@@ -3522,21 +3838,15 @@ export async function buildServer(
       );
 
       // Phase 8.17: Meteora DLMM positions (SDK read、失敗は空)
-      const meteoraPositionsPromise = fetchMeteoraPositions(wallet).catch(
-        (err) => {
-          req.log.warn(
-            { err: (err as Error).message },
-            "meteora positions fetch failed"
-          );
-          return [] as MeteoraRawPosition[];
-        }
-      );
+      const meteoraPositionsPromise = snap.meteora.then((r) => {
+        if (r.status === "fulfilled") return r.value;
+        req.log.warn({ err: r.reason }, "meteora positions fetch failed");
+        return [] as MeteoraRawPosition[];
+      });
       // Phase 8.18: Orca Whirlpool positions + pool stats (実 APY。失敗は空)
-      const orcaPositionsPromise = fetchOrcaPositions(wallet).catch((err) => {
-        req.log.warn(
-          { err: (err as Error).message },
-          "orca positions fetch failed"
-        );
+      const orcaPositionsPromise = snap.orca.then((r) => {
+        if (r.status === "fulfilled") return r.value;
+        req.log.warn({ err: r.reason }, "orca positions fetch failed");
         return [] as OrcaRawPosition[];
       });
       const orcaStatsPromise = fetchOrcaPoolStats().catch((err) => {
@@ -3605,22 +3915,24 @@ export async function buildServer(
       const saveRatesPromise = fetchSaveReserveRates(
         SAVE_MARKETS.map((m) => m.reserve)
       ).catch(() => [] as Awaited<ReturnType<typeof fetchSaveReserveRates>>);
-      const solPricePromise = getOracleResult(SOL_MINT).catch(() => null);
-      const usdcPricePromise = getOracleResult(USDC_MINT).catch(() => null);
+      // B3: SOL / USDC を 1 回の getOracleResults で (失敗は null = 従来どおり)
+      const earnOraclePromise = oracleResultsOrNull([SOL_MINT, USDC_MINT]);
+      const solPricePromise = earnOraclePromise.then((m) => m.get(SOL_MINT) ?? null);
+      const usdcPricePromise = earnOraclePromise.then((m) => m.get(USDC_MINT) ?? null);
       // Phase 8.33: Exponent PT markets (失敗は undefined → registry backstop)。
       // Promise.resolve 包みは test automock (非 Promise 戻り) への防御
       const exponentMarketsPromise = Promise.resolve()
         .then(() => fetchExponentFullMarkets())
         .catch(() => undefined);
 
-      const [jupRes, heliusRes, txRes, kaminoObRes, kaminoResRes] =
-        await Promise.allSettled([
-          fetchEarnPositions(wallet),
-          fetchAssetsByOwner(wallet),
-          fetchEnhancedTransactions(wallet),
+      const [jupRes, heliusRes, txRes, kaminoObRes, [kaminoResRes]] =
+        await Promise.all([
+          snap.jupiterLend,
+          snap.assets,
+          snap.txs,
           // Phase 8.15b: 実 Kamino obligation + reserve APY
-          fetchKaminoObligations(KAMINO_MAIN_MARKET, wallet),
-          fetchKaminoReserveMetrics(KAMINO_MAIN_MARKET),
+          snap.kaminoObligations,
+          Promise.allSettled([fetchKaminoReserveMetrics(KAMINO_MAIN_MARKET)]),
         ]);
 
       // 8.95: 主要 5 upstream が**全滅**なら 503 — 200 全空は「真に空の wallet」と
@@ -3630,9 +3942,7 @@ export async function buildServer(
       if (mainResults.every((r) => r.status === "rejected")) {
         req.log.warn(
           {
-            errors: mainResults.map((r) =>
-              r.status === "rejected" ? String(r.reason) : ""
-            ),
+            errors: mainResults.map((r) => settledReason(r) ?? ""),
             wallet,
           },
           "earn positions: all upstreams failed"
@@ -3792,25 +4102,25 @@ export async function buildServer(
 
       if (jupRes.status === "rejected") {
         req.log.warn(
-          { err: (jupRes.reason as Error).message },
+          { err: settledReason(jupRes) },
           "jupiter lend fetch failed"
         );
       }
       if (heliusRes.status === "rejected") {
         req.log.warn(
-          { err: (heliusRes.reason as Error).message },
+          { err: settledReason(heliusRes) },
           "helius fetch failed (kamino detection skipped)"
         );
       }
       if (kaminoObRes.status === "rejected") {
         req.log.warn(
-          { err: (kaminoObRes.reason as Error).message },
+          { err: settledReason(kaminoObRes) },
           "kamino obligations fetch failed (falling back to best-effort)"
         );
       }
       if (txRes.status === "rejected") {
         req.log.warn(
-          { err: (txRes.reason as Error).message },
+          { err: settledReason(txRes) },
           "helius tx fetch failed (cost-basis unknown, earnings fall back to estimate)"
         );
       }
@@ -3824,24 +4134,53 @@ export async function buildServer(
         meteora,
         orca,
       };
+      setDataAgeHeader(reply, snap);
       return response;
     }
   );
 
-  // ── agent plans (list + read + approve/reject) ───────────────────────
-  // Phase 8.28: MCP 由来の store plan と fixture を merge (store 優先)
-  app.get("/agent-plans", async () => [
-    ...listStoredPlans(),
-    ...fixtureAgentPlans,
-  ]);
+  // ── agent plans (list + read + approve → execute → signatures) ───────
+  // 2026-10-06: 人が承認する plan は web が approve → execute (unsigned tx) → 署名 →
+  // 送信 → /signatures まで一気に行う (承認 = 実行、ETH agent proposal と同じ)。
+  // plan は .data/agent-plans.json に永続、24h で expired (plan-store.ts)。
+  // fixture plan は test 環境でのみ混ぜる (dev / prod の inbox に偽 plan を出さない)
+  const fixturePlansEnabled = (): boolean => process.env.NODE_ENV === "test";
+  const findFixturePlan = (planId: string): AgentPlan | undefined =>
+    fixturePlansEnabled()
+      ? fixtureAgentPlans.find((p) => p.plan_id === planId)
+      : undefined;
+  /** /failed や /reject の reason は表示用の短い文字列に限る (ログ / UI に生で出るため) */
+  const sanitizeReason = (v: unknown): string | undefined =>
+    typeof v === "string" && v.trim().length > 0
+      ? v.trim().slice(0, 200)
+      : undefined;
+  /** base58 の tx signature (ed25519 64 byte = 87〜88 文字、短い表現も許容) */
+  const SIGNATURE_RE = /^[1-9A-HJ-NP-Za-km-z]{64,88}$/;
+
+  app.get<{ Querystring: { wallet?: string } }>("/agent-plans", async (req, reply) => {
+    const wallet = req.query?.wallet;
+    if (typeof wallet === "string" && wallet.length > 0 && !isWalletAddress(wallet)) {
+      reply.code(400);
+      return { error: "invalid_wallet_address", wallet };
+    }
+    const stored = listStoredPlans();
+    const filtered =
+      typeof wallet === "string" && wallet.length > 0
+        ? stored.filter((p) => p.selected_action?.wallet_id === wallet)
+        : stored;
+    if (!fixturePlansEnabled()) return filtered;
+    const fixtures =
+      typeof wallet === "string" && wallet.length > 0
+        ? fixtureAgentPlans.filter((p) => p.selected_action?.wallet_id === wallet)
+        : fixtureAgentPlans;
+    return [...filtered, ...fixtures];
+  });
 
   app.get<{ Params: { planId: string } }>(
     "/agent-plans/:planId",
     async (req, reply) => {
       const { planId } = req.params;
-      const found =
-        getStoredPlan(planId) ??
-        fixtureAgentPlans.find((p) => p.plan_id === planId);
+      const found = getStoredPlan(planId) ?? findFixturePlan(planId);
       if (!found) {
         reply.code(404);
         return { error: "agent_plan_not_found", plan_id: planId };
@@ -3852,7 +4191,7 @@ export async function buildServer(
 
   /**
    * Phase 8.28: MCP compare_opportunities が draft plan を作成する (§11.7)。
-   * store 保存 (in-memory — §17/§25 の永続化前段)。
+   * expires_at = 作成 + 24h (plan-store)。
    */
   app.post<{
     Body: {
@@ -3881,8 +4220,8 @@ export async function buildServer(
 
   /**
    * Phase 8.28: MCP request_user_approval — status を pending_user にし、
-   * 登録済み push token へ Expo push を best-effort 送信 (ApprovalPushPayload
-   * 契約 = mobile services/push.ts)。push 失敗/token 無しでも 200 (poll で成立)。
+   * 登録済み push token へ Expo push を best-effort 送信 (payload は
+   * `{ type: "approval", plan_id }`)。push 失敗/token 無しでも 200 (web inbox / poll で成立)。
    */
   app.post<{ Params: { planId: string }; Body: { timeout_seconds?: number } }>(
     "/agent-plans/:planId/request-approval",
@@ -3940,7 +4279,10 @@ export async function buildServer(
           bundle_hash: plan.simulation_result.bundle_hash,
         });
         incrementDaily(); // auto 承認も日次枠を消費 (自律実行と合算の保守側運用)
-        return updatePlan(planId, { status: AgentPlanStatus.Approved })!;
+        return updatePlan(planId, {
+          status: AgentPlanStatus.Approved,
+          approved_by: "auto",
+        })!;
       }
       // idempotent (§10.3): pending_user なら push を再送しない
       const alreadyPending = plan.status === AgentPlanStatus.PendingUser;
@@ -3976,9 +4318,10 @@ export async function buildServer(
   );
 
   /**
-   * Phase 8.28: MCP request_user_approval の poll 先 — 承認状態と、承認済み
-   * なら発行済み approval_token を返す (§24.9)。v1 は client 認証の無い dev
-   * 前提 (plan_id を知る者が token を取得できる — README に明記、v2 で auth)。
+   * MCP request_user_approval の poll 先 (§24.9)。承認状態・署名結果・失敗理由を返す。
+   * approval_token は **policy の自動承認 (approved_by === "auto") で approved の時だけ** 含める —
+   * 人が承認した plan の token は web が approve 応答で直接受け取り、ここからは出さない
+   * (plan_id を知る者が人の承認を横取りして execute できないように)。
    */
   app.get<{ Params: { planId: string } }>(
     "/agent-plans/:planId/approval",
@@ -3990,34 +4333,61 @@ export async function buildServer(
         return { error: "agent_plan_not_found", plan_id: planId };
       }
       const token =
-        plan.status === AgentPlanStatus.Approved
+        plan.status === AgentPlanStatus.Approved && plan.approved_by === "auto"
           ? getLatestTokenForPlan(planId)
           : undefined;
-      return {
+      const res: AgentPlanApprovalStatus = {
         plan_id: planId,
         status: plan.status,
-        approval_token: token ?? null,
+        approved_by: plan.approved_by ?? null,
+        ...(token ? { approval_token: token } : {}),
+        ...(plan.execution ? { execution: plan.execution } : {}),
+        ...(plan.failure_reason ? { failure_reason: plan.failure_reason } : {}),
       };
+      return res;
     }
   );
 
-  app.post<{
-    Params: { planId: string };
-    Body: { fee_payer?: string };
-  }>("/agent-plans/:planId/approve", async (req, reply) => {
-    const { planId } = req.params;
-    // Phase 8.28: store plan は永続遷移 + ApprovalToken 発行
-    const stored = getStoredPlan(planId);
-    if (stored) {
+  /**
+   * 人の承認 (web / Seeker)。body 不要。simulated | pending_user → approved +
+   * approved_by "user" + ApprovalToken 発行。応答 `{ ...plan, approval_token }`。
+   *
+   * 既に人が承認した plan (approved + approved_by "user") も受け付け、token を再発行する:
+   * Seeker で承認 → web で署名、や、gate 拒否 (token 未消費のまま approved) 後の再試行のため。
+   * token は plan 側の status guard (execute は approved からのみ、消費で executing) で 1 回しか使えない。
+   * auto 承認 (autonomous) の plan は Agent が /execute を呼ぶので人は触れない (409)。
+   */
+  app.post<{ Params: { planId: string } }>(
+    "/agent-plans/:planId/approve",
+    async (req, reply) => {
+      const { planId } = req.params;
+      const stored = getStoredPlan(planId);
+      const target = stored ?? findFixturePlan(planId);
+      if (!target) {
+        reply.code(404);
+        return { error: "agent_plan_not_found", plan_id: planId };
+      }
+      const reissue =
+        target.status === AgentPlanStatus.Approved && target.approved_by === "user";
       if (
-        stored.status !== AgentPlanStatus.Simulated &&
-        stored.status !== AgentPlanStatus.PendingUser
+        target.status !== AgentPlanStatus.Simulated &&
+        target.status !== AgentPlanStatus.PendingUser &&
+        !reissue
       ) {
         reply.code(409);
         return {
           error: "invalid_status_transition",
-          current: stored.status,
+          current: target.status,
           target: AgentPlanStatus.Approved,
+        };
+      }
+      if (!stored) {
+        // fixture plan (test のみ) は非永続の遷移だけ返す (回帰用)
+        return {
+          ...target,
+          status: AgentPlanStatus.Approved,
+          approved_by: "user",
+          updated_at: new Date().toISOString(),
         };
       }
       if (!stored.selected_action || !stored.simulation_result) {
@@ -4030,86 +4400,73 @@ export async function buildServer(
         mcp_client_id: stored.mcp_client_id,
         bundle_hash: stored.simulation_result.bundle_hash,
       });
-      const next = updatePlan(planId, { status: AgentPlanStatus.Approved })!;
+      const next = updatePlan(planId, {
+        status: AgentPlanStatus.Approved,
+        approved_by: "user",
+      })!;
       return { ...next, approval_token: token };
     }
+  );
 
-    const found = fixtureAgentPlans.find((p) => p.plan_id === planId);
-    if (!found) {
-      reply.code(404);
-      return { error: "agent_plan_not_found", plan_id: planId };
-    }
-    if (
-      found.status !== AgentPlanStatus.Simulated &&
-      found.status !== AgentPlanStatus.PendingUser
-    ) {
-      reply.code(409);
-      return {
-        error: "invalid_status_transition",
-        current: found.status,
-        target: AgentPlanStatus.Approved,
-      };
-    }
-    const next: AgentPlan & { tx?: string } = {
-      ...found,
-      status: AgentPlanStatus.Approved,
-      updated_at: new Date().toISOString(),
-    };
-    // fee_payer が渡された場合、Devnet RPC から blockhash 取得 + memo tx を構築。
-    // fee_payer 不在 / Devnet RPC 失敗時は plan のみ返す (mobile 側で sign skip)。
-    const feePayer = req.body?.fee_payer;
-    if (feePayer && typeof feePayer === "string" && feePayer.length > 0) {
-      try {
-        next.tx = await buildMemoTransaction(feePayer, planId);
-      } catch (err) {
-        // Devnet RPC が落ちている等。tx field を欠落させるだけで approve 自体は成功扱い
-        req.log.warn(
-          { err: (err as Error).message },
-          "memo tx build failed"
-        );
-      }
-    }
-    return next;
-  });
-
+  /** simulated | pending_user | approved からのみ rejected (executing 以降は 409) */
   app.post<{ Params: { planId: string }; Body: { reason?: string } }>(
     "/agent-plans/:planId/reject",
     async (req, reply) => {
       const { planId } = req.params;
-      // Phase 8.28: store plan は永続遷移
       const stored = getStoredPlan(planId);
-      if (stored) {
-        return updatePlan(planId, { status: AgentPlanStatus.Rejected })!;
-      }
-      const found = fixtureAgentPlans.find((p) => p.plan_id === planId);
-      if (!found) {
+      const target = stored ?? findFixturePlan(planId);
+      if (!target) {
         reply.code(404);
         return { error: "agent_plan_not_found", plan_id: planId };
       }
-      const next: AgentPlan = {
-        ...found,
+      if (
+        target.status !== AgentPlanStatus.Simulated &&
+        target.status !== AgentPlanStatus.PendingUser &&
+        target.status !== AgentPlanStatus.Approved
+      ) {
+        reply.code(409);
+        return {
+          error: "invalid_status",
+          current: target.status,
+          target: AgentPlanStatus.Rejected,
+        };
+      }
+      const reason = sanitizeReason(req.body?.reason);
+      const patch: Partial<AgentPlan> = {
         status: AgentPlanStatus.Rejected,
-        updated_at: new Date().toISOString(),
+        ...(reason ? { failure_reason: reason } : {}),
       };
-      return next;
+      if (!stored) {
+        return { ...target, ...patch, updated_at: new Date().toISOString() };
+      }
+      return updatePlan(planId, patch)!;
     }
   );
 
   /**
-   * Phase 8.28: MCP execute_approved_action (§24.9 / §29.3)。
-   * approval_token を単一操作で検証+消費 (single-use / TTL / bundle_hash /
-   * plan 一致)。v1 は swap-earn の deposit / withdraw のみ unsigned tx を構築。
-   * Agent は unsigned tx を受け取るだけで署名しない (§6.5)。
+   * execute (§24.9 / §29.3)。approved のみ。selected_action を lib の
+   * resolveSolanaRoute で 13 route のどれかに解決し、人と同じ /protocols/* の tx builder
+   * (agent-plan-executor.ts) で unsigned tx を組む。署名は呼び手 (web の接続 wallet) が
+   * 行い、結果を /signatures (成功) か /failed (拒否・送信失敗) で報告する。
+   *
+   * 順序 (8.37 B1 / 8.75): token の早期検証 (非消費) → tx build (oracle gate / 償還価値
+   * ガード / 残高 gate は builder 内) → **最後に** token を消費。gate で止まった時に
+   * 単発 token を失わない。plan は approved のまま残るので回復後に同じ token で再実行できる。
    */
   app.post<{
     Params: { planId: string };
-    Body: { approval_token?: string };
+    Body: { approval_token?: string; via?: string };
   }>("/agent-plans/:planId/execute", async (req, reply) => {
     const { planId } = req.params;
     const tokenId = req.body?.approval_token;
     if (!tokenId || typeof tokenId !== "string") {
       reply.code(400);
       return { error: "missing_required_field", required: ["approval_token"] };
+    }
+    const viaRaw = req.body?.via;
+    if (viaRaw !== undefined && viaRaw !== "web" && viaRaw !== "autonomous") {
+      reply.code(400);
+      return { error: "invalid_via", via: viaRaw, allowed: ["web", "autonomous"] };
     }
     const plan = getStoredPlan(planId);
     if (!plan) {
@@ -4129,114 +4486,149 @@ export async function buildServer(
       reply.code(409);
       return { error: "selected_action_required", plan_id: planId };
     }
-
-    // v1: swap-earn (Jupiter routable) の deposit / withdraw のみ。
-    // Phase 8.37: 実行可否と oracle gate を **token 消費より前** に判定する —
-    // 単発 token を oracle block / 非対応 action で無駄に消費させない (§29.3)。
-    // Phase 8.75: 償還価値ガードも同じ理由で token 消費より前に置いた
-    const market = action.asset
-      ? findMarketByProtocolAsset(action.protocol, action.asset)
-      : undefined;
-    if (
-      !market ||
-      (action.action_type !== "deposit" && action.action_type !== "withdraw") ||
-      !action.amount ||
-      !isValidTokenAmount(action.amount)
-    ) {
+    const route = resolveSolanaRoute(action);
+    if (route === null) {
       reply.code(422);
       return {
-        error: "unsupported_action_v1",
-        message:
-          "v1 executes swap-earn deposit/withdraw only (valid amount required)",
+        error: "unsupported_market",
+        message: "Unsupported market — no onchain route resolved for this plan",
       };
     }
+    const amount = action.amount;
+    if (amount === undefined || !isValidTokenAmount(amount)) {
+      reply.code(422);
+      return { error: "invalid_amount", amount: amount ?? null };
+    }
 
-    // Phase 8.37 (B1): execute にも §4.6 fail-closed gate — 直接 tx-build endpoint
-    // (buildSwapEarnTx 等) と同一の判定。agent 経路だけ oracle 無検査で署名可能
-    // tx を返していた drift の修正
-    const oracle = await getOracleResult(market.underlying_mint);
-    if (oracle.status === "blocked") {
+    const expect = { plan_id: planId, bundle_hash: computeBundleHash(action) };
+    const peek = peekApprovalToken(tokenId, expect);
+    if (!peek.valid) {
+      reply.code(403);
+      return { error: "approval_token_invalid", reason: peek.reason };
+    }
+
+    const built = await buildPlanTransactions(app, route, { ...action, amount });
+    if (!built.ok) {
       req.log.warn(
-        { planId, block_reason: oracle.block_reason },
-        "execute blocked by oracle gate"
+        { planId, route: route.kind, status: built.statusCode, error: built.body.error },
+        "agent plan execute: tx build refused"
       );
+      reply.code(built.statusCode);
+      return built.body;
+    }
+
+    const validation = validateAndConsumeToken(tokenId, expect);
+    if (!validation.valid) {
+      reply.code(403);
+      return { error: "approval_token_invalid", reason: validation.reason };
+    }
+    // max_daily_executions: 人が承認した plan も実行試行として数える。
+    // auto 承認は request-approval の短絡時に数え済みなので二重に数えない
+    if (plan.approved_by !== "auto") incrementDaily();
+
+    const via: AgentPlanExecutionVia =
+      viaRaw ?? (plan.approved_by === "auto" ? "autonomous" : "web");
+    const executionId = `exec_${planId}_${Date.now().toString(36)}`;
+    const next = startPlanExecution(planId, {
+      execution_id: executionId,
+      tx_count: built.transactions.length,
+      via,
+    })!;
+    const res: AgentPlanExecuteResponse = {
+      execution_id: executionId,
+      status: "awaiting_signature",
+      plan: next,
+      unsigned_transactions: built.transactions,
+    };
+    return res;
+  });
+
+  /**
+   * web が署名・送信に成功したら報告する。executing のみ、execution_id 一致、
+   * 本数が unsigned tx と一致、各 signature は base58。→ broadcasted + execution 保存。
+   */
+  app.post<{
+    Params: { planId: string };
+    Body: { execution_id?: string; signatures?: unknown };
+  }>("/agent-plans/:planId/signatures", async (req, reply) => {
+    const { planId } = req.params;
+    const executionId = req.body?.execution_id;
+    const signatures = req.body?.signatures;
+    if (typeof executionId !== "string" || !Array.isArray(signatures)) {
+      reply.code(400);
+      return { error: "missing_required_field", required: ["execution_id", "signatures"] };
+    }
+    const plan = getStoredPlan(planId);
+    if (!plan) {
+      reply.code(404);
+      return { error: "agent_plan_not_found", plan_id: planId };
+    }
+    const pending = getPendingExecution(planId);
+    if (plan.status !== AgentPlanStatus.Executing || !pending) {
       reply.code(409);
-      return { error: "oracle_blocked", block_reason: oracle.block_reason, oracle };
+      return { error: "invalid_status", current: plan.status, target: AgentPlanStatus.Broadcasted };
     }
-
-    const isDeposit = action.action_type === "deposit";
-    try {
-      // Phase 8.75: quote は **token 消費より前** に取る。8.72 の償還価値ガードで
-      // 止まる時に単発 token を無駄にしないため — 8.37 (B1) が oracle gate で
-      // 確立した順序をそのまま踏襲する (§29.3)
-      const quote = await fetchSwapQuote({
-        inputMint: isDeposit ? market.underlying_mint : market.share_mint,
-        outputMint: isDeposit ? market.share_mint : market.underlying_mint,
-        amount: action.amount,
-        slippageBps: 50,
-      });
-
-      // Phase 8.75: 8.72 の償還価値ガードは buildSwapEarnTx 経由の human 経路にしか
-      // 掛かっておらず、**agent 経路だけ素通り**していた。oracle で 8.37 (B1) が直した
-      // drift の再発で、しかもこちらは画面を見ている人間がいない分だけ悪い。
-      // 上で取った quote をそのまま判定に使うので Jupiter への追加呼び出しは無い
-      const fv = await evaluateSwapFairValue(req, quote, {
-        direction: isDeposit ? "deposit" : "withdraw",
-        shareSymbol: market.share_symbol,
-      });
-      if (fv.status === "blocked") {
-        // plan は Approved のまま残す (Failed にしない) — 乖離が戻れば同じ token で
-        // 再実行できる。oracle block と同じ扱い
-        reply.code(409);
-        return {
-          error: "fair_value_blocked",
-          reason: fv.reason,
-          deviation_bps: fv.deviation_bps,
-          guard_bps: fairValueGuardBps(),
-          message: fairValueBlockMessage(
-            fv.reason,
-            market.share_symbol,
-            fv.deviation_bps,
-            fairValueGuardBps()
-          ),
-        };
-      }
-
-      const validation = validateAndConsumeToken(tokenId, {
-        plan_id: planId,
-        bundle_hash: computeBundleHash(action),
-      });
-      if (!validation.valid) {
-        reply.code(403);
-        return { error: "approval_token_invalid", reason: validation.reason };
-      }
-
-      const tx = await fetchSwapTransaction({
-        quoteResponse: quote,
-        userPublicKey: action.wallet_id,
-      });
-      const next = updatePlan(planId, { status: AgentPlanStatus.Executing })!;
+    if (pending.execution_id !== executionId) {
+      reply.code(409);
+      return { error: "execution_id_mismatch" };
+    }
+    if (signatures.length !== pending.tx_count) {
+      reply.code(409);
       return {
-        execution_id: `exec_${planId}`,
-        status: "pushed_to_mobile",
-        plan: next,
-        unsigned_transactions: [
-          {
-            index: 0,
-            label: `${action.action_type} ${action.asset} on ${action.protocol}`,
-            tx_base64: tx.swapTransaction,
-          },
-        ],
+        error: "signature_count_mismatch",
+        expected: pending.tx_count,
+        got: signatures.length,
       };
-    } catch (err) {
-      req.log.error(
-        { err: (err as Error).message, planId },
-        "execute tx build failed"
-      );
-      updatePlan(planId, { status: AgentPlanStatus.Failed });
-      reply.code(502);
-      return { error: "execute_tx_build_failed", message: readableUpstreamError(err, "Jupiter API") };
     }
+    if (!signatures.every((s) => typeof s === "string" && SIGNATURE_RE.test(s))) {
+      reply.code(409);
+      return { error: "invalid_signature_format" };
+    }
+    // B3: broadcast 済み → その wallet の表示 snapshot を bust (chain 反映後に読み直させる)
+    const planWallet = plan.selected_action?.wallet_id;
+    if (typeof planWallet === "string" && isWalletAddress(planWallet)) {
+      invalidateWalletSnapshot(planWallet);
+    }
+    return updatePlan(planId, {
+      status: AgentPlanStatus.Broadcasted,
+      execution: {
+        execution_id: executionId,
+        signatures: signatures as string[],
+        submitted_at: new Date().toISOString(),
+        via: pending.via,
+      },
+    })!;
+  });
+
+  /** web が wallet 拒否 / 送信失敗を報告する。executing → failed + failure_reason */
+  app.post<{
+    Params: { planId: string };
+    Body: { execution_id?: string; reason?: string };
+  }>("/agent-plans/:planId/failed", async (req, reply) => {
+    const { planId } = req.params;
+    const executionId = req.body?.execution_id;
+    if (typeof executionId !== "string") {
+      reply.code(400);
+      return { error: "missing_required_field", required: ["execution_id", "reason"] };
+    }
+    const plan = getStoredPlan(planId);
+    if (!plan) {
+      reply.code(404);
+      return { error: "agent_plan_not_found", plan_id: planId };
+    }
+    const pending = getPendingExecution(planId);
+    if (plan.status !== AgentPlanStatus.Executing || !pending) {
+      reply.code(409);
+      return { error: "invalid_status", current: plan.status, target: AgentPlanStatus.Failed };
+    }
+    if (pending.execution_id !== executionId) {
+      reply.code(409);
+      return { error: "execution_id_mismatch" };
+    }
+    return updatePlan(planId, {
+      status: AgentPlanStatus.Failed,
+      failure_reason: sanitizeReason(req.body?.reason) ?? "unknown",
+    })!;
   });
 
   // ── adapter-driven endpoints (CLAUDE.md §13 / §26) ───────────────────
@@ -4297,7 +4689,7 @@ export async function buildServer(
   });
 
   /**
-   * Phase 8.14 §4.6: underlying mint の実 oracle 判定 (Pyth→Switchboard fail-closed)。
+   * §4.6: underlying mint の実 oracle 判定 (Pyth push → RedStone push、fail-closed。2026-10 に on-chain feed へ移行)。
    * Mobile ActionModal が review 時に引いて WarningArea 表示 / CTA gate に使う。
    * deposit/withdraw-tx の server 強制 gate と同じ getOracleResult を共有。
    */
@@ -4325,11 +4717,16 @@ export async function buildServer(
    */
   app.get<{ Querystring: { wallet?: string; days?: string } }>(
     "/portfolio/history",
+    WALLET_READ_LIMIT,
     async (req, reply) => {
       const wallet = req.query?.wallet?.trim();
       if (!wallet) {
         reply.code(400);
         return { error: "wallet_required" };
+      }
+      if (!isWalletAddress(wallet)) {
+        reply.code(400);
+        return { error: "invalid_wallet_address", wallet };
       }
       const requested = Number(req.query?.days ?? "30");
       const days = Number.isFinite(requested)
@@ -4346,6 +4743,41 @@ export async function buildServer(
         return {
           error: "portfolio_history_unavailable",
           message: readableUpstreamError(err, "Portfolio history sources"),
+        };
+      }
+    }
+  );
+
+  /**
+   * web Dashboard: 現在の保有を category 付きで返す (Allocation donut 用)。
+   * 履歴と同じ入力 cache から作るので、グラフの右端とパイの合計が揃う。
+   * 単価が不明な asset は載せない (0 として見せない)。失敗は履歴と同じく 503。
+   */
+  app.get<{ Querystring: { wallet?: string } }>(
+    "/portfolio/holdings",
+    WALLET_READ_LIMIT,
+    async (req, reply) => {
+      const wallet = req.query?.wallet?.trim();
+      if (!wallet) {
+        reply.code(400);
+        return { error: "wallet_required" };
+      }
+      // /positions と同じ base58 guard (不正 address で上流を叩かない)
+      if (!isWalletAddress(wallet)) {
+        reply.code(400);
+        return { error: "invalid_wallet_address", wallet };
+      }
+      try {
+        return await buildPortfolioHoldings(wallet);
+      } catch (err) {
+        req.log.warn(
+          { err: (err as Error).message, wallet },
+          "portfolio holdings failed"
+        );
+        reply.code(503);
+        return {
+          error: "portfolio_holdings_unavailable",
+          message: readableUpstreamError(err, "Portfolio holdings sources"),
         };
       }
     }
@@ -4379,12 +4811,29 @@ export async function buildServer(
         .slice(0, 20); // 上限 (registry は 4 asset なので実質十分)
       const prices: Record<string, string> = {};
       let thrown = 0;
+      // B3: 全 symbol の mint を 1 回の getOracleResults で読む (Pyth + RedStone を 1 回の
+      // getMultipleAccounts)。batch が throw したら従来の per-symbol 読みに戻す (1 mint の失敗を
+      // 他 symbol に波及させず、thrown の数え方も従来どおり)。判定 (fail-closed / TTL) は不変
+      const mintBySymbol = new Map<string, string>();
+      for (const symbol of symbols) {
+        const mint = oracleMintForSymbol(symbol);
+        if (mint) mintBySymbol.set(symbol, mint);
+      }
+      let batch: Map<string, Awaited<ReturnType<typeof getOracleResult>>> | null = null;
+      if (mintBySymbol.size > 0) {
+        try {
+          const r = await getOracleResults([...new Set(mintBySymbol.values())]);
+          batch = r instanceof Map ? r : null;
+        } catch {
+          batch = null;
+        }
+      }
       await Promise.all(
         symbols.map(async (symbol) => {
-          const mint = oracleMintForSymbol(symbol);
+          const mint = mintBySymbol.get(symbol);
           if (!mint) return;
           try {
-            const result = await getOracleResult(mint);
+            const result = batch?.get(mint) ?? (await getOracleResult(mint));
             if (result.status !== "blocked" && result.price_usd) {
               prices[symbol] = result.price_usd;
             }
@@ -4417,6 +4866,7 @@ export async function buildServer(
    */
   app.post<{ Body: { signedTx?: string; skipPreflight?: boolean } }>(
     "/tx/submit",
+    TX_SUBMIT_LIMIT,
     async (req, reply) => {
       const { signedTx, skipPreflight } = req.body ?? {};
       if (!signedTx || typeof signedTx !== "string") {
@@ -4427,6 +4877,16 @@ export async function buildServer(
         const signature = await sendTransactionViaHelius(signedTx, {
           skipPreflight: Boolean(skipPreflight),
         });
+        // B3: 送った wallet (fee payer = static account key 0、legacy / v0 共通) の表示 snapshot を
+        // bust する。best effort — 失敗しても route は成功を返す。tx 本体は log に出さない
+        try {
+          const feePayer = VersionedTransaction.deserialize(
+            Buffer.from(signedTx, "base64")
+          ).message.staticAccountKeys[0]?.toBase58();
+          if (feePayer) invalidateWalletSnapshot(feePayer);
+        } catch {
+          // deserialize 不能 (送信は成功済み) → snapshot は TTL で自然に更新される
+        }
         return { signature };
       } catch (err) {
         req.log.error(
@@ -4441,6 +4901,26 @@ export async function buildServer(
       }
     }
   );
+
+  /**
+   * Web: /tx/submit で送った tx の着地確認。Wallet Standard の sign-only wallet は送信後の状態を
+   * 出さないので、web はこれを数秒おきに引いて confirmed / failed を表示する (read-only)。
+   */
+  app.get<{ Querystring: { signature?: string } }>("/tx/status", async (req, reply) => {
+    const signature = req.query.signature ?? "";
+    // base58 の ed25519 signature (64 byte) は 86〜88 文字
+    if (!/^[1-9A-HJ-NP-Za-km-z]{86,88}$/.test(signature)) {
+      reply.code(400);
+      return { error: "invalid_signature", message: "signature must be a base58 transaction signature" };
+    }
+    try {
+      return await getSignatureStatus(signature);
+    } catch (err) {
+      req.log.error({ err: (err as Error).message.replace(/api-key=[^&\s]+/g, "api-key=***") }, "tx status failed");
+      reply.code(502);
+      return { error: "status_failed", message: "Could not read the transaction status from the Solana RPC." };
+    }
+  });
 
   /**
    * Phase 8.9: One-tap withdraw — jlToken → underlying mint の Jupiter Swap tx。
@@ -4465,7 +4945,7 @@ export async function buildServer(
         required: ["user", "jlMint", "amount"],
       };
     }
-    if (user.length < 32 || user.length > 44 || /\s/.test(user)) {
+    if (!isWalletAddress(user)) {
       reply.code(400);
       return { error: "invalid_wallet_address", user };
     }
@@ -4517,7 +4997,7 @@ export async function buildServer(
         required: ["user", "inputMint", "amount"],
       };
     }
-    if (user.length < 32 || user.length > 44 || /\s/.test(user)) {
+    if (!isWalletAddress(user)) {
       reply.code(400);
       return { error: "invalid_wallet_address", user };
     }
@@ -4563,7 +5043,7 @@ export async function buildServer(
         required: ["user", "shareMint", "amount"],
       };
     }
-    if (user.length < 32 || user.length > 44 || /\s/.test(user)) {
+    if (!isWalletAddress(user)) {
       reply.code(400);
       return { error: "invalid_wallet_address", user };
     }
@@ -4610,7 +5090,7 @@ export async function buildServer(
         required: ["user", "shareMint", "amount"],
       };
     }
-    if (user.length < 32 || user.length > 44 || /\s/.test(user)) {
+    if (!isWalletAddress(user)) {
       reply.code(400);
       return { error: "invalid_wallet_address", user };
     }
@@ -4652,7 +5132,7 @@ export async function buildServer(
         required: ["user", "reserve", "amount"],
       };
     }
-    if (user.length < 32 || user.length > 44 || /\s/.test(user)) {
+    if (!isWalletAddress(user)) {
       reply.code(400);
       return { error: "invalid_wallet_address", user };
     }
@@ -4674,7 +5154,7 @@ export async function buildServer(
         required: ["user", "reserve", "amount"],
       };
     }
-    if (user.length < 32 || user.length > 44 || /\s/.test(user)) {
+    if (!isWalletAddress(user)) {
       reply.code(400);
       return { error: "invalid_wallet_address", user };
     }
@@ -4696,7 +5176,7 @@ export async function buildServer(
         required: ["user", "vault", "amount"],
       };
     }
-    if (user.length < 32 || user.length > 44 || /\s/.test(user)) {
+    if (!isWalletAddress(user)) {
       reply.code(400);
       return { error: "invalid_wallet_address", user };
     }
@@ -4718,7 +5198,7 @@ export async function buildServer(
         required: ["user", "vault", "amount"],
       };
     }
-    if (user.length < 32 || user.length > 44 || /\s/.test(user)) {
+    if (!isWalletAddress(user)) {
       reply.code(400);
       return { error: "invalid_wallet_address", user };
     }
@@ -4742,7 +5222,7 @@ export async function buildServer(
         required: ["user", "reserve", "amount"],
       };
     }
-    if (user.length < 32 || user.length > 44 || /\s/.test(user)) {
+    if (!isWalletAddress(user)) {
       reply.code(400);
       return { error: "invalid_wallet_address", user };
     }
@@ -4773,7 +5253,7 @@ export async function buildServer(
         required: ["user", "ctokenMint", "amount"],
       };
     }
-    if (user.length < 32 || user.length > 44 || /\s/.test(user)) {
+    if (!isWalletAddress(user)) {
       reply.code(400);
       return { error: "invalid_wallet_address", user };
     }
@@ -4806,7 +5286,7 @@ export async function buildServer(
         required: ["user", "ptMint", "amount"],
       };
     }
-    if (user.length < 32 || user.length > 44 || /\s/.test(user)) {
+    if (!isWalletAddress(user)) {
       reply.code(400);
       return { error: "invalid_wallet_address", user };
     }
@@ -4891,7 +5371,7 @@ export async function buildServer(
         required: ["user", "poolKey", "amount"],
       };
     }
-    if (user.length < 32 || user.length > 44 || /\s/.test(user)) {
+    if (!isWalletAddress(user)) {
       reply.code(400);
       return { error: "invalid_wallet_address", user };
     }
@@ -4946,7 +5426,7 @@ export async function buildServer(
         required: ["user", "position", "amount"],
       };
     }
-    if (user.length < 32 || user.length > 44 || /\s/.test(user)) {
+    if (!isWalletAddress(user)) {
       reply.code(400);
       return { error: "invalid_wallet_address", user };
     }
@@ -5013,7 +5493,7 @@ export async function buildServer(
         required: ["user", "poolKey", "amount"],
       };
     }
-    if (user.length < 32 || user.length > 44 || /\s/.test(user)) {
+    if (!isWalletAddress(user)) {
       reply.code(400);
       return { error: "invalid_wallet_address", user };
     }
@@ -5068,7 +5548,7 @@ export async function buildServer(
         required: ["user", "position", "amount"],
       };
     }
-    if (user.length < 32 || user.length > 44 || /\s/.test(user)) {
+    if (!isWalletAddress(user)) {
       reply.code(400);
       return { error: "invalid_wallet_address", user };
     }
@@ -5184,11 +5664,23 @@ export async function buildServer(
       // Phase 8.28: store plan は body.action_spec を selected_action に採用し、
       // simulation_result を永続 (status→simulated)。bundle_hash は決定的 sha256。
       const stored = getStoredPlan(planId);
-      const found =
-        stored ?? fixtureAgentPlans.find((p) => p.plan_id === planId);
+      const found = stored ?? findFixturePlan(planId);
       if (!found) {
         reply.code(404);
         return { error: "agent_plan_not_found", plan_id: planId };
+      }
+      // 実行中 / 終端の plan を simulated に巻き戻さない (署名待ちの execution を壊さない)
+      if (
+        stored &&
+        (stored.status === AgentPlanStatus.Executing ||
+          isTerminalPlanStatus(stored.status))
+      ) {
+        reply.code(409);
+        return {
+          error: "invalid_status_transition",
+          current: stored.status,
+          target: AgentPlanStatus.Simulated,
+        };
       }
       const action = stored
         ? (req.body?.action_spec ?? stored.selected_action)
@@ -5241,7 +5733,7 @@ export async function buildServer(
       // (偽の健全表示をしない — optional field の正直な不在)
       let simOracle:
         | {
-            primary: "pyth" | "switchboard";
+            primary: OracleSourceId;
             primary_age_seconds: number;
             divergence_pct?: number;
             warnings: string[];
@@ -5273,7 +5765,7 @@ export async function buildServer(
         if (oracle.primary) {
           simOracle = {
             primary: oracle.primary,
-            primary_age_seconds: oracle[oracle.primary].age_seconds ?? 0,
+            primary_age_seconds: (oracle.primary === "pyth" ? oracle.pyth : oracle.secondary).age_seconds ?? 0,
             divergence_pct: oracle.divergence_pct ?? undefined,
             warnings,
           };
@@ -5293,11 +5785,13 @@ export async function buildServer(
         metadata: meta,
       };
       // store plan は selected_action + simulation_result を永続 (§11.7)
+      // 再 simulate は承認をやり直させる (approved_by を外す。旧 token は bundle_hash で弾かれる)
       if (stored) {
         updatePlan(planId, {
           selected_action: action,
           simulation_result: sim,
           status: AgentPlanStatus.Simulated,
+          approved_by: undefined,
         });
       }
       return { plan_id: planId, simulation: sim };
@@ -5324,6 +5818,11 @@ export async function buildServer(
   app.post<{ Body: { token: string; device_id?: string } }>(
     "/push-tokens",
     async (req, reply) => {
+      // EXPO_PUSH_ENABLED=true の時だけ受け付ける (FCM 未設定の配布物で token を溜めない)
+      if (!pushEnabled()) {
+        reply.code(503);
+        return { error: "push_not_configured" };
+      }
       const body = req.body ?? {};
       if (!body.token || typeof body.token !== "string") {
         reply.code(400);
@@ -5341,6 +5840,11 @@ export async function buildServer(
     "/autonomous/tick",
     async (req, reply) => {
       const body = req.body ?? {};
+      // plans-only サーバでは dry_run (決定のみ、署名しない) 以外を断る
+      if (solanaExecutionTarget() === "disabled" && body.dry_run !== true) {
+        reply.code(409);
+        return EXECUTION_DISABLED;
+      }
       if (!isObjective(body.objective)) {
         reply.code(400);
         return { error: "invalid_objective", objective: body.objective };
@@ -5372,11 +5876,28 @@ export async function buildServer(
 
   app.get("/autonomous/log", async () => listExecutionRecords());
   app.get("/autonomous/status", async () => getAutonomousStatus());
-  app.post("/autonomous/kill", async () => {
+  // kill / resume は自律機能が有効な BFF でだけ、かつ管理者だけが触れる
+  // (公開 BFF で誰でも kill switch を切り替えられないように)
+  const autonomousAdminGuard = (req: FastifyRequest, reply: FastifyReply) => {
+    if (!isAutonomousFeatureEnabled()) {
+      reply.code(403);
+      return { error: "autonomous_disabled", reason: "feature_flag_off" };
+    }
+    if (!isAdminAuthorized(req, adminToken())) {
+      reply.code(403);
+      return { error: "admin_token_required" };
+    }
+    return null;
+  };
+  app.post("/autonomous/kill", async (req, reply) => {
+    const denied = autonomousAdminGuard(req, reply);
+    if (denied) return denied;
     killAutonomous();
     return getAutonomousStatus();
   });
-  app.post("/autonomous/resume", async () => {
+  app.post("/autonomous/resume", async (req, reply) => {
+    const denied = autonomousAdminGuard(req, reply);
+    if (denied) return denied;
     resumeAutonomous();
     return getAutonomousStatus();
   });

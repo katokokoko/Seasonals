@@ -133,6 +133,31 @@ describe("routes", () => {
     expect(mainnet.json().message).toMatch(/plans only/);
     await app.close();
   });
+  it("agent proposals: execute needs approval + hash, list needs an address, submit validates the steps", async () => {
+    const app = await buildServer();
+    const noApproval = await app.inject({ method: "POST", url: "/eth/agent-proposals/ethprop_x/execute", payload: { via: "web", bundleHash: "0x1" } });
+    expect(noApproval.statusCode).toBe(403);
+    expect(noApproval.json().error).toBe("approval_required");
+    const noHash = await app.inject({ method: "POST", url: "/eth/agent-proposals/ethprop_x/execute", payload: { approvedBy: "user", via: "web" } });
+    expect(noHash.statusCode).toBe(400);
+    const unknown = await app.inject({ method: "POST", url: "/eth/agent-proposals/ethprop_x/execute", payload: { approvedBy: "user", via: "chat", bundleHash: "0x1" } });
+    expect(unknown.statusCode).toBe(404);
+    expect((await app.inject({ method: "GET", url: "/eth/agent-proposals?address=nope" })).statusCode).toBe(400);
+    expect((await app.inject({ method: "GET", url: "/eth/agent-proposals/ethprop_x" })).statusCode).toBe(404);
+    const owner = "0x0cA88aeB92357A00CDFAC815d5e11C4eEEefc2b5";
+    const step = { kind: "uniswap_swap", tokenIn: "USDC", tokenOut: "USDe", amount: "1" };
+    const tooMany = await app.inject({ method: "POST", url: "/eth/agent-proposals", payload: { owner, name: "🍋 t", rationale: "r", steps: Array(7).fill(step) } });
+    expect(tooMany.statusCode).toBe(400);
+    expect(tooMany.json().error).toBe("invalid_argument");
+    const badSymbol = await app.inject({ method: "POST", url: "/eth/agent-proposals", payload: { owner, name: "🍋 t", rationale: "r", steps: [{ ...step, tokenOut: "DAI" }] } });
+    expect(badSymbol.statusCode).toBe(400);
+    const noLetter = await app.inject({ method: "POST", url: "/eth/agent-proposals/brief", payload: { owner, name: "🍋", rationale: "r", steps: [step] } });
+    expect(noLetter.statusCode).toBe(400);
+    expect(noLetter.json().message).toMatch(/letter/);
+    const badPreview = await app.inject({ method: "POST", url: "/eth/agent-proposals/preview", payload: { owner, step: { kind: "menu" } } });
+    expect(badPreview.statusCode).toBe(400);
+    await app.close();
+  });
   it("execute refuses a non-Anvil endpoint", async () => {
     const saved = { ...process.env };
     process.env.ETH_EXECUTION_TARGET = "fork";

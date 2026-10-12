@@ -13,19 +13,15 @@
  * 逆算とサンプリングを単体テストできるようにしてある。
  */
 
+import type { PositionCategory } from "@workspace/lib/types";
 import {
+  bigIntToUsd8,
   toBigInt,
   toSmallestUnit,
 } from "@workspace/lib/utils/numeric";
 
-/** USD の 8-dec fixed point bigint → decimal string (server.ts と同形式) */
-function formatUsd8(scaled8: bigint): string {
-  const neg = scaled8 < 0n;
-  const v = neg ? -scaled8 : scaled8;
-  const intPart = v / 100_000_000n;
-  const frac = (v % 100_000_000n).toString().padStart(8, "0");
-  return `${neg ? "-" : ""}${intPart.toString()}.${frac}`;
-}
+/** USD の 8-dec fixed point bigint → decimal string (lib の共通 helper) */
+const formatUsd8 = bigIntToUsd8;
 
 /** 8-dec decimal string → scaled bigint (×1e8)。不正は null */
 function usd8ToScaled(price: string): bigint | null {
@@ -41,7 +37,10 @@ function usd8ToScaled(price: string): bigint | null {
 export interface BalanceDelta {
   /** unix seconds */
   timestamp: number;
-  /** mint address (native SOL は "SOL" の擬似キー) */
+  /**
+   * chain 上の asset key。Solana = mint address (native SOL は WSOL mint)、
+   * Ethereum = 小文字の token address (native ETH は "ETH")
+   */
   mint: string;
   /** 符号付き差分 (wallet 増加が正) */
   amount: bigint;
@@ -58,6 +57,9 @@ export interface HistoryAsset {
   feedId?: string | undefined;
   /** 現在の USD 単価 (8-dec string)。実価格が引けない点の近似に使う */
   currentUsd8?: string | undefined;
+  /** holdings (Allocation donut) 用。履歴の計算には使わない */
+  protocolId?: string;
+  category?: PositionCategory;
 }
 
 export interface HistoryPoint {
@@ -65,12 +67,15 @@ export interface HistoryPoint {
   at: number;
   /** その時点の評価額 (USD 8-dec string)。**全資産** */
   usd: string;
-  /** その時点の SOL 建て評価額 (8-dec string)。SOL 価格が無い点は "0" */
-  sol: string;
+  /**
+   * その時点の native 建て評価額 (8-dec string。Solana = SOL、Ethereum = ETH)。
+   * native の価格が無い点は "0"。Solana route は mobile 互換の `sol` alias も付ける
+   */
+  native: string;
   /** 8.62: protocol に預けた分のみの評価額 (同じ残高・価格から同時に集計) */
   deposited_usd: string;
-  /** 8.62: 同上の SOL 建て */
-  deposited_sol: string;
+  /** 8.62: 同上の native 建て */
+  deposited_native: string;
   /**
    * 8.65: **直前の点からの間に起きた残高変化**に由来する評価額の増減
    * (USD 8-dec、符号付き)。価格変動の分は含まない。
@@ -266,17 +271,17 @@ export interface HistorySeries {
 
 /**
  * 各時点の残高 × その時点の価格 → 評価額の系列。
- * SOL 建ては同じ時点の SOL 価格で割る (SOL の線も歴史的に正しくなる)。
+ * native 建ては同じ時点の native 価格で割る (SOL / ETH の線も歴史的に正しくなる)。
  *
  * @param pricesByTime 時刻 → (**mint** → USD 8-dec string)。8.64 で feedId キーから変更
- * @param solPriceKey  SOL 建て換算に使う mint (= WSOL mint)
+ * @param nativePriceKey native 建て換算に使う asset key (Solana = WSOL mint、Ethereum = "ETH")
  */
 export function buildHistorySeries(
   timestamps: number[],
   balancesByTime: Map<number, Map<string, bigint>>,
   assets: HistoryAsset[],
   pricesByTime: Map<number, Map<string, string>>,
-  solPriceKey: string | undefined
+  nativePriceKey: string | undefined
 ): HistorySeries {
   const points: HistoryPoint[] = [];
   const approximated = new Set<string>();
@@ -329,9 +334,9 @@ export function buildHistorySeries(
       points.push({
         at,
         usd: "0.00000000",
-        sol: "0.00000000",
+        native: "0.00000000",
         deposited_usd: "0.00000000",
-        deposited_sol: "0.00000000",
+        deposited_native: "0.00000000",
         // ゼロになった = 直前に持っていた分がまるごと出ていった (全額引き出し)
         flow_usd: formatUsd8(prevAmounts === null ? 0n : -prevUsd),
         deposited_flow_usd: formatUsd8(
@@ -343,17 +348,19 @@ export function buildHistorySeries(
       prevDepositedUsd = 0n;
       continue;
     }
-    const solScaled = solPriceKey
-      ? usd8ToScaled(pricesOfPoint?.get(solPriceKey) ?? "")
+    const nativeScaled = nativePriceKey
+      ? usd8ToScaled(pricesOfPoint?.get(nativePriceKey) ?? "")
       : null;
-    const toSol = (usd8: bigint) =>
-      solScaled && solScaled > 0n ? (usd8 * 100_000_000n) / solScaled : 0n;
+    const toNative = (usd8: bigint) =>
+      nativeScaled && nativeScaled > 0n
+        ? (usd8 * 100_000_000n) / nativeScaled
+        : 0n;
     points.push({
       at,
       usd: formatUsd8(usdTotal),
-      sol: formatUsd8(toSol(usdTotal)),
+      native: formatUsd8(toNative(usdTotal)),
       deposited_usd: formatUsd8(depositedTotal),
-      deposited_sol: formatUsd8(toSol(depositedTotal)),
+      deposited_native: formatUsd8(toNative(depositedTotal)),
       flow_usd: formatUsd8(flowTotal),
       deposited_flow_usd: formatUsd8(depositedFlowTotal),
     });

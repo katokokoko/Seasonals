@@ -40,6 +40,7 @@ import {
 } from "@workspace/lib/design-system";
 // Phase 8.14: OracleWarningKind / OracleWarning は lib canonical に統合 (§32.2)。
 import type { OracleWarning, OracleWarningKind } from "@workspace/lib/types";
+import { ORACLE_WARNING_HEADLINE, oracleWarningBody } from "@workspace/lib/derive/oracle-gate";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Public types
@@ -101,28 +102,8 @@ export interface WarningAreaProps {
 // Internal: 表示文の生成
 // ─────────────────────────────────────────────────────────────────────────────
 
-const ORACLE_WARNING_HEADLINE: Record<OracleWarningKind, string> = {
-  oracle_divergence_warning: "Price oracle anomaly detected",
-  oracle_pyth_stale: "Pyth is returning a stale price",
-  oracle_switchboard_stale: "Switchboard is returning a stale price",
-};
-
-function buildOracleWarningBody(w: OracleWarning): string {
-  switch (w.kind) {
-    case "oracle_divergence_warning":
-      return w.divergencePct !== undefined
-        ? `Pyth and Switchboard prices differ by ${w.divergencePct.toFixed(1)}%`
-        : "Pyth and Switchboard prices differ";
-    case "oracle_pyth_stale":
-      return w.pythAgeSeconds !== undefined
-        ? `Pyth last updated ${Math.floor(w.pythAgeSeconds)}s ago · using Switchboard`
-        : "Pyth is stale · using Switchboard";
-    case "oracle_switchboard_stale":
-      return w.switchboardAgeSeconds !== undefined
-        ? `Switchboard last updated ${Math.floor(w.switchboardAgeSeconds)}s ago · using Pyth`
-        : "Switchboard is stale · using Pyth";
-  }
-}
+// 見出し / 本文は Web (OracleGate) と共有する (lib/derive/oracle-gate.ts、source 名に依存しない)
+const buildOracleWarningBody = oracleWarningBody;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // WarningArea component

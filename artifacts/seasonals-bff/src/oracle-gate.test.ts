@@ -11,6 +11,9 @@ jest.mock("./clients/oracle", () => ({
   // 8.57: symbol → mint の逆引きは実物を使う (registry と一致させるため)
   ...jest.requireActual("./clients/oracle"),
   getOracleResult: (mint: string) => mockGetOracleResult(mint),
+  // B3: /prices 等は batch 版を使う — 同じ stub から組み立てる (判定は stub のまま)
+  getOracleResults: async (mints: string[]) =>
+    new Map(await Promise.all(mints.map(async (m) => [m, await mockGetOracleResult(m)] as const))),
 }));
 
 import { buildServer } from "./server";
@@ -33,7 +36,8 @@ function blockedResult(): OracleResult {
     primary: null,
     price_usd: null,
     pyth: { available: false, price_usd: null, age_seconds: null },
-    switchboard: { available: false, price_usd: null, age_seconds: null },
+    secondary: { source: null, available: false, price_usd: null, age_seconds: null },
+    tier: "C",
     divergence_pct: null,
     warnings: [],
     block_reason: "oracle_unavailable",
@@ -71,7 +75,8 @@ function okResult(symbol: string, price: string): OracleResult {
     primary: "pyth",
     price_usd: price,
     pyth: { available: true, price_usd: price, age_seconds: 2 },
-    switchboard: { available: false, price_usd: null, age_seconds: null },
+    secondary: { source: null, available: false, price_usd: null, age_seconds: null },
+    tier: "C",
     divergence_pct: null,
     warnings: [],
     block_reason: null,

@@ -11,7 +11,7 @@
  * 2026-05-11 の 1.04269 → 08-01 の 1.05372 = +1.06%、Jupiter の earnings
  * 107982 と整合)。これを **履歴表示専用** の第 3 経路として使う。
  *
- * **oracle 経路とは隔離する**: §4.6 の primary=Pyth / fallback=Switchboard は
+ * **oracle 経路とは隔離する**: §4.6 の primary=Pyth / secondary=RedStone (on-chain push feed) は
  * simulate / execute の fail-closed 判定であり、本 module はそこに一切入らない。
  * ここは chart の値付け (display only) だけに使う。
  *
@@ -34,6 +34,7 @@ import { fetchWithTimeout } from "./http";
 import type { PriceSeries } from "./pyth-history";
 
 const CHART_URL = "https://coins.llama.fi/chart";
+const CURRENT_URL = "https://coins.llama.fi/prices/current";
 const FETCH_TIMEOUT_MS = 15_000;
 /** 系列は末尾以外変わらないので pyth-history と同じ TTL */
 const CACHE_TTL_MS = 5 * 60_000;
@@ -45,6 +46,9 @@ const CACHE_MAX_ENTRIES = 200;
  * 実データの顔をした雑音になる (実測: jlUSDC = 0.9)。
  */
 export const MIN_CONFIDENCE = 0.7;
+
+/** 1 リクエストあたりの coin 数 (URL 長で API が空応答になるのを避ける) */
+export const CHUNK = 20;
 
 /** 上限点数 (API の span 上限に踏み込まないための保険) */
 const MAX_SPAN = 400;
@@ -60,9 +64,25 @@ export function _clearLlamaHistoryCacheForTest(): void {
   cache.clear();
 }
 
-/** mint → coins API のキー (Solana chain 固定) */
-export function llamaCoinKey(mint: string): string {
-  return `solana:${mint}`;
+/** DeFiLlama coins API の chain prefix (Seasonals の ChainId と同名) */
+export type LlamaChain = "solana" | "ethereum";
+
+/** Ethereum の native ETH を表す asset key (ERC-20 address と衝突しない擬似キー) */
+export const ETH_NATIVE_KEY = "ETH";
+
+/**
+ * asset key → coins API のキー。
+ * Solana は `solana:<mint>`、Ethereum は `ethereum:<address>`、native ETH は
+ * contract address を持たないので `coingecko:ethereum`。
+ */
+export function llamaCoinKey(
+  mint: string,
+  chain: LlamaChain = "solana"
+): string {
+  if (chain === "ethereum" && mint === ETH_NATIVE_KEY) {
+    return "coingecko:ethereum";
+  }
+  return `${chain}:${mint}`;
 }
 
 /**
@@ -122,7 +142,8 @@ export async function fetchLlamaPriceSeries(
   mints: string[],
   fromSec: number,
   toSec: number,
-  stepSec: number
+  stepSec: number,
+  chain: LlamaChain = "solana"
 ): Promise<Map<string, PriceSeries>> {
   const unique = [...new Set(mints)].sort();
   const out = new Map<string, PriceSeries>();
@@ -133,32 +154,36 @@ export async function fetchLlamaPriceSeries(
     MAX_SPAN,
     Math.max(1, Math.ceil((toSec - fromSec) / Math.max(1, stepSec)) + 1)
   );
-  const cacheKey = `${unique.join(",")}|${period}|${span}|${fromSec}`;
+  const cacheKey = `${chain}|${unique.join(",")}|${period}|${span}|${fromSec}`;
   const cached = cache.get(cacheKey);
   if (cached && Date.now() - cached.at < CACHE_TTL_MS) return cached.data;
 
-  const coins = unique.map(llamaCoinKey).join(",");
-  const url =
-    `${CHART_URL}/${coins}?start=${fromSec}&span=${span}` +
-    `&period=${period}&searchWidth=${period}`;
-  try {
-    const res = await fetchWithTimeout(
-      url,
-      {
-        method: "GET",
-        headers: {
-          accept: "application/json",
-          "user-agent": "seasonals-bff/1.0",
+  // 1 リクエストに全 coin を並べると URL が長くなり (75 coin で約 5,500 文字)、coins API は
+  // 何も返さなくなる (2026-09-26 実測: 全 asset が現在価格に落ちて履歴が平らになった)。
+  // CHUNK 個ずつに分け、失敗した束は半分に割って再試行する (1 つの不正な coin で全体を落とさない)
+  const fetchChunk = async (chunk: string[]): Promise<boolean> => {
+    const coins = chunk.map((m) => llamaCoinKey(m, chain)).join(",");
+    const url =
+      `${CHART_URL}/${coins}?start=${fromSec}&span=${span}` +
+      `&period=${period}&searchWidth=${period}`;
+    try {
+      const res = await fetchWithTimeout(
+        url,
+        {
+          method: "GET",
+          headers: {
+            accept: "application/json",
+            "user-agent": "seasonals-bff/1.0",
+          },
         },
-      },
-      FETCH_TIMEOUT_MS
-    );
-    if (res.ok) {
+        FETCH_TIMEOUT_MS
+      );
+      if (!res.ok) return false;
       const json = (await res.json()) as {
         coins?: Record<string, LlamaChartCoin>;
       };
-      for (const mint of unique) {
-        const coin = json.coins?.[llamaCoinKey(mint)];
+      for (const mint of chunk) {
+        const coin = json.coins?.[llamaCoinKey(mint, chain)];
         if (!coin || !Array.isArray(coin.prices)) continue;
         // confidence は「この価格をどれだけ信用してよいか」。低い値は採用しない
         if (
@@ -184,9 +209,20 @@ export async function fetchLlamaPriceSeries(
         }
         if (series.t.length > 0) out.set(mint, series);
       }
+      return true;
+    } catch {
+      return false; // 取れない mint は Map に入れない (呼び手が近似に落ちる)
     }
-  } catch {
-    /* noop — 取れない mint は Map に入れない (呼び手が近似に落ちる) */
+  };
+  const run = async (chunk: string[]): Promise<void> => {
+    if (await fetchChunk(chunk)) return;
+    if (chunk.length <= 1) return;
+    const mid = Math.ceil(chunk.length / 2);
+    await run(chunk.slice(0, mid));
+    await run(chunk.slice(mid));
+  };
+  for (let i = 0; i < unique.length; i += CHUNK) {
+    await run(unique.slice(i, i + CHUNK));
   }
 
   cache.set(cacheKey, { at: Date.now(), data: out });
@@ -227,4 +263,51 @@ export function anchorSeries(
       return scaledToUsd8((scaled * target) / last);
     }),
   };
+}
+
+/**
+ * 現在価格 (USD 8-dec)。Chainlink feed の無い Ethereum asset (wstETH / sUSDe /
+ * Pendle PT 等) の「今の単価」に使う (Solana は DAS が価格を持つので不要)。
+ * 履歴と同じく **display only**。取れない / 低 confidence は Map に入れない。
+ */
+export async function fetchLlamaCurrentPrices(
+  mints: string[],
+  chain: LlamaChain = "solana"
+): Promise<Map<string, string>> {
+  const unique = [...new Set(mints)].sort();
+  const out = new Map<string, string>();
+  if (unique.length === 0) return out;
+  const coins = unique.map((m) => llamaCoinKey(m, chain)).join(",");
+  try {
+    const res = await fetchWithTimeout(
+      `${CURRENT_URL}/${coins}?searchWidth=4h`,
+      {
+        method: "GET",
+        headers: {
+          accept: "application/json",
+          "user-agent": "seasonals-bff/1.0",
+        },
+      },
+      FETCH_TIMEOUT_MS
+    );
+    if (!res.ok) return out;
+    const json = (await res.json()) as {
+      coins?: Record<string, { price?: number; confidence?: number }>;
+    };
+    for (const mint of unique) {
+      const coin = json.coins?.[llamaCoinKey(mint, chain)];
+      if (!coin) continue;
+      if (
+        typeof coin.confidence === "number" &&
+        coin.confidence < MIN_CONFIDENCE
+      ) {
+        continue;
+      }
+      const usd8 = toUsd8(coin.price);
+      if (usd8 !== null) out.set(mint, usd8);
+    }
+  } catch {
+    /* noop — 取れない asset は単価不明 (holdings に載らない / 近似に落ちる) */
+  }
+  return out;
 }

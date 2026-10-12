@@ -47,7 +47,7 @@ const MINTS: Record<string, string> = {
 
 /**
  * mock 価格表 (USD per 1 token、8 decimals string で扱うが quote 計算では Number)。
- * 実装: 後で Pyth / Switchboard / Jupiter price API に置換。
+ * 実装: 後で oracle (Pyth / RedStone の on-chain push feed) か Jupiter price API に置換。
  */
 const MOCK_PRICES: Record<string, number> = {
   SOL: 168.5,

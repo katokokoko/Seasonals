@@ -456,7 +456,7 @@ export async function runAutonomousCycle(
     bundle_hash: bundleHash,
   });
   validateAndConsumeToken(token.token_id, { plan_id: plan.plan_id, bundle_hash: bundleHash });
-  updatePlan(plan.plan_id, { status: "approved" });
+  updatePlan(plan.plan_id, { status: "approved", approved_by: "auto" });
 
   const delegate = getDelegate()!;
   // lamports を tx build 直前に第2クランプ (最終防衛線)
@@ -491,7 +491,16 @@ export async function runAutonomousCycle(
     // broadcast 失敗でも枠は返さない (保守側 = cap は実行「試行」に対する上限)
     incrementDaily();
     const signature = await sendAndConfirmDevnetTx(tx, delegate.keypair);
-    updatePlan(plan.plan_id, { status: "executing" });
+    // 委任署名で送信・確認まで済んでいる = 人の web 署名経路の /signatures と同じ終端
+    updatePlan(plan.plan_id, {
+      status: "broadcasted",
+      execution: {
+        execution_id: rec.record_id,
+        signatures: [signature],
+        submitted_at: new Date().toISOString(),
+        via: "autonomous",
+      },
+    });
     rec.decision = "executed";
     rec.reason = null;
     rec.lamports = lamports.toString();
@@ -515,7 +524,7 @@ export async function runAutonomousCycle(
     }
     return rec;
   } catch (err) {
-    updatePlan(plan.plan_id, { status: "failed" });
+    updatePlan(plan.plan_id, { status: "failed", failure_reason: "broadcast_failed" });
     rec.decision = "rejected";
     rec.reason = `broadcast_failed: ${(err as Error).message}`;
     pushRecord(rec);

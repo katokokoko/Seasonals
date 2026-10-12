@@ -22,6 +22,7 @@ import {
   BackHandler,
   Dimensions,
   Image,
+  Linking,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -58,20 +59,10 @@ import {
   type ProtocolPool,
 } from "@workspace/lib/types";
 import { TOKEN_DECIMALS, formatUsd } from "@workspace/lib/utils/numeric";
-import {
-  findMarketByShareMint,
-  heldSwapEarnPositions,
-} from "@workspace/lib/config/swap-earn-markets";
-import {
-  KAMINO_MARKETS,
-  findKaminoMarketByReserve,
-  findKaminoVaultByAddress,
-} from "@workspace/lib/config/kamino-markets";
-import {
-  findSaveMarketByCToken,
-  heldSavePositions,
-} from "@workspace/lib/config/save-markets";
-import { findExponentMarketByPtMint } from "@workspace/lib/config/exponent-markets";
+import { heldSwapEarnPositions } from "@workspace/lib/config/swap-earn-markets";
+import { KAMINO_MARKETS } from "@workspace/lib/config/kamino-markets";
+import { heldSavePositions } from "@workspace/lib/config/save-markets";
+import { canWithdrawEarnPosition } from "@workspace/lib/derive/solana-action";
 
 import type { JupiterLendMarketDTO } from "../../services/api";
 import {
@@ -363,6 +354,12 @@ export interface MenuDrawerProps {
    * undefined or 空配列なら "Your Positions" section を hide。
    */
   earnPositions?: EarnPositionsResponse | undefined;
+  /**
+   * Phase A-1: Home と同じ onchain wallet address (未接続 / default variant は null)。
+   * `usePositions` を Home と同じ key で引くので追加リクエストは 0。
+   * 旧実装は address 無しで `/positions` を撃ち、onchain build では常に [] だった
+   */
+  walletAddress?: string | null;
   testID?: string;
 }
 
@@ -372,6 +369,7 @@ export function MenuDrawer({
   onStartAction,
   onWithdrawPosition,
   earnPositions,
+  walletAddress = null,
   testID,
 }: MenuDrawerProps) {
   // 8.45: edge-to-edge の inset (drawer は絶対配置で SafeAreaView の padding が効かない)
@@ -380,7 +378,7 @@ export function MenuDrawer({
   const backdropOpacity = useSharedValue(0);
 
   const { data: listings = [] } = useMenuListings();
-  const { data: positions = [] } = usePositions();
+  const { data: positions = [] } = usePositions(walletAddress);
   // Phase 8.6: Jupiter Lend live markets (drill-down で fixture pools を上書き)
   const { data: jlMarkets = [] } = useJupiterLendMarkets();
 
@@ -795,19 +793,8 @@ function formatApyBps(bps: number | null): string {
  * 8.54: カード行の CTA (Manage / Redeem) と "Your Positions" 行で共用する。
  */
 function canWithdrawPosition(position: EarnPosition): boolean {
-  return (
-    findMarketByShareMint(position.share_mint) !== undefined ||
-    findKaminoMarketByReserve(position.share_mint) !== undefined ||
-    findSaveMarketByCToken(position.share_mint) !== undefined ||
-    findKaminoVaultByAddress(position.share_mint) !== undefined ||
-    // Exponent PT (8.34): 満期済のみ redeem 可 (満期前は server も 400 で拒否)
-    (findExponentMarketByPtMint(position.share_mint) !== undefined &&
-      position.maturity_at != null &&
-      new Date(position.maturity_at).getTime() <= Date.now()) ||
-    // Meteora (8.17) / Orca (8.18): share_mint = position 実 pubkey — protocol で判定
-    position.protocol_id === "meteora" ||
-    position.protocol_id === "orca"
-  );
+  // 判定は lib に移設 (Web の Menu / Dashboard と共有、same source of truth)
+  return canWithdrawEarnPosition(position);
 }
 
 interface YourPositionRowProps {
@@ -1118,6 +1105,7 @@ function DefaultPoolDetailPane({
             row={row}
             onDeposit={() => handleDeposit(row)}
             onManage={() => handleManage(row)}
+            protocolName={entry.display_name}
             testID={testID ? `${testID}-pool-${row.key}` : undefined}
           />
         ))}
@@ -1138,6 +1126,7 @@ function DefaultPoolDetailPane({
               row={row}
               onDeposit={() => handleDeposit(row)}
               onManage={() => handleManage(row)}
+              protocolName={entry.display_name}
               testID={testID ? `${testID}-pool-${row.key}` : undefined}
             />
           ))}
@@ -1421,11 +1410,14 @@ function VaultRowView({
   row,
   onDeposit,
   onManage,
+  protocolName,
   testID,
 }: {
   row: VaultRow;
   onDeposit: () => void;
   onManage: () => void;
+  /** externalUrl の導線ラベル ("Open <protocol> ↗") に使う protocol 表示名 */
+  protocolName?: string;
   testID?: string;
 }) {
   const deposited = row.isDeposited;
@@ -1543,6 +1535,29 @@ function VaultRowView({
         <Text style={styles.poolUtilWarning}>
           High utilization — withdrawals may be limited
         </Text>
+      )}
+
+      {/* pool の補足案内 (Perena の legacy USD* 等)。Seasonals は案内だけで、操作は protocol 側 */}
+      {row.note && (
+        <Text style={styles.jupVaultCapLine} testID={`pool-note-${row.key}`}>
+          {row.note}
+        </Text>
+      )}
+      {row.externalUrl && (
+        <Pressable
+          accessibilityRole="link"
+          onPress={() => {
+            const url = row.externalUrl;
+            if (url) Linking.openURL(url).catch(() => undefined);
+          }}
+          hitSlop={8}
+          style={styles.poolLink}
+          testID={`pool-link-${row.key}`}
+        >
+          <Text style={styles.poolLinkText}>
+            {`Open ${protocolName ?? "protocol app"} ↗`}
+          </Text>
+        </Pressable>
       )}
     </View>
   );
@@ -2030,6 +2045,16 @@ const styles = StyleSheet.create({
     fontFamily: FONT.body,
     color: COLOR.cherryDark,
     marginTop: 2,
+  },
+  poolLink: {
+    alignSelf: "flex-start",
+    marginTop: SPACE.xs,
+  },
+  poolLinkText: {
+    fontSize: FONT_SIZE.bodySM,
+    fontFamily: FONT.body,
+    fontWeight: WEIGHT.semibold,
+    color: COLOR.sodaText,
   },
   // ─── Phase 8.11 — Jupiter drill-down (unified vault list) ──────────────
   jupAssetLine: {

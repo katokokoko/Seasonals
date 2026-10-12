@@ -7,7 +7,11 @@
 
 import * as SecureStore from "expo-secure-store";
 
-import { useWalletStore } from "./walletStore";
+import {
+  isWalletStoreHydrated,
+  onWalletStoreHydrated,
+  useWalletStore,
+} from "./walletStore";
 import * as mwa from "./mwa";
 import type { ConnectedAuthorization } from "./mwa";
 
@@ -185,6 +189,32 @@ describe("rehydrate — 再起動後の復元 (8.67)", () => {
     expect(mockedMwa.reauthorizeWallet).not.toHaveBeenCalled();
   });
 
+  it("authorization と status=connected を **1 回の set** で戻す (二重の再取得を起こさない)", async () => {
+    await seed({ authorization: FAKE_AUTH, recentWallets: [] });
+    const seen: { address: string | null; status: string }[] = [];
+    const unsub = useWalletStore.subscribe((st) =>
+      seen.push({ address: st.authorization?.address ?? null, status: st.status })
+    );
+    await useWalletStore.persist.rehydrate();
+    unsub();
+    // 「address だけ戻った idle」という中間状態を subscriber に見せない
+    expect(seen).not.toContainEqual({ address: FAKE_AUTH.address, status: "idle" });
+    expect(seen[0]).toEqual({ address: FAKE_AUTH.address, status: "connected" });
+    // 復元した wallet は recentWallets の先頭
+    expect(useWalletStore.getState().recentWallets[0]?.address).toBe(FAKE_AUTH.address);
+  });
+
+  it("切断中 (authorization=null) でも recentWallets は復元される", async () => {
+    await seed({
+      authorization: null,
+      recentWallets: [{ address: "w1", lastConnectedAt: 1 }],
+    });
+    await useWalletStore.persist.rehydrate();
+    const s = useWalletStore.getState();
+    expect(s.status).toBe("idle");
+    expect(s.recentWallets).toEqual([{ address: "w1", lastConnectedAt: 1 }]);
+  });
+
   it("保存が無い / authorization=null なら idle のまま (connected を騙らない)", async () => {
     await SecureStore.deleteItemAsync("seasonals.wallet.v1");
     await useWalletStore.persist.rehydrate();
@@ -195,6 +225,104 @@ describe("rehydrate — 再起動後の復元 (8.67)", () => {
     const s = useWalletStore.getState();
     expect(s.authorization).toBeNull();
     expect(s.status).toBe("idle");
+  });
+});
+
+describe("rehydrate — storage の失敗でも復元は「終わる」 (resync を止めない)", () => {
+  let warnSpy: jest.SpyInstance;
+  beforeEach(() => {
+    warnSpy = jest.spyOn(console, "warn").mockImplementation(() => undefined);
+  });
+  afterEach(() => warnSpy.mockRestore());
+
+  it("SecureStore の読みが reject しても throw せず、hydrated になる (保存無しとして始める)", async () => {
+    (SecureStore.getItemAsync as jest.Mock).mockRejectedValueOnce(
+      new Error("keystore unavailable")
+    );
+    const finished = jest.fn();
+    const unsub = onWalletStoreHydrated(finished);
+    await expect(useWalletStore.persist.rehydrate()).resolves.toBeUndefined();
+    unsub();
+    expect(useWalletStore.persist.hasHydrated()).toBe(true);
+    expect(isWalletStoreHydrated()).toBe(true);
+    expect(finished).toHaveBeenCalledTimes(1);
+    const s = useWalletStore.getState();
+    expect(s.authorization).toBeNull();
+    expect(s.status).toBe("idle");
+  });
+
+  it("読み以外の失敗 (保存値が壊れていて parse できない) でも isWalletStoreHydrated は true、待ち手に知らせる", async () => {
+    await SecureStore.setItemAsync("seasonals.wallet.v1", "{not json");
+    const finished = jest.fn();
+    const unsub = onWalletStoreHydrated(finished);
+    await expect(useWalletStore.persist.rehydrate()).resolves.toBeUndefined();
+    unsub();
+    // zustand persist 自体は成功時しか hasHydrated を立てない
+    expect(useWalletStore.persist.hasHydrated()).toBe(false);
+    expect(isWalletStoreHydrated()).toBe(true);
+    expect(finished).toHaveBeenCalledTimes(1);
+    // 次の成功した復元で通常の判定に戻る
+    await SecureStore.deleteItemAsync("seasonals.wallet.v1");
+    await useWalletStore.persist.rehydrate();
+    expect(useWalletStore.persist.hasHydrated()).toBe(true);
+    expect(isWalletStoreHydrated()).toBe(true);
+  });
+});
+
+describe("recentWallets — §4.0 cache を保持する wallet (MRU 5)", () => {
+  const authFor = (address: string): ConnectedAuthorization => ({
+    ...FAKE_AUTH,
+    address,
+  });
+
+  it("接続成功で先頭に入り、切断しても残る (cache 保持の根拠)", async () => {
+    mockedMwa.connectWallet.mockResolvedValue(FAKE_AUTH);
+    await useWalletStore.getState().connect();
+    expect(useWalletStore.getState().recentWallets.map((w) => w.address)).toEqual([
+      FAKE_AUTH.address,
+    ]);
+    mockedMwa.disconnectWallet.mockResolvedValue();
+    await useWalletStore.getState().disconnect();
+    expect(useWalletStore.getState().recentWallets.map((w) => w.address)).toEqual([
+      FAKE_AUTH.address,
+    ]);
+  });
+
+  it("接続失敗では増えない", async () => {
+    mockedMwa.connectWallet.mockRejectedValue(new Error("user_cancelled"));
+    await expect(useWalletStore.getState().connect()).rejects.toThrow();
+    expect(useWalletStore.getState().recentWallets).toEqual([]);
+  });
+
+  it("6 件目の接続で最古が落ちる (MRU、再接続した wallet は先頭へ)", async () => {
+    for (const a of ["w1", "w2", "w3", "w4", "w5"]) {
+      mockedMwa.connectWallet.mockResolvedValue(authFor(a));
+      await useWalletStore.getState().connect();
+    }
+    // w1 に繋ぎ直すと先頭へ (最古は w2 になる)
+    mockedMwa.connectWallet.mockResolvedValue(authFor("w1"));
+    await useWalletStore.getState().connect();
+    mockedMwa.connectWallet.mockResolvedValue(authFor("w6"));
+    await useWalletStore.getState().connect();
+    expect(useWalletStore.getState().recentWallets.map((w) => w.address)).toEqual([
+      "w6",
+      "w1",
+      "w5",
+      "w4",
+      "w3",
+    ]);
+  });
+
+  it("永続化される (秘密を足さない: address と時刻だけ)", async () => {
+    mockedMwa.connectWallet.mockResolvedValue(FAKE_AUTH);
+    await useWalletStore.getState().connect();
+    const raw = await SecureStore.getItemAsync("seasonals.wallet.v1");
+    const saved = JSON.parse(raw!).state;
+    expect(Object.keys(saved).sort()).toEqual(["authorization", "recentWallets"]);
+    expect(Object.keys(saved.recentWallets[0]).sort()).toEqual([
+      "address",
+      "lastConnectedAt",
+    ]);
   });
 });
 

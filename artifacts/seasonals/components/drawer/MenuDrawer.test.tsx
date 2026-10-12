@@ -11,10 +11,13 @@
 import React, { type ReactNode } from "react";
 import { QueryClientProvider, type QueryClient } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react-native";
+import { Linking } from "react-native";
 import { SafeAreaProvider } from "react-native-safe-area-context";
+import { fixtureMenuListings } from "@workspace/lib/__fixtures__";
 
 import { MenuDrawer } from "./MenuDrawer";
 import { createQueryClient } from "../../services/queryClient";
+import * as api from "../../services/api";
 
 function freshClient(): QueryClient {
   return createQueryClient({
@@ -91,5 +94,42 @@ describe("MenuDrawer drill-down (8.54 カード行)", () => {
     await waitFor(() => expect(screen.getByTestId("menu-detail-summary")).toBeTruthy());
     expect(screen.getByTestId("menu-detail-filter-stable")).toBeTruthy();
     expect(screen.getByTestId("menu-detail-filter-deposited")).toBeTruthy();
+  });
+
+  it("Perena Tri-Stable: View only のまま note と protocol app への link を出す", async () => {
+    const pool = fixtureMenuListings
+      .find((e) => e.protocol_id === "perena")!
+      .pools.find((p) => p.pool_id === "perena_tri_stable")!;
+    expect(pool.note).toBeTruthy();
+    expect(pool.external_url).toBeTruthy();
+    const openURL = jest
+      .spyOn(Linking, "openURL")
+      .mockResolvedValue(true as never);
+
+    await openProtocol("perena");
+    await waitFor(() =>
+      expect(screen.getByTestId("menu-detail-pool-perena_tri_stable")).toBeTruthy()
+    );
+    // display_only は維持 (deposit 経路なし)
+    expect(screen.getByTestId("pool-viewonly-perena_tri_stable")).toBeTruthy();
+    expect(screen.getByTestId("pool-note-perena_tri_stable")).toBeTruthy();
+    expect(screen.getByText(pool.note!)).toBeTruthy();
+    const link = screen.getByTestId("pool-link-perena_tri_stable");
+    expect(screen.getByText("Open Perena ↗")).toBeTruthy();
+    fireEvent.press(link);
+    expect(openURL).toHaveBeenCalledWith(pool.external_url);
+    openURL.mockRestore();
+  });
+});
+
+describe("MenuDrawer — 保有 positions は Home と同じ wallet key で引く (Phase A-1)", () => {
+  afterEach(() => jest.restoreAllMocks());
+
+  it("walletAddress を渡すと address 付きで取得する (Home と同 key = 追加リクエスト 0)", async () => {
+    const A = "7nZbHkQqXkr3eW8s2dKvHqBxNz9vC5jPpL2tF6mYrXaA";
+    const spy = jest.spyOn(api, "getPositions");
+    render(wrap(<MenuDrawer visible onClose={() => {}} walletAddress={A} testID="menu" />));
+    await waitFor(() => expect(spy).toHaveBeenCalled());
+    expect(spy.mock.calls.every(([address]) => address === A)).toBe(true);
   });
 });

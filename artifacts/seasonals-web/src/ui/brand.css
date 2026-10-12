@@ -1,0 +1,59 @@
+/*
+ * Protocol ブランド色の accent (docs/design-system.md「Protocol ブランド色」)。
+ * --accent / --accent-bg は brandStyle(id) が要素に渡す。色の無い protocol は未定義 → 透明 (中立)。
+ * 線は inset box-shadow で描き、border 幅や layout を変えない。文字色には使わない。
+ */
+.brand-accent {
+  position: relative;
+}
+.brand-accent::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 6px;
+  bottom: 6px;
+  width: 3px;
+  border-radius: 2px;
+  background: var(--accent, transparent);
+  pointer-events: none;
+}
+.brand-tint {
+  background: var(--accent-bg, transparent);
+}
+.brand-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+/* 見出し: logo + 左 3px accent (Agent の Aqua / Menu の Uniswap route など) */
+.brand-heading {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-sm);
+  padding-left: var(--sp-sm);
+  box-shadow: inset 3px 0 0 var(--accent, transparent);
+}
+/* Pendle PT / YT バッジ (TokenKindBadge)。PT = 塗り、YT = 縁取り (形でも区別) */
+.token-kind {
+  display: inline-grid;
+  place-items: center;
+  min-width: 28px;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: var(--r-pill);
+  font-size: var(--fs-overline);
+  font-weight: var(--w-bold);
+  letter-spacing: 0.06em;
+  line-height: 1;
+}
+.token-kind-pt {
+  color: var(--c-textOnColor);
+  background: var(--brand-pendle);
+  border: 1.5px solid var(--brand-pendle);
+}
+.token-kind-yt {
+  color: var(--c-textPrimary);
+  background: var(--brandbg-pendle);
+  border: 1.5px solid var(--brand-pendle);
+}

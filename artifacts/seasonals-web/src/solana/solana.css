@@ -1,0 +1,75 @@
+/*
+ * Solana 実行パネル (SolanaExecutePanel / OracleGate)。
+ * Menu / Calendar の詳細カード / Dashboard の Your Positions のどこで開いても同じ見た目にするため、
+ * explore.css (Menu の lazy chunk) に頼らずここで定義する。色は DS token の CSS 変数のみ (no-hex)。
+ */
+.solana-action {
+  display: grid;
+  gap: var(--sp-sm);
+  padding: var(--sp-md);
+  border-radius: var(--r-lg);
+  border: 1px solid var(--c-borderStrong);
+  background: var(--c-bgPrimary);
+}
+.solana-action h3 {
+  margin: 0;
+}
+.solana-action .menu-action-form {
+  display: grid;
+  gap: var(--sp-xs);
+}
+.solana-action .menu-action-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-sm);
+}
+.solana-action .menu-warning,
+.oracle-gate .menu-warning {
+  color: var(--c-cherryDark);
+}
+.oracle-gate {
+  display: grid;
+  gap: var(--sp-xs);
+}
+.oracle-warnings {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: var(--sp-xs);
+}
+.oracle-warnings li {
+  padding: var(--sp-xs) var(--sp-sm);
+  border-radius: var(--r-md);
+  background: var(--c-cherrySoft);
+}
+.sign-result {
+  display: grid;
+  gap: var(--sp-xs);
+}
+.sign-result p {
+  margin: 0;
+}
+.sign-txs {
+  margin: 0;
+  padding-left: var(--sp-lg);
+  display: grid;
+  gap: 2px;
+}
+.sign-txs .sim-ok,
+.sign-txs .sim-fail,
+.sign-txs .muted {
+  padding: 0 var(--sp-xs);
+  border-radius: 4px;
+}
+
+/* Dashboard の Your Positions (Solana): 正の earned は melon、損失は cherry (CLAUDE.md §6) */
+.solana-positions .positive {
+  color: var(--c-melonText);
+}
+.solana-positions .negative {
+  color: var(--c-cherryDark);
+}
+.solana-positions-panel > td {
+  padding: var(--sp-sm) 0 var(--sp-md);
+}

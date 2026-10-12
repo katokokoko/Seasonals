@@ -9,13 +9,13 @@
  *
  * 規約:
  *   - 失敗時は throw (呼び出し側で 502)、空配列ではなく明示的にエラー
- *   - cache 60s TTL (履歴は変化頻度低い)
+ *   - cache は持たない (直近 N 件の 60s cache は facade の tx-history.ts `fetchWalletTxs` に 1 つだけ)
  *   - HELIUS_API_KEY env が必須
  */
 
-import { fetchWithTimeout } from "./http"; // Phase 8.38 (B9): 共通 timeout
+// B1: Enhanced は heliusDataFetch の列 (2 in flight / 500ms) に並べ、429 / 5xx は backoff 再試行
+import { fetchJsonWithRetry, heliusDataFetch } from "./helius-limiter";
 const HELIUS_BASE = "https://api.helius.xyz/v0";
-const CACHE_TTL_MS = 60_000;
 
 export interface HeliusTokenTransfer {
   mint: string;
@@ -67,29 +67,6 @@ export interface HeliusEnhancedTx {
   accountData?: HeliusAccountData[];
 }
 
-interface CacheEntry {
-  data: HeliusEnhancedTx[];
-  ts: number;
-}
-
-const cache = new Map<string, CacheEntry>();
-
-// Phase 8.38 (B10): wallet キー cache の上限 — TTL は read 時にしか効かず、
-// 多数 wallet で無制限成長していた。挿入順 (Map) で古い方から落とす
-const CACHE_MAX_ENTRIES = 200;
-function evictOldest(m: Map<string, unknown>): void {
-  while (m.size > CACHE_MAX_ENTRIES) {
-    const oldest = m.keys().next().value;
-    if (oldest === undefined) break;
-    m.delete(oldest);
-  }
-}
-
-
-export function _clearHeliusTxCacheForTest(): void {
-  cache.clear();
-}
-
 function buildUrl(walletAddress: string, limit: number): string {
   const apiKey = process.env.HELIUS_API_KEY;
   if (!apiKey) {
@@ -97,7 +74,16 @@ function buildUrl(walletAddress: string, limit: number): string {
       "HELIUS_API_KEY is not set. Required for Enhanced Transactions API (Phase 8.3)"
     );
   }
-  return `${HELIUS_BASE}/addresses/${walletAddress}/transactions?api-key=${apiKey}&limit=${limit}`;
+  return `${HELIUS_BASE}/addresses/${encodeURIComponent(walletAddress)}/transactions?api-key=${apiKey}&limit=${limit}`;
+}
+
+/** GET 1 本 (列 + retry)。error message に URL (api-key) を出さない (HeliusRpcError) */
+function getEnhancedJson(url: string): Promise<HeliusEnhancedTx[]> {
+  return fetchJsonWithRetry<HeliusEnhancedTx[]>(
+    url,
+    { method: "GET", headers: { accept: "application/json" } },
+    { label: "enhanced-tx", fetchImpl: heliusDataFetch.timed() }
+  );
 }
 
 /**
@@ -113,18 +99,7 @@ export async function fetchEnhancedTransactionsPage(
   const url =
     buildUrl(walletAddress, limit) +
     (opts.before ? `&before=${encodeURIComponent(opts.before)}` : "");
-  const res = await fetchWithTimeout(url, {
-    method: "GET",
-    headers: { accept: "application/json" },
-  });
-  if (!res.ok) {
-    throw new Error(
-      `Helius enhanced-tx HTTP ${res.status} ${res.statusText}: ${await res
-        .text()
-        .catch(() => "")}`
-    );
-  }
-  const json = (await res.json()) as HeliusEnhancedTx[];
+  const json = await getEnhancedJson(url);
   if (!Array.isArray(json)) {
     throw new Error("Helius enhanced-tx unexpected shape (not array)");
   }
@@ -134,33 +109,15 @@ export async function fetchEnhancedTransactionsPage(
 /**
  * 指定 wallet の最近の tx 一覧を Enhanced Transactions API で取得。
  * 過去 50 件 (= Helius 1 page default、recent activity を見せる目的なので十分)。
+ * cache しない (呼び手は tx-history.ts の `fetchWalletTxs` 経由 = `wallet:limit` の 60s cache)。
  */
 export async function fetchEnhancedTransactions(
   walletAddress: string,
   limit = 50
 ): Promise<HeliusEnhancedTx[]> {
-  const cached = cache.get(walletAddress);
-  if (cached && Date.now() - cached.ts < CACHE_TTL_MS) {
-    return cached.data;
-  }
-
-  const res = await fetchWithTimeout(buildUrl(walletAddress, limit), {
-    method: "GET",
-    headers: { accept: "application/json" },
-  });
-
-  if (!res.ok) {
-    throw new Error(
-      `Helius enhanced-tx HTTP ${res.status} ${res.statusText}: ${await res.text().catch(() => "")}`
-    );
-  }
-
-  const json = (await res.json()) as HeliusEnhancedTx[];
+  const json = await getEnhancedJson(buildUrl(walletAddress, limit));
   if (!Array.isArray(json)) {
     throw new Error(`Helius enhanced-tx unexpected shape (not array)`);
   }
-
-  cache.set(walletAddress, { data: json, ts: Date.now() });
-  evictOldest(cache);
   return json;
 }

@@ -2,7 +2,7 @@
  * Phase 8.33: fetchExponentFullMarkets の parse / fail-closed 検証。
  * global fetch を mock し、実 network なし (_clearRatesCacheForTest で cache 隔離)。
  */
-import { _clearRatesCacheForTest, fetchExponentFullMarkets } from "./rates";
+import { _clearRatesCacheForTest, fetchExponentFullMarkets, fetchPerenaUsdStarPrice } from "./rates";
 
 const VALID_ENTRY = {
   underlyingAsset: {
@@ -104,5 +104,29 @@ describe("fetchExponentFullMarkets (Phase 8.33)", () => {
     await fetchExponentFullMarkets();
     await fetchExponentFullMarkets();
     expect(spy).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("fetchPerenaUsdStarPrice (2026-10、Menu の USD* TVL 用)", () => {
+  afterEach(() => {
+    jest.restoreAllMocks();
+    _clearRatesCacheForTest();
+  });
+  it("単価を返し、5 分 cache する", async () => {
+    const spy = jest.spyOn(global, "fetch").mockResolvedValue(new Response(JSON.stringify({ price: 1.100805, timestamp: "x" }), { status: 200 }));
+    await expect(fetchPerenaUsdStarPrice()).resolves.toBe(1.100805);
+    await fetchPerenaUsdStarPrice();
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(String(spy.mock.calls[0]![0])).toBe("https://api.perena.org/api/usdstar/price");
+  });
+  it("0 / 非数値 / HTTP エラーは throw (TVL は fixture のまま)", async () => {
+    for (const body of [{ price: 0 }, { price: "1.1" }, {}]) {
+      _clearRatesCacheForTest();
+      jest.spyOn(global, "fetch").mockResolvedValueOnce(new Response(JSON.stringify(body), { status: 200 }));
+      await expect(fetchPerenaUsdStarPrice()).rejects.toThrow();
+    }
+    _clearRatesCacheForTest();
+    jest.spyOn(global, "fetch").mockResolvedValueOnce(new Response("no", { status: 500 }));
+    await expect(fetchPerenaUsdStarPrice()).rejects.toThrow(/HTTP 500/);
   });
 });

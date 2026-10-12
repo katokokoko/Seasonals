@@ -140,20 +140,30 @@ API boundary の regex (`numeric.ts` の `TOKEN_AMOUNT_REGEX` / `USD_AMOUNT_REGE
 
 oracle 異常時は **常に止める方を選ぶ**。warning だけで素通りさせない。
 
-- primary: **Pyth Network**
-- fallback: **Switchboard**
-- staleness 閾値: 60 秒
+- primary: **Pyth** — Solana 上の sponsored push feed account (shard 0、PriceUpdateV2) を Helius RPC で読む
+- secondary: **RedStone** — Solana 上の push feed account (PriceData) を同じく Helius で読む。push feed が無い asset は RedStone の公開 gateway (key 不要) の署名付き package を使う
+- staleness 閾値は **source ごとに heartbeat + 猶予**: Pyth 75 秒 (heartbeat 55s) / RedStone push 90 秒 (heartbeat 60s) / RedStone gateway 60 秒。sponsored feed の heartbeat が長い asset は feed 別に Pyth 閾値を上書き (`pythMaxAgeS`、例: USDG 200 秒)
+- Pyth Hermes REST (2026-08-26 に API key 必須化) と Switchboard (2026-09-25 サポート終了) は **呼ばない**
+- asset ごとの構成は `lib/config/oracle-feeds.ts` に tier で宣言 (registry の全 underlying mint に tier が無いと lib の test が落ちる)。鮮度は `pnpm --filter @seasonals/bff verify:oracle` で確認
+
+| tier | 構成 | 判定 |
+|---|---|---|
+| A | Pyth + RedStone | staleness + 乖離 (下の 2 表) |
+| B | Pyth + RedStone gateway (off-chain 署名付き package) | staleness + 乖離。BFF が署名を自前で recover し、正規 signer 5 つのうち 3 以上の中央値を使う (閾値 60 秒)。USDT / JLP / USDG |
+| C | Pyth のみ | staleness のみ。UI は「single price source」を控えめに表示 |
+| D | feed 無し / sponsor 停止 | gate 対象外 (`not_configured` + `reason`、理由必須) |
 
 ### staleness による block
 
 | 状態 | simulate | execute |
 |---|---|---|
 | Pyth fresh | 通す | 通す |
-| Pyth stale + Switchboard fresh | Switchboard を使う + warning | Switchboard を使う + warning |
-| 両 stale | **拒否** (`oracle_both_stale`) | **拒否** (`oracle_both_stale`) |
-| 両 未取得 | **拒否** (`oracle_unavailable`) | **拒否** (`oracle_unavailable`) |
+| Pyth stale + secondary fresh | secondary を使う + warning (`oracle_pyth_stale`) | secondary を使う + warning |
+| Pyth fresh + secondary stale | Pyth を使う + warning (`oracle_secondary_stale`、乖離は未評価) | 同左 |
+| Pyth stale + secondary 無し / stale | **拒否** (`oracle_both_stale`) | **拒否** (`oracle_both_stale`) |
+| どれも 未取得 | **拒否** (`oracle_unavailable`) | **拒否** (`oracle_unavailable`) |
 
-### oracle 間乖離による block
+### oracle 間乖離による block (Pyth と secondary が両方 fresh の時)
 
 | 乖離 (中央値からの ±%) | simulate | execute |
 |---|---|---|
@@ -161,7 +171,7 @@ oracle 異常時は **常に止める方を選ぶ**。warning だけで素通り
 | 2-5% | 通す + warning (`oracle_divergence_warning`) | 通す + warning |
 | > 5% | 通す + warning | **拒否** (`oracle_divergence_too_large`) |
 
-設計意図: simulate は情報提供 tool (警告付きで見せる)、execute は実資金が動く (>5% 乖離 = flash crash / oracle attack の可能性として拒否)。閾値は trusted protocol registry で override 可 (§13.2)、全 block / warning は §17.1 でイベント記録。
+設計意図: simulate は情報提供 tool (警告付きで見せる)、execute は実資金が動く (>5% 乖離 = flash crash / oracle attack の可能性として拒否)。push feed は価格が乖離幅 (Pyth 0.5% / RedStone 0.1%) を超えれば heartbeat を待たず更新されるので、「閾値以内の age = 価格はその乖離幅以内」が staleness の意味。乖離閾値は trusted protocol registry で override 可 (§13.2)、全 block / warning は §17.1 でイベント記録。
 
 ---
 
@@ -280,6 +290,8 @@ PR / コードレビュー前の pitch claim ↔ 実装の対応表は
 完了済みタスクは git log を参照。**未着手の要約だけ**を以下に残す。
 詳細 (経緯 / program ID / バージョン実測) は `docs/backlog.md` §E (local-only) が canonical。
 
+- **外部配布 (seasonals.cafe)**: web = Cloudflare Pages (`/api/*` は Pages Function が BFF へ proxy)、BFF = Fly.io `api.seasonals.cafe`、APK = EAS `preview-onchain` / `production-onchain` (EAS 管理 keystore)。公開 BFF の env (`SOLANA_EXECUTION_TARGET` / `CORS_ALLOWED_ORIGINS` / `RATE_LIMIT_MAX` / `ADMIN_TOKEN` / `BFF_PROXY_SECRET`) と運用手順は `docs/external-release-api-handling.md` §9。初回 EAS build 後に `assetlinks.json` の SHA-256 を埋めるまで APK を配らない
+  - Wave 2 (未着手): mobile の watch-only address mode (web の watchlist の移植)、Helius Enhanced Tx → Parsed Events 移行 (credit 10 分の 1)
 - **依存リフレッシュ** (残り 1 種): major 跨ぎ (`@types/node` / `date-fns` / `@fastify/cors` / **TypeScript 6.0** — SDK 57 期待、`expo.install.exclude` で保留中)。
   ✅ Expo SDK 57 + newArch + native module 群 + MWA 2.2.9 は Phase 8.87 で完了 (経緯は docs/expo57-upgrade.md)
   - SDK 更新時は §8.1 完了ゲートに加えて **`pnpm --filter @seasonals/bff verify:tx`** (全 23 経路 mainnet simulate、署名なし) を必ず通す
@@ -314,6 +326,8 @@ PR / コードレビュー前の pitch claim ↔ 実装の対応表は
 - `docs/design-system.jsx` — デザインシステム原典 (DS object source of truth)
 - `lib/types/index.ts` — 共通型 barrel export (ここから全部取れる)
 - `lib/utils/numeric.ts` — 金融値の string ↔ bigint 変換 helper
+- `docs/external-release-api-handling.md` — 外部配布 (APK 共有 / dApp Store / Fly / Pages) の API 鍵の取り扱い、公開前チェックリスト、運用手順
+- `docs/mobile-runbook.md` — Seeker 版のローカル起動・EAS build・署名・assetlinks・adb QA の公開版 runbook
 
 ### 外部
 - **MWA**: [solana-mobile/mobile-wallet-adapter](https://github.com/solana-mobile/mobile-wallet-adapter) (公式 monorepo、`mobile-wallet-adapter-protocol-web3js` を採用。examples/ に RN 参照実装) + [RN docs](https://docs.solanamobile.com/react-native/setup)

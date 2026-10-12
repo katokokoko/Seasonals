@@ -6,14 +6,17 @@
  * - Uniswap CCA: github.com/Uniswap/continuous-clearing-auction (README deployments、v2.1.0 を含む 4 factory)
  * - Pendle: api-v2.pendle.finance/core/docs (v2/markets/all, v1/dashboard/positions/database/{user}, v3/sdk/{chainId}/convert)
  */
+import { ETH_ASSET_ADDRESS } from "@workspace/lib/config/eth-assets";
+
+// token address の canonical は lib/config/eth-assets.ts (portfolio と共有)
 export const ETHENA = {
-  sUSDe: "0x9D39A5DE30e57443BfF2A8307A4256c8797A3497",
-  USDe: "0x4c9EDD5852cd905f086C759E8383e09bff1E68B3",
+  sUSDe: ETH_ASSET_ADDRESS.sUSDe,
+  USDe: ETH_ASSET_ADDRESS.USDe,
 } as const;
 
 export const LIDO = {
-  stETH: "0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84",
-  wstETH: "0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0",
+  stETH: ETH_ASSET_ADDRESS.stETH,
+  wstETH: ETH_ASSET_ADDRESS.wstETH,
   withdrawalQueue: "0x889edC2eDab5f40e902b864aD4d7AdE8E412F9B1",
 } as const;
 
@@ -28,4 +31,9 @@ export const CCA = {
 } as const;
 
 export const PENDLE_API = "https://api-v2.pendle.finance/core";
+/**
+ * Pendle PYLpOracle (mainnet)。PT / YT の SY 建て TWAP を返す。2026-09-26 に eth_getCode と
+ * getOracleState / getPtToSyRate / getYtToSyRate の応答で実在を確認済み
+ */
+export const PENDLE_PY_LP_ORACLE = "0x9a9Fa8338dd5E5B2188006f1Cd2Ef26d921650C2";
 export const MAINNET_CHAIN_ID = 1;

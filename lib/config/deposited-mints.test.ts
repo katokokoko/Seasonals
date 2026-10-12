@@ -36,4 +36,8 @@ describe("isDepositedMint", () => {
       false
     );
   });
+
+  it("Perena 旧 USD* は registry 外でも known-mints で Perena の預入として扱う (表示のみ)", () => {
+    expect(isDepositedMint("BenJy1n3WTx9mTjEvy63e8Q1j4RqUc6E4VBMz3ir4Wo6")).toBe(true);
+  });
 });

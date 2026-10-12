@@ -37,6 +37,7 @@
 }
 
 .portal-card {
+  position: relative;
   display: grid;
   grid-template-columns: auto 1fr auto;
   align-items: center;
@@ -44,24 +45,24 @@
   min-height: 132px;
   padding: var(--sp-lg);
   border-radius: 28px;
-  background: var(--s-lobby);
-  border: 1px solid var(--s-border);
-  box-shadow: var(--sh-soft);
+  border: 1px solid transparent;
   text-decoration: none;
   color: var(--c-textPrimary);
   cursor: pointer;
-  transform: rotate(var(--rot, 0deg));
-  transition: transform 200ms ease, box-shadow 200ms ease;
+  /* glass (ui/glass.css)。tilt は useGlassPointer が --tiltX / --tiltY を書く */
+  transform: perspective(900px) rotate(var(--rot, 0deg)) translateY(var(--lift, 0px)) rotateX(var(--tiltX, 0deg))
+    rotateY(var(--tiltY, 0deg));
+  transition: transform 180ms ease-out, box-shadow 200ms ease;
 }
 .portal-card:hover {
-  transform: rotate(var(--rot, 0deg)) translateY(-4px);
-  box-shadow: var(--sh-lift);
+  --lift: -4px;
+  box-shadow: var(--sh-glassLift);
 }
 .portal-card:active {
-  transform: rotate(var(--rot, 0deg)) translateY(-1px);
+  --lift: -1px;
 }
 .portal-card:focus-visible {
-  box-shadow: var(--focus-ring), var(--sh-soft);
+  box-shadow: var(--focus-ring), var(--sh-glass);
 }
 .portal-icon {
   display: grid;
@@ -71,6 +72,7 @@
   border-radius: 18px;
   background: var(--c-sodaTextSoft);
   color: var(--c-sodaText);
+  box-shadow: inset 0 1px 0 var(--s-glassRim), inset 0 -1px 0 var(--s-glassRimSoft);
 }
 .slot-menu .portal-icon,
 .slot-dashboard .portal-icon {
@@ -96,7 +98,8 @@
   width: 32px;
   height: 32px;
   border-radius: 50%;
-  border: 1px solid var(--c-borderStrong);
+  border: 1px solid var(--s-glassRim);
+  background: var(--s-glassRimSoft);
   color: var(--c-textSubtitle);
 }
 

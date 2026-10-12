@@ -19,9 +19,13 @@ pnpm --filter @seasonals/mcp-server start
 
 **Tools**: `compare_opportunities` (live menu をランクし draft AgentPlan 作成) →
 `simulate_action` (selected_action 確定 + 決定的 bundle_hash) →
-`request_user_approval` (mobile へ push → long-poll、承認で single-use
-approval_token) → `execute_approved_action` (unsigned tx を返す — **Agent は
-署名に一切触れない**、§6.5)。
+`request_user_approval` (承認依頼 → long-poll)。人は **Seasonals web の Agent
+ページで approve → 自分の wallet で署名 → 送信** まで一気に行い (承認 = 実行)、
+tool は終端 (`broadcasted` + signatures / `failed` + failure_reason / `rejected` /
+`expired`) を返す。policy の自動承認 (`approved_by: "auto"`) の plan だけは
+approval_token を返し、`execute_approved_action` で unsigned tx を受け取る。人が承認した
+plan に `execute_approved_action` を呼ぶと `{status:"awaiting_user_signature"}` が返る
+(**Agent は署名に一切触れない**、§6.5)。
 
 **Resources**: `seasonals://protocols` / `seasonals://positions/{wallet}` /
 `seasonals://events/{wallet}` (agentReadable のみ) / `seasonals://policy/default`
@@ -62,17 +66,48 @@ pnpm --filter @seasonals/bff start
 
 - §12.3 の「共有 core service」直結ではなく **BFF REST を表現層として共有**
   (mobile と同一 endpoint = same source of truth は成立)
-- plan / approval_token は BFF の **in-memory store** (§17/§25 の Redis+Postgres
-  は後続)。プロセス再起動で消える
-- **client 認証なし** — `GET /agent-plans/:id/approval` は plan_id を知る者に
-  token を返す (ローカル dev 前提。v2 で MCP client 承認 §8.6 と連動)
+- plan / approval_token は BFF の `.data/agent-plans.json` に保存 (§17/§25 の
+  Redis+Postgres は後続)。plan は作成から 24h で `expired`
+- **client 認証なし** — `GET /agent-plans/:id/approval` は plan_id を知る者に状態を
+  返す。token は policy の自動承認 plan の時だけ含める (人の承認分は出さない)。
+  ローカル dev 前提、v2 で MCP client 承認 §8.6 と連動
 - 監査は stderr 構造化ログ (`mcp_audit`)。ClickHouse `mcp_audit_logs` (§25.3)
   は後続
-- `execute_approved_action` v1 は **swap-earn の deposit/withdraw のみ** tx 構築
-  (他 protocol は `unsupported_action_v1`)。mobile への tx push も後続 (§24.10)
+- execute は lib の `resolveSolanaRoute` (Seeker / web と同じ 13 route) で解決し、
+  人と同じ `/protocols/*` の tx builder で組む (解決できない market は 422
+  `unsupported_market`)。Seeker 上での署名は後続 (承認までは Seeker でもできる)
+
+## Ethereum tools (web / ETHGlobal track)
+
+BFF の `/eth/*` を読む。UI (web) と同じ endpoint = same source of truth。
+
+| tool | 何をするか |
+|---|---|
+| `list_events` / `get_proposal` / `build_action` | 期日イベント (Pendle PT 満期 / Ethena cooldown / Lido withdrawal / CCA / Aqua review) と、その対応の未署名プラン |
+| `ship_lp_strategy` | 1inch Aqua PEGGED_STABLE (USDC/USDe) の未署名 ship plan (Chainlink peg guard) |
+| `list_yield_menu` / `get_holdings` | Menu の利回り (Lido / Ethena / Pendle PT・YT) と address の保有・spendable、fork の到達性 |
+| `preview_rebalance_step` | 1 step の未署名プラン (swap は `amountOut` を返す → 次 step の金額決め) |
+| `propose_rebalance` | 最大 6 step (menu deposit / withdraw、USDC ⇄ USDe swap、event action、**1inch Aqua LP ship**) の **提案** を BFF に保存。全 step を組んで guard を通し、`bundleHash` と **Strategy Brief** (`brief`) を付ける。`dryRun: true` なら保存せず brief だけ返す (練り直し用) |
+| prompt `design_rebalance` | `{address, goal?}`。holdings → menu → preview → `dryRun` → 提出 → `brief.markdown` をそのまま提示 → web / chat で承認依頼、という手順を英語で教える |
+
+### Strategy Brief (`brief`)
+
+LLM が組んだ戦略を人が読める形にする。**数字は BFF が実データから決定的に組む** (holdings の on-chain 残高 + menu の利回り + 各 step の preview)。LLM が書くのは `name` (絵文字 + 短い英語名、≤ 40 文字)、`tagline`、`rationale` だけ。
+
+- `before` / `after`: line ごとの量・USD・share・APY。after は step の効果 (builder が返す `effects`) を順に適用した結果
+- `blendedApy`: USD 加重平均を 2 つ。`moved` = **この提案が動かす資金** (減る側の APY → 増える側の APY、見出し)、`deployed` = **DeFi で運用中の資金だけ** (Lido / Ethena / Pendle / Aqua) の before → after。**wallet の idle 資産はどちらの分母にも入れない** (巨大な idle 残高で効果が埋もれないように)。APY 不明 (Aqua LP など) は 0 扱いで `excluded` に列挙 (数字を膨らませない)。価格の無い line は `unpriced` に列挙し総額・APY から除外
+- 表 (Markdown / web) は量の変わる line だけ。変わらない line は "Unchanged: … (N positions, $X)" の 1 行にまとめる
+- `aqua`: LP sleeve の中身と peg guard、`horizon`: PT 満期 / Aqua review / cooldown 終了 / Lido queue
+- `markdown`: 英語の Markdown (Claude はこれをそのまま見せる)。web の Agent ページも同じ brief を表で描く
+| `wait_for_rebalance_decision` | 人が web の Agent ページで承認 (= fork 実行) / 却下するまで long-poll |
+| `execute_rebalance` | chat で人が明示的に yes と言った後、`bundleHash` 付きで fork 実行 (`user_confirmed: true` 必須) |
+
+不変条件: Agent は署名しない / mainnet 送信経路なし / 実行は Anvil fork のみ / 表示した `bundleHash` と違う内容は BFF が拒否 / peg・TWAP・残高 guard は fail-closed。
+step は symbol + 人が読む decimal (`{kind:"uniswap_swap", tokenIn:"USDC", tokenOut:"USDe", amount:"100"}`) で書き、address / smallest unit への変換は BFF だけが行う。
+承認の 2 経路 (web のワンタップ / chat の yes) はどちらも同じ `POST /eth/agent-proposals/:id/execute` に収束し、web の Agent ページには chat 承認分も同じ状態で出る。
 
 ## v2 backlog
 
 plan_rollover / prompts 残 3 種 / HTTP+SSE transport / rate limit (§15.4) /
 policy engine 連携 (`approval_mode=manual_only` 拒否等) / ClickHouse 監査 /
-Redis+Postgres 永続化 / execute の全 protocol 対応 + mobile tx push
+Redis+Postgres 永続化 / Seeker での agent plan 署名

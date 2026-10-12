@@ -15,6 +15,11 @@
  *
  * §4.5: amount は smallest-unit string を透過 (境界で ^[0-9]+$ 検証)。
  * §6.5: Agent は unsigned tx を受け取るだけで署名しない (秘密鍵ゼロ)。
+ *
+ * 2026-10-06: 人が承認する plan は web (Agent ページ) で approve → 署名 → 送信まで
+ * 一気に行う (承認 = 実行)。request_user_approval はその終端 (broadcasted / failed /
+ * rejected / expired) まで待って signatures を返す。execute_approved_action は policy の
+ * 自動承認 (approved_by = "auto") の plan だけが使う。
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -23,12 +28,24 @@ import { z } from "zod";
 
 import type {
   AgentPlan,
-  ApprovalToken,
+  AgentPlanApprovalStatus,
+  AgentPlanExecuteResponse,
+  EthAgentProposal,
+  EthProposalBriefResponse,
+  EthProposalPreviewSlot,
+  MenuHoldingsResponse,
+  MenuProduct,
   ProtocolMenuEntry,
   UnifiedTimeEventDTO,
 } from "@workspace/lib/types";
+import {
+  CooldownDataStatus,
+  CooldownSource,
+  SWAP_SYMBOLS,
+  isCooldownStateResponse,
+} from "@workspace/lib/types";
 
-import type { BffClient } from "./bff-client";
+import { BffHttpError, type BffClient } from "./bff-client";
 import type { TimelineEvent, TimelineEventsResponse } from "@workspace/lib/types";
 import { TIMELINE_STATUSES } from "@workspace/lib/types";
 import { deriveTimelineStatus } from "@workspace/lib/derive/timeline";
@@ -95,6 +112,44 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 export interface BuildOptions {
   /** request_user_approval の poll 間隔 (テストで短縮) */
   pollIntervalMs?: number;
+  /**
+   * SKR cooldown event の取得元 (docs/skr-r0-implementation.md §4)。
+   * default は env `SKR_SOURCE=demo` の時だけ demo、それ以外は live
+   */
+  skrSource?: CooldownSource;
+}
+
+export const SKR_STATE_PATH = "/protocols/skr-staking/state";
+
+/**
+ * events resource に SKR cooldown の lockup_end を投影する (§4「MCPはeventのみ公開する」)。
+ * - BFF が導出した fresh な event だけを追加し、MCP 独自に日時や状態を導出しない
+ * - 取得失敗 / unavailable / unsupported / 形の不正 / 別 wallet の応答は SKR event 0 件 + 補足文
+ * - 既存 event と id で重複排除。position / 実行候補は作らない
+ */
+export function projectCooldownEvents(
+  base: UnifiedTimeEventDTO[],
+  skr: PromiseSettledResult<unknown>,
+  wallet: string
+): { events: UnifiedTimeEventDTO[]; note: string | null } {
+  if (skr.status === "rejected") {
+    return { events: base, note: "skr_staking events omitted: fetch_failed" };
+  }
+  const state = skr.value;
+  if (!isCooldownStateResponse(state)) {
+    return { events: base, note: "skr_staking events omitted: invalid_response" };
+  }
+  if (state.wallet_address !== wallet) {
+    return { events: base, note: "skr_staking events omitted: scope_mismatch" };
+  }
+  if (state.data_status !== CooldownDataStatus.Fresh) {
+    return { events: base, note: `skr_staking events omitted: ${state.data_status}` };
+  }
+  const seen = new Set(base.map((e) => e.id));
+  const added = state.events
+    .map((e) => e.event)
+    .filter((e) => e.agentReadable !== false && !seen.has(e.id));
+  return { events: [...base, ...added], note: null };
 }
 
 export function buildMcpServer(
@@ -102,6 +157,9 @@ export function buildMcpServer(
   opts: BuildOptions = {}
 ): McpServer {
   const pollIntervalMs = opts.pollIntervalMs ?? 2000;
+  const skrSource: CooldownSource =
+    opts.skrSource ??
+    (process.env.SKR_SOURCE === CooldownSource.Demo ? CooldownSource.Demo : CooldownSource.Live);
   const server = new McpServer({
     name: "seasonals",
     version: "0.1.0",
@@ -115,7 +173,8 @@ export function buildMcpServer(
       description:
         "Compare and rank deposit opportunities across Seasonals-registered protocols " +
         "(live APY/TVL/utilization). Creates a draft AgentPlan and returns plan_id. " +
-        "Follow with simulate_action → request_user_approval → execute_approved_action.",
+        "Follow with simulate_action → request_user_approval (the user approves, signs and " +
+        "sends in the Seasonals web app; execute_approved_action is only for policy auto-approved plans).",
       inputSchema: {
         objective: z.enum(OBJECTIVES),
         asset: z.string().describe('Deposit asset symbol, e.g. "USDC" or "SOL"'),
@@ -245,9 +304,16 @@ export function buildMcpServer(
     "request_user_approval",
     {
       description:
-        "Request user approval for a simulated plan (push notification to the " +
-        "user's mobile, then long-poll). Returns approval_token only after the " +
-        "user explicitly approves. Idempotent — safe to retry while pending.",
+        "Request user approval for a simulated plan, then long-poll until it settles. " +
+        "The user reviews the plan in the Seasonals web app (Agent page), and approving " +
+        "there also signs and sends the transaction from the user's own wallet — the " +
+        "agent never signs. Returns {status:\"broadcasted\", signatures} when the user " +
+        "signed and sent it, {status:\"failed\", failure_reason} when signing/sending " +
+        "failed or was cancelled, {status:\"rejected\"} or {status:\"expired\"} " +
+        "(plans expire 24h after creation), or {status:\"timeout\"} if nothing " +
+        "settled within timeout_seconds (safe to call again). If the user's policy " +
+        "auto-approves the plan, returns {status:\"approved\", approval_token} for " +
+        "execute_approved_action instead. Idempotent — safe to retry while pending.",
       inputSchema: {
         plan_id: z.string(),
         timeout_seconds: z.number().int().min(1).max(600).default(300),
@@ -256,23 +322,32 @@ export function buildMcpServer(
     async ({ plan_id, timeout_seconds }) => {
       const t0 = Date.now();
       try {
-        await bff.post(`/agent-plans/${plan_id}/request-approval`, {
-          timeout_seconds,
-        });
+        // 既に approved / executing の plan に request-approval は 409 (BFF の status guard)。
+        // その場合も poll で結果を待てるよう、409 だけは握って poll に進む
+        try {
+          await bff.post(`/agent-plans/${plan_id}/request-approval`, {
+            timeout_seconds,
+          });
+        } catch (err) {
+          const current =
+            err instanceof BffHttpError
+              ? (err.body as { current?: string } | null)?.current
+              : undefined;
+          if (!(err instanceof BffHttpError && err.status === 409 && current !== "draft")) {
+            throw err;
+          }
+        }
         const deadline = Date.now() + timeout_seconds * 1000;
-        // §10.3: long-running response — approved/rejected/timeout まで poll。
+        // §10.3: long-running response — 終端 (broadcasted / failed / rejected / expired)
+        // か auto 承認か timeout まで poll。
         // Phase 8.38 (F7): 一過性の BFF エラー (deploy 中の 502 等) で承認待ち全体を
         // abort しない — deadline 内なら次の poll で継続する (fail 側は timeout が拾う)
         for (;;) {
-          let res: {
-            status: AgentPlan["status"];
-            approval_token: ApprovalToken | null;
-          };
+          let res: AgentPlanApprovalStatus;
           try {
-            res = await bff.get<{
-              status: AgentPlan["status"];
-              approval_token: ApprovalToken | null;
-            }>(`/agent-plans/${plan_id}/approval`);
+            res = await bff.get<AgentPlanApprovalStatus>(
+              `/agent-plans/${plan_id}/approval`
+            );
           } catch {
             if (Date.now() >= deadline) {
               audit("request_user_approval", plan_id, "rejected", t0);
@@ -281,24 +356,43 @@ export function buildMcpServer(
             await sleep(pollIntervalMs);
             continue;
           }
-          if (res.status === "approved" && res.approval_token) {
+          // policy の自動承認 (autonomous 経路) — token を Agent に渡し execute_approved_action へ
+          if (
+            res.status === "approved" &&
+            res.approved_by === "auto" &&
+            res.approval_token
+          ) {
             audit("request_user_approval", plan_id, "ok", t0);
             return jsonContent({
               status: "approved",
+              approved_by: "auto",
               approval_token: res.approval_token.token_id,
               expires_at: res.approval_token.expires_at,
             });
           }
-          if (res.status === "rejected") {
-            audit("request_user_approval", plan_id, "rejected", t0);
+          if (res.status === "broadcasted") {
+            audit("request_user_approval", plan_id, "ok", t0);
             return jsonContent({
-              status: "rejected",
-              rejection_reason: "user_declined",
+              status: "broadcasted",
+              signatures: res.execution?.signatures ?? [],
+              ...(res.execution ? { submitted_at: res.execution.submitted_at, via: res.execution.via } : {}),
             });
           }
+          if (
+            res.status === "failed" ||
+            res.status === "rejected" ||
+            res.status === "expired"
+          ) {
+            audit("request_user_approval", plan_id, "rejected", t0);
+            return jsonContent({
+              status: res.status,
+              ...(res.failure_reason ? { failure_reason: res.failure_reason } : {}),
+            });
+          }
+          // pending_user / approved (人、署名前) / executing (web で署名中) は待ち続ける
           if (Date.now() >= deadline) {
             audit("request_user_approval", plan_id, "rejected", t0);
-            return jsonContent({ status: "timeout" });
+            return jsonContent({ status: "timeout", last_status: res.status });
           }
           await sleep(pollIntervalMs);
         }
@@ -313,9 +407,13 @@ export function buildMcpServer(
     "execute_approved_action",
     {
       description:
-        "Execute a previously user-approved plan. Requires the single-use " +
-        "approval_token issued at approval. Returns UNSIGNED transactions — " +
-        "the agent never receives signed transactions (§6.5).",
+        "Build the transactions for a plan that the user's policy auto-approved " +
+        "(request_user_approval returned approved_by:\"auto\" and an approval_token). " +
+        "Returns UNSIGNED transactions — the agent never receives signed transactions " +
+        "or keys (§6.5). Plans approved by a person are signed and sent by the user in " +
+        "the Seasonals web app instead; for those this tool returns " +
+        "{status:\"awaiting_user_signature\"} without executing — call " +
+        "request_user_approval to wait for the result.",
       inputSchema: {
         plan_id: z.string(),
         approval_token: z.string(),
@@ -324,9 +422,22 @@ export function buildMcpServer(
     async ({ plan_id, approval_token }) => {
       const t0 = Date.now();
       try {
-        const res = await bff.post<Record<string, unknown>>(
+        const approval = await bff.get<AgentPlanApprovalStatus>(
+          `/agent-plans/${plan_id}/approval`
+        );
+        if (approval.approved_by !== "auto") {
+          audit("execute_approved_action", plan_id, "rejected", t0);
+          return jsonContent({
+            status: "awaiting_user_signature",
+            plan_status: approval.status,
+            message:
+              "This plan is approved and signed by the user in the Seasonals web app; " +
+              "call request_user_approval to wait for the result.",
+          });
+        }
+        const res = await bff.post<AgentPlanExecuteResponse>(
           `/agent-plans/${plan_id}/execute`,
-          { approval_token }
+          { approval_token, via: "autonomous" }
         );
         audit("execute_approved_action", plan_id, "ok", t0);
         return jsonContent({
@@ -437,20 +548,30 @@ export function buildMcpServer(
       mimeType: "application/json",
     },
     async (uri, { wallet }) => {
-      const events = await bff.get<UnifiedTimeEventDTO[]>(
-        `/time-events/wallet?wallet=${wallet}`
+      const w = String(wallet);
+      // SKR の読取失敗で既存 event まで落とさない (base の失敗は従来どおり error)
+      const [base, skr] = await Promise.allSettled([
+        bff.get<UnifiedTimeEventDTO[]>(`/time-events/wallet?wallet=${wallet}`),
+        bff.get<unknown>(
+          `${SKR_STATE_PATH}?wallet=${encodeURIComponent(w)}&source=${skrSource}`
+        ),
+      ]);
+      if (base.status === "rejected") throw base.reason;
+      const { events, note } = projectCooldownEvents(
+        base.value.filter((e) => e.agentReadable !== false),
+        skr,
+        w
       );
       return {
         contents: [
           {
             uri: uri.href,
             mimeType: "application/json",
-            text: JSON.stringify(
-              events.filter((e) => e.agentReadable !== false),
-              null,
-              2
-            ),
+            text: JSON.stringify(events, null, 2),
           },
+          ...(note
+            ? [{ uri: `${uri.href}#skr_staking`, mimeType: "text/plain", text: note }]
+            : []),
         ],
       };
     }
@@ -632,6 +753,251 @@ export function buildMcpServer(
         return jsonContent(plan);
       } catch (err) {
         audit("ship_lp_strategy", null, "rejected", t0);
+        throw err;
+      }
+    }
+  );
+
+  // ── Agent rebalance proposals (Ethereum) ──────────────────────────────────
+  // 読む (menu / holdings) → 1 step ずつ preview → 複数 step の proposal を提出 → 人が承認
+  // (web の Agent ページ、または chat で明示的な yes) → fork でだけ実行。Agent は署名しない。
+
+  const DECIMAL = z.string().regex(/^[0-9]+(\.[0-9]+)?$/, "decimal string like \"100\" or \"1.5\"");
+  const PROPOSAL_STEP = z.discriminatedUnion("kind", [
+    z.object({
+      kind: z.literal("menu"),
+      productId: z.string().min(1).describe('From list_yield_menu, e.g. "ethereum:ethena:susde", "ethereum:lido:steth", "ethereum:pendle:pt:0x…"'),
+      action: z.enum(["deposit", "withdraw"]),
+      amount: DECIMAL.describe("Human-readable decimal of the token being paid (deposit) or sold/withdrawn (withdraw)"),
+      token: z.string().min(1).optional().describe('Withdraw token when the product offers a choice (Lido: "stETH" | "wstETH")'),
+    }),
+    z.object({
+      kind: z.literal("uniswap_swap"),
+      tokenIn: z.enum(SWAP_SYMBOLS),
+      tokenOut: z.enum(SWAP_SYMBOLS),
+      amount: DECIMAL.describe("Human-readable decimal of tokenIn"),
+    }),
+    z.object({
+      kind: z.literal("event_action"),
+      eventId: z.string().min(1).describe("An event id from list_events"),
+      actionType: z.string().regex(/^[a-z_]+$/).describe("One of that event's actions (lido_claim, ethena_unstake, pendle_redeem, aqua_dock …)"),
+    }),
+    z.object({
+      kind: z.literal("aqua_ship"),
+      usdc: DECIMAL.describe("USDC to commit to the 1inch Aqua PEGGED_STABLE USDC/USDe LP (human-readable decimal)"),
+      usde: DECIMAL.describe("USDe to commit (human-readable decimal)"),
+      bandBps: z.number().int().min(10).max(200).describe("Peg band in bps (10–200); the server refuses if Chainlink shows USDe/USDC off peg by > 50 bps"),
+      reviewAt: z.string().datetime().describe("ISO date (≤ 180 days out) when a 'strategy review' event goes on the calendar"),
+      feeBps: z.number().int().min(1).max(30).optional().describe("Taker fee in bps, default 5"),
+    }),
+  ]);
+  const proposalPath = (id: string) => `/eth/agent-proposals/${encodeURIComponent(id)}`;
+
+  server.registerTool(
+    "list_yield_menu",
+    {
+      description:
+        "List the Ethereum yield menu the Seasonals Menu page shows: Lido stETH, Ethena sUSDe and the top Pendle PT / YT markets " +
+        "with live rates (APR / 30d yield / implied APY; null when the source was unavailable), product ids, maturities and facts. " +
+        "Use the product ids in propose_rebalance menu steps.",
+      inputSchema: {},
+    },
+    async () => {
+      const t0 = Date.now();
+      try {
+        const menu = await bff.get<MenuProduct[]>("/eth/menu");
+        audit("list_yield_menu", null, "ok", t0);
+        return jsonContent({ products: menu });
+      } catch (err) {
+        audit("list_yield_menu", null, "error", t0);
+        throw err;
+      }
+    }
+  );
+
+  server.registerTool(
+    "get_holdings",
+    {
+      description:
+        "Read what an address holds in the menu products (stETH / wstETH, sUSDe incl. cooldown, Pendle PT / YT) plus spendable ETH / USDC / USDe, " +
+        "as the Menu page shows them (mainnet state; amounts are smallest-unit strings with decimals). Also reports whether the local " +
+        "Anvil fork is reachable, which is where approved proposals run.",
+      inputSchema: { address: EVM_ADDRESS },
+    },
+    async ({ address }) => {
+      const t0 = Date.now();
+      try {
+        const [holdings, status] = await Promise.all([
+          bff.get<MenuHoldingsResponse>(`/eth/holdings?address=${address}`),
+          bff.get<{ executionTarget: "fork" | "mainnet"; forkReachable: boolean }>("/eth/status"),
+        ]);
+        audit("get_holdings", null, "ok", t0);
+        return jsonContent({ ...holdings, executionTarget: status.executionTarget, forkReachable: status.forkReachable });
+      } catch (err) {
+        audit("get_holdings", null, "error", t0);
+        throw err;
+      }
+    }
+  );
+
+  server.registerTool(
+    "preview_rebalance_step",
+    {
+      description:
+        "Build the UNSIGNED plan for one rebalance step against current mainnet state, without submitting anything. Runs the same " +
+        "guards as execution (Chainlink peg for swaps, Pendle TWAP for PT / YT, balances). For a uniswap_swap it returns amountOut " +
+        "(smallest units of tokenOut) so you can size the next step. Nothing is signed or sent.",
+      inputSchema: { address: EVM_ADDRESS, step: PROPOSAL_STEP },
+    },
+    async ({ address, step }) => {
+      const t0 = Date.now();
+      try {
+        const preview = await bff.post<EthProposalPreviewSlot>("/eth/agent-proposals/preview", { owner: address, step });
+        audit("preview_rebalance_step", null, "ok", t0);
+        return jsonContent(preview);
+      } catch (err) {
+        audit("preview_rebalance_step", null, "rejected", t0);
+        throw err;
+      }
+    }
+  );
+
+  server.registerTool(
+    "propose_rebalance",
+    {
+      description:
+        "Submit a multi-step rebalance (up to 6 steps: menu deposit / withdraw, USDC ⇄ USDe swap, event action, 1inch Aqua LP ship) as an " +
+        "UNSIGNED proposal with a Strategy Brief. The server builds every step and refuses the whole proposal if any guard fails; a later step " +
+        "that spends what an earlier step produces is deferred and checked on the fork when it runs. Size such steps from the previous step's " +
+        "preview amountOut (leave ~1% margin). Withdrawals from Lido (queue) and Ethena (cooldown) are not liquid in the same run — end the " +
+        "proposal at the request and let the calendar event handle the claim later. " +
+        "The response carries `brief`: the server computes BEFORE → AFTER portfolio, USD-weighted blended APY, the Aqua sleeve and the calendar " +
+        "horizon from real holdings, menu rates and step previews (you only name and explain the strategy; never invent numbers). " +
+        "Use dryRun: true first to see the brief without submitting, iterate, then submit. Nothing runs until a human approves: show the " +
+        "user `brief.markdown` verbatim plus the id and bundleHash, then either ask them to approve it on the Seasonals web Agent page (then " +
+        "call wait_for_rebalance_decision) or ask for an explicit yes in this conversation (then call execute_rebalance). Execution happens " +
+        "only on the local Anvil fork; the Agent never signs.",
+      inputSchema: {
+        address: EVM_ADDRESS,
+        name: z
+          .string()
+          .min(1)
+          .max(80)
+          .describe("Pop strategy name: one emoji + a short English name, ≤ 40 characters, e.g. '🍋 Lemon Ladder' or '🦋 Cocoon to Coupon'"),
+        tagline: z.string().min(1).max(140).optional().describe("One-line English hook for the strategy (≤ 140 characters)"),
+        rationale: z.string().min(1).max(2000).describe("Why this rebalance, in plain English the user will read before approving"),
+        steps: z.array(PROPOSAL_STEP).min(1).max(6),
+        dryRun: z.boolean().optional().describe("true = build previews + Strategy Brief only; nothing is stored or shown to the user yet"),
+      },
+    },
+    async ({ address, name, tagline, rationale, steps, dryRun }) => {
+      const t0 = Date.now();
+      const body = { owner: address, name, ...(tagline ? { tagline } : {}), rationale, steps };
+      try {
+        if (dryRun) {
+          const brief = await bff.post<EthProposalBriefResponse>("/eth/agent-proposals/brief", body);
+          audit("propose_rebalance", null, "ok", t0);
+          return jsonContent({ dryRun: true, ...brief });
+        }
+        const proposal = await bff.post<EthAgentProposal>("/eth/agent-proposals", body);
+        audit("propose_rebalance", proposal.id, "ok", t0);
+        return jsonContent(proposal);
+      } catch (err) {
+        audit("propose_rebalance", null, "rejected", t0);
+        throw err;
+      }
+    }
+  );
+
+  server.registerPrompt(
+    "design_rebalance",
+    {
+      description: "Design an Ethereum rebalance for an address, present it as a Strategy Brief, and ask the human to approve it",
+      argsSchema: { address: z.string(), goal: z.string().optional() },
+    },
+    ({ address, goal }) => ({
+      messages: [
+        {
+          role: "user" as const,
+          content: {
+            type: "text" as const,
+            text:
+              `Design a rebalance for ${address} on Seasonals${goal ? ` with this goal: ${goal}` : ""}.\n\n` +
+              "Workflow:\n" +
+              "1. Read the current state with get_holdings and the opportunities with list_yield_menu (Lido, Ethena, Pendle PT / YT, 1inch Aqua LP).\n" +
+              "2. Pick at most 6 steps. Size each step with preview_rebalance_step; a swap's amountOut tells you how much the next step can use (leave ~1% margin). " +
+              "Withdrawals from Lido or Ethena are not liquid in the same run, so end there and let the calendar event handle the claim.\n" +
+              "3. Give the strategy a pop name (one emoji + a short English name, ≤ 40 characters), a one-line tagline and a plain-English rationale.\n" +
+              "4. Call propose_rebalance with dryRun: true, read the returned brief (before → after, blended APY, warnings, unpriced), adjust, then submit without dryRun.\n" +
+              "5. Show me brief.markdown verbatim (do not restate or change its numbers — the server computed them), plus the proposal id and bundleHash.\n" +
+              "6. Ask me to approve: either on the Seasonals web Agent page (then call wait_for_rebalance_decision) or by an explicit yes here (then call execute_rebalance with user_confirmed: true).\n" +
+              "Never say anything ran before I approved. Everything executes only on the local Anvil fork; you never sign.",
+          },
+        },
+      ],
+    })
+  );
+
+  server.registerTool(
+    "wait_for_rebalance_decision",
+    {
+      description:
+        "Wait for the human to approve (and thereby execute on the fork) or reject a proposal on the web Agent page. Long-polls until the " +
+        "status is no longer pending, then returns the proposal with per-step fork transaction results. Returns {status:\"timeout\"} if nothing " +
+        "happened within timeout_seconds; safe to call again.",
+      inputSchema: { proposalId: z.string().min(1), timeout_seconds: z.number().int().min(1).max(600).default(300) },
+    },
+    async ({ proposalId, timeout_seconds }) => {
+      const t0 = Date.now();
+      const deadline = Date.now() + timeout_seconds * 1000;
+      try {
+        for (;;) {
+          let p: EthAgentProposal | null = null;
+          try {
+            p = await bff.get<EthAgentProposal>(proposalPath(proposalId));
+          } catch (err) {
+            // 一過性の BFF エラーでは待ちを止めない (request_user_approval と同じ)。404 は即座に返す
+            if ((err as { status?: number }).status === 404) throw err;
+          }
+          // executing は fork で走っている途中 (数十秒かかる)。終端状態になるまで待つ
+          if (p && p.status !== "pending" && p.status !== "executing") {
+            audit("wait_for_rebalance_decision", proposalId, p.status === "executed" ? "ok" : "rejected", t0);
+            return jsonContent(p);
+          }
+          if (Date.now() >= deadline) {
+            audit("wait_for_rebalance_decision", proposalId, "rejected", t0);
+            return jsonContent({ status: "timeout", proposalId });
+          }
+          await sleep(pollIntervalMs);
+        }
+      } catch (err) {
+        audit("wait_for_rebalance_decision", proposalId, "error", t0);
+        throw err;
+      }
+    }
+  );
+
+  server.registerTool(
+    "execute_rebalance",
+    {
+      description:
+        "Execute a pending proposal on the local Anvil fork after the user explicitly approved it IN THIS CONVERSATION (user_confirmed must be true " +
+        "and you must have shown them the steps). Pass the bundleHash from propose_rebalance: the server refuses anything that differs from what " +
+        "was shown. Steps run in order and stop at the first failure. Never sends to mainnet; the Agent never signs.",
+      inputSchema: {
+        proposalId: z.string().min(1),
+        bundleHash: z.string().regex(/^0x[0-9a-f]{64}$/),
+        user_confirmed: z.literal(true).describe("Only true after the user said yes to this exact proposal"),
+      },
+    },
+    async ({ proposalId, bundleHash }) => {
+      const t0 = Date.now();
+      try {
+        const p = await bff.post<EthAgentProposal>(`${proposalPath(proposalId)}/execute`, { approvedBy: "user", via: "chat", bundleHash });
+        audit("execute_rebalance", proposalId, p.status === "executed" ? "ok" : "rejected", t0);
+        return jsonContent(p);
+      } catch (err) {
+        audit("execute_rebalance", proposalId, "rejected", t0);
         throw err;
       }
     }

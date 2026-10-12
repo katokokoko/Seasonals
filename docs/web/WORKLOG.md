@@ -41,6 +41,7 @@ Branch: `ethglobal-tokyo-web` (main から分岐)。ETHGlobal Tokyo 2026 期間�
 | 変数 | 用途 |
 |---|---|
 | `INFURA_API_KEY` | Ethereum mainnet RPC (Infura)。`ETHEREUM_RPC_URL` で上書き可 |
+| `ETHERSCAN_API_KEY` | Dashboard の Ethereum 評価額履歴 (Etherscan API V2 の tx 差分)。無ければ `/eth/portfolio/*` は 503 `etherscan_not_configured` |
 | `UNISWAP_API_KEY` | Uniswap Trading API proxy |
 | `ETH_EXECUTION_TARGET` | `fork` (既定) / `mainnet` (送信拒否、plan のみ) |
 | `ETH_FORK_RPC_URL` | Anvil fork (既定 `http://127.0.0.1:8545`) |
@@ -235,6 +236,242 @@ Web 側 (`artifacts/seasonals-web`) は `BFF_URL` (Vite dev proxy 先、node 側
 
 ### Aave — `84e6b74` (push 済み)
 
+### Dashboard Portfolio — 資産推移グラフ + category 別 Allocation
+- 実装済み: `lib/derive/portfolio.ts` (mobile から chain 非依存 helper を移設 + 複数 address 合算)、BFF の履歴 engine を chain 非依存化 (`portfolio/engine.ts`)、`/portfolio/holdings`、Ethereum source (`/eth/portfolio/history` / `holdings`、Etherscan V2 + RPC + Chainlink + DeFiLlama)、web Dashboard の Portfolio (推移 / donut / 保有一覧 / address chip / Total・Deposited)
+- 判断: indexer は Etherscan (gas・internal tx まで厳密)。stETH は approximated、Aave V4 は履歴から除外して現在値のみ。取れなかった address は合算から外し理由を表示 (0 / $0.00 と見せない)。設計と新チェーン手順は `docs/portfolio-history-design.md`
+- 検証: `pnpm -r test` (lib 196 / mobile 475 / BFF 460 / web 41 / mcp 15) と `pnpm -r typecheck` green、e2e 失敗 0。fixture で 1440 / 1280 を screenshot 目視、実 BFF で key 未設定時の表示を確認
+- 未検証: `ETHERSCAN_API_KEY` を入れた実 address での Ethereum 履歴 (key 未設定のため)
+- 既知: category 色 (Seeker と共有) は dataviz の CVD / contrast 検査を満たさない組み合わせがあるため、凡例に名前・割合・金額を併記し、保有表を table view にしている
+
+### Agent rebalance proposals (MCP → BFF → web / chat approval → fork)
+- 実装済み: `lib/types/eth-agent-proposal.ts` (step は symbol + decimal、proposal / preview / execution の wire 型)、`lib/types/eth-plan.ts` (`ActionPlan` / `ForkExecution` を web のローカル定義から lib へ)、BFF `ethereum/agent-proposals.ts` (submit で全 step を既存 builder で組み guard を fail-closed で通す、後続 step の `insufficient_balance` だけ「fork 実行時に検証」として保留、`bundleHash = sha256({id, owner, steps})`、24h 期限、fork 実行は既存 executor を順に呼び最初の失敗で停止、`.data/eth-agent-proposals.json` に永続化、pending は `user_plan` / `agent_proposal` event としてカレンダーに出す)、routes `/eth/agent-proposals` (submit / preview / list / get / execute / reject)、MCP 6 tools (`list_yield_menu` / `get_holdings` / `preview_rebalance_step` / `propose_rebalance` / `wait_for_rebalance_decision` / `execute_rebalance`)、web `/agent` の ProposalInbox (ワンタップ承認 = fork 実行、reject、step 毎の tx 結果、pending がある間 5 秒 poll)
+- 判断: 承認は approval token ではなく `bundleHash` + status + 期限 + per-id lock (web と chat の両経路が同じ execute に収束、表示したものと違う内容は 409)。LLM は MCP client 側 (BFF は決定的のまま)。Lido queue / Ethena cooldown は流動化しないので proposal は「withdraw 要求」で終え、claim は既存のカレンダーイベント → `get_proposal` / `build_action` に任せる。`amount:"max"` は未対応 (swap preview の `amountOut` から Agent が決める)
+- §32.2 enum 変更: `USER_EVENT_KINDS` に `agent_proposal` 追加 (web `labels.ts` の KIND_LABEL / shapeForKind も更新)
+- 検証: unit (BFF `agent-proposals.test.ts` 10 件、route 4xx、MCP 19 件、web ProposalInbox 3 件)。**実 fork で e2e (シナリオ A、2026-09-26)**: stdio の MCP から `get_holdings` → `list_yield_menu` → `preview_rebalance_step` (amountOut 100.03 USDe) → `propose_rebalance` (100 USDC → USDe swap、99 USDe → sUSDe) → web `/agent` のカードで承認 → fork で 5 tx すべて success (approve Permit2 / permit / swap / approve sUSDe / stake 99 USDe ≈ 79.2 sUSDe) → `wait_for_rebalance_decision` が `executed` を返し、カレンダーに Executed イベント 2 件。owner は Binance 14 (`0x28C6…1d60`) を impersonate
+- e2e で直したもの: `wait_for_rebalance_decision` が `executing` で即返っていた (終端状態まで待つように)。web の proposal 一覧は pending / executing が無くても 15 秒ごとに再取得 (Agent の新しい提出が触らずに出るように)
+- 既知: 起動直後の fork では最初の実行が upstream の state 取得待ちで viem の 10 秒 timeout に当たり `failed` になることがある (2 回目以降は state がキャッシュされ数十秒で完走)。認証なし (既存 `/eth/execute` と同水準)。holdings / events は mainnet を読むので fork 実行後も保有表示は変わらない (tx 結果と executed event で見せる)
+- **シナリオ B (chat 承認、2026-09-26)**: owner `0x1121…0a11` で `propose_rebalance` (0.1 PT-apyUSD を売る、TWAP 0.03% 乖離で通過) → Agent が id / steps / bundleHash を人に提示して yes をもらう → `execute_rebalance(user_confirmed: true)` → fork で 2 tx success (router approve / sell 0.1 PT → 0.0688 apyUSD)、`execution.via: "chat"`。同時に oracle 未準備の PT-USDx を売る提案は提出時点で `oracle_unavailable` として拒否 (fail-closed は提案段階で効く)。実行済み proposal の再実行 / 誤 bundleHash / approvedBy 無しは live BFF でも 409 / 409 / 403
+- Pendle の「PT 売り → 別 PT 買い」は market ごとに underlying が違う (apyUSD / USDx / reUSD …) ため、同じ underlying の後続 market が無いと組めない。デモでは単発の売りにした
+
+### Strategy Brief (Agent の戦略を英語で提示する枠組み)
+- 実装済み: `lib/types/eth-agent-proposal.ts` に `EthStrategyBrief` (before / after の `EthPortfolioSnapshot`、USD 加重 `blendedApy`、`aqua` sleeve、`horizon`、`unpriced` / `warnings`、英語 `markdown`)、step kind `aqua_ship`、`title` → `name` (絵文字 + 短い英語名 ≤ 40 code point、文字必須) + `tagline`。`lib/types/eth-plan.ts` に `EthPlanEffects` (`ActionPlan.effects?`)。BFF `ethereum/prices.ts` (現在単価: Chainlink → on-chain 換算 wstETH / sUSDe → DefiLlama、history.ts と共有)、`menu-actions.ts` の全 plan に `effects` (Lido 1:1 / previewDeposit / convertToAssets / Pendle Convert の outAmount、pending は queue / cooldown)、`ethereum/strategy-brief.ts` (`composeStrategyBrief` は純関数、`buildStrategyBrief` が I/O。Pendle 単価は dashboard 評価額 → step の反対側からの暗黙単価 (approx) → unpriced)、`agent-proposals.ts` に `aqua_ship` (preview = `buildAquaShipPlan`、実行 = `shipAquaOnFork`)、`prepareProposal` / `previewProposal` (dry run) と `POST /eth/agent-proposals/brief`、holdings の `spendable` に USDC。MCP `propose_rebalance` に `name` / `tagline` / `dryRun` / `aqua_ship`、prompt `design_rebalance`。web `/agent` の `StrategyBrief` 表 (before / after / APY、Blended APY の delta を melon / cherry 色、Aqua sleeve、horizon、unpriced)
+- 判断: 数字は BFF が決定的に計算し LLM は名前と説明だけ (数字を創作できない)。加重 APY は 2 つ: `moved` (この提案が動かす資金、減る側 → 増える側、見出し) と `deployed` (DeFi で運用中の資金だけ)。**wallet の idle 資産はどちらの分母にも入れない** — 初版は全 line を分母にしていて、$295M の idle ETH / USDe を持つ whale では $180 の効果が 0.00% → 0.00% に埋もれた (レビュー指摘で修正)。表は量の変わる line だけ出し、変わらない line は "Unchanged: … (N positions, $X)" にまとめる。APY 不明は 0 扱いで `excluded` に列挙 (未知の利回りで数字を膨らませない)。brief は proposal を止めない (取得失敗は warnings)。`bundleHash` は `{id, owner, steps}` のまま。aqua.ts の残高不足は `insufficient_balance` に変更 (後続 step で保留できるように)。brief 無しの旧 proposal は load 時に捨てる
+- 検証: unit (BFF `strategy-brief.test.ts` 11 件 / `prices.test.ts` 5 件 / agent-proposals 追加 4 件、MCP 20 件、web ProposalInbox 4 件)。**fork e2e (2026-09-26、🍋 Lemon Ladder、owner `0x28C6…1d60`)**: `POST /eth/agent-proposals` で 3 step (100 USDC → USDe swap / 99 USDe → sUSDe / Aqua PEGGED_STABLE 40 + 40 ship) を提出 → brief は "This rebalance moves $178.94: 0.00% → 2.67% (+2.67% pts)" / "Deployed capital (DeFi only): $924.80 → $1,103.77 · 2.25% → 2.32%"、表は 4 行 + Unchanged 2 件 → web `/agent` のカードで承認 → 36 秒で `executed` (`via: "web"`)、**8 tx すべて success** (Permit2 approve / permit / swap、sUSDe approve / deposit → 79.2001 sUSDe、Aqua USDC approve / USDe approve / ship)。カレンダーに Executed 3 件 + `strategy_review` (2026-10-10) が出て、brief の horizon で予告した予定がそのまま乗った
+- 既知: Pendle の暗黙単価は 8 桁に丸めるため 1e-6 USD 程度ずれる (approx 表示)。YT は Llama に無いことが多く dashboard 評価額が無ければ unpriced
+
+### Infura credit 削減 (2026-10-05)
+- 背景: Infura free (3M credit/日) を 9 割近く消費。主因は CCA bid scan (address ごとに 24.33M → head を 10k block 分割 `eth_getLogs` ≈ 180 call ≈ 46k credit、cache 5 分・永続化なし)、それを初回必ず `ok:false` にして web が 15 秒 polling で回す連鎖、Anvil fork が毎回 latest を fork して `~/.foundry/cache/rpc` が効かないこと
+- 実装:
+  - bid scan は `ETHERSCAN_API_KEY` があれば Etherscan V2 `module=logs` (block 範囲制限なし、address 無し topic0 AND topic2=owner の検索が可能なことを実測) で event ごと 1 call。key 無しは従来の Infura 経路に fallback。`userCache` 10 分
+  - `events.ts` は source 単位の cache。失敗した source だけ 10 秒で再試行し、成功 source (Ethena / Lido 等) の RPC read は通常 TTL まで再利用
+  - web Timeline の部分失敗時 refetch は 15 → 30 → 60 … 秒、上限 5 分の backoff
+  - CCA `head()` 12 秒 cache、`enrich` の個別 revert は 24h 再試行しない、`/eth/status` は block 12 秒 cache + chainId 保持
+  - `GET /eth/rpc-usage`: BFF 起動後に Infura へ出た request の method 別件数と credit 目安。`rpc-proxy.mjs` も上流 request 数を 60 秒ごとに log
+  - `eth-fork.sh`: `--fork-block-number` を `.data/fork-block` に固定 (`FORK_MAX_AGE_H` 既定 24h、`FORK_REFRESH=1` で更新)。上流は `FORK_UPSTREAM_RPC_URL` (例: Alchemy free) を優先できる
+  - Settings に Etherscan API 規約の表記 ("Powered by Etherscan.io APIs")
+- 実測: bid のある実 address で `/eth/events` が初回から全 source ok・1.4 秒・Infura 4 request (≈495 credit、うち getLogs は CCA factory index の差分 1 回)。2 回目は 0 request。`/eth/status` 4 回で blockNumber 1 + chainId 1
+- 実測 (fork、2026-10-09): block 26148842 を固定して 2 回起動、上流 request は 1 回目 50 → 2 回目 6 (`~/.foundry/cache/rpc/mainnet/26148842/` を再利用、reachable まで 12 秒 → 3 秒)。同じ fork で Lemon Ladder 相当 (100 USDC → USDe swap → 99 USDe → sUSDe) を REST で提出 → 実行: 5 tx すべて success、31 秒、`FORK_REFRESH` 不要。e2e 中の上流 request は +99 (tx が触る storage slot 48 件など、以後は cache)、BFF 側の Infura は +9 request (≈720 credit)。execute は `approvedBy` / `bundleHash` に加えて `via: "web"` が必須。残る気づき: proxy 経由で `anvil_nodeInfo` と fork tx の `eth_getTransactionReceipt` (10 件) が上流に出ている (次の削減候補)
+- 不採用: HyperSync (新依存 + token、free は fair-use のみ)、Alchemy free の getLogs (10 block 制限)、JSON-RPC batch (課金は減らず、429 時に結果欠落した過去あり)
+
+### Home portal card を水の blob に (droplet glass、2026-10-05)
+- 経緯: 水面に独立した blob を浮かべる案 (`web-liquid-blobs-attempt1`) は想定と違ったため取り消し、4 隅の portal card 自体を blob の質感にした
+- `data-water-glass="droplet"` (`GLASS_VARIANTS.droplet`、lens 1.2 / frost 0) + `uGlassShape` (輪郭の揺らぎ 4 CSS px、seed)。shader は透明な「水への窓」(quiet × 0.6 で線の間を沈める、縁だけ薄い水色)、光の側の細い光の線、光に向いた角の 4 点星、水面 layer (`uGlassLens = 0`) にカードの外の集光。CSS は WebGL 中だけ tint / rim / 影を外し、文字の後ろに薄い vanilla の楕円と白い縁取り。WebGL 不可 / reduced transparency は従来の glass
+- 計測: drawArrays + readPixels で水面 layer 7.60 → 7.97 ms、glass layer 4.58 → 4.29 ms (droplet は bevel の色分散を省く)。`e2e/run.mjs` 全 pass (droplet の 2 check 追加)
+
+### droplet カードのきらめきの位置 (2026-10-05)
+- きらめきは光の向きの符号で 4 隅のどれかに置いていたため、ポインターが画面の中心線をまたぐと隅から隅へ飛んでいた。中心から光の方向 (カードの縦横比で引き伸ばす) へ伸ばした線が角丸の輪郭と交わる点の少し内側に置き、`uLight` の追従に合わせて縁に沿ってなめらかに動くようにした。既定の左上の光では左上の隅の近くに止まる
+- カードの下のキャラを glass layer で描く案 (texture) と top bar の droplet 版 (`?nav=droplet`) は試したが、どちらも不要と決めて外した
+
+### 水面を浅い海の写真に寄せる (/goal、2026-10-05)
+- 参照は浅い海を真上から撮った写真 (local-only、`docs/web/reference/water-ref.png`)。膨らみや blob ではなく、水面の shader (`renderB`) そのものを寄せた。手順・採点文面・記録は `docs/web/reference/water-{goal,judge,tuning-log}.md`、撮影と gate は `e2e/water-shots.mjs`
+- 採用は iter 7 の形: 集光は「6 波の和の曲面が光を集める」(1 / |det(I − s∇²h)|) の折れ線、焦点外は少し深いアクア、水は赤から吸収するターコイズで浅い砂と深い斑、砂は粒 + 小石 + 砂紋、流れに沿う水面の筋と星、Home の静かな所はぼかした線を残す。描画コストは元の shader の 0.87 倍
+- 採点 (fresh な Opus、全軸 4 以上 2 回連続が完了条件) は上限 10 回で未達。元の shader の 2/3/2/2/3 から 3/3/3/3/4 (iter 5 と 7) まで。iter 2 以降は全軸 3 前後で頭打ちで、網目の形 (Voronoi はタイル的、焦点の折れ線は稲妻的、重み付き Voronoi の iter 9 / 10 も多角形と言われた) と水面の筋の弱さが毎回残った。規則どおり最低軸が最も高い commit のうち後の iter 7 に戻した。iter 9 / 10 の丸い網目は `0ccdeec` / `a10006f` に残してある
+- gate は全 iteration で通過: 文字のコントラスト (iter 0 の値以上)、作業画面の静かさ、reduced motion で静止、描画コストの比 ≤ 1.4。作業マシンは別セッションの test / build で負荷が高く、perf は iter 0 の shader と同じ page で交互に測る比にした。撮影中の vite reload は撮り直す
+- 延長 (iter 11–15、ユーザーの指示): 浅い砂を app の vanilla cream (別の UI mock の上端の色) に変え、採点の depth 軸も合わせた。網目は乗法重み付き Voronoi (壁が円弧の小石状の網目) に替え、吸収を深さの 2 乗に (浅い所は vanilla、深い所はティール)。最良は iter 14 / 15 の 3/3/3/4/4 (depth が初めて 4) で、後の iter 15 を採用。完了条件 (全軸 4 × 2 回) は未達。e2e 110 件全 pass、描画コストは元の 0.95 倍
+- 粒の修正と 2 回目の延長 (iter 16–20): 砂の粒を正方形の hash から滑らかな noise に (Retina で荒く見えない)、droplet card の縁で粒・砂紋・筋を薄める。線の太さを細線〜太い帯に、knot に hot spot と小さなきらめき、水面の筋を流れに沿う長い細線に。最良は iter 16 / 19 / 20 の 3/4/3/4/4 (caustics と depth が 4) で iter 20 を採用。完了条件は未達。採点には ±1 のぶれ (同じ線で Ca が 4 と 3)。e2e 110 件全 pass、描画コストは元の 1.05 倍
+- Home の水色の膜: DOM の層ではなく、列ごとに束ねた quiet zone (0.85) だった。Home の `quiet` を下げ (0.4 を試してユーザー指定で 0.6)、上部バーの glass の下だけは 0.85 のまま (ロゴの文字のコントラストを保つ)
+
+### 水面背景の発熱対策 (2026-10-06)
+
+- 原因: MacBook Pro M4 Pro (ProMotion 120 Hz) で、水面と glass の 2 枚の canvas を毎フレーム全画面に描いていた。
+  GPU がほぼ常に水を描いていて追いつかず、Home の rAF は 120 Hz から 70 Hz 前後に落ちていた。
+- 対策 (`src/background/perfVariant.ts`、dev では `?water-perf=none|1,3|all|default` で 1 つずつ切り替えられる):
+  1. 水の描画を 20 fps に間引く (`waterDefaults.maxFps`)。kick (quiet zone / glass の移動) は即描く。
+     キャラクターの style 書き換えだけでは kick しない (`useQuietZones` の measure が floater だけの変化で false を返す)。
+  2. 作業画面 (calm preset) は静止画 (`waterCalm.animate: false`、`data-water-state="still"`)。
+  3. DPR 上限 1.0。見た目の判断待ちで既定には入れていない。
+  4. glass layer を glass の外接矩形だけ描く (`glassScissor()`)。
+  5. Home のキャラクターの動きを 30 fps に (水とは別)。
+- 計測 (`e2e/water-power.mjs`、画面に Chrome を出して 120 Hz で、各版 10 秒 × 2 周):
+  水を描いている GPU 時間の目安は、対策なしで Home 約 94 %、Calendar 約 98 %。
+  既定 (1+2+4+5) で Home 約 37 %、Calendar 0 % (静止画)。3 も入れると Home 約 25 %。
+  単独では 1 と 2 が効き、3 は単独だと fps が上がるだけで GPU の忙しさはほぼ変わらない。4 と 5 は単独では小さい。
+- 最終版 (ユーザーが決定): 10 / 15 / 20 / 25 / 30 fps を `?water-fps=` で見比べ、水は 20 fps、作業画面は静止画、キャラは 30 fps。
+  10 fps はコマ送りに見えた。DPR は 1.25 のまま。Home で水を描く GPU 時間の目安は約 94 % → 約 30 %、Calendar は 0 %。
+- 確認: web typecheck / test 152、`water-shots.mjs` の gate 全 true、`e2e/run.mjs` 110/110。
+
+### Solana を web で実行 (Seeker 版の移植、2026-10-05、未 commit)
+- 範囲 (ユーザー決定): Solana browser wallet 接続 + Menu の deposit / withdraw + Calendar の claim / redeem + Dashboard の Your Positions からの withdraw。**mainnet に実送信** (Seeker と同じ経路)。Agent plan 承認 inbox / autonomous は対象外
+- 実装済み:
+  - wallet: `services/solanaWallet.ts` (Wallet Standard を手書き。`getWallets()` で検出、`standard:connect` / `standard:events` / `solana:signTransaction` の一括署名、拒否判定)。`@solana/web3.js` と wallet-adapter は入れず、tx は base64 ↔ Uint8Array のまま (`services/bytes.ts`)。依存は `@wallet-standard/{app,base,features}` と `@solana/wallet-standard-{features,chains}` (MWA 経由で lockfile に既にあった版)
+  - session: `connectedEvm` → chain 別 `connected`。Solana wallet 名だけ保存し、reload 後に `connect({ silent: true })` で 1 回だけ戻す。Settings の Server integrations に Solana RPC (Helius) の設定有無
+  - lib (same source of truth): Seeker の `oracle-gate` / `amount-utils` / `event-action` を `lib/derive/` へ移設 (mobile は import 先だけ変更、test も移動)。`lib/derive/solana-action.ts` (`resolveSolanaRoute` = Seeker ActionModal の dispatch cascade を順序込みで転写、`canWithdrawEarnPosition` = MenuDrawer から移設、`depositAction` / `withdrawActionFromPosition` / `withdrawActionFromParams`)。`lib/types/solana-tx.ts` (tx builder の応答型を mobile のローカル定義から lift)。`allEarnPositions`
+  - Calendar: `fromUnifiedTimeEventDTO` が event.metadata の withdraw 用フィールドを action params に写し、BFF route に解決できる時だけ `available` (欠けたら unsupported、fail-closed)
+  - BFF: `GET /tx/status?signature=` (getSignatureStatuses の要約、read-only) と `/health` の `solana.heliusConfigured` (boolean のみ)
+  - web: `solana/useSignAndSubmit.ts` (build → 1 回の承認で全 tx 署名 → `/tx/submit` を順に、2 本目以降 skipPreflight → `/tx/status` で confirmed / failed)、`solana/OracleGate.tsx` (web 版 WarningArea: blocked は CTA を出さない、warning は 1 秒グレーアウト)、`solana/SolanaExecutePanel.tsx` (Menu / Calendar / Dashboard 共用)。Menu の Solana カードに Deposit / Withdraw (display_only / 満杯 / route 無しは理由付きで無効)、chain chip は `SUPPORTED_CHAINS` から。Dashboard に「Your positions (Solana)」
+- 判断: 署名できるのは接続中の wallet の address だけ (watch は読み取りのみ)。`oracle_blocked` / `fair_value_blocked` は失敗ではなく declined (Seeker 8.74)。route の無い pool は Seeker と違い押す前に無効にする
+- 検証:
+  - `pnpm -r test` green (lib 264 / mobile 427 (移設した 48 件は lib 側) / BFF 524 / web 138 / MCP 20)、`pnpm -r typecheck` green
+  - e2e 113/113 (`SOL_E2E=1`): 偽 Wallet Standard wallet の検出・接続・reload で silent 再接続、実 BFF で Menu の Jupiter USDC deposit panel が実 mainnet 残高 (38.486021 USDC) を読む、network を差し替えた block で署名 → `/tx/submit` (署名済 bytes の base64 一致) → confirmed → Solscan link
+- **oracle 障害 → 解消済み** (下の「oracle 移行」): 実 BFF での build → wallet prompt は e2e で確認済み。**mainnet 実送信は未検証**のまま (実 wallet での署名が要る)。少額で Jupiter Lend USDC deposit → withdraw、Kamino、Save (複数 tx)、Orca / Meteora の部分署名済 tx を wallet ごと (Phantom / Solflare / Backpack) に確かめる
+- 既知: Orca / Meteora の withdraw は Seeker と同じ入力単位 (metadata の share_decimals と asset) なので、position NFT 1 枚が「1 USDC」のように見える。mobile の `ActionModal` はまだ `resolveSolanaRoute` に乗せ替えていない (lib test が cascade 順序を固定。乗せ替えは実機確認が要るので別 phase)
+
+### oracle 移行: Pyth push + RedStone push (2026-10-05、未 commit)
+- 背景: Pyth Hermes REST が 2026-08-26 の Pyth Core upgrade で API key 必須 (key 無しは 401、key は 14 日 trial 後 $500/月)、Switchboard が 2026-09-25 にサポート終了 (crossbar は DNS 消滅)。BFF の oracle gate が全 Solana asset で `oracle_unavailable` になり、Seeker も web も Solana の tx を組めなかった
+- 判断 (ユーザー決定): primary = Pyth の sponsored push feed、secondary = RedStone の push feed。どちらも Solana 上の account を Helius で読む (追加費用・key なし)。Hermes の key は買わない。RedStone の off-chain gateway (tier B) は後続。wire 形は `switchboard` → `secondary: { source }` + `tier` に改名。staleness は source ごとに heartbeat + 猶予 (Pyth 75 秒 / RedStone 90 秒) — 60 秒固定だと heartbeat の谷で RedStone が 15〜26%、Pyth が 2〜4% の時間 stale 判定になった (4 分 × 5 秒間隔の実測)
+- 実装:
+  - lib: `lib/config/oracle-feeds.ts` (asset ごとの tier A–D、feed id、program 定数、閾値。BFF の `ASSET_ORACLE_FEEDS` を移設)。`oracle-feeds.test.ts` が registry の全 underlying / deposit mint に tier があることを強制 (Menu に asset を足して tier を忘れると落ちる)。`lib/types/oracle.ts` を `secondary` / `tier` / `reason` / `OracleSourceId` に、warning kind `oracle_switchboard_stale` → `oracle_secondary_stale` (§32.2 enum 変更)。warning 文言を `lib/derive/oracle-gate.ts` に集約し Seeker WarningArea と web OracleGate で共有
+  - BFF: `clients/oracle-onchain.ts` (PDA 導出 + PriceUpdateV2 / RedStone PriceData の手書き decode、価格は bigint で 8 桁 string)、`helius-rpc.ts` `getMultipleAccountsBase64` (1 asset = RPC 1 回)、`clients/oracle.ts` 書き直し (Hermes / Crossbar 削除、last-good は source の閾値以内だけ)。`scripts/verify-oracle-feeds.ts` + `verify:oracle` (全 feed の鮮度と乖離、stale は 15 秒おきに 2 回読み直してから判定)。実 account の bytes を `src/__fixtures__/oracle/` に固定
+  - 評価額履歴: Pyth Benchmarks も 404 になっていた。feed のある asset は Benchmarks しか見ず、SOL / USDC が「現在価格の横一直線」に近似されていた → 空 series なら DefiLlama に落とす (`solanaPriceSeries`)
+  - 表示: Seeker WarningArea / MCPApprovalPushCard、web OracleGate (tier C は「Single price source (Pyth)」を muted で 1 行、CTA は止めない)
+- tier (2026-10-05): A = SOL / USDC / JupUSD、C = USDT (RedStone の account が 2025-07 から停止) / JLP / EURC、D = USDG (Pyth が 3 分 heartbeat) / USDS / USX (Pyth sponsor 停止) / Exponent の niche underlying 11 種 (feed 無し、従来どおり gate 対象外)
+- Save (旧 Solend) への影響なし: Save の reserve が指す Pyth oracle は同じ sponsored push account で、Switchboard 側は 2025-01 から止まっていた (Save は以前から Pyth 単独)。solend-sdk が Hermes を呼ぶのは push account が 80 秒より古い時だけで、75 秒の gate が先に止める。BFF builder の USDC / SOL deposit は mainnet simulate 成功
+- 検証:
+  - lib 291 / mobile 427 / BFF 538 / MCP 20 tests green、`pnpm -r typecheck` green。web は 134/135 (失敗 1 件は並行作業中の水背景 shader の sha256 検査で、この変更とは無関係)
+  - `verify:oracle`: tier A / C の 6 asset すべて fresh、tier A の乖離 0.003〜0.008%
+  - 実 BFF `/oracle/status`: SOL = ok / tier A / secondary redstone、USDT = ok / tier C、USDS = not_configured / tier D + reason
+  - `verify:tx`: 23 経路中 simulate 成功 13 / 想定内 9 / 要調査 1 (前回は 18 が `oracle_blocked`)。残る 1 件は Perena deposit で、Jupiter が USDC → USD* の route を返さない (`NO_ROUTES_FOUND`、oracle は通過済み、別件)
+  - web e2e 113/113 (`SOL_E2E=1`): 前回は oracle blocked で skip した「実 BFF で Jupiter Lend USDC deposit を build → 偽 wallet が 1 回 prompt を受けて拒否 → /tx/submit 0 回」を実行して pass
+- 未実装 / 未検証: RedStone gateway (tier B、USDT / JLP / USDG / JitoSOL の 2 本目)、Seeker 実機での WarningArea 文言確認 (JS reload)、mainnet 実送信、Pyth sponsorship 停止時の Save 側の挙動 (制御外)
+
+### oracle tier B: RedStone gateway (2026-10-05、未 commit)
+- 背景: 前段の移行後、USDT / JLP は Pyth 単独 (tier C) で乖離を照合できず、USDG は Pyth の sponsored feed が 3 分 heartbeat のため gate 対象外 (tier D) だった。RedStone の on-chain push feed にはこれらが無い (USDT は 2025-07 停止、JLP / USDG は account 無し)
+- 判断 (ユーザー決定): USDT / JLP を C → B、USDG を D → B (USDG の Pyth は feed 別閾値 200 秒)。2 本目は RedStone の公開 gateway (key 不要) の署名付き data package
+- 実装:
+  - 署名検証は **viem で手書き** (新規依存なし)。公式 `@redstone-finance/protocol@1.0.0` の `DataPackage.toBytes` / `getSignableHash` を読み、byte 列 (feed id bytes32 ‖ value 32B ‖ timestamp 6B ‖ value size 4B ‖ 件数 3B) の keccak256 を prefix なしで recover。実 package 30 件すべて正規 signer に一致を確認
+  - gateway の `signerAddress` / `isSignatureValid` は自己申告なので使わない。正規 signer は SDK `getSignersForDataServiceId` 既定と同じ internal 5 つを lib に固定 (`REDSTONE_PRIMARY_SIGNERS`、出所コメント付き)。2025 年以降の external signer は受け入れない
+  - 判定: 異なる正規 signer 3 以上 (quorum)、中央値 (偶数件は低い方)、age は使った package の最も古い timestamp から、閾値 60 秒
+  - gateway は feed で絞れず毎回全 996 feed (~2MB) を返すので、全 asset で 1 回の取得を共有し 10 秒 cache (同時呼び出しは 1 本に合流)。1 本目が落ちたら 2 本目 (`oracle-gateway-2.a`)
+  - `lib/config/oracle-feeds.ts` に `redstoneGatewayFeedId` / `pythMaxAgeS`、BFF `clients/oracle-redstone-gateway.ts`、`oracle.ts` は Pyth / push の RPC と gateway を並列取得。`verify:oracle` に gateway 列 (有効 signer 数 / 中央値 / age)
+- tier (変更後): A = SOL / USDC / JupUSD、**B = USDT / JLP / USDG**、C = EURC (gateway にも無い)、D = USDS / USX / Exponent niche 11 種
+- 検証:
+  - lib 291 / mobile 427 / BFF 561 / MCP 20 / web 135 tests green、`pnpm -r typecheck` green
+  - gateway のテストは実 package の fixture で、改ざん (値 1 桁) / 署名破損 / signer 重複 / quorum 境界 / feed id・data service 不一致 / 中央値 / cache 共有 / 予備 gateway を確認
+  - `verify:oracle`: 7 asset すべて OK。tier B は 3 asset とも 5/5 signer、gateway 11 秒、Pyth との乖離 0.005〜0.031%
+  - 実 BFF `/oracle/status`: USDT / JLP / USDG = tier B、secondary `redstone_gateway`、乖離が数値
+  - `verify:tx`: 前回と同じ 22/23 (Perena は既知の Jupiter route 問題)。1 回目は Kamino layout 確認が Helius の 429 に当たったが、再実行で通過
+  - web e2e 113/113 (`SOL_E2E=1`)
+- 既知のリスク: RedStone の公式 SDK 1.0.0 は「authenticated gateway」を既定にしている。公開 gateway が key 化されたら gateway source は unavailable になり、tier B は Pyth 単独で動く (Pyth も stale なら block、fail-closed)
+
+### Perena USD* の mint 移行 (2026-10-05、未 commit)
+- 症状: `verify:tx` で「swap-earn dep perena」だけが Jupiter `NO_ROUTES_FOUND` (oracle は通過済み)
+- 原因 (調査): Perena が USD* を新しい mint と新 program に移していた。registry は旧 mint を指したまま
+  - 旧 `BenJy1n3…Wo6`: Jupiter 上は "USD Star (Perena StableSwap LP)" (Numéraire の LP)、流動性 $44、USDC↔USD* とも金額によらず route 無し。on-chain は RemoveLiquidity と小口 swap だけ
+  - 新 `star9agSpjiFe3M49B3RniVU4CMBBEK3Qnaqn3RGiFM`: Jupiter で verified "USD Star"、時価総額 $11.6M、program は Perena Star V2 (`save8RQ…`)。Jupiter label "Perena Star V2" で双方向に route あり (1 USDC → 0.908353 USD*、価格影響 ≈ 0)
+  - 一時障害ではなく恒久的な移行。Perena の APY API は生きている (7d 9.12%)
+- 修正: `lib/config/swap-earn-markets.ts` の perena の share mint を新 mint に、`verify-tx-routes.mjs` も同じ値に。旧 mint は swap-earn registry に入れず (入れると withdraw route を解決して Jupiter で必ず失敗する)、`lib/__fixtures__/known-mints.ts` に "USD* (legacy)" として表示だけ残す (Perena への預入として数える)。旧 token の移行は Perena app で行う前提
+- 検証: lib 293 / BFF 561 / mobile 427 / MCP 20 / web 135 tests green、`pnpm -r typecheck` green。**`verify:tx` が 23 経路中 成功 14 / 想定内 9 / 要調査 0 で exit 0** (この phase の連続作業で初めて)。実 BFF で新 mint 向け deposit tx が組める (0.1 USDC → 0.090835 USD*)。web e2e 113/113
+- 範囲外: 旧 USD* → 新 USD* の移行を Seasonals 上で行うこと、Menu の Perena TVL (fixture 5,000,000 のまま)
+
+### Perena: 旧 USD* の案内と TVL の live 化 (2026-10-06、未 commit)
+- 調査:
+  - 旧 USD* (`BenJy1…`) は Perena **Tri-Stable Pool** (`2w4A1eGy…`、`@perena/numeraire-sdk` の `PRODUCTION_POOLS.tripool`、USDC / USDT / PYUSD) の LP token。Menu に display_only で載っていた「Tri-Stable Pool」カードと同じもの
+  - 市場では実質売れない (Jupiter Ultra → DFlow → Raydium CLMM: 1 → 0.917 USDC、100 → 16.3、1,000 → 19.2)。正規の引き出しは Numeraire の `remove_liquidity` (USDC 単独で受け取れる) だが、公式 SDK はグローバル状態に署名者 Keypair を持つ作りで、CJS から ESM 専用の `node-fetch` 3 を require するため BFF ではそのまま使えない
+  - TVL の fixture はずれていた: USD* 5,000,000 → 実測 $11.58M、Tri-Stable 3,000,000 → 実測 $306.8K (約 10 倍)
+- 判断 (ユーザー決定): 旧 USD* は **表示と Perena app への案内だけ** (Seasonals で移行も withdraw も作らない)。TVL は **2 カードとも live**
+- 実装:
+  - `lib/config/perena.ts` (app URL、旧 USD* mint / decimals、Tri-Stable pool と vault 3 つを固定 — pool PDA は spam token も持つので owner 一覧では数えない)。`ProtocolPool` に任意の `note` / `external_url`。Tri-Stable の fixture に旧 USD* の案内と link
+  - BFF: `rates.ts` `fetchPerenaUsdStarPrice` (`api.perena.org/api/usdstar/price`、5 分 cache)、`clients/perena.ts` `fetchPerenaTriStableTvlUsd` (3 vault を 1 回の getMultipleAccounts で読み、mint / owner / program が違えば throw)。`/menu-listings` の overlay で USD* = 新 mint 供給 × 単価、Tri-Stable = vault 残高合計。取れなければ fixture (fixture も実測値に更新)
+  - web: Menu カードの詳細に `note` と「Open Perena ↗」。閲覧専用 pool には「wallet で署名して送る」の定型文を出さず「Seasonals では扱えない」と書く。Dashboard の Your positions に、閲覧中 address が旧 USD* を持っていれば Perena app への案内 (`/positions` の `raw_state.mint` で判定、deposit 残高と同じ query を共有)
+- 検証: lib 293 / BFF 569 / mobile 427 / MCP 20 / web 139 tests green、`pnpm -r typecheck` green。実 BFF `/menu-listings`: USD* $11,575,088 / Tri-Stable $306,770.57 + 案内。Menu を screenshot で確認 ($11.6M / $306.8K、詳細に案内と link)。`verify:tx` 23 経路中 成功 14 / 想定内 9 / 要調査 0 (Kamino layout 確認が 2 回 Helius の 429 に当たり、再実行で通過)。web e2e 113/113
+- 範囲外: 旧 USD* の withdraw / 移行 (必要になったら IDL から remove_liquidity を自前で組む。SDK は入れない)、Seeker への案内表示 (`note` / `external_url` は任意 field で mobile は無視する)
+
+### Menu fixture の総点検 + RPC 429 対策 (2026-10-06、未 commit、Opus 5.5 subagent 2 本で実装)
+- 背景: Perena の TVL が fixture と約 10 倍ずれていたので、`/menu-listings` の live 応答と fixture を全 pool で突き合わせた。TVL が fixture のままだったのは 13 pool (LST 6 / kVault 2 / Save 2 / sHYUSD / 出典なし 2)。同日 `verify:tx` が Helius の 429 に 3 回当たった
+- 実装 (A: Menu の live 化):
+  - LST (INF / jitoSOL / bSOL / mSOL / hyloSOL): Sanctum `/v1/tvl/current` (lamports) × SOL oracle 価格。display_only の sanctum_jitosol / sanctum_bsol も対象
+  - kVault (steakhouse / allez): Kamino metrics の `tokensInvestedUsd + tokensAvailableUsd` (以前は apy しか拾っていなかった)
+  - Save (USDC / SOL): reserve account を `@solendprotocol/solend-sdk` の `parseReserve` で decode し `available + borrowedWads/1e18` × 単価 (program id は SDK 定数、両 reserve の owner と一致を確認)
+  - sHYUSD: 供給 × Jupiter price v3 (`lite-api.jup.ag/price/v3`、key 不要)。APY は Exponent `/markets` に sHYUSD の underlying が無いため fixture のまま (fixture にその旨)
+  - overlay の挙動: LST / solstice の TVL と Save の TVL は APY source が失敗しても適用される (以前は APY と同じ分岐の中だった)。SOL 価格が無ければ SOL 建ての pool は fixture
+  - fixture は 2026-10-06 の実測値に更新 (live 失敗時の fallback)。savefi_turbo_sol / jito_restaking_vault は出典なしで fixture 維持 + コメント
+- 実装 (B: 429 対策):
+  - `helius-rpc.ts` に `rpcReadWithRetry` (429 / 5xx / network は 500ms → 1s の backoff で最大 3 回、`Retry-After` 優先・上限 10 秒、他の 4xx と JSON-RPC error は即 throw)。読み取り系 (`getMultipleAccountsBase64` / `getSignatureStatus` / `getTokenSupplyUi` / `getEpochInfo` / `fetchStakeAccounts` / `simulateUnsignedTx`) が使う。`sendTransactionViaHelius` は再試行しない
+  - `verify-tx-routes.mjs`: 同じ backoff の `rpc()` helper (非 JSON 応答も再試行対象)、simulate 間 250ms、再試行しても駄目なら「RPC rate limit (429) — 時間を置いて再実行」と出す。`verify-oracle-feeds.ts` は helius-rpc 経由なので自動で効く
+  - backoff の待ちは test が `_setSleepForTest` で差し替える (subagent は jest 判定を本体に入れていたが、test 側の注入に変更)
+- before → after (2026-10-06、SOL ≈ $119):
+
+| pool | fixture (before) | live (after) |
+|---|---|---|
+| sanctum_inf | 158M | $275.9M |
+| sanctum_jitosol / jito_jitosol | 780M | $1,242.9M |
+| sanctum_bsol | 69M | $124.1M |
+| marinade_msol | 187M | $382.2M |
+| hylo_hylosol | 20M | $24.3M |
+| kamino_steakhouse_usdc | 19.8M | $19.1M |
+| kamino_allez_sol_vault | 6.3M | $10.6M |
+| savefi_usdc_main | 21.9M | $22.5M |
+| savefi_sol_main | 16.1M | $22.1M |
+| hylo_shyusd | 11M | $22.9M |
+
+- 検証: lib 293 / BFF 600 / mobile 427 / MCP 20 / web 139 tests green、`pnpm -r typecheck` green。`verify:tx` 連続 2 回とも 要調査 0 / exit 0、`verify:oracle` 7 asset OK。web e2e 113/113。Menu の Staking tab を screenshot で確認 ($275.9M / $1.2B / $124.1M / $382.1M / $24.2M)
+- 未検証: 実際の 429 を再試行で吸収する経路は live で踏めなかった (今回の実行では 429 が出なかった)。単体 test では 429 → 200 / 3 回 429 / Retry-After を確認済み
+
+### Seeker を web と同じ部品に乗せ替え (2026-10-06、未 commit、Opus 5.5 subagent)
+- 背景: ActionModal の `handleExecute` は market 解決と 13 分岐 (swap-earn → Kamino reserve → kVault → Meteora → Orca → Save → Exponent) を約 400 行自前で持っていた。web 移植で同じ cascade を `lib/derive/solana-action.ts` の `resolveSolanaRoute` に写していたので、Seeker もそれに乗せ替えて重複を消す
+- 実装:
+  - `services/solana-tx.ts` (新規): `buildSolanaTxs(route, user, amount)` が 13 route を mobile の `api.get*` builder に写す (web `src/solana/buildTx.ts` と同じ switch。swap-earn は `slippageBps: 50` を明示、応答 key の `swapTransaction` / `transaction` / `transactions` の差を吸収、`default` は `never`)
+  - `ActionModal.tsx`: `resolveSolanaRoute(action)` → `runOnchainTx(() => buildSolanaTxs(...))` に置換 (-400 行)。`canOnchain` / `action.amount` の gate、fail-closed (`route === null` → lib の `UNSUPPORTED_MARKET_MESSAGE`)、`signSubmitAndSettle`、`BffError` / plain Error の扱いは従来どおり。registry の `find*` import と web3.js `Transaction` 依存を削除
+  - tier C (Pyth 単独 asset) の注記: `<WarningArea>` の外に muted 1 行「Single price source (Pyth). Not cross-checked against a second oracle.」(warning ではないので CTA を止めない。testID `oracle-single-source-note`)。`ActionModal.test.tsx` を新設 (tier C で出る / tier A で出ない / blocked なら blocked card)
+  - Perena の案内: `VaultRow` に `note` / `externalUrl` (pool から写す)。`VaultRowView` に note の caption と「Open Perena ↗」(`Linking.openURL`、testID `pool-link-<key>`)。「View only」badge は維持
+- 検証: mobile 427 → 456 tests green (suites 38 → 40)、`tsc` 新規エラーなし。`verify:tx` 23 経路 要調査 0
+- 未検証 (Seeker 実機、ユーザー): deposit / withdraw 1 往復 (route 無しの pool で Unsupported market が出ること)、tier C 注記、Menu → Perena → Tri-Stable の link
+
+### Solana agent plan の承認 inbox を web に (2026-10-06、未 commit、Opus 5.5 subagent 3 本で実装)
+- 背景 (調査 2026-10-06): BFF の `/agent-plans` は approve で token を出し、`/execute` は swap-earn だけ unsigned tx を **Agent に返す** (`pushed_to_mobile` という label だけ) 作りで、誰も署名しない。plan はメモリのみ、wallet で絞れず、fixture と autonomous dry-run が混ざる。mobile の承認画面は `?token=` 必須 (token は approve 後にしか無いので実 plan は開けない)、push payload は `token_id` を要求して捨てる。memo stub (`buildMemoTransaction`、devnet) は fixture plan 専用
+- 判断 (ユーザー決定): **web が approve → 組む → 署名 → 送信まで一気に** (ETH の ProposalInbox と同じ「承認 = 実行」)。MCP の `request_user_approval` は終端まで待って signature を返す。`execute_approved_action` は policy auto 承認 (autonomous) 専用。永続化と絞り込みは ETH に揃える (`.data/agent-plans.json`、24h で `expired`、`GET /agent-plans?wallet=`、fixture は test のみ)
+- 契約 (`lib/types/agent-plan.ts` に `expires_at` / `approved_by: "user" | "auto"` / `execution { execution_id, signatures, submitted_at, via }` / `failure_reason`、応答型 `AgentPlanExecuteResponse` 等):
+  - `POST /approve` (body なし) → approved + `approved_by: "user"` + token。**人が承認済みの approved plan にも token を再発行** (Seeker で承認 → web で署名、gate 拒否後の再試行のため。auto 承認の plan は 409)
+  - `POST /execute {approval_token, via}` → `resolveSolanaRoute` で 13 route すべてを既存 `/protocols/*` route に in-process (`app.inject`) で流して組む。oracle / fair-value / 残高 / 預入停止の gate は builder 側のものがそのまま効く。応答 `{execution_id, status: "awaiting_signature", unsigned_transactions[{index,label,tx_base64}]}`、plan は executing。builder が止めたら status と body を透過し plan は approved のまま token 未消費 (再試行可)
+  - `POST /signatures {execution_id, signatures[]}` → broadcasted (本数一致、base58 形式)。`POST /failed {execution_id, reason}` → failed。`/reject` は simulated | pending_user | approved からのみ。`GET /approval` は auto 承認の時だけ token を出す。`GET /agent-plans?wallet=` で絞る。期限超過は読み出し時に expired
+  - MCP: `request_user_approval` は broadcasted (signatures) / failed (failure_reason) / rejected / expired / auto 承認 (token) / timeout を返す。`execute_approved_action` は人が承認した plan には `awaiting_user_signature` を返し `/execute` を呼ばない
+  - mobile: push payload の `token_id` を任意に、承認画面は token 無しで開く、approve は body なし、承認後は「Sign & send from the Seasonals web app.」(Seeker で署名するのは後続)。`httpPostJson` は body 無しの時 content-type を付けない (Fastify の `FST_ERR_CTP_EMPTY_JSON_BODY` 400 を実 BFF で踏んだ)
+- web (`src/agent/SolanaPlanInbox.tsx`): /agent の「Proposals from your Agent」の下に「Solana plans from your Agent」。card は status tag / action と金額 (`toHumanReadable` は表示直前) / protocol / estimated out / oracle 要約 (`ORACLE_WARNING_HEADLINE`) / bundle_hash / 期限 / Solscan link。**Approve & sign** (pending_user | simulated) と **Sign & send** (approved) は approve → `useSignAndSubmit(wallet_id).run(execute → unsigned tx)` → `/signatures`、wallet 拒否 / 送信失敗は `/failed`。`/execute` の 409 は「Declined by safety gate」(plan は approved のまま、`/failed` は呼ばない)。plan の wallet が接続 wallet と違えば署名ボタンを出さない。polling は live な plan がある間 5 秒、無ければ 15 秒 (ETH と同じ)
+- 検証: lib 293 / BFF 634 / mobile 456 / MCP 24 / web 152 tests green、`pnpm -r typecheck` green。`verify:tx` 23 経路 要調査 0。web e2e 116/116 (agent inbox の 3 check 含む)。**MCP e2e** (新コードの MCP server を stdio で spawn、dev BFF 相手): compare → simulate (jupiter_lend USDC 1.0) → request_user_approval を待たせつつ web 相当の approve → execute (mainnet の実 tx 構築、署名なし) → /failed で Agent に `{status:"failed", failure_reason:"user_cancelled"}` が返る、wallet filter、token の秘匿、user 承認 plan への `execute_approved_action` が `awaiting_user_signature`、再 approve の token 再発行 — 19/19
+- 未検証: 実 wallet で web から署名して送る (mainnet 少額、ユーザー)、Seeker 実機で承認画面が token 無しで開くこと
+- 範囲外: Seeker 上での agent plan 署名、`/agent-plans` の認証 (従来どおり無し)
+
+### Seeker 版の API 利用量を multi-user 前提で削る (2026-10-12、branch perf/api-usage、Opus 5.5 subagent 5 本で実装)
+- 背景: 外部配布 (PR #38) で 1 台の BFF (Fly、Helius Free: 月 100 万 credit、DAS / Enhanced 2 rps) を複数の Seeker ユーザーが共有する。コードを読み切ると、`docs/external-release-api-handling.md` §3.1 の見積りより重く、同じデータを route ごと / リクエストごとに Helius へ取り直していた
+- 調査 (コード読み、main 5719e73):
+  - client: cold start で 10〜11 GET、foreground 復帰 (30s 超) で 8〜10 GET。常に `[]` を返す `/time-events` と wallet 無しの `/positions` (MenuDrawer) を毎回叩く、Kamino 以外の action sheet でも Kamino reserves を取る、共有データ (menu / markets / reserves) の staleTime が 30〜60s、tx 後の invalidate が prefix で他 wallet と fixture key を巻き込む、wallet 復元の二段階 setState で二重取得
+  - BFF: `/positions` ≈ 10 credit、`/positions/earn` ≈ 155、`/time-events/wallet` ≈ 165、`/portfolio/history` 120〜1,030 (Enhanced 100 credit × 最大 10 page)。3 本の wallet route が同時に飛ぶのに in-flight dedupe が無く、1 wallet の cold open で DAS ×3〜4、Enhanced ×2〜3、Meteora GPA ×6。Kamino reserve / kVault metrics、Save reserves、Meteora pool、Orca context は wallet 非依存なのに毎回取得。oracle は mint 別に別々の getMultipleAccounts。DAS / Enhanced は `rpcReadWithRetry` を通らず retry 無し
+  - Helius Parsed Events (公式 docs で確認): `POST /v1/parsed-events/transaction-history`、10 credit/req (Enhanced の 1/10)、`afterSignature` で増分、`time.gte` で期間限定。ただし derivation が読む `accountData[].tokenBalanceChanges / nativeBalanceChange` 相当が無く、`includeRawTransaction` の meta から再構成できるかは実データで要確認
+- 設計 (ユーザー決定 2026-10-12): Parsed Events は flag 付きで含め既定は enhanced (parity test が通ったら別 PR で flip)。wallet snapshot は 60s + stale-while-revalidate 60s。**接続状態と取得済みデータの保持を分ける**: connect / disconnect は表示の ON/OFF と署名権限だけ、wallet 由来データは address key の cache に残す (recentWallets MRU 5 件、24h)、再接続は新 address の key だけ invalidate、disconnect は no-op、古い値を先に出す時は「Updated hh:mm · awaiting update」、cache は権限でも実行根拠でもない (tx builder は fresh 読み、oracle は dedupe / batch のみで TTL と fail-closed 不変)
+- 実装 (wave 1〜2、commit 済):
+  - B1 `cc97859` (BFF 基盤): `src/cache/ttl-cache.ts` (TTL + in-flight dedupe + SWR + LRU、timer 無し)、`clients/helius-limiter.ts` (heliusRpcFetch 4 in flight / 100ms、heliusDataFetch 2 / 500ms、`fetchJsonWithRetry`)、DAS / Enhanced / Kamino caps を retry + limiter に、Meteora / Orca / Save / Exponent の web3 Connection に fetch 注入、`src/usage.ts` (method 別 count / 推定 credit / 429 / cache stats)、`GET /admin/helius-usage` (isAdminAuthorized)、`scripts/measure-usage.mjs`
+  - A `d270c3f` (Seeker client): 空振り 2 endpoint を止める、Kamino reserves は Kamino action のみ、staleTime を BFF cache に合わせる (共有 5 分 / prices 2 分 / wallet 系 60s)、tx 後は署名 wallet の 4 key だけ invalidate (history を追加)、AbortSignal 透過、wallet 復元を 1 回の setState に、recentWallets + wallet 系の gcTime 24h + AsyncStorage 永続化 (`services/persist-filter.ts`、skr-staking / oracle / quote は対象外)、`wallet-query-sync.ts` の `resyncTargets`、`stores/portfolioHistory.ts` を wallet 別 key に (旧 key は削除)、`usePortfolioHistory` の placeholder を同 wallet 限定に、`lib/derive/data-freshness.ts` + PortfolioSummary の鮮度ラベル
+  - B2 `f7f4c22` (BFF 共有 cache): kamino.reserves / vaultMetrics 120s、save.reserves 120s、meteora.pool 60s、orca.pool 30s、perena.tvl 300s、jupiterLend 30s (dedupe)、lst.rates 60s。`getOracleResults(mints)` で Pyth + RedStone の全 account を 1 回の getMultipleAccounts に (100 key で分割)、同 mint の同時要求は 1 読み。SKR は limiter + 計数のみ (cache / retry 無し、docs/skr-r0-implementation.md §3)
+- 実測 (baseline、main 相当の B1 時点、wallet 1 つ、`measure-usage.mjs`): cold `positions + earn + events + history` = **52 req / 448 credit** (DAS ×4、Enhanced ×3、getMultipleAccounts 26、getProgramAccounts 7)、warm (直後) `positions + earn + events` = **29 req / 92 credit**
+- 検証 (wave 1〜2): lib 392 / mobile 580 / BFF 799 / MCP 36 tests green、web vitest green、`pnpm -r typecheck` green。oracle.test.ts / oracle-gate.test.ts は無変更
+  - B3 `279b7d7` + `518163f` (BFF wallet snapshot): `src/wallet-snapshot.ts` が 8 source (DAS / Enhanced / Meteora / Orca / Kamino obligations / kVault / Jupiter Lend / stake) を同じ tick で読み、source ごとの Promise を持つ snapshot を 3 route (`/positions` は assets だけ待つ) と `/portfolio/history` の DAS が共有。TTL 60s (1 つでも失敗なら 5s)、SWR 60s、`/tx/submit` で fee payer を decode して snapshot と source 側の per-wallet cache (DAS 30s / Enhanced 60s / Jupiter Lend 30s) をまとめて bust (20 秒間は TTL 5s・SWR 無し)。実行系 (withdraw builder / `/protocols/*-tx` / execute) は snapshot を通さず直接 fresh 読み。`/menu-listings` を TtlCache + getOrLoad に、`/prices` / earn / history の oracle を `getOracleResults` 1 回に。3 route に `X-Seasonals-Data-Age-Ms`。`credit-budget.test.ts` (3 route 並列 cold → 8 client 各 1 回、2 回目 +0、2 wallet 各 1 回、`/tx/submit` v0 / legacy で送信者だけ再読み)
+- 実測 (B3 後、同じ wallet、`measure-usage.mjs`、429 無し):
+
+| run | before (req / credit) | after (req / credit) | 内訳 (after) |
+|---|---|---|---|
+| cold: positions + earn + events + history | 52 / 448 | **16 / 241** | DAS 4 → 1、Enhanced 3 → 2 (snapshot 1 + history 1 page)、Meteora GPA 6 → 1。241 のうち 200 は Enhanced |
+| 10 秒後: positions + earn + events | 29 / 92 | **5 / 23** | この run は Meteora GPA の Helius 500 で TTL 5s に落ち SWR 経由。fresh TTL 内なら **1 / 1** (oracle のみ) |
+| 75 秒後 (SWR) | — | 9 / 27 を即返し | 裏で 1 回だけ再読み (応答後の tail は script の差分に出ない。1 回の snapshot 再構築 ≈ 28 req / 172 credit) |
+
+  - C / D `0024975` (branch `perf/api-usage-parsed`、stacked): Parsed Events adapter `clients/helius-parsed-events.ts` (POST /v1/parsed-events/transaction-history、heliusDataFetch + retry、rawTokenAmount / amount / pre・postBalances を JSON.parse 前に文字列化)、facade `clients/tx-history.ts` + flag `HELIUS_TX_HISTORY_API` (**既定 enhanced**)、`/portfolio/history` の parsed 経路は `time.gte` で窓の外を読まず、期限切れ entry は `afterSignature` で増分 (通常 1 page = 10 credit)、`portfolio/inputs-store.ts` で history inputs を volume に永続化 (hydrate した entry は stale 扱いで増分更新)、`credit-budget.test.ts` に approxCredits の閾値 (cold 3 route: enhanced 152 ≤ 168 / parsed 62 ≤ 69、2 回目 +0)
+  - fixture 録画 (`pnpm --filter @seasonals/bff record:tx-fixtures -- --wallet <w>`、wallet 6QGJ…、20 件要求 → 14 件): **14/14 件に `rawTransaction.meta` の pre/post token・native balance が入っていた** (source A)。parity は 14/14 で tokenBalanceChanges (account / mint / userAccount / amount) と nativeBalanceChange (0 含む) と timestamp / fee が Enhanced と完全一致 (正規化は「0 変化の token account を省く」の 1 点のみ)。API の実挙動: 最終 page でも paginationToken が返り、空 page で終端。`afterSignature` は自身を含まない。未知 field は 400
+  - 見つけて直した不具合: parsed 時に窓内に tx が無いと `/portfolio/history` が 0 点になる (`time.gte` で古い tx が見えず oldestSeen が now のまま) → cutoff に下げる + regression test
+- 実測 (C 後、同じ wallet、cold の 4 route、429 無し): **enhanced 29 req / 272 credit → parsed 29 req / 92 credit**。parsed の history は 10 秒後 0、5 分 TTL 後の裏更新は history 1 page (10) + snapshot 再構築、`days=90` cold は 2 page (tx 1 件 + 空の終端)、**再起動後 (volume から hydrate) は 20 req / 74 credit** (増分 1 page 10 + cold snapshot ≈ 64)。応答の比較: `/positions/earn` は byte 一致 (`cost_basis_amount` 4828082)、`/portfolio/history?days=30` は 90 点とも同じ timestamp で値差は撮影間の価格変動 (≤ 0.036%)
+- 検証: lib 392 / mobile 580 / BFF 872 / MCP 36 tests green、web vitest green、`pnpm -r typecheck` green (5 workspace)。`verify:tx` / `verify:oracle` は下記
+- flip の判断: parity は exact だが、この wallet には LP / WSOL wrap の tx が無く、LP cost basis の rent-in 判定 (`computeLpCostBasisByPositionKey`) を実データで未確認。**既定は enhanced のまま**、Orca / Meteora の LP position を持つ wallet 3 つで `pnpm --filter @seasonals/bff record:tx-fixtures -- --wallet <w>` → parity が通ったら別 PR で flip
+- 未検証 (ユーザー、Seeker 実機): cold start → 背景 → 復帰 30s / 90s (90s は旧値 + "awaiting update" → 更新) → deposit 1 件 → 5 秒後の positions 反映、disconnect → 同 wallet reconnect (即表示 + 裏で 3〜5 GET) → 別 wallet 切替 (前 wallet の数値 / チャート / 日次 store が残らない) → 戻す → 再起動後も同じ
+- 残課題 (記録のみ): cold の history 読みは snapshot の recent tx (limit 50) と history page の 2 回 (parsed なら 20 credit)、終端判定の空 page 1 回、窓内に tx が無い wallet は newestSignature が残らず毎回 1 page、`saveJson` の pretty print、web client の `/agent-plans` 常時 poll と MCP の 2s poll (upstream 無し)、push token 登録 (未配線)、承認画面の 5s poll (web-water-shallows 側)、`/portfolio/history` 単独呼び出しが snapshot 8 source を起こす
+
 ## 最終状態 (2026-09-26 05:30 JST 時点)
 
 | 領域 | 状態 | 実際に確認したこと |
@@ -244,7 +481,7 @@ Web 側 (`artifacts/seasonals-web`) は `BFF_URL` (Vite dev proxy 先、node 側
 | Pendle / Ethena / Lido の実イベント | 実装済み | 実 mainnet address で表示。overdue (満期済み PT 13 本) も表示 |
 | 提案 | rule-based で実装済み | 実データ (Lido SMA APR / Ethena 30 日平均 / Pendle implied APY)。LLM は key 無しのため未使用 |
 | 署名前 preview | 実装済み | mainnet eth_call: Lido claim / Pendle Convert redeem (step 1) / CCA exitBid が成功 |
-| MCP | 実装済み | stdio で list_events → get_proposal → build_action → iCal resource を実 BFF に対して実行。ship_lp_strategy 追加 |
+| MCP | 実装済み | stdio で list_events → get_proposal → build_action → iCal resource を実 BFF に対して実行。ship_lp_strategy 追加。rebalance proposal 6 tools + `design_rebalance` prompt + Strategy Brief (fork でシナリオ A / B を完走) |
 | fork 実行 | 実装済み (fork のみ) | Lido claim / Ethena unstake / Pendle redeem / CCA refund exit / Uniswap USDC→USDe swap / Aqua ship・fill・dock の receipt success |
 | Uniswap CCA | 実装済み | 330 auction を index、実 bidder の exit / claim / refund |
 | Uniswap Trading API | quote・swap plan・fork 実行 | 実 API 応答、peg guard 付き |
@@ -253,11 +490,11 @@ Web 側 (`artifacts/seasonals-web`) は `BFF_URL` (Vite dev proxy 先、node 側
 | Chainlink peg guard | 実装済み | 実 feed で 1 bps、stale / 欠損 / 乖離は unit test で refuse |
 
 未実装 / 未検証:
-- mainnet への送信 (意図的に経路なし)、browser wallet 署名
+- Ethereum: mainnet への送信 (意図的に経路なし)、browser wallet 署名。Solana は実装済み (上の「Solana を web で実行」「oracle 移行」)。実 wallet での mainnet 送信は未検証
 - CCA `exitPartiallyFilledBid`
 - Uniswap の UniswapX `/order`
 - Aqua の mainnet 実行
 - Aave action
 - LLM 提案、hidden concentration warning
 - mobile 幅 (<1100px は 2×2 まで)
-- Explore の「Add to calendar」(user plan 作成 UI は無い。user_plan は Aqua の review event のみ)
+- Menu (旧 Explore) の「Add to calendar」。自分の予定 (絵文字 + 内容) は日付から手入力できるが、このブラウザの localStorage のみ (BFF / MCP には未同期)

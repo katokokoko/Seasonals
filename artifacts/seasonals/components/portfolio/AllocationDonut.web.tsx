@@ -31,7 +31,7 @@ export function AllocationDonut({
         <PieChart>
           <Pie
             data={segments}
-            dataKey="sol"
+            dataKey="value"
             nameKey="label"
             cx="50%"
             cy="50%"

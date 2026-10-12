@@ -93,12 +93,16 @@
 }
 .menu-item {
   display: grid;
+  /* 同じ行のカードがパネルで伸びても、他のカードの中身を引き伸ばさない */
+  align-self: start;
+  align-content: start;
   gap: var(--sp-sm);
   padding: var(--sp-md) var(--sp-lg);
   border-radius: var(--r-xl);
   background: var(--c-bgPrimary);
   border: 1px solid var(--c-border);
-  box-shadow: 0 1px 0 var(--c-textOnColor) inset, 0 6px 18px var(--c-shadow);
+  /* 上辺 3px = protocol ブランド色 (brandStyle、無い protocol は透明) */
+  box-shadow: inset 0 3px 0 var(--accent, transparent), 0 1px 0 var(--c-textOnColor) inset, 0 6px 18px var(--c-shadow);
 }
 .menu-item-top {
   display: grid;
@@ -115,7 +119,24 @@
   margin: 2px 0 0;
 }
 .menu-item-name h3 {
-  overflow-wrap: anywhere;
+  /* 語の途中では割らない (名前のハイフンは表示時に U+2011 にして改行させない) */
+  overflow-wrap: break-word;
+}
+/* 左の列: chain ロゴ → protocol ロゴ → PT / YT バッジを縦に積む */
+.menu-media {
+  display: grid;
+  justify-items: center;
+  align-content: start;
+  gap: 6px;
+}
+.menu-media-chain {
+  display: inline-grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  color: var(--c-textSubtitle);
+  background: var(--c-bgSecondary);
 }
 .menu-item-protocol {
   font-weight: var(--w-semibold);
@@ -144,6 +165,9 @@
   font-weight: var(--w-bold);
   color: var(--c-melonText);
   font-variant-numeric: tabular-nums;
+}
+.menu-price-value.negative {
+  color: var(--c-cherryDark);
 }
 .menu-rule {
   border-top: 1px dashed var(--c-borderStrong);
@@ -223,10 +247,6 @@
   color: var(--c-textOnColor);
   border-color: var(--c-textPrimary);
 }
-.menu-actions {
-  display: inline-flex;
-  gap: var(--sp-xs);
-}
 .route-preview {
   display: grid;
   gap: var(--sp-sm);
@@ -236,4 +256,81 @@
 }
 .route-result p {
   margin: 0 0 var(--sp-xs);
+}
+
+/* 「Deposited only」トグル (chain chip の右、状態文は折り返してよい) */
+.deposited-toggle {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-sm);
+  margin-left: auto;
+}
+.menu-warning {
+  color: var(--c-cherryDark);
+}
+/* 保有行: カード上段の直下。量は本文色、補足 (cooldown 等) は muted */
+.menu-holding {
+  margin: 0;
+  padding: var(--sp-xs) var(--sp-sm);
+  border-radius: var(--r-md);
+  background: var(--c-melonTextSoft);
+}
+.menu-holding .block {
+  display: block;
+}
+
+/* deposit / withdraw: カード最下段 (左にボタン、右下に外部サイトへのリンク) とパネル */
+.menu-item-bottom {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-sm);
+}
+.menu-item-cta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-sm);
+}
+/* 右下のリンク群 (Learn / プロトコルのサイト): 本文より小さめ */
+.menu-links {
+  display: inline-flex;
+  gap: var(--sp-md);
+  margin-left: auto;
+}
+.menu-open-link {
+  font-size: var(--fs-caption);
+  font-weight: var(--w-semibold);
+  color: var(--c-sodaText);
+  text-decoration: none;
+  white-space: nowrap;
+}
+.menu-open-link:hover {
+  text-decoration: underline;
+}
+.menu-action {
+  display: grid;
+  gap: var(--sp-sm);
+  padding: var(--sp-md);
+  border-radius: var(--r-lg);
+  border: 1px solid var(--c-borderStrong);
+  background: var(--c-bgPrimary);
+}
+.menu-action-form {
+  display: grid;
+  gap: var(--sp-xs);
+}
+.menu-action-form label {
+  display: grid;
+  gap: 2px;
+}
+.menu-action-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-sm);
+}
+/* Deposit パネル内の「USDC → USDe」経路 (Ethena のみ) */
+.menu-route {
+  padding-top: var(--sp-sm);
+  border-top: 1px dashed var(--c-borderStrong);
 }

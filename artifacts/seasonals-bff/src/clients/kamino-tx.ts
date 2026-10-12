@@ -20,6 +20,8 @@
 import { fetchWithTimeout } from "./http"; // Phase 8.38 (B9): 共通 timeout
 // 8.51: 署名前の tx 検証 / 8.52: mainnet RPC の URL 組み立ては helius-rpc に集約
 import { buildUrl as heliusMainnetUrl, simulateUnsignedTx } from "./helius-rpc";
+import { fetchJsonWithRetry, heliusRpcFetch } from "./helius-limiter";
+import { TtlCache } from "../cache/ttl-cache";
 const KAMINO_BASE = "https://api.kamino.finance";
 
 /** reserves/metrics の 1 reserve 分 (raw)。APY 系は fraction string。 */
@@ -51,14 +53,29 @@ async function kaminoGet<T>(path: string): Promise<T> {
   return (await res.json()) as T;
 }
 
+/**
+ * B2: wallet に依らない market / vault metrics は全 user で共有する (120 秒、同時 miss は 1 回の取得に合流)。
+ * earn / menu / reserves / simulate が同じ値を読むので、request ごとの上流呼び出しを O(1) にする。
+ * 失敗は cache しない (次の呼び手が再取得)
+ */
+const METRICS_TTL_MS = 120_000;
+const reserveMetricsCache = new TtlCache<KaminoReserveMetric[]>({
+  name: "kamino.reserves",
+  ttlMs: METRICS_TTL_MS,
+  maxEntries: 20,
+  now: () => Date.now(),
+});
+
 /** market の全 reserve metrics (58 件規模)。server 側で supported reserve を抽出。 */
 export async function fetchKaminoReserveMetrics(
   market: string
 ): Promise<KaminoReserveMetric[]> {
-  const raw = await kaminoGet<unknown>(
-    `/kamino-market/${market}/reserves/metrics`
-  );
-  return (Array.isArray(raw) ? raw : []) as KaminoReserveMetric[];
+  return reserveMetricsCache.getOrLoad(market, async () => {
+    const raw = await kaminoGet<unknown>(
+      `/kamino-market/${market}/reserves/metrics`
+    );
+    return (Array.isArray(raw) ? raw : []) as KaminoReserveMetric[];
+  });
 }
 
 /** market × wallet の obligation 群 (保有 position、空なら [])。 */
@@ -245,20 +262,43 @@ export interface KaminoVaultMetrics {
   apy: string;
   tokensPerShare: string;
   tokenPrice: string;
+  /**
+   * 2026-10: reserve へ投下済み / 未投下の USD 額 (decimal string)。
+   * 合計が vault TVL (menu の表示専用 tvl_usd)。API が返さなければ undefined
+   */
+  tokensInvestedUsd?: string;
+  tokensAvailableUsd?: string;
 }
+
+const vaultMetricsCache = new TtlCache<KaminoVaultMetrics>({
+  name: "kamino.vaultMetrics",
+  ttlMs: METRICS_TTL_MS,
+  maxEntries: 50,
+  now: () => Date.now(),
+});
 
 export async function fetchKaminoVaultMetrics(
   vault: string
 ): Promise<KaminoVaultMetrics> {
+  return vaultMetricsCache.getOrLoad(vault, () => loadKaminoVaultMetrics(vault));
+}
+
+async function loadKaminoVaultMetrics(vault: string): Promise<KaminoVaultMetrics> {
   const raw = await kaminoGet<{
     apy?: string;
     tokensPerShare?: string;
     tokenPrice?: string;
+    tokensInvestedUsd?: unknown;
+    tokensAvailableUsd?: unknown;
   }>(`/kvaults/${vault}/metrics`);
   return {
     apy: raw.apy ?? "0",
     tokensPerShare: raw.tokensPerShare ?? "0",
     tokenPrice: raw.tokenPrice ?? "0",
+    tokensInvestedUsd:
+      typeof raw.tokensInvestedUsd === "string" ? raw.tokensInvestedUsd : undefined,
+    tokensAvailableUsd:
+      typeof raw.tokensAvailableUsd === "string" ? raw.tokensAvailableUsd : undefined,
   };
 }
 
@@ -389,20 +429,29 @@ async function fetchDepositCapsUncached(
 ): Promise<KaminoDepositCap[]> {
   const apiKey = process.env.HELIUS_API_KEY;
   if (!apiKey) return [];
-  const res = await fetchWithTimeout(heliusMainnetUrl(), {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({
-      jsonrpc: "2.0",
-      id: "seasonals-kamino-caps",
-      method: "getMultipleAccounts",
-      params: [reserves, { encoding: "base64" }],
-    }),
-  }).catch(() => null);
-  if (!res || !res.ok) return [];
-  const json = (await res.json().catch(() => null)) as {
+  // B1: Helius RPC の列 (heliusRpcFetch) は通すが再試行はしない (maxAttempts 1): 429 / 5xx /
+  // network は backoff を待たず即「上限不明」に倒す (menu 経路を待たせない)。失敗は従来どおり空配列
+  const json = await fetchJsonWithRetry<{
     result?: { value?: ({ data?: [string, string] } | null)[] };
-  } | null;
+  } | null>(
+    heliusMainnetUrl(),
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0",
+        id: "seasonals-kamino-caps",
+        method: "getMultipleAccounts",
+        params: [reserves, { encoding: "base64" }],
+      }),
+    },
+    {
+      label: "getMultipleAccounts(kamino caps)",
+      fetchImpl: heliusRpcFetch.timed(),
+      maxAttempts: 1,
+      retryNetworkErrors: false,
+    }
+  ).catch(() => null);
   const values = json?.result?.value;
   if (!Array.isArray(values)) return [];
   const out: KaminoDepositCap[] = [];

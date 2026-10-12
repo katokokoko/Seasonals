@@ -9,8 +9,9 @@
  *   REFERRALS: Referrals count + code
  *   AGENT: Policy dropdown + Ask Agent (coming soon)
  *   WALLET: Connected status + Add Wallet/Subscription/Sign out
+ *   ABOUT: Privacy policy / Source (外部 link ↗。docs/external-release-api-handling.md §7)
  *   DEVELOPER (__DEV__ only): MWA probe + BFF URL
- *   Footer: Seasonals · v0.0.1 (dev)
+ *   Footer: Seasonals · v{APP_VERSION} (dev build のみ " (dev)" を付ける)
  *
  * brand wordmark tap または edge swipe (右へ) で開く。reanimated で translation アニメ、
  * backdrop tap or 左 swipe で close。
@@ -22,6 +23,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import {
   Dimensions,
+  Linking,
   Pressable,
   ScrollView,
   StyleSheet,
@@ -52,7 +54,12 @@ import {
 import { OBJECTIVES, type Objective } from "@workspace/lib/types";
 
 import { useWallet } from "../../services/useWallet";
-import { BFF_BASE_URL } from "../../services/config";
+import {
+  APP_VERSION,
+  BFF_BASE_URL,
+  PRIVACY_POLICY_URL,
+  SOURCE_REPO_URL,
+} from "../../services/config";
 import {
   formatTimeOfDay,
   useDevFallbackLog,
@@ -454,6 +461,30 @@ export function SettingsDrawer({
               )}
             </View>
 
+            {/* ABOUT — 配布 build でも出す (dApp Store の privacy policy 導線) */}
+            <SectionLabel>About</SectionLabel>
+            <View style={styles.card}>
+              <Pressable
+                accessibilityRole="link"
+                onPress={() => void Linking.openURL(PRIVACY_POLICY_URL)}
+                style={styles.row}
+                testID={testID ? `${testID}-privacy` : undefined}
+              >
+                <Text style={styles.rowLabel}>Privacy policy</Text>
+                <Text style={styles.chevron}>↗</Text>
+              </Pressable>
+              <View style={styles.divider} />
+              <Pressable
+                accessibilityRole="link"
+                onPress={() => void Linking.openURL(SOURCE_REPO_URL)}
+                style={styles.row}
+                testID={testID ? `${testID}-source` : undefined}
+              >
+                <Text style={styles.rowLabel}>Source</Text>
+                <Text style={styles.chevron}>↗</Text>
+              </Pressable>
+            </View>
+
             {/* DEVELOPER — dev build のみ */}
             {__DEV__ && (
               <>
@@ -513,7 +544,12 @@ export function SettingsDrawer({
 
             {/* Footer */}
             <View style={styles.footer}>
-              <Text style={styles.footerText}>Seasonals · v0.0.1 (dev)</Text>
+              <Text
+                style={styles.footerText}
+                testID={testID ? `${testID}-version` : undefined}
+              >
+                {`Seasonals · v${APP_VERSION}${__DEV__ ? " (dev)" : ""}`}
+              </Text>
             </View>
           </ScrollView>
         </Animated.View>

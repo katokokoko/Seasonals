@@ -1,0 +1,119 @@
+/* ── 自分の予定 (custom plan) の入力フォーム / 絵文字 marker ───────────────── */
+.plan-form {
+  display: grid;
+  gap: var(--sp-sm);
+  padding: var(--sp-md);
+  border-radius: var(--r-lg);
+  border: 1px dashed var(--c-caramelDark);
+  background: var(--c-caramelSoft);
+}
+.plan-emoji {
+  margin: 0;
+  padding: 0;
+  border: 0;
+  min-width: 0;
+}
+.plan-emoji legend,
+.plan-field > span {
+  margin-bottom: 4px;
+  font-size: var(--fs-caption);
+  font-weight: var(--w-bold);
+  color: var(--c-textSubtitle);
+}
+.plan-emoji-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(36px, 1fr));
+  gap: 4px;
+}
+.plan-emoji-option {
+  display: grid;
+  place-items: center;
+  height: 36px;
+  border-radius: var(--r-md);
+  border: 1px solid var(--c-borderStrong);
+  background: var(--c-textOnColor);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  transition: transform 120ms ease, box-shadow 120ms ease;
+}
+.plan-emoji-option:hover {
+  transform: translateY(-1px);
+}
+.plan-emoji-option[aria-checked="true"] {
+  border-color: var(--c-sodaText);
+  box-shadow: inset 0 0 0 2px var(--c-sodaText);
+  background: var(--c-sodaTextSoft);
+}
+.plan-emoji-custom .input {
+  width: 100%;
+  height: 36px;
+  padding: 0;
+  text-align: center;
+  font-size: 18px;
+}
+.plan-field {
+  display: grid;
+}
+.plan-field .input {
+  width: 100%;
+}
+.plan-field textarea.input {
+  height: auto;
+  padding: var(--sp-xs) var(--sp-md);
+  resize: vertical;
+  font: inherit;
+}
+.plan-form-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-xs);
+  align-items: center;
+}
+.plan-delete {
+  margin-left: auto;
+  color: var(--c-cherryDark);
+}
+.btn-danger {
+  margin-left: auto;
+  border-color: transparent;
+  background: var(--c-cherryDark);
+  color: var(--c-textOnColor);
+}
+.plan-privacy {
+  margin: 0;
+}
+.plan-note {
+  white-space: pre-wrap;
+}
+.plan-emoji-large {
+  display: grid;
+  place-items: center;
+  flex: none;
+  width: 44px;
+  height: 44px;
+  border-radius: 14px;
+  background: var(--c-caramelSoft);
+  font-size: 26px;
+  line-height: 1;
+}
+.emoji-marker {
+  display: inline-grid;
+  place-items: center;
+  flex: none;
+  line-height: 1;
+}
+.day-panel-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--sp-xs);
+}
+.list-view {
+  display: grid;
+  align-content: start;
+  min-height: 0;
+  overflow: auto;
+}
+.list-scope {
+  margin: 0 0 var(--sp-sm);
+}

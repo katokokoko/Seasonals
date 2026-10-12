@@ -5,7 +5,9 @@
  * 全関数 pure (now は引数で注入)。Web / BFF / MCP Server で共有する。
  */
 
+import type { CustomEvent } from "../types/custom-event";
 import type { UnifiedTimeEventDTO } from "../types/unified-time-event";
+import { resolveSolanaRoute, withdrawActionFromParams, WITHDRAW_PARAM_KEYS } from "./solana-action";
 import type {
   TimelineAction,
   TimelineDisplayStatus,
@@ -39,7 +41,9 @@ export function deriveTimelineStatus(event: TimelineEvent, now: Date): TimelineS
   if (Number.isNaN(at)) return "upcoming";
   const diff = now.getTime() - at;
   if (diff < 0) return "upcoming";
-  if (event.class === "user_plan") return diff < DAY_MS ? "due" : "overdue";
+  // user_plan: 当日中は due。action の無い予定 (custom plan のメモ等) は過ぎたら done、
+  // action 付き (Aqua strategy review 等) は未処理として overdue
+  if (event.class === "user_plan") return diff < DAY_MS ? "due" : event.actions.length === 0 ? "done" : "overdue";
   if (!hasOpenAction(event)) return "done";
   return diff < OVERDUE_AFTER_MS ? "due" : "overdue";
 }
@@ -198,21 +202,28 @@ function protocolDisplayName(protocol: string): string {
  * Solana UnifiedTimeEventDTO → TimelineEvent。
  * - metadata.source === "helius_tx" (wallet tx 履歴) は executed class
  * - それ以外は protocol class
- * - Seeker と同じく action は event.actions から取る。Web には MWA 署名経路が無いので
- *   availability は "unsupported" (実行済みのように見せない)
+ * - Seeker と同じく action は event.actions から取る。withdraw 系 (claim の "Withdraw & claim" /
+ *   満期 PT の "Redeem") は event.metadata の synthetic plan 用フィールドを params (string) に写し、
+ *   BFF の tx builder に解決できる時だけ available (Web は Wallet Standard で署名、Seeker と同じ BFF 経路)。
+ *   欠けていれば unsupported (fail-closed、Seeker syntheticPlanFromEventAction と同じ判定)
  */
 export function fromUnifiedTimeEventDTO(dto: UnifiedTimeEventDTO, observedAt: string): TimelineEvent {
   const meta = dto.metadata ?? {};
   const isTx = meta.source === "helius_tx";
   const headline = typeof meta.headline === "string" ? meta.headline : null;
-  const actions: TimelineAction[] = dto.actions.map((a) => ({
-    actionType: a.actionType,
-    label: a.label,
-    requiresWallet: true,
-    availability: "unsupported",
-    reason: "Solana signing runs on the Seeker app (MWA). Web shows it read-only.",
-    params: {},
-  }));
+  const params = solanaWithdrawParams(meta);
+  const actions: TimelineAction[] = dto.actions.map((a) => {
+    const input = a.actionType === "withdraw" ? withdrawActionFromParams(params) : null;
+    const routable = input !== null && resolveSolanaRoute(input) !== null;
+    return {
+      actionType: a.actionType,
+      label: a.label,
+      requiresWallet: true,
+      availability: routable ? "available" : "unsupported",
+      ...(routable ? {} : { reason: "Seasonals cannot build a transaction for this action yet." }),
+      params: routable ? params : {},
+    };
+  });
   const signature = typeof meta.signature === "string" ? meta.signature : null;
   return {
     id: `solana:${dto.protocol}:${dto.category}:${dto.id}`,
@@ -232,6 +243,52 @@ export function fromUnifiedTimeEventDTO(dto: UnifiedTimeEventDTO, observedAt: st
     owner: dto.walletAddress,
     links: signature ? [{ label: "View on Solscan", url: `https://solscan.io/tx/${signature}` }] : [],
     source: typeof meta.source === "string" ? meta.source : "seasonals-bff",
+    observedAt,
+  };
+}
+
+/** event.metadata の withdraw 用フィールドを string の params に写す (number は 10 進 string) */
+function solanaWithdrawParams(meta: Record<string, unknown>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const k of WITHDRAW_PARAM_KEYS) {
+    const v = meta[k];
+    if (typeof v === "string" && v.length > 0) out[k] = v;
+    else if (typeof v === "number" && Number.isInteger(v) && v >= 0) out[k] = String(v);
+  }
+  return out;
+}
+
+export const CUSTOM_EVENT_SOURCE = "local:custom";
+
+/** Calendar に手入力した予定か (編集 / 削除できるのはこれだけ) */
+export function isCustomPlan(event: TimelineEvent): boolean {
+  return event.source === CUSTOM_EVENT_SOURCE;
+}
+
+/**
+ * ユーザーが手入力した CustomEvent → TimelineEvent (user_plan)。
+ * 日付のみの予定なので at はその日の local 0 時、allDay = true。chain 非依存 (null)。
+ */
+export function fromCustomEvent(ce: CustomEvent, observedAt: string): TimelineEvent {
+  const [y, m, d] = ce.date.split("-").map(Number) as [number, number, number];
+  return {
+    id: `custom:${ce.id}`,
+    chain: null,
+    class: "user_plan",
+    kind: "user_note",
+    protocol: null,
+    protocolName: null,
+    title: ce.title,
+    at: new Date(y, m - 1, d).toISOString(),
+    allDay: true,
+    atApprox: false,
+    settled: false,
+    ...(ce.marker === "emoji" && ce.emoji ? { emoji: ce.emoji } : {}),
+    metrics: ce.note ? [{ label: "Note", kind: "text", value: ce.note }] : [],
+    actions: [],
+    requiresWallet: false,
+    links: [],
+    source: CUSTOM_EVENT_SOURCE,
     observedAt,
   };
 }

@@ -1,18 +1,23 @@
 /**
  * DashboardWorkspace — /dashboard (UI v2 §11)。
- * 表示するのは timeline から導出できる件数のみ。残高・ポジション評価額は
- * 接続されるまで出さない (架空値を出さない)。
+ * 上部の Portfolio は BFF が tx から復元した評価額の履歴と現在の保有
+ * (Seeker の PortfolioSummary 相当、docs/portfolio-history-design.md)。
+ * 下の件数・dated positions は timeline から導出したもの。
+ * どちらも取れない値は出さない (架空値を出さない)。
  */
 import { useNow } from "../ui/useNow";
 import { AaveContext } from "./AaveContext";
+import { PortfolioPanel } from "./portfolio/PortfolioPanel";
+import { SolanaPositions } from "./SolanaPositions";
+import { useActiveAddresses } from "../state/session";
 import { deriveTimelineStatus, displayStatus } from "@workspace/lib/derive/timeline";
 import { useDetail } from "../timeline/detailStore";
 import { StatusBadge } from "../timeline/StatusBadge";
 import { statusText } from "../timeline/labels";
 import { fmtAmount, fmtFullDate, fmtUsd } from "../ui/format";
+import { ProtocolBadge, brandStyle } from "../ui/ProtocolBadge";
 import { useTimeline } from "../services/queries";
 import { WorkspaceShell } from "../shell/WorkspaceShell";
-import { requestOpenWallet } from "../timeline/detailStore";
 import { SourceStatusLine } from "../timeline/SourceStatusLine";
 import "../agent/agent.css";
 
@@ -22,6 +27,7 @@ export default function DashboardWorkspace() {
   const count = (pred: (s: ReturnType<typeof deriveTimelineStatus>) => boolean) =>
     t.events.filter((e) => e.class !== "executed" && pred(deriveTimelineStatus(e, now))).length;
   const open = useDetail((st) => st.open);
+  const hasSolana = useActiveAddresses().some((a) => a.chain === "solana");
   const positions = t.events.filter((e) => e.owner && e.class === "protocol" && !e.settled && e.amount);
   const week = t.events.filter((e) => {
     if (!e.at || e.class === "executed") return false;
@@ -32,14 +38,21 @@ export default function DashboardWorkspace() {
   return (
     <WorkspaceShell title="Dashboard" subtitle="Your seasonal snapshot">
       <div className="panel-block">
-        {!t.hasWallet && (
-          <p className="connect-note">
-            Connect your wallet to include your own positions.{" "}
-            <button type="button" className="btn-link" onClick={requestOpenWallet}>
-              Connect wallet
-            </button>
-          </p>
+        <section aria-labelledby="portfolio">
+          <h2 id="portfolio" className="section-heading">
+            Portfolio
+          </h2>
+          <PortfolioPanel />
+        </section>
+        {hasSolana && (
+          <section aria-labelledby="solana-positions">
+            <h2 id="solana-positions" className="section-heading">
+              Your positions (Solana)
+            </h2>
+            <SolanaPositions />
+          </section>
         )}
+        <h2 className="section-heading">Timeline</h2>
         <div className="stat-row">
           <Stat label="Needs attention" value={count((s) => s === "overdue" || s === "due")} />
           <Stat label="Next 7 days" value={week} />
@@ -77,7 +90,12 @@ export default function DashboardWorkspace() {
                   const st = deriveTimelineStatus(e, now);
                   return (
                     <tr key={e.id}>
-                      <td>{e.protocolName}</td>
+                      <td>
+                        <span className="brand-inline">
+                          <ProtocolBadge id={e.protocol} name={e.protocolName} size={18} />
+                          {e.protocolName}
+                        </span>
+                      </td>
                       <td>
                         <button type="button" className="btn-link" onClick={(ev) => open({ kind: "event", eventId: e.id }, ev.currentTarget)}>
                           {e.asset ?? e.title}
@@ -95,10 +113,11 @@ export default function DashboardWorkspace() {
               </tbody>
             </table>
           )}
-          <p className="muted small">Portfolio value and exposure across positions without dates are not connected yet.</p>
+          <p className="muted small">Holdings without a date are in the Portfolio allocation above.</p>
         </section>
         <section aria-labelledby="aave-context">
-          <h2 id="aave-context" className="section-heading">
+          <h2 id="aave-context" className="section-heading brand-heading" style={brandStyle("aave")}>
+            <ProtocolBadge id="aave" name="Aave" size={24} />
             Aave V4 (context)
           </h2>
           <AaveContext />

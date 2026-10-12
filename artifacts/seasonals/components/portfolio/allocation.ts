@@ -15,60 +15,22 @@ import {
   type Protocol,
 } from "@workspace/lib/types";
 import { TOKEN_DECIMALS, toHumanReadable } from "@workspace/lib/utils/numeric";
-import { COLOR } from "@workspace/lib/design-system";
 import { isDepositedMint } from "@workspace/lib/config/deposited-mints";
+import {
+  ALLOCATION_DISPLAY_ORDER,
+  COLOR_BY_CATEGORY,
+  LABEL_BY_CATEGORY,
+  type AllocationSegment,
+} from "@workspace/lib/derive/portfolio";
 
 export type CurrencyUnit = "USDC" | "SOL";
 
-export interface AllocationSegment {
-  category: PositionCategory;
-  /** Display label (legend / tooltip 用) */
-  label: string;
-  /** 選択 currency 単位での value (USDC 1:1 USD、SOL: USD/168.5) */
-  value: number;
-  /** Donut の color token */
-  color: string;
-}
-
-/** prototype の凡例順序。Vesting / Governance / Other は表示対象外。 */
-export const ALLOCATION_DISPLAY_ORDER: readonly PositionCategory[] = [
-  PositionCategory.Lending,
-  PositionCategory.Staking,
-  PositionCategory.Restaking,
-  PositionCategory.Vault,
-  PositionCategory.LP,
-  PositionCategory.PTYT,
-  PositionCategory.Stable,
-  // Phase 8.7: native SOL の wallet 保有を Other segment として表示
-  PositionCategory.Other,
-] as const;
-
-const LABEL_BY_CATEGORY: Record<PositionCategory, string> = {
-  lending: "Lending",
-  staking: "Staking",
-  restaking: "Restaking",
-  vault: "Vault",
-  lp: "Liquidity Pool",
-  pt_yt: "PT-YT",
-  stable: "Yield-Bearing Stablecoins",
-  vesting: "Vesting",
-  governance: "Governance",
-  other: "Other",
-};
-
-/** prototype の凡例 swatch 色 (8 segment ホイール) */
-const COLOR_BY_CATEGORY: Record<PositionCategory, string> = {
-  lending: COLOR.sodaText, // #00ACC1 cyan
-  staking: COLOR.melonText, // #2E9968 dark green
-  restaking: COLOR.melonDeep, // #56C596 mid green
-  vault: COLOR.caramel, // #C4956A tan
-  lp: COLOR.straw, // #FFD54F yellow
-  pt_yt: COLOR.cherry, // #E57373 coral
-  stable: COLOR.sodaDeep, // #80DEEA light cyan
-  vesting: COLOR.textMuted,
-  governance: COLOR.textMuted,
-  other: COLOR.textMuted,
-};
+// web Dashboard 追加時: category の順序・ラベル・色は web と共有するため
+// lib/derive/portfolio.ts に移設 (mobile はここから re-export)
+export {
+  ALLOCATION_DISPLAY_ORDER,
+  type AllocationSegment,
+} from "@workspace/lib/derive/portfolio";
 
 /**
  * symbol → USD 価格 (実価格)。source は 2 つ:

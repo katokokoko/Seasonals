@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <title>Seasonals Privacy Policy</title>
+    <meta name="description" content="How the Seasonals web app and Seeker app handle data." />
+    <link rel="icon" href="/icon.png" type="image/png" />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600&family=Pacifico&family=Quicksand:wght@400;500;600;700&display=swap"
+      rel="stylesheet"
+    />
+    <!--
+      Standalone static page served at /privacy (Cloudflare Pages serves public/privacy/index.html).
+      It does not load the SPA bundle, so it renders without JavaScript and is linkable from the
+      Solana dApp Store listing. Colors mirror the design-system tokens (docs/design-system.md):
+      sodaText #00ACC1, textSubtitle #5D4E47, textMuted #8D7E76.
+    -->
+    <style>
+      :root {
+        --bg: #fbf7f2;
+        --surface: #ffffff;
+        --text: #3e322c;
+        --text-subtitle: #5d4e47;
+        --text-muted: #8d7e76;
+        --accent: #00acc1;
+        --border: rgba(93, 78, 71, 0.14);
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #15191c;
+          --surface: #1d2327;
+          --text: #ece6e1;
+          --text-subtitle: #cfc4bd;
+          --text-muted: #a2958d;
+          --accent: #4dd0e1;
+          --border: rgba(236, 230, 225, 0.14);
+        }
+      }
+      * {
+        box-sizing: border-box;
+      }
+      body {
+        margin: 0;
+        background: var(--bg);
+        color: var(--text);
+        font-family: "Quicksand", system-ui, -apple-system, "Segoe UI", sans-serif;
+        font-size: 16px;
+        line-height: 1.65;
+      }
+      main {
+        max-width: 720px;
+        margin: 0 auto;
+        padding: 40px 16px 64px;
+      }
+      .brand {
+        font-family: "Pacifico", cursive;
+        font-size: 28px;
+        color: var(--accent);
+        text-decoration: none;
+      }
+      h1 {
+        margin: 24px 0 8px;
+        font-size: 32px;
+        font-weight: 700;
+        line-height: 1.25;
+      }
+      h2 {
+        margin: 32px 0 8px;
+        font-size: 20px;
+        font-weight: 700;
+        color: var(--text-subtitle);
+      }
+      p {
+        margin: 0 0 12px;
+      }
+      ul {
+        margin: 0 0 12px;
+        padding-left: 20px;
+      }
+      li {
+        margin-bottom: 6px;
+      }
+      a {
+        color: var(--accent);
+      }
+      section {
+        border-top: 1px solid var(--border);
+      }
+      footer {
+        margin-top: 48px;
+        color: var(--text-muted);
+        font-size: 14px;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <a class="brand" href="/">Seasonals</a>
+      <h1>Seasonals Privacy Policy</h1>
+
+      <section id="what-seasonals-is">
+        <h2>What Seasonals is</h2>
+        <p>Seasonals is a calendar for time-sensitive DeFi positions: maturities, cooldowns, unlocks, claims and health events on Solana, with an Ethereum layer in the web app. It is non-custodial. The Seeker app, the web app and the MCP Server read public on-chain data through our backend and never hold your funds or keys.</p>
+      </section>
+      <section id="data-we-process">
+        <h2>Data we process</h2>
+        <ul>
+          <li><strong>Wallet addresses</strong> you connect or enter in watch mode, and the public on-chain positions and transaction history derived from them.</li>
+          <li><strong>Plans you create</strong> (simulate, approve, execute). A plan, its approval token and its result are stored on our server so that the calendar, the agent and your device agree on the same state. Plans expire after 24 hours; executed plans keep their transaction signatures, which are public anyway.</li>
+          <li><strong>Technical logs</strong>: IP address, request path, status and timestamp, kept for a short time for rate limiting and abuse prevention. The web app reaches our backend through Cloudflare, which forwards your IP for the same purpose.</li>
+          <li><strong>Push token</strong> of your device, only if you turn notifications on. Push approvals are disabled in the current version, so nothing is collected today.</li>
+          <li><strong>Preferences</strong> such as theme, filters and the last tab are stored on your device or in your browser only.</li>
+        </ul>
+      </section>
+      <section id="wallet-addresses">
+        <h2>Wallet addresses</h2>
+        <p>A wallet address is a public identifier on a public blockchain. Connecting through Mobile Wallet Adapter shares only your public address and the signatures you explicitly approve in your wallet. Watch-only addresses are read-only and are never asked to sign. We do not link addresses to names, emails or accounts; Seasonals has no accounts.</p>
+      </section>
+      <section id="third-party-services">
+        <h2>Third-party services</h2>
+        <p>To answer a request, our backend calls these services and passes them only what the request needs. None of them receives a private key.</p>
+        <ul>
+          <li><strong>Helius</strong>: Solana RPC and indexing (your address, the transactions you ask to broadcast).</li>
+          <li><strong>Jupiter</strong>: prices and lending data. <strong>RedStone</strong> and <strong>Pyth</strong>: price feeds used by the safety checks.</li>
+          <li><strong>Protocol APIs</strong> (Kamino, Exponent, Orca, Meteora, Save, Marinade, Sanctum, Perena, DefiLlama): yields and pool data; your address when a position must be read.</li>
+          <li><strong>Infura, Etherscan, Uniswap</strong>: Ethereum data for the web app.</li>
+          <li><strong>Cloudflare</strong>: hosting and proxy for the web app (sees your IP and request). <strong>Fly.io</strong>: hosting for the backend. <strong>Expo</strong>: app build distribution and, if enabled later, push notifications.</li>
+        </ul>
+      </section>
+      <section id="no-private-keys">
+        <h2>No private keys</h2>
+        <p>Signing happens inside your wallet (Seed Vault, Phantom, Solflare or a browser wallet). Seasonals never sees, stores or transmits a seed phrase or private key, and there is no API in Seasonals that accepts one. Agents can propose and simulate, but every transaction is signed by you.</p>
+      </section>
+      <section id="analytics">
+        <h2>Analytics: none</h2>
+        <p>None. There are no analytics or advertising trackers and no tracking cookies on this site or in the app.</p>
+      </section>
+      <section id="data-retention-and-deletion">
+        <h2>Data retention &amp; deletion</h2>
+        <p>Expired plans are removed from the server as they expire. Technical logs are kept for a short period and then discarded. To delete everything our server holds about an address (plans, approval tokens, policy settings, push token), open an issue in the repository below or contact us with the address; we delete it within 30 days unless a record is still needed to prevent abuse. Public blockchain data is outside our control and cannot be deleted by us.</p>
+      </section>
+      <section id="contact">
+        <h2>Contact</h2>
+        <p>Issues and requests: <a href="https://github.com/katokokoko/Seasonals/issues">github.com/katokokoko/Seasonals/issues</a>. Source code: <a href="https://github.com/katokokoko/Seasonals">github.com/katokokoko/Seasonals</a> (Apache-2.0).</p>
+      </section>
+      <section id="last-updated">
+        <h2>Last updated</h2>
+        <p>2026-10-10. Changes to this policy are published on this page and recorded in the repository history.</p>
+      </section>
+
+      <footer>
+        <a href="/">Back to Seasonals</a>
+      </footer>
+    </main>
+  </body>
+</html>

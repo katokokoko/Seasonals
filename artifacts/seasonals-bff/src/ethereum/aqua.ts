@@ -113,7 +113,8 @@ export async function buildAquaShipPlan(input: AquaShipInput, opts: { stateClien
     client.readContract({ address: AQUA.USDC, abi: erc20, functionName: "allowance", args: [maker, AQUA.aqua as Hex] }),
     client.readContract({ address: AQUA.USDe, abi: erc20, functionName: "allowance", args: [maker, AQUA.aqua as Hex] }),
   ])) as bigint[];
-  if (balUsdc! < usdc || balUsde! < usde) throw new PlanError("action_not_available", "The maker does not hold enough USDC / USDe for these amounts.");
+  // 残高不足は insufficient_balance (proposal の後続 step では「前 step の残高を使う」として保留できる)
+  if (balUsdc! < usdc || balUsde! < usde) throw new PlanError("insufficient_balance", "The maker does not hold enough USDC / USDe for these amounts.");
 
   const feeBps = input.feeBps ?? 5;
   const salt = BigInt(`0x${randomBytes(8).toString("hex")}`);

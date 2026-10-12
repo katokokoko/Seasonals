@@ -17,7 +17,7 @@ import type { OracleResult } from "@workspace/lib/types";
 
 import { buildServer } from "./server";
 import { fetchSwapQuote, fetchSwapTransaction } from "./clients/jupiter-swap";
-import { getOracleResult } from "./clients/oracle";
+import { getOracleResult, getOracleResults } from "./clients/oracle";
 import { fetchLstSolValues } from "./clients/lst-rates";
 import { getWalletBalanceSmallest } from "./clients/helius-rpc";
 
@@ -53,7 +53,7 @@ function fairOut(inAmount: string, inputMint: string): string {
     : ((amount * 1_000_000_000n) / JITO_SOL_VALUE).toString();
 }
 
-const VALID_USER = "8sN5e1Qm9bYz2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7r";
+const VALID_USER = "8sN5e1Qm9bYz2c3d4e5f6g7h8i9jAk1L2m3n4o5p6q7r";
 
 function okOracle(symbol = "SOL"): OracleResult {
   return {
@@ -62,7 +62,8 @@ function okOracle(symbol = "SOL"): OracleResult {
     primary: "pyth",
     price_usd: "150.00000000",
     pyth: { available: true, price_usd: "150.00000000", age_seconds: 1 },
-    switchboard: { available: true, price_usd: "150.10000000", age_seconds: 0 },
+    secondary: { source: "redstone", available: true, price_usd: "150.10000000", age_seconds: 0 },
+    tier: "A",
     divergence_pct: 0.06,
     warnings: [],
     block_reason: null,
@@ -76,7 +77,8 @@ function blockedOracle(symbol = "SOL"): OracleResult {
     primary: null,
     price_usd: null,
     pyth: { available: false, price_usd: null, age_seconds: null },
-    switchboard: { available: false, price_usd: null, age_seconds: null },
+    secondary: { source: null, available: false, price_usd: null, age_seconds: null },
+    tier: "C",
     divergence_pct: null,
     warnings: [],
     block_reason: "oracle_both_stale",
@@ -87,6 +89,10 @@ let app: FastifyInstance;
 
 beforeEach(async () => {
   jest.clearAllMocks();
+  // B3: routes は getOracleResults (batch) を使う — 既存の getOracleResult stub から組み立てる
+  (getOracleResults as jest.Mock).mockImplementation(async (mints: string[]) =>
+    new Map(await Promise.all(mints.map(async (m) => [m, await getOracleResult(m)] as const)))
+  );
   mockOracle.mockResolvedValue(okOracle());
   mockSolValues.mockResolvedValue(new Map([["jitoSOL", JITO_SOL_VALUE]]));
   // 8.80: 既定は潤沢な残高 (gate を通す)。不足系は専用 describe で上書き

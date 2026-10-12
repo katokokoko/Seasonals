@@ -1,0 +1,24 @@
+{
+ "legibility": {
+  "nav:Seasonals": 2.32,
+  "nav:Overview": 2.12,
+  "nav:Menu": 6.87,
+  "nav:Calendar": 6.71,
+  "nav:Agent": 6.78,
+  "nav:Dashboard": 6.92,
+  "nav:Learn": 6.73,
+  "title:Agent": 10.21,
+  "desc:Your seasonal companion": 6.1,
+  "title:Menu": 10.57,
+  "desc:Explore Seasonals": 5.98,
+  "title:Setting": 11.74,
+  "desc:Make it yours": 6.55,
+  "title:Dashboard": 10.7,
+  "desc:Your seasonal snapshot": 6.29
+ },
+ "calm": {
+  "/calendar?view=month": 4.222,
+  "/menu": 4.219
+ },
+ "syncDrawMs": 11.847
+}

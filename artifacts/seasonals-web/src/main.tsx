@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { App } from "./App";
 import { injectTokens } from "./styles/tokens";
 import "./styles/base.css";
+import "./ui/glass.css";
 
 injectTokens();
 

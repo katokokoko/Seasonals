@@ -6,10 +6,8 @@
 import { useMemo } from "react";
 import { dayKey, deriveTimelineStatus, displayStatus, indexTimelineByDay, monthGridDays } from "@workspace/lib/derive/timeline";
 import type { TimelineEvent } from "@workspace/lib/types";
-import { STATUS_COLOR } from "../styles/tokens";
 import { fmtFullDate } from "../ui/format";
-import { Droplet } from "./Droplet";
-import { shapeForKind } from "./labels";
+import { EventMarker } from "./EventMarker";
 
 const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
@@ -78,7 +76,7 @@ export function MonthGrid({
                           onClick={(e) => onEvent(ev.id, e.currentTarget)}
                           title={ev.title}
                         >
-                          <Droplet shape={shapeForKind(ev.kind, ev.class)} color={STATUS_COLOR[st]} size={10} />
+                          <EventMarker event={ev} status={st} size={10} />
                           <span>{ev.title}</span>
                         </button>
                       );

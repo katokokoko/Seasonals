@@ -22,6 +22,7 @@ export const KIND_LABEL: Record<TimelineEventKind, string> = {
   user_cashflow: "Cash flow",
   user_note: "Note",
   action_executed: "Executed",
+  agent_proposal: "Agent proposal",
 };
 
 export const CLASS_LABEL: Record<TimelineEventClass, string> = {
@@ -72,6 +73,8 @@ export function shapeForKind(kind: TimelineEventKind, cls: TimelineEventClass): 
       return "vote_deadline";
     case "action_executed":
       return "deposit_history";
+    case "agent_proposal":
+      return "forecast_marker";
     default:
       return kind;
   }

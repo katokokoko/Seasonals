@@ -18,6 +18,7 @@ import type {
   EarnPositionsResponse,
   Position,
 } from "@workspace/lib/types";
+import { allEarnPositions } from "@workspace/lib/derive/earn-positions";
 
 /**
  * Phase 8.3.1 / 8.57: BFF が underlying_usd を "0" で返す protocol 用の fallback。
@@ -95,19 +96,9 @@ export function mergeEarnPositions(
 ): Position[] {
   if (!earnPositions) return basePositions;
   // Phase 8.15.x: swapEarn (LST/USD*) / save (cToken) も合成 → total/donut に反映。
-  const earnAll: EarnPosition[] = [
-    ...earnPositions.jupiterLend,
-    ...earnPositions.kaminoBestEffort,
-    ...(earnPositions.swapEarn ?? []),
-    ...(earnPositions.save ?? []),
-    // Phase 8.33: Exponent PT (share_mint = pt_mint。raw SPL 保有行は dedup ガードが置換)
-    ...(earnPositions.exponent ?? []),
-    // Phase 8.17: Meteora DLMM (position pubkey は raw mint に現れない)
-    ...(earnPositions.meteora ?? []),
-    // Phase 8.18: Orca Whirlpools (position mint は NFT — raw SPL 保有行と重複しうるが
-    // dedup ガードが share_mint 一致で置換するため二重計上しない)
-    ...(earnPositions.orca ?? []),
-  ];
+  // Phase 8.15.x〜8.18: jupiterLend / kamino / swapEarn / save / exponent / meteora / orca の全配列。
+  // 並びは lib allEarnPositions が canonical (Web の Your Positions と共有)
+  const earnAll: EarnPosition[] = allEarnPositions(earnPositions);
   const earnAsPositions: Position[] = earnAll.map(earnPositionToPosition);
   // 二重計上ガード: earn 行の share_mint (jlToken / jitoSOL / cUSDC 等の wallet SPL)
   // と同じ mint の raw 保有行は earn 行が置換する (donut 合計を二重にしない)。

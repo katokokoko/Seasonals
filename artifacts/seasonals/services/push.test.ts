@@ -19,10 +19,7 @@ import {
   scheduleLocalApprovalNotification,
   setupNotificationHandler,
 } from "./push";
-import {
-  fixtureAgentPlanPendingUser,
-  fixtureApprovalTokenActive,
-} from "@workspace/lib/__fixtures__";
+import { fixtureAgentPlanPendingUser } from "@workspace/lib/__fixtures__";
 
 const mockedNotifications = Notifications as unknown as {
   setNotificationHandler: jest.Mock;
@@ -44,7 +41,13 @@ beforeEach(() => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe("isApprovalPushPayload", () => {
-  it("type=approval + plan_id + token_id を持つオブジェクトに true", () => {
+  it("BFF 契約の { type: approval, plan_id } (token_id なし) に true", () => {
+    expect(
+      isApprovalPushPayload({ type: "approval", plan_id: "plan_003" })
+    ).toBe(true);
+  });
+
+  it("旧 payload (token_id 付き) も引き続き true", () => {
     expect(
       isApprovalPushPayload({
         type: "approval",
@@ -64,12 +67,14 @@ describe("isApprovalPushPayload", () => {
     ).toBe(false);
   });
 
-  it("plan_id / token_id が string でないと false", () => {
+  it("plan_id が string でない / 空、token_id が string 以外なら false", () => {
     expect(
       isApprovalPushPayload({ type: "approval", plan_id: 123, token_id: "t" })
     ).toBe(false);
+    expect(isApprovalPushPayload({ type: "approval" })).toBe(false);
+    expect(isApprovalPushPayload({ type: "approval", plan_id: "" })).toBe(false);
     expect(
-      isApprovalPushPayload({ type: "approval", plan_id: "p" })
+      isApprovalPushPayload({ type: "approval", plan_id: "p", token_id: 42 })
     ).toBe(false);
   });
 
@@ -188,6 +193,25 @@ describe("addApprovalResponseListener", () => {
     sub.remove();
   });
 
+  it("BFF の { type, plan_id } payload (token_id なし) でも handler が発火", () => {
+    const handler = jest.fn();
+    const sub = addApprovalResponseListener(handler);
+
+    mockedNotifications.__triggerResponse({
+      notification: {
+        request: {
+          content: { data: { type: "approval", plan_id: "plan_live_1" } },
+        },
+      },
+    });
+
+    expect(handler).toHaveBeenCalledWith({
+      type: "approval",
+      plan_id: "plan_live_1",
+    });
+    sub.remove();
+  });
+
   it("approval 以外の payload では handler が発火しない", () => {
     const handler = jest.fn();
     const sub = addApprovalResponseListener(handler);
@@ -229,6 +253,21 @@ describe("getInitialApprovalResponse", () => {
     expect(payload?.token_id).toBe("tok_active_001");
   });
 
+  it("token_id なしの approval payload も返す (cold start)", async () => {
+    mockedNotifications.getLastNotificationResponseAsync.mockResolvedValueOnce(
+      {
+        notification: {
+          request: {
+            content: { data: { type: "approval", plan_id: "plan_live_1" } },
+          },
+        },
+      }
+    );
+    const payload = await getInitialApprovalResponse();
+    expect(payload?.plan_id).toBe("plan_live_1");
+    expect(payload?.token_id).toBeUndefined();
+  });
+
   it("最後の notification が approval 以外なら null", async () => {
     mockedNotifications.getLastNotificationResponseAsync.mockResolvedValueOnce(
       {
@@ -255,14 +294,13 @@ describe("getInitialApprovalResponse", () => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe("scheduleLocalApprovalNotification", () => {
-  it("default は fixture (PendingUser plan + Active token) で payload を組む", async () => {
+  it("default は fixture PendingUser plan で BFF と同じ { type, plan_id } 形 (token_id なし)", async () => {
     await scheduleLocalApprovalNotification({});
 
     const call = mockedNotifications.scheduleNotificationAsync.mock.calls[0]![0];
     expect(call.content.data).toEqual({
       type: "approval",
       plan_id: fixtureAgentPlanPendingUser.plan_id,
-      token_id: fixtureApprovalTokenActive.token_id,
       protocol: fixtureAgentPlanPendingUser.selected_action!.protocol,
       action_type: fixtureAgentPlanPendingUser.selected_action!.action_type,
     });

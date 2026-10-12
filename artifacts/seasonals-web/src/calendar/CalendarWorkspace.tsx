@@ -1,6 +1,7 @@
 /**
  * CalendarWorkspace — /calendar (UI v2 §8, §9)。
  * ?view=month | week | list | timeline、&date=YYYY-MM-DD。
+ * List は自分の予定表 (wallet 由来 + 自分の予定、`isPersonal`)、Timeline は公開イベントも含む全体。
  * Timeline は同じ route の別 view (TimelineWorkspace)。view 切替は ?view= を
  * replace で更新し full navigation しない。
  */
@@ -12,7 +13,7 @@ import type { ChainId } from "@workspace/lib/config/chains";
 import { SUPPORTED_CHAINS } from "@workspace/lib/config/chains";
 import { useTimeline } from "../services/queries";
 import { WorkspaceShell } from "../shell/WorkspaceShell";
-import { useDetail } from "../timeline/detailStore";
+import { requestOpenWallet, useDetail } from "../timeline/detailStore";
 import { MonthGrid } from "../timeline/MonthGrid";
 import { TimelineList } from "../timeline/TimelineList";
 import { SourceStatusLine } from "../timeline/SourceStatusLine";
@@ -33,8 +34,17 @@ export interface Filters {
   chains: Set<ChainId>;
 }
 
+/** chain 非依存の予定 (custom plan、chain = null) は chain filter の対象外 */
 export function applyFilters(events: TimelineEvent[], f: Filters): TimelineEvent[] {
-  return events.filter((e) => f.classes.has(e.class) && f.chains.has(e.chain));
+  return events.filter((e) => f.classes.has(e.class) && (e.chain === null || f.chains.has(e.chain)));
+}
+
+/**
+ * List view は「自分の予定表」: 閲覧中 wallet 由来のイベント (deposit / 満期 / lockup / 実行履歴、
+ * requiresWallet) と自分の予定 (user_plan) だけ。公開 protocol イベントは Timeline に出す。
+ */
+export function isPersonal(e: TimelineEvent): boolean {
+  return e.class === "user_plan" || e.requiresWallet;
 }
 
 export default function CalendarWorkspace() {
@@ -127,7 +137,7 @@ export default function CalendarWorkspace() {
   );
 
   const monthEvents = events.filter((e) => {
-    if (!e.at) return false;
+    if (!e.at || !isPersonal(e)) return false;
     const d = new Date(e.at);
     return d.getFullYear() === monthStart.getFullYear() && d.getMonth() === monthStart.getMonth();
   });
@@ -168,12 +178,30 @@ export default function CalendarWorkspace() {
             onEvent={(id, el) => open({ kind: "event", eventId: id }, el)}
           />
         )}
-        {view === "list" &&
-          (monthEvents.length === 0 ? (
-            <p className="muted empty-state">No events in {fmtMonthYear(monthStart)}.</p>
-          ) : (
-            <TimelineList events={monthEvents} now={now} variant="full" onEvent={(id, el) => open({ kind: "event", eventId: id }, el)} />
-          ))}
+        {view === "list" && (
+          <div className="list-view">
+            <p className="list-scope muted small">
+              Your wallet events and your own plans. Public protocol events are in{" "}
+              <button type="button" className="btn-link" onClick={() => update({ view: "timeline" })}>
+                Timeline
+              </button>
+              .
+            </p>
+            {monthEvents.length === 0 ? (
+              <div className="empty-state">
+                <p>Nothing of yours in {fmtMonthYear(monthStart)}.</p>
+                <p className="small">Pick a day to add a plan (TGE, unlock, vote…){timeline.hasWallet ? "." : ", or connect a wallet to see your positions."}</p>
+                {!timeline.hasWallet && (
+                  <button type="button" className="btn" onClick={requestOpenWallet}>
+                    Connect wallet
+                  </button>
+                )}
+              </div>
+            ) : (
+              <TimelineList events={monthEvents} now={now} variant="full" onEvent={(id, el) => open({ kind: "event", eventId: id }, el)} />
+            )}
+          </div>
+        )}
         <SourceStatusLine sources={timeline.sources} />
       </div>
     </WorkspaceShell>

@@ -20,8 +20,12 @@ import {
   // bigint
   toBigInt,
   fromBigInt,
+  SIGNED_TOKEN_AMOUNT_REGEX,
+  signedToBigInt,
   usd8ToBigInt,
   compareUsd8,
+  signedUsd8ToBigInt,
+  bigIntToUsd8,
   // human ↔ smallest
   toHumanReadable,
   toSmallestUnit,
@@ -178,6 +182,24 @@ describe("toBigInt / fromBigInt", () => {
   it("invalid input は throw", () => {
     expect(() => toBigInt("1.5")).toThrow(InvalidAmountError);
     expect(() => toBigInt("-1")).toThrow(InvalidAmountError);
+  });
+});
+
+describe("signedToBigInt / SIGNED_TOKEN_AMOUNT_REGEX", () => {
+  it("符号付き整数 string を bigint に (2^53 超も正確)", () => {
+    expect(signedToBigInt("0")).toBe(0n);
+    expect(signedToBigInt("-5000")).toBe(-5000n);
+    expect(signedToBigInt("9007199254740993")).toBe(9007199254740993n);
+    expect(signedToBigInt("-9007199254740993")).toBe(-9007199254740993n);
+  });
+
+  it.each(["", "-", "1.5", "-1.5", "+1", "1e3", " 1", "abc", "--1"])("%p は throw", (v) => {
+    expect(SIGNED_TOKEN_AMOUNT_REGEX.test(v)).toBe(false);
+    expect(() => signedToBigInt(v)).toThrow(InvalidAmountError);
+  });
+
+  it("string 以外は throw", () => {
+    expect(() => signedToBigInt(5 as unknown as string)).toThrow(InvalidAmountError);
   });
 });
 
@@ -356,5 +378,19 @@ describe("usd8ToBigInt / compareUsd8 (§4.5、Phase 8.29)", () => {
     expect(compareUsd8("500.00000000", "500.00000001")).toBe(-1);
     expect(compareUsd8("500.00000001", "500.00000000")).toBe(1);
     expect(compareUsd8("500", "500.00000000")).toBe(0);
+  });
+});
+
+describe("signedUsd8ToBigInt / bigIntToUsd8", () => {
+  it("round-trips signed values without precision loss", () => {
+    expect(signedUsd8ToBigInt("-12.5")).toBe(-1_250_000_000n);
+    expect(signedUsd8ToBigInt("0.00000001")).toBe(1n);
+    expect(bigIntToUsd8(-1_250_000_000n)).toBe("-12.50000000");
+    expect(bigIntToUsd8(1n)).toBe("0.00000001");
+    expect(bigIntToUsd8(0n)).toBe("0.00000000");
+  });
+  it("rejects invalid input", () => {
+    expect(() => signedUsd8ToBigInt("--1")).toThrow();
+    expect(() => signedUsd8ToBigInt("1e5")).toThrow();
   });
 });

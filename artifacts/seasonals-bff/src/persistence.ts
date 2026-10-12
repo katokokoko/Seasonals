@@ -19,10 +19,14 @@
 import {
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   renameSync,
+  statSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
+import { access, mkdir, readdir, rename, stat, unlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 function dataDir(): string | null {
@@ -71,5 +75,127 @@ export function saveJson(name: string, value: unknown): void {
     renameSync(tmp, file);
   } catch {
     // best-effort: 永続化失敗はサイクル/リクエストを壊さない
+  }
+}
+
+/**
+ * Phase C: `<dataDir>/<name>.json` を消す。無効時 / 不在は no-op、失敗は握りつぶす
+ * (portfolio/inputs-store.ts の LRU 掃除用)。
+ */
+export function deleteJson(name: string): void {
+  const dir = dataDir();
+  if (!dir) return;
+  try {
+    unlinkSync(join(dir, `${name}.json`));
+  } catch {
+    // 不在 / 権限: best-effort
+  }
+}
+
+/**
+ * Phase C: `<prefix>*.json` の一覧 (name は拡張子なし、mtime 付き、古い順)。
+ * 無効時 / dir 不在は空配列。書込途中の `.json.tmp` は含めない。
+ */
+export function listJson(prefix: string): Array<{ name: string; mtimeMs: number }> {
+  const dir = dataDir();
+  if (!dir || !existsSync(dir)) return [];
+  const out: Array<{ name: string; mtimeMs: number }> = [];
+  try {
+    for (const f of readdirSync(dir)) {
+      if (!f.startsWith(prefix) || !f.endsWith(".json")) continue;
+      try {
+        out.push({ name: f.slice(0, -".json".length), mtimeMs: statSync(join(dir, f)).mtimeMs });
+      } catch {
+        // 列挙と stat の間に消えた
+      }
+    }
+  } catch {
+    return [];
+  }
+  return out.sort((a, b) => a.mtimeMs - b.mtimeMs || a.name.localeCompare(b.name));
+}
+
+// ── async 版 (request path から外したい書き込み用。portfolio/inputs-store.ts) ──────────────
+
+/**
+ * saveJson の async 版 (tmp file + rename の atomic 書込は同じ)。無効時は no-op、失敗は握りつぶす。
+ * 同じ name への並行書込は呼び手が直列化する (tmp file 名が同じため)
+ */
+export async function saveJsonAsync(name: string, value: unknown): Promise<void> {
+  const dir = dataDir();
+  if (!dir) return;
+  try {
+    await mkdir(dir, { recursive: true });
+    const file = join(dir, `${name}.json`);
+    const tmp = `${file}.tmp`;
+    await writeFile(tmp, JSON.stringify(value, null, 2));
+    await rename(tmp, file);
+  } catch {
+    // best-effort
+  }
+}
+
+/** `<dataDir>/<name>.json` が在るか (無効時は false) */
+export async function jsonExistsAsync(name: string): Promise<boolean> {
+  const dir = dataDir();
+  if (!dir) return false;
+  try {
+    await access(join(dir, `${name}.json`));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** deleteJson の async 版 */
+export async function deleteJsonAsync(name: string): Promise<void> {
+  const dir = dataDir();
+  if (!dir) return;
+  try {
+    await unlink(join(dir, `${name}.json`));
+  } catch {
+    // 不在 / 権限: best-effort
+  }
+}
+
+/** listJson の async 版 (古い順) */
+export async function listJsonAsync(
+  prefix: string
+): Promise<Array<{ name: string; mtimeMs: number }>> {
+  const dir = dataDir();
+  if (!dir) return [];
+  let names: string[];
+  try {
+    names = await readdir(dir);
+  } catch {
+    return [];
+  }
+  const out: Array<{ name: string; mtimeMs: number }> = [];
+  for (const f of names) {
+    if (!f.startsWith(prefix) || !f.endsWith(".json")) continue;
+    try {
+      out.push({ name: f.slice(0, -".json".length), mtimeMs: (await stat(join(dir, f))).mtimeMs });
+    } catch {
+      // 列挙と stat の間に消えた
+    }
+  }
+  return out.sort((a, b) => a.mtimeMs - b.mtimeMs || a.name.localeCompare(b.name));
+}
+
+/**
+ * 起動時の書込確認: `dir` を作り (recursive)、probe file を書いて消す。
+ * saveJson は失敗を握りつぶすので、volume の mount 漏れ / 権限不足で plan・承認
+ * token・監査ログが **黙って** 消える事故を起動時に検出するために使う (index.ts)。
+ * 例外は投げない (false を返す)。
+ */
+export function ensureWritableDataDir(dir: string): boolean {
+  try {
+    mkdirSync(dir, { recursive: true });
+    const probe = join(dir, `.write-probe-${process.pid}-${Date.now()}`);
+    writeFileSync(probe, "ok");
+    unlinkSync(probe);
+    return true;
+  } catch {
+    return false;
   }
 }

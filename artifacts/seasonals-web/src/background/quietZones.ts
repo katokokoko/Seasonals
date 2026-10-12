@@ -19,6 +19,27 @@ export interface QuietRect {
   h: number;
 }
 
+/**
+ * canvas の実 box (CSS px) と、CSS px → drawing buffer px の倍率。
+ * rect の座標変換は必ずこれを基準にする (viewport / innerHeight / dpr を前提にしない):
+ *   x = (r.left - left) * scale、y = (bottom - r.bottom) * scale (bottom-left origin)
+ */
+export interface CanvasFrame {
+  left: number;
+  bottom: number;
+  scale: number;
+}
+
+export function canvasFrame(canvas: HTMLCanvasElement): CanvasFrame {
+  const b = canvas.getBoundingClientRect();
+  return { left: b.left, bottom: b.bottom, scale: b.height > 0 ? canvas.height / b.height : 1 };
+}
+
+/** root から探すか、キャッシュ済みの要素列をそのまま使う (毎フレーム計測で querySelectorAll を避ける) */
+function elementsOf(src: ParentNode | Iterable<HTMLElement>, selector: string): Iterable<HTMLElement> {
+  return "querySelectorAll" in src ? (src as ParentNode).querySelectorAll<HTMLElement>(selector) : src;
+}
+
 interface CssRect {
   left: number;
   top: number;
@@ -26,16 +47,12 @@ interface CssRect {
   bottom: number;
 }
 
-export function collectQuietRects(
-  root: ParentNode,
-  viewport: { width: number; height: number },
-  dpr: number
-): QuietRect[] {
+export function collectQuietRects(src: ParentNode | Iterable<HTMLElement>, frame: CanvasFrame): QuietRect[] {
   const groups = new Map<string, CssRect>();
   let anon = 0;
-  root.querySelectorAll<HTMLElement>("[data-water-quiet]").forEach((el) => {
+  for (const el of elementsOf(src, "[data-water-quiet]")) {
     const r = el.getBoundingClientRect();
-    if (r.width <= 0 || r.height <= 0) return;
+    if (r.width <= 0 || r.height <= 0) continue;
     const key = el.dataset.waterQuiet ? `g:${el.dataset.waterQuiet}` : `a:${anon++}`;
     const prev = groups.get(key);
     groups.set(
@@ -49,13 +66,13 @@ export function collectQuietRects(
           }
         : { left: r.left, top: r.top, right: r.right, bottom: r.bottom }
     );
-  });
+  }
   return [...groups.values()]
     .map((r) => ({
-      x: r.left * dpr,
-      y: (viewport.height - r.bottom) * dpr,
-      w: (r.right - r.left) * dpr,
-      h: (r.bottom - r.top) * dpr,
+      x: (r.left - frame.left) * frame.scale,
+      y: (frame.bottom - r.bottom) * frame.scale,
+      w: (r.right - r.left) * frame.scale,
+      h: (r.bottom - r.top) * frame.scale,
     }))
     .sort((a, b) => b.w * b.h - a.w * a.h)
     .slice(0, MAX_QUIET_RECTS);
@@ -77,4 +94,217 @@ export function sameRects(a: Float32Array, b: Float32Array): boolean {
   if (a.length !== b.length) return false;
   for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
   return true;
+}
+
+// ── glass surfaces (liquid glass lens、docs/web/water-background-spec.md "Glass lens") ──
+
+export const MAX_GLASS_RECTS = 6;
+
+/**
+ * glass の種類 (Apple Liquid Glass の variant)。`data-water-glass` の値で指定し、空は regular。
+ * - clear: 中央が透けて縁の屈折が強い (top bar / 選択しずく)
+ * - regular: すりガラス寄り
+ * - droplet: 水の blob (Home の portal card)。透明なレンズで、輪郭がゆっくり揺らぎ、縁の光の線・
+ *   星のきらめき・砂の上の集光を shader が描く (CSS の rim / 影は使わない)
+ */
+export const GLASS_VARIANTS = {
+  clear: { lens: 1.5, frost: 0.3 },
+  regular: { lens: 1, frost: 1 },
+  droplet: { lens: 1.2, frost: 0 },
+} as const;
+export type GlassVariant = keyof typeof GLASS_VARIANTS;
+
+/** droplet の輪郭の揺らぎ (CSS px)。文字の padding (24px) に対して十分小さい */
+export const DROPLET_WOBBLE_PX = 4;
+
+export function glassVariant(value: string | undefined): GlassVariant {
+  return value === "clear" || value === "droplet" ? value : "regular";
+}
+
+/** 回転を持つ角丸矩形。device px、中心は bottom-left origin、angle は CSS rotate と同じ向き (rad、時計回り正) */
+export interface GlassRect {
+  cx: number;
+  cy: number;
+  w: number;
+  h: number;
+  radius: number;
+  angle: number;
+  /** 屈折の強さ (中央の拡大と縁の曲がり) */
+  lens: number;
+  /** すりガラス度 (0 = 透明、1 = caustic がぼける) */
+  frost: number;
+  /** droplet variant (水の blob) か */
+  droplet: boolean;
+  /** 輪郭の揺らぎの振幅 (device px、droplet 以外は 0) */
+  wobble: number;
+  /** 揺らぎの位相 (要素の順番から決まる、毎回同じ) */
+  seed: number;
+}
+
+/** computed transform ("matrix(...)" / "matrix3d(...)" / "none") → 2D 回転角 (rad) */
+export function transformAngle(transform: string | null | undefined): number {
+  const m = /^matrix(3d)?\(([^)]+)\)$/.exec((transform ?? "").trim());
+  if (!m) return 0;
+  const v = m[2]!.split(",").map((x) => Number.parseFloat(x));
+  const a = v[0] ?? 1;
+  const b = v[1] ?? 0;
+  return Number.isFinite(a) && Number.isFinite(b) ? Math.atan2(b, a) : 0;
+}
+
+/**
+ * `[data-water-glass]` 要素を回転付き角丸矩形として集める。
+ * 回転している portal card は bounding box が膨らむので、中心だけ bbox から取り、
+ * 大きさは layout size (offsetWidth / offsetHeight)、角度は computed transform から取る。
+ */
+export function collectGlassRects(
+  src: ParentNode | Iterable<HTMLElement>,
+  frame: CanvasFrame,
+  opts: { dropletsOnly?: boolean } = {}
+): GlassRect[] {
+  const out: GlassRect[] = [];
+  const k = frame.scale;
+  let index = 0;
+  for (const el of elementsOf(src, "[data-water-glass]")) {
+    const variant = glassVariant(el.dataset.waterGlass);
+    const seed = index++ * 2.39;
+    if (opts.dropletsOnly && variant !== "droplet") continue;
+    const r = el.getBoundingClientRect();
+    if (r.width <= 0 || r.height <= 0) continue;
+    const cs = getComputedStyle(el);
+    const w = el.offsetWidth || r.width;
+    const h = el.offsetHeight || r.height;
+    const radius = Math.min(Number.parseFloat(cs.borderTopLeftRadius) || 0, w / 2, h / 2);
+    // 透明 (opacity 0) の面は shader にも出さない (例: active link が無い画面の選択しずく)
+    if (Number.parseFloat(cs.opacity || "1") === 0) continue;
+    out.push({
+      ...GLASS_VARIANTS[variant],
+      droplet: variant === "droplet",
+      wobble: variant === "droplet" ? DROPLET_WOBBLE_PX * k : 0,
+      seed,
+      cx: (r.left + r.width / 2 - frame.left) * k,
+      cy: (frame.bottom - (r.top + r.height / 2)) * k,
+      w: w * k,
+      h: h * k,
+      radius: radius * k,
+      angle: transformAngle(cs.transform),
+    });
+  }
+  return out.sort((a, b) => b.w * b.h - a.w * a.h).slice(0, MAX_GLASS_RECTS);
+}
+
+/**
+ * uGlassRects (vec4 × 6: cx, cy, w, h) / uGlassMeta (vec4 × 6: radius, angle, lens, frost) /
+ * uGlassShape (vec4 × 6: wobble, droplet 0/1, seed, 0) 用に詰める
+ */
+export function packGlassRects(
+  rects: readonly GlassRect[],
+  out = {
+    rects: new Float32Array(MAX_GLASS_RECTS * 4),
+    meta: new Float32Array(MAX_GLASS_RECTS * 4),
+    shape: new Float32Array(MAX_GLASS_RECTS * 4),
+  }
+): { rects: Float32Array; meta: Float32Array; shape: Float32Array } {
+  out.rects.fill(0);
+  out.meta.fill(0);
+  out.shape.fill(0);
+  rects.slice(0, MAX_GLASS_RECTS).forEach((g, i) => {
+    out.rects.set([g.cx, g.cy, g.w, g.h], i * 4);
+    out.meta.set([g.radius, g.angle, g.lens, g.frost], i * 4);
+    out.shape.set([g.wobble, g.droplet ? 1 : 0, g.seed, 0], i * 4);
+  });
+  return out;
+}
+
+/**
+ * 発熱対策 4 (2026-10-06): glass layer の scissor 矩形 (device px、bottom-left origin、整数)。
+ * 詰めた uGlassRects / uGlassMeta / uGlassShape から、全 glass 面の回転込みの外接矩形の和を返す。
+ * shader の glass は輪郭の外 1px まで (smoothstep(-1, 1, sd)) と droplet の揺らぎの分だけはみ出すので、
+ * その分と 2px の余白を足す。canvas の外は切る。glass が無ければ null (何も描かない)
+ */
+export function glassScissor(
+  rects: Float32Array,
+  meta: Float32Array,
+  shape: Float32Array,
+  count: number,
+  width: number,
+  height: number
+): { x: number; y: number; w: number; h: number } | null {
+  let x0 = Infinity;
+  let y0 = Infinity;
+  let x1 = -Infinity;
+  let y1 = -Infinity;
+  for (let i = 0; i < Math.min(count, MAX_GLASS_RECTS); i++) {
+    const [cx, cy, w, h] = [rects[i * 4]!, rects[i * 4 + 1]!, rects[i * 4 + 2]!, rects[i * 4 + 3]!];
+    const angle = meta[i * 4 + 1]!;
+    const pad = Math.abs(shape[i * 4]!) + 3;
+    const c = Math.abs(Math.cos(angle));
+    const s = Math.abs(Math.sin(angle));
+    const ex = (c * w + s * h) / 2 + pad;
+    const ey = (s * w + c * h) / 2 + pad;
+    x0 = Math.min(x0, cx - ex);
+    y0 = Math.min(y0, cy - ey);
+    x1 = Math.max(x1, cx + ex);
+    y1 = Math.max(y1, cy + ey);
+  }
+  const x = Math.max(0, Math.floor(x0));
+  const y = Math.max(0, Math.floor(y0));
+  const r = Math.min(width, Math.ceil(x1));
+  const t = Math.min(height, Math.ceil(y1));
+  return r > x && t > y ? { x, y, w: r - x, h: t - y } : null;
+}
+
+/**
+ * glass 面を Web Animations 等で動かす時に呼ぶ。WAAPI は style 属性を変えないので
+ * MutationObserver では拾えない。受け取った useQuietZones が ms の間 rAF ごとに rect を取り直す。
+ */
+export const GLASS_TRACKING_EVENT = "seasonals:glass-tracking";
+export function requestGlassTracking(ms: number): void {
+  window.dispatchEvent(new CustomEvent(GLASS_TRACKING_EVENT, { detail: ms }));
+}
+
+// ── floaters (Home の水面に浮かぶキャラクター、docs/web/water-background-spec.md "Floaters") ──
+
+export const MAX_FLOATERS = 2;
+
+/** 水面に浮かぶもの。device px、中心は bottom-left origin。radius は体の半径 */
+export interface Floater {
+  cx: number;
+  cy: number;
+  radius: number;
+  /** 波紋と影の強さ (0..1、`data-water-floater` の値。空なら 1) */
+  strength: number;
+}
+
+/**
+ * `[data-water-floater]` 要素を水面の floater として集める。中心は bbox の中心、半径は
+ * layout size (回転で bbox が膨らむのを避ける) の短辺の半分。見えていない (opacity 0) ものは
+ * 出さず、fade 中は強さに opacity を掛ける。
+ */
+export function collectFloaters(src: ParentNode | Iterable<HTMLElement>, frame: CanvasFrame): Floater[] {
+  const out: Floater[] = [];
+  const k = frame.scale;
+  for (const el of elementsOf(src, "[data-water-floater]")) {
+    const r = el.getBoundingClientRect();
+    if (r.width <= 0 || r.height <= 0) continue;
+    const w = el.offsetWidth || r.width;
+    const h = el.offsetHeight || r.height;
+    const opacity = Number.parseFloat(getComputedStyle(el).opacity || "1");
+    if (!(opacity > 0)) continue;
+    const v = Number.parseFloat(el.dataset.waterFloater ?? "");
+    out.push({
+      cx: (r.left + r.width / 2 - frame.left) * k,
+      cy: (frame.bottom - (r.top + r.height / 2)) * k,
+      radius: (Math.min(w, h) / 2) * k,
+      strength: (Number.isFinite(v) ? Math.min(Math.max(v, 0), 1) : 1) * Math.min(opacity, 1),
+    });
+    if (out.length === MAX_FLOATERS) break;
+  }
+  return out;
+}
+
+/** uFloaters (vec4 × 2: cx, cy, radius, strength) 用に詰める */
+export function packFloaters(floaters: readonly Floater[], out = new Float32Array(MAX_FLOATERS * 4)): Float32Array {
+  out.fill(0);
+  floaters.slice(0, MAX_FLOATERS).forEach((f, i) => out.set([f.cx, f.cy, f.radius, f.strength], i * 4));
+  return out;
 }

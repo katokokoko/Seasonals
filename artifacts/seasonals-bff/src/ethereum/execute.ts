@@ -9,18 +9,13 @@
  */
 import { createPublicClient, createWalletClient, http, type Hex, type PublicClient } from "viem";
 import { mainnet } from "viem/chains";
-import type { TimelineEvent } from "@workspace/lib/types";
+import type { ForkExecution, TimelineEvent } from "@workspace/lib/types";
 import { executionTarget, forkRpcUrl, sanitizeError, undiciFetch } from "./client";
 import { buildActionPlan, PlanError, type ActionPlan } from "./plans";
 import { registerUserSource, _invalidateUser } from "./events";
 import { loadJson, saveJson } from "../persistence";
 
-export interface ForkExecution {
-  target: "fork";
-  plan: ActionPlan;
-  txs: Array<{ hash: string; status: "success" | "reverted"; blockNumber: string; gasUsed: string; description: string }>;
-  executedEvent: TimelineEvent;
-}
+export type { ForkExecution };
 
 const STORE = "eth-executed-events";
 // 遅延 load: SEASONALS_DATA_DIR は index.ts の main() で設定されるため import 時には読まない
@@ -193,4 +188,44 @@ export async function mineFork(blocks: number): Promise<{ block: string; timesta
   await rpc("anvil_mine", ["0x" + blocks.toString(16), "0xc"]);
   const b = await rpc<{ timestamp: string; number: string }>("eth_getBlockByNumber", ["latest", false]);
   return { timestamp: new Date(Number.parseInt(b.timestamp, 16) * 1000).toISOString(), block: String(Number.parseInt(b.number, 16)) };
+}
+
+/**
+ * Menu の deposit / withdraw を fork 上で実行する (人が UI で承認した時だけ)。
+ * fork の状態でプランを作り直して検証し、receipt を executed event として記録する。
+ */
+export async function executeMenuOnFork(input: import("./menu-actions").MenuPlanInput): Promise<ForkExecution> {
+  await assertForkEndpoint();
+  const { buildMenuPlan } = await import("./menu-actions");
+  const { pub } = forkClients();
+  const plan = await buildMenuPlan(input, { client: pub as unknown as PublicClient, where: "fork" });
+  try {
+    const txs = await sendStepsOnFork(input.owner as Hex, plan.steps);
+    const ok = txs.length === plan.steps.length && txs.every((t) => t.status === "success");
+    const [, protocol] = input.productId.split(":");
+    const executedEvent = await recordExecuted({
+      owner: input.owner,
+      title: plan.summary,
+      protocol: protocol ?? null,
+      protocolName: protocol ? protocol.charAt(0).toUpperCase() + protocol.slice(1) : null,
+      txs,
+      ok,
+    });
+    (await import("./holdings"))._invalidateHoldings(input.owner);
+    return { target: "fork", plan, txs, executedEvent };
+  } catch (e) {
+    if (e instanceof PlanError) throw e;
+    throw new PlanError("upstream_error", sanitizeError(e));
+  }
+}
+
+/**
+ * fork の状態に対して Menu のプランを作る (送信しない)。fork 上の swap で得た USDe など、
+ * mainnet には無い残高を使う続きの操作を、実行前に確かめるため
+ */
+export async function buildMenuPlanOnFork(input: import("./menu-actions").MenuPlanInput): Promise<ActionPlan> {
+  await assertForkEndpoint();
+  const { buildMenuPlan } = await import("./menu-actions");
+  const { pub } = forkClients();
+  return buildMenuPlan(input, { client: pub as unknown as PublicClient, where: "fork" });
 }

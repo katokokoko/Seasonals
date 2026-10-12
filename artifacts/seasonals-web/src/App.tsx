@@ -1,6 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { lazy, Suspense, type ReactNode } from "react";
-import { createBrowserRouter, RouterProvider } from "react-router";
+import { createBrowserRouter, Navigate, RouterProvider } from "react-router";
 import { AppShell } from "./shell/AppShell";
 import { HomeLobby } from "./home/HomeLobby";
 
@@ -10,6 +10,7 @@ const CalendarWorkspace = lazy(() => import("./calendar/CalendarWorkspace"));
 const AgentWorkspace = lazy(() => import("./agent/AgentWorkspace"));
 const DashboardWorkspace = lazy(() => import("./dashboard/DashboardWorkspace"));
 const SettingsScreen = lazy(() => import("./settings/SettingsScreen"));
+const LearnPage = lazy(() => import("./learn/LearnPage"));
 
 const lazyEl = (node: ReactNode) => <Suspense fallback={<div className="route-loading" aria-busy="true" />}>{node}</Suspense>;
 
@@ -19,11 +20,14 @@ export const routes = [
     element: <AppShell />,
     children: [
       { index: true, element: <HomeLobby /> },
-      { path: "explore", element: lazyEl(<ExploreMenu />) },
+      { path: "menu", element: lazyEl(<ExploreMenu />) },
+      // 旧 URL (Explore → Menu に改名) は redirect
+      { path: "explore", element: <Navigate to="/menu" replace /> },
       { path: "calendar", element: lazyEl(<CalendarWorkspace />) },
       { path: "agent", element: lazyEl(<AgentWorkspace />) },
       { path: "dashboard", element: lazyEl(<DashboardWorkspace />) },
       { path: "settings", element: lazyEl(<SettingsScreen />) },
+      { path: "learn", element: lazyEl(<LearnPage />) },
       { path: "*", element: lazyEl(<NotFound />) },
     ],
   },

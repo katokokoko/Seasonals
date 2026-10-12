@@ -1,7 +1,10 @@
 /**
  * pyth-history — 過去の実価格 (Phase 8.58 / 8.59)
  *
- * Pyth Benchmarks の過去価格。oracle.ts (Hermes latest) と同じ提供元なので、
+ * 2026-10-05 時点: Benchmarks の tradingview shim が 404 を返す (Pyth Core upgrade 後)。失敗は空 series になり、
+ * server.ts solanaPriceSeries が DefiLlama (llama-history.ts) に落とす。Benchmarks が戻れば自動でこちらを使う。
+ *
+ * Pyth Benchmarks の過去価格。oracle.ts (Pyth sponsored push feed) と同じ feed id なので、
  * 現在と過去で価格の出所が一致する (§4.6 Pyth primary の一貫性)。
  *
  * 実測メモ (2026-08-01):

@@ -6,18 +6,25 @@
  */
 import type { FastifyInstance } from "fastify";
 import { isEvmAddress } from "@workspace/lib/config/chains";
-import { ethereumRpcUrl, executionTarget, forkRpcUrl, getEthClient, sanitizeError, undiciFetch } from "../ethereum/client";
+import { ethereumRpcUrl, executionTarget, forkRpcUrl, getEthClient, rpcUsageSnapshot, sanitizeError, undiciFetch } from "../ethereum/client";
 import { getPublicEvents, getUserEvents } from "../ethereum/events";
 import { buildActionPlan, PlanError } from "../ethereum/plans";
 import { buildProposal } from "../ethereum/proposals";
-import { advanceFork, executeOnFork, mineFork } from "../ethereum/execute";
+import { advanceFork, buildMenuPlanOnFork, executeMenuOnFork, executeOnFork, mineFork } from "../ethereum/execute";
+import { buildMenuPlan, pendleTradeContext, type MenuPlanInput } from "../ethereum/menu-actions";
+import { pendleOracleReady } from "../ethereum/pendle-guard";
 import { ensureIndexing, indexProgress } from "../ethereum/cca";
 import { UniswapError, buildUniswapSwapPlan, executeUniswapSwapOnFork, uniswapPreview } from "../ethereum/uniswap";
 import { getEthMenu } from "../ethereum/menu";
+import { getMenuHoldings } from "../ethereum/holdings";
 import { getAavePositions } from "../ethereum/aave";
 import { buildAquaShipPlan, fillAquaOnFork, shipAquaOnFork, type AquaShipInput } from "../ethereum/aqua";
+import { executeProposal, getProposal, listProposals, previewProposal, previewStep, ProposalError, rejectProposal, StepSchema, submitProposal } from "../ethereum/agent-proposals";
+import type { EthProposalApprovalVia, EthProposalExecuteRequest, EthProposalPreviewRequest, EthProposalSubmitRequest } from "@workspace/lib/types";
 import { checkPeg, getChainlinkPrice, PRICE_ASSETS, type PriceAsset } from "../ethereum/pricing";
 import { assertTokenAmount, InvalidAmountError } from "@workspace/lib/utils/numeric";
+import { ethereumHistoryEngine } from "../ethereum/history";
+import { EtherscanNotConfiguredError } from "../clients/etherscan";
 
 async function forkReachable(): Promise<boolean> {
   try {
@@ -34,6 +41,14 @@ async function forkReachable(): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+/** 503 の本文。key 未設定は別 code にして UI が「未設定」と言えるようにする */
+function portfolioUnavailable(e: unknown, code: string): { error: string; message: string } {
+  if (e instanceof EtherscanNotConfiguredError) {
+    return { error: "etherscan_not_configured", message: "Ethereum history needs ETHERSCAN_API_KEY on the server." };
+  }
+  return { error: code, message: sanitizeError(e) };
 }
 
 export async function registerEthRoutes(parent: FastifyInstance): Promise<void> {
@@ -56,13 +71,24 @@ async function ethRoutes(app: FastifyInstance): Promise<void> {
     return indexProgress();
   });
 
+  /**
+   * 全ページの nav が 30 秒ごとに読むので、block は 1 block 分 (12 秒) cache、chainId は一度取れたら保持
+   * (mainnet 固定)。Infura credit 削減 (docs/web/WORKLOG.md)
+   */
+  let statusBlock: { at: number; value: string } | null = null;
+  let statusChainId: number | null = null;
   app.get("/eth/status", async () => {
     const client = getEthClient();
     let latestBlock: string | null = null;
-    let chainId: number | null = null;
+    let chainId: number | null = statusChainId;
     if (client) {
       try {
-        [latestBlock, chainId] = await Promise.all([client.getBlockNumber().then((b) => b.toString()), client.getChainId()]);
+        if (statusBlock && Date.now() - statusBlock.at < 12_000) latestBlock = statusBlock.value;
+        else {
+          latestBlock = (await client.getBlockNumber()).toString();
+          statusBlock = { at: Date.now(), value: latestBlock };
+        }
+        if (chainId === null) chainId = statusChainId = await client.getChainId();
       } catch (e) {
         app.log.warn({ err: sanitizeError(e) }, "eth status read failed");
       }
@@ -77,6 +103,9 @@ async function ethRoutes(app: FastifyInstance): Promise<void> {
       latestBlock,
     };
   });
+
+  /** BFF 起動後に Infura へ出た RPC の method 別件数と credit の目安 (削減効果の確認用) */
+  app.get("/eth/rpc-usage", async () => rpcUsageSnapshot());
 
   app.get("/eth/public-events", async () => getPublicEvents());
 
@@ -109,8 +138,45 @@ async function ethRoutes(app: FastifyInstance): Promise<void> {
     }
   });
 
+  /**
+   * 評価額の履歴 (web Dashboard の資産推移グラフ)。Solana の /portfolio/history と
+   * 同じエンジン・同じ応答形 (lib PortfolioHistoryResponse)。上流が落ちたら 503
+   * (履歴を捏造しない / 空の成功で client の cache を上書きしない、8.95 と同じ)
+   */
+  app.get<{ Querystring: { address?: string; days?: string } }>("/eth/portfolio/history", async (req, reply) => {
+    const address = req.query.address?.trim() ?? "";
+    if (!isEvmAddress(address)) return reply.code(400).send({ error: "invalid_address" });
+    const requested = Number(req.query.days ?? "30");
+    const days = Number.isFinite(requested) ? Math.min(730, Math.max(1, Math.floor(requested))) : 30;
+    try {
+      return await ethereumHistoryEngine.history(address.toLowerCase(), days);
+    } catch (e) {
+      return reply.code(503).send(portfolioUnavailable(e, "portfolio_history_unavailable"));
+    }
+  });
+
+  /** 現在の保有 (category 付き、Allocation donut 用)。Aave V4 は in_history=false で載る */
+  app.get<{ Querystring: { address?: string } }>("/eth/portfolio/holdings", async (req, reply) => {
+    const address = req.query.address?.trim() ?? "";
+    if (!isEvmAddress(address)) return reply.code(400).send({ error: "invalid_address" });
+    try {
+      return await ethereumHistoryEngine.holdings(address.toLowerCase());
+    } catch (e) {
+      return reply.code(503).send(portfolioUnavailable(e, "portfolio_holdings_unavailable"));
+    }
+  });
+
   /** Explore の Ethereum 商品 (利率は label + 出所付き、取れなければ null) */
   app.get("/eth/menu", async () => getEthMenu());
+
+  /** Menu 商品ごとの保有量 (on-chain 残高が正、失敗した source は failed[]) */
+  app.get<{ Querystring: { address?: string } }>("/eth/holdings", async (req, reply) => {
+    const address = req.query.address?.trim() ?? "";
+    if (!isEvmAddress(address)) {
+      return reply.code(400).send({ error: "invalid_address", message: "address must be a 0x-prefixed 20-byte hex string" });
+    }
+    return getMenuHoldings(address);
+  });
 
   app.get<{ Querystring: { address?: string } }>("/eth/events", async (req, reply) => {
     const address = req.query.address?.trim() ?? "";
@@ -145,6 +211,71 @@ async function ethRoutes(app: FastifyInstance): Promise<void> {
         return reply.code(code).send({ error: e.code, message: e.message });
       }
       app.log.warn({ err: sanitizeError(e) }, "build-action failed");
+      return reply.code(502).send({ error: "upstream_error", message: sanitizeError(e) });
+    }
+  });
+
+  /** PlanError → HTTP (入力の誤りは 400、状態が合わないのは 409、上流 / RPC は 502) */
+  const planErrorStatus = (code: PlanError["code"]) =>
+    code === "invalid_amount"
+      ? 400
+      : code === "event_not_found"
+        ? 404
+        : code === "rpc_unavailable" || code === "upstream_error" || code === "oracle_unavailable"
+          ? 502
+          : 409;
+
+  function menuInput(body: Partial<MenuPlanInput> | undefined): MenuPlanInput | null {
+    const { owner = "", productId = "", action, amount = "", token } = body ?? {};
+    if (!isEvmAddress(owner) || !productId || (action !== "deposit" && action !== "withdraw") || typeof amount !== "string" || !amount) return null;
+    return { owner, productId, action, amount, ...(typeof token === "string" ? { token } : {}) };
+  }
+
+  /** Pendle 売買パネル用: 払う / 受け取るトークンと残高、満期 (on-chain で読む) */
+  app.get<{ Querystring: { address?: string; productId?: string; action?: string } }>("/eth/menu/context", async (req, reply) => {
+    const { address = "", productId = "", action } = req.query;
+    if (!isEvmAddress(address) || !productId || (action !== "deposit" && action !== "withdraw")) return reply.code(400).send({ error: "invalid_argument" });
+    const client = getEthClient();
+    if (!client) return reply.code(502).send({ error: "rpc_unavailable", message: "Ethereum RPC is not configured." });
+    try {
+      const ctx = await pendleTradeContext(client as never, address as `0x${string}`, productId, action);
+      return {
+        oracleReady: await pendleOracleReady(client as never, ctx.market.address),
+        matured: ctx.matured,
+        maturity: ctx.market.expiry,
+        token: { value: ctx.token.balance.toString(), decimals: ctx.token.decimals, symbol: ctx.token.symbol },
+        pyToken: { value: ctx.pyToken.balance.toString(), decimals: ctx.pyToken.decimals, symbol: ctx.pyToken.symbol },
+      };
+    } catch (e) {
+      if (e instanceof PlanError) return reply.code(planErrorStatus(e.code)).send({ error: e.code, message: e.message });
+      return reply.code(502).send({ error: "upstream_error", message: sanitizeError(e) });
+    }
+  });
+
+  /**
+   * Menu の deposit / withdraw: 未署名プランのみ (送信しない)。
+   * state: "fork" は fork の状態で確かめる (fork 上の swap の続きなど、mainnet に無い残高を使う時)
+   */
+  app.post<{ Body: Partial<MenuPlanInput> & { state?: string } }>("/eth/menu/plan", async (req, reply) => {
+    const input = menuInput(req.body);
+    if (!input) return reply.code(400).send({ error: "invalid_argument" });
+    try {
+      return req.body?.state === "fork" ? await buildMenuPlanOnFork(input) : await buildMenuPlan(input);
+    } catch (e) {
+      if (e instanceof PlanError) return reply.code(planErrorStatus(e.code)).send({ error: e.code, message: e.message });
+      return reply.code(502).send({ error: "upstream_error", message: sanitizeError(e) });
+    }
+  });
+
+  /** Menu の deposit / withdraw を fork で実行 (人が UI で承認した時だけ、mainnet には送らない) */
+  app.post<{ Body: Partial<MenuPlanInput> & { approvedBy?: string } }>("/eth/menu/execute", async (req, reply) => {
+    const input = menuInput(req.body);
+    if (!input) return reply.code(400).send({ error: "invalid_argument" });
+    if (req.body?.approvedBy !== "user") return reply.code(403).send({ error: "approval_required", message: "Execution requires the user's approval in the app." });
+    try {
+      return await executeMenuOnFork(input);
+    } catch (e) {
+      if (e instanceof PlanError) return reply.code(planErrorStatus(e.code)).send({ error: e.code, message: e.message });
       return reply.code(502).send({ error: "upstream_error", message: sanitizeError(e) });
     }
   });
@@ -239,6 +370,82 @@ async function ethRoutes(app: FastifyInstance): Promise<void> {
       if (e instanceof UniswapError) return reply.code(e.status >= 500 ? 502 : e.status).send({ error: "uniswap_error", message: sanitizeError(e) });
       if (e instanceof PlanError) return reply.code(e.code === "rpc_unavailable" ? 502 : 409).send({ error: e.code, message: e.message });
       throw e;
+    }
+  });
+
+  // ── Agent rebalance proposals (MCP が提案 → 人が web / chat で承認 → fork で実行) ──
+  const proposalErr = (reply: import("fastify").FastifyReply, e: unknown) => {
+    if (e instanceof ProposalError) return reply.code(e.status).send({ error: e.code, message: e.message });
+    if (e instanceof PlanError) return reply.code(planErrorStatus(e.code)).send({ error: e.code, message: e.message });
+    if (e instanceof UniswapError) return reply.code(e.status >= 500 ? 502 : e.status).send({ error: "uniswap_error", message: sanitizeError(e) });
+    return reply.code(502).send({ error: "upstream_error", message: sanitizeError(e) });
+  };
+
+  /** 提出: 各 step の未署名プランを組んで guard を通す (署名も送信もしない) */
+  app.post<{ Body: Partial<EthProposalSubmitRequest> }>("/eth/agent-proposals", async (req, reply) => {
+    try {
+      return reply.code(201).send(await submitProposal(req.body));
+    } catch (e) {
+      return proposalErr(reply, e);
+    }
+  });
+
+  /** dry run: previews + Strategy Brief だけ返す (保存しない)。Agent が brief を見て練り直すため */
+  app.post<{ Body: Partial<EthProposalSubmitRequest> }>("/eth/agent-proposals/brief", async (req, reply) => {
+    try {
+      return await previewProposal(req.body);
+    } catch (e) {
+      return proposalErr(reply, e);
+    }
+  });
+
+  /** 1 step だけの未署名プラン (Agent が金額を決める材料。swap は amountOut を返す) */
+  app.post<{ Body: Partial<EthProposalPreviewRequest> }>("/eth/agent-proposals/preview", async (req, reply) => {
+    const owner = req.body?.owner ?? "";
+    const step = StepSchema.safeParse(req.body?.step);
+    if (!isEvmAddress(owner) || !step.success) return reply.code(400).send({ error: "invalid_argument" });
+    try {
+      return await previewStep(owner, step.data, 0);
+    } catch (e) {
+      return proposalErr(reply, e);
+    }
+  });
+
+  app.get<{ Querystring: { address?: string } }>("/eth/agent-proposals", async (req, reply) => {
+    const address = req.query.address?.trim() ?? "";
+    if (!isEvmAddress(address)) return reply.code(400).send({ error: "invalid_address" });
+    return { proposals: listProposals(address) };
+  });
+
+  app.get<{ Params: { id: string } }>("/eth/agent-proposals/:id", async (req, reply) => {
+    try {
+      return getProposal(req.params.id);
+    } catch (e) {
+      return proposalErr(reply, e);
+    }
+  });
+
+  /**
+   * 人の承認後の実行 (fork のみ)。web のボタンも chat 経由の MCP も同じここに来る。
+   * approvedBy:"user" に加えて、提出時に見せた bundleHash の一致を要求する
+   */
+  app.post<{ Params: { id: string }; Body: Partial<EthProposalExecuteRequest> }>("/eth/agent-proposals/:id/execute", async (req, reply) => {
+    if (req.body?.approvedBy !== "user") return reply.code(403).send({ error: "approval_required", message: "Execution requires the user's approval in the app." });
+    const via = req.body.via;
+    const bundleHash = req.body.bundleHash;
+    if ((via !== "web" && via !== "chat") || typeof bundleHash !== "string" || !bundleHash) return reply.code(400).send({ error: "invalid_argument" });
+    try {
+      return await executeProposal(req.params.id, { bundleHash, via: via as EthProposalApprovalVia });
+    } catch (e) {
+      return proposalErr(reply, e);
+    }
+  });
+
+  app.post<{ Params: { id: string } }>("/eth/agent-proposals/:id/reject", async (req, reply) => {
+    try {
+      return rejectProposal(req.params.id);
+    } catch (e) {
+      return proposalErr(reply, e);
     }
   });
 

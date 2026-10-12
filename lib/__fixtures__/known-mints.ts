@@ -17,6 +17,7 @@
  */
 
 import { PositionCategory } from "../types/enums";
+import { PERENA_LEGACY_USD_STAR_DECIMALS, PERENA_LEGACY_USD_STAR_MINT } from "../config/perena";
 
 export interface KnownMint {
   /** SPL mint pubkey (base58) */
@@ -74,6 +75,17 @@ export const KNOWN_PROTOCOL_MINTS: Record<string, KnownMint> = {
     category: PositionCategory.Lending,
     asset_symbol: "cSOL",
     decimals: 9,
+  },
+
+  // ── Perena 旧 USD* (2026-10 に Star V2 の新 mint へ移行) ──
+  // swap-earn registry には入れない (Jupiter で route が無く withdraw が必ず失敗する)。
+  // 保有者が旧 token と分かるよう表示だけ残す。移行は Perena app (app.perena.org/earn) で行う
+  [PERENA_LEGACY_USD_STAR_MINT]: {
+    mint: PERENA_LEGACY_USD_STAR_MINT,
+    protocol_id: "perena",
+    category: PositionCategory.Stable,
+    asset_symbol: "USD* (legacy)",
+    decimals: PERENA_LEGACY_USD_STAR_DECIMALS,
   },
 
   // ── Native SOL ──

@@ -150,3 +150,42 @@ code {
   color: var(--c-caramelDark);
   font-weight: var(--w-bold);
 }
+.proposal-inbox {
+  display: grid;
+  gap: var(--sp-md);
+}
+.brief-name {
+  margin: 0;
+  font-size: var(--fs-headingMD);
+}
+.strategy-brief {
+  display: grid;
+  gap: var(--sp-xs);
+}
+.brief-table .cell-num {
+  display: table-cell;
+}
+.brief-table td.cell-num > span {
+  display: block;
+}
+.brief-table tfoot th {
+  text-align: left;
+  padding: var(--sp-sm);
+  font-size: var(--fs-bodySM);
+}
+.brief-table tfoot td {
+  font-weight: var(--w-bold);
+}
+.delta-up {
+  color: var(--c-melonText);
+}
+.delta-down {
+  color: var(--c-cherryDark);
+}
+.proposal-card .plan-steps li {
+  display: grid;
+  gap: 2px;
+}
+.proposal-card .fork-exec {
+  flex-wrap: wrap;
+}

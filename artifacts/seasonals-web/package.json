@@ -2,7 +2,7 @@
   "name": "@seasonals/web",
   "version": "0.0.1",
   "private": true,
-  "description": "Seasonals desktop Web — Home lobby / Explore / Calendar workspace (docs/web/ui-spec-v2.md)",
+  "description": "Seasonals desktop Web — Home lobby / Menu / Calendar workspace (docs/web/ui-spec-v2.md)",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -13,11 +13,17 @@
     "e2e": "node e2e/run.mjs"
   },
   "dependencies": {
+    "@solana/wallet-standard-chains": "^1.1.1",
+    "@solana/wallet-standard-features": "^1.3.0",
     "@tanstack/react-query": "^5.101.4",
+    "@wallet-standard/app": "^1.1.0",
+    "@wallet-standard/base": "^1.1.0",
+    "@wallet-standard/features": "^1.1.0",
     "@workspace/lib": "workspace:*",
     "react": "19.2.3",
     "react-dom": "19.2.3",
     "react-router": "^7.18.4",
+    "recharts": "2.15.4",
     "zustand": "^4.5.5"
   },
   "devDependencies": {

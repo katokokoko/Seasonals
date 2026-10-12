@@ -34,6 +34,8 @@ import {
 } from "@workspace/lib/config/orca-markets";
 import { fetchSwapQuote, fetchSwapTransaction } from "./jupiter-swap";
 import { toV0Base64 } from "./tx-utils";
+import { heliusRpcFetch } from "./helius-limiter";
+import { TtlCache } from "../cache/ttl-cache";
 
 const HELIUS_MAINNET_URL = "https://mainnet.helius-rpc.com";
 const ORCA_STATS_URL = "https://api.mainnet.orca.so/v1/whirlpool/list";
@@ -78,7 +80,8 @@ function bn(value: string | number | bigint): BN {
 function getConnection(): Connection {
   const apiKey = process.env.HELIUS_API_KEY;
   if (!apiKey) throw new Error("HELIUS_API_KEY is not set");
-  return new Connection(`${HELIUS_MAINNET_URL}/?api-key=${apiKey}`, "confirmed");
+  // B1: SDK の RPC read も Helius の列 (同時実行数 / 間隔) に並べ、usage に数える
+  return new Connection(`${HELIUS_MAINNET_URL}/?api-key=${apiKey}`, { commitment: "confirmed", fetch: heliusRpcFetch });
 }
 
 /** 1% slippage (increase / decrease quote 共通、boot 検証値) */
@@ -106,6 +109,46 @@ function ctxAndClient(user: PublicKey) {
     orca.ORCA_WHIRLPOOL_PROGRAM_ID
   );
   return { ctx, client: orca.buildWhirlpoolClient(ctx) };
+}
+
+/**
+ * B2: 共有 pool cache (下の readPoolCache) の miss を読む read-only context は module で 1 つ。
+ * wallet stub は default owner/funder の解決にしか使われないので user に依らない。
+ * HELIUS_API_KEY が変わったら作り直す (test / key rotation)。
+ *
+ * **positions の読みには使わない**: SDK の SimpleAccountFetcher (common-sdk 0.7) の cache は
+ * set のみで evict しない Map で、getAllPositionAccountsByOwner は IGNORE_CACHE でも候補 position
+ * PDA を全部書き込む。共有すると問い合わせた全 wallet の口座が process 寿命で溜まる (multi-user BFF)。
+ * pool の読みが書くのは ORCA_MARKETS の pool と付随口座だけなので有界。
+ * positions / deposit / withdraw は呼び出しごとの context (= 呼び出し後に GC される fetcher)
+ */
+let readCtx: { apiKey: string; value: ReturnType<typeof ctxAndClient> } | null = null;
+function readOnlyCtxAndClient(): ReturnType<typeof ctxAndClient> {
+  const apiKey = process.env.HELIUS_API_KEY ?? "";
+  if (!readCtx || readCtx.apiKey !== apiKey) {
+    readCtx = { apiKey, value: ctxAndClient(PublicKey.default) };
+  }
+  return readCtx.value;
+}
+
+type OrcaWhirlpool = Awaited<ReturnType<ReturnType<typeof ctxAndClient>["client"]["getPool"]>>;
+
+/**
+ * B2: positions 表示用の pool (sqrtPrice 等) を全 user で共有 (30 秒、同時 miss は 1 回の取得に合流)。
+ * 我々の miss では SDK 側 fetcher cache を使わず読む (IGNORE_CACHE — cache を二重にしない)。
+ * deposit / withdraw の tx build は live の getPool のまま
+ */
+const readPoolCache = new TtlCache<OrcaWhirlpool>({
+  name: "orca.pool",
+  ttlMs: 30_000,
+  maxEntries: 20,
+  now: () => Date.now(),
+});
+
+function getReadPool(poolAddress: string): Promise<OrcaWhirlpool> {
+  return readPoolCache.getOrLoad(poolAddress, () =>
+    readOnlyCtxAndClient().client.getPool(poolAddress, getOrca().IGNORE_CACHE)
+  );
 }
 
 // ── deposit (zap-in) ─────────────────────────────────────────────────────────
@@ -210,7 +253,9 @@ export async function fetchOrcaPositions(
 ): Promise<OrcaRawPosition[]> {
   const orca = getOrca();
   const user = new PublicKey(wallet);
-  const { ctx, client } = ctxAndClient(user);
+  // 呼び出しごとの context: fetcher cache に溜まる position 口座を呼び出しと一緒に捨てる
+  // (共有 context だと wallet ごとの口座が evict されず残る — readOnlyCtxAndClient の注記)
+  const { ctx } = ctxAndClient(user);
   const map = await orca.getAllPositionAccountsByOwner({
     ctx,
     owner: user,
@@ -228,7 +273,7 @@ export async function fetchOrcaPositions(
       ([, pos]) => pos.whirlpool.toBase58() === market.pool_address
     );
     if (hits.length === 0) continue;
-    const pool = await client.getPool(market.pool_address);
+    const pool = await getReadPool(market.pool_address);
     const data = pool.getData();
     for (const [address, pos] of hits) {
       const amounts = orca.PoolUtil.getTokenAmountsFromLiquidity(

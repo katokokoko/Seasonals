@@ -8,6 +8,10 @@
  * 経由で確認する。
  */
 
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import type { FastifyInstance } from "fastify";
 
 import {
@@ -31,6 +35,8 @@ import {
   normalizeJup8DecimalUsd,
 } from "./server";
 import type { HeliusEnhancedTx } from "./clients/helius-tx";
+import { _solanaHistoryInputsStoreForTest } from "./server";
+import { INPUTS_FILE_PREFIX } from "./portfolio/inputs-store";
 
 let app: FastifyInstance;
 
@@ -216,6 +222,16 @@ describe("GET /approval-tokens/:tokenId", () => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe("POST /push-tokens", () => {
+  // EXPO_PUSH_ENABLED=true の時だけ受け付ける (未設定の 503 は public-guards.test.ts)
+  const savedPush = process.env.EXPO_PUSH_ENABLED;
+  beforeEach(() => {
+    process.env.EXPO_PUSH_ENABLED = "true";
+  });
+  afterEach(() => {
+    if (savedPush === undefined) delete process.env.EXPO_PUSH_ENABLED;
+    else process.env.EXPO_PUSH_ENABLED = savedPush;
+  });
+
   it("有効な token は 200 + registered_at", async () => {
     const res = await app.inject({
       method: "POST",
@@ -570,5 +586,45 @@ describe("Phase 8.70 — jlSharePriceOverrides / DAS 価格の上書き", () => 
     expect(legacy.find((p) => p.asset_symbol === "jlUSDC")!.unit_price_usd).toBe(
       "1.08643570"
     );
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Phase C / review #40: shutdown で history 入力の保留分を書き切る
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("app.close() flushes the history inputs store (onClose hook)", () => {
+  const savedDir = process.env.SEASONALS_DATA_DIR;
+  let dir: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "seasonals-close-"));
+    process.env.SEASONALS_DATA_DIR = dir;
+  });
+
+  afterEach(() => {
+    if (savedDir === undefined) delete process.env.SEASONALS_DATA_DIR;
+    else process.env.SEASONALS_DATA_DIR = savedDir;
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("writes the throttled (pending) state before close resolves", async () => {
+    const own = await buildServer({ logger: false });
+    const store = _solanaHistoryInputsStoreForTest();
+    const wallet = "6QGJNXnCjhYkKgPpDm7qRzxBKCj9KugUL2LDHc8sGUUM";
+    const base = {
+      current: new Map<string, bigint>(),
+      assets: [],
+      deltas: [{ timestamp: 1, mint: "So11111111111111111111111111111111111111112", amount: -5000n }],
+      oldestSeen: 1,
+      fetchedDays: 30,
+      complete: true,
+    };
+    store.persist(wallet, { ...base, newestSignature: "FIRST" });
+    store.persist(wallet, { ...base, newestSignature: "PENDING" }); // 30s 以内 = 間引かれて保留
+    await own.close();
+    const file = join(dir, `${INPUTS_FILE_PREFIX}${wallet}.json`);
+    expect(existsSync(file)).toBe(true);
+    expect(JSON.parse(readFileSync(file, "utf8")).newestSignature).toBe("PENDING");
   });
 });

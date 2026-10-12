@@ -1,10 +1,10 @@
 /** Week view: 7 列、各日の event を時刻順に縦積み */
 import { dayKey, deriveTimelineStatus, displayStatus, sortTimeline } from "@workspace/lib/derive/timeline";
 import type { TimelineEvent } from "@workspace/lib/types";
-import { STATUS_COLOR } from "../styles/tokens";
-import { Droplet } from "../timeline/Droplet";
-import { shapeForKind } from "../timeline/labels";
-import { fmtTime } from "../ui/format";
+import { EventMarker } from "../timeline/EventMarker";
+import { CLASS_LABEL } from "../timeline/labels";
+import { fmtEventTime } from "../ui/format";
+import { ProtocolBadge, brandStyle } from "../ui/ProtocolBadge";
 
 export function WeekView({
   start,
@@ -40,13 +40,18 @@ export function WeekView({
               {list.map((e) => {
                 const st = displayStatus(e, deriveTimelineStatus(e, now));
                 return (
-                  <button key={e.id} type="button" className={`week-event class-${e.class}`} onClick={(ev) => onEvent(e.id, ev.currentTarget)}>
+                  <button key={e.id} type="button" className={`week-event brand-accent class-${e.class}`}
+                    style={brandStyle(e.protocol)}
+                    onClick={(ev) => onEvent(e.id, ev.currentTarget)}>
                     <span className="week-event-time">
-                      <Droplet shape={shapeForKind(e.kind, e.class)} color={STATUS_COLOR[st]} size={10} />
-                      {e.at ? `${e.atApprox ? "≈" : ""}${fmtTime(new Date(e.at))}` : ""}
+                      <EventMarker event={e} status={st} size={10} />
+                      {fmtEventTime(e) ?? ""}
                     </span>
                     <span className="week-event-title">{e.title}</span>
-                    <span className="muted small">{e.protocolName}</span>
+                    <span className="muted small brand-inline">
+                      <ProtocolBadge id={e.protocol} name={e.protocolName} size={14} />
+                      <span className="cell-ellipsis">{e.protocolName ?? CLASS_LABEL[e.class]}</span>
+                    </span>
                   </button>
                 );
               })}

@@ -1,15 +1,34 @@
 /**
  * TanStack Query hooks (server state は必ずここ経由、CLAUDE.md §5)。
  *
- * useTimeline(): 公開イベント + 閲覧中 address のイベントを 1 本の TimelineEvent[] に
- * merge する (Calendar / Timeline / 詳細カード / Dashboard の共通 source)。
+ * useTimeline(): 公開イベント + 閲覧中 address のイベント + ユーザーが手入力した予定
+ * (custom plan、localStorage) を 1 本の TimelineEvent[] に merge する
+ * (Calendar / Timeline / 詳細カード / Dashboard の共通 source)。
  * 部分失敗は source ごとの状態として返し、架空データで埋めない。
  */
-import { useQueries, useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useQueries, useQuery } from "@tanstack/react-query";
 import { useMemo } from "react";
-import { fromUnifiedTimeEventDTO, mergeTimelineEvents, sortTimeline } from "@workspace/lib/derive/timeline";
-import type { TimelineEvent, TimelineEventsResponse } from "@workspace/lib/types";
-import { useActiveAddresses } from "../state/session";
+import { fromCustomEvent, fromUnifiedTimeEventDTO, mergeTimelineEvents, sortTimeline } from "@workspace/lib/derive/timeline";
+import { allEarnPositions, heldPoolKeys } from "@workspace/lib/derive/earn-positions";
+import { oracleRefetchInterval } from "@workspace/lib/derive/oracle-gate";
+import { rangeToDays, type RangeKey } from "@workspace/lib/derive/portfolio";
+import type {
+  EarnPositionsResponse,
+  EarnPosition,
+  EthAgentProposal,
+  EthProposalListResponse,
+  MenuHolding,
+  MenuHoldingsResponse,
+  MenuProduct,
+  PortfolioHistoryResponse,
+  PortfolioHoldingsResponse,
+  ProtocolMenuEntry,
+  TimelineEvent,
+  TimelineEventsResponse,
+} from "@workspace/lib/types";
+import { useActiveAddresses, type ActiveAddress } from "../state/session";
+import { useCustomEvents } from "../state/customEvents";
+import { AgentPlanStatus, type AgentPlan } from "@workspace/lib/types";
 import { api, ApiError } from "./api";
 import { shortAddress } from "../ui/format";
 
@@ -19,7 +38,20 @@ export const queryKeys = {
   solEvents: (a: string) => ["sol", "events", a] as const,
   menu: ["menu-listings"] as const,
   ethStatus: ["eth", "status"] as const,
+  ethHoldings: (a: string) => ["eth", "holdings", a.toLowerCase()] as const,
+  solEarn: (a: string) => ["sol", "earn", a] as const,
+  portfolioHistory: (a: ActiveAddress, days: number) => ["portfolio", "history", a.chain, addressKey(a), days] as const,
+  portfolioHoldings: (a: ActiveAddress) => ["portfolio", "holdings", a.chain, addressKey(a)] as const,
+  ethAgentProposals: (a: string) => ["eth", "agent-proposals", a.toLowerCase()] as const,
+  solPositions: (a: string) => ["sol", "positions", a] as const,
+  oracleStatus: (mint: string) => ["oracle-status", mint] as const,
+  health: ["health"] as const,
 };
+
+/** EVM address は大小文字を区別しない (Solana の base58 は区別する) */
+function addressKey(a: Pick<ActiveAddress, "chain" | "address">): string {
+  return a.chain === "ethereum" ? a.address.toLowerCase() : a.address;
+}
 
 export interface SourceState {
   key: string;
@@ -39,6 +71,11 @@ export interface TimelineData {
   hasWallet: boolean;
 }
 
+/** Timeline の部分失敗時の再取得間隔: 15 秒から倍々、上限 5 分 (n = これまでの取得成功回数) */
+export function timelineRetryMs(n: number): number {
+  return Math.min(15_000 * 2 ** Math.max(0, n - 1), 5 * 60_000);
+}
+
 function errorText(e: unknown): string {
   if (e instanceof ApiError) return e.status === 404 ? "Not available on this server yet." : e.message;
   return e instanceof Error ? e.message : "Unknown error";
@@ -46,6 +83,7 @@ function errorText(e: unknown): string {
 
 export function useTimeline(): TimelineData {
   const active = useActiveAddresses();
+  const customEvents = useCustomEvents((s) => s.events);
 
   const specs = [
     {
@@ -83,16 +121,23 @@ export function useTimeline(): TimelineData {
       queryFn: s.queryFn,
       staleTime: 60_000,
       retry: (n: number, e: unknown) => !(e instanceof ApiError && e.status === 404) && n < 2,
-      // 一部 source が未完了 / 失敗 (CCA bid の background scan、429 等) なら 15 秒後に再取得
-      refetchInterval: (q: { state: { data?: TimelineEventsResponse } }) => (q.state.data?.sources.some((x) => !x.ok) ? 15_000 : false),
+      // 一部 source が未完了 / 失敗 (CCA bid の background scan、429 等) なら再取得。
+      // 間隔は 15 → 30 → 60 → 120 秒 … 上限 5 分の backoff (失敗が続くと Infura credit を浪費するため)
+      refetchInterval: (q: { state: { data?: TimelineEventsResponse; dataUpdateCount: number } }) =>
+        q.state.data?.sources.some((x) => !x.ok) ? timelineRetryMs(q.state.dataUpdateCount) : false,
     })),
   });
 
   const dataKey = results.map((r) => r.dataUpdatedAt).join(",");
   const events = useMemo(
-    () => sortTimeline(mergeTimelineEvents(...results.map((r) => r.data?.events ?? []))),
+    () => {
+      const observedAt = new Date().toISOString();
+      return sortTimeline(
+        mergeTimelineEvents(...results.map((r) => r.data?.events ?? []), customEvents.map((c) => fromCustomEvent(c, observedAt)))
+      );
+    },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [dataKey]
+    [dataKey, customEvents]
   );
 
   const sources: SourceState[] = specs.map((s, i) => {
@@ -126,4 +171,288 @@ export function useEthMenu() {
 
 export function useEthStatus() {
   return useQuery({ queryKey: queryKeys.ethStatus, queryFn: api.ethStatus, staleTime: 30_000, retry: false });
+}
+
+export interface AgentProposalsData {
+  proposals: EthAgentProposal[];
+  isLoading: boolean;
+  /** 閲覧中の Ethereum address が 1 つでもあるか */
+  hasAddress: boolean;
+  error?: string;
+}
+
+/**
+ * Agent が提出したリバランス案 (閲覧中の Ethereum address すべて)。
+ * 承認待ち / 実行中がある間は 5 秒、それ以外も 15 秒ごとに再取得する
+ * (Agent の新しい提出やチャット承認が、ページを触らなくても反映されるように)
+ */
+export function useAgentProposals(): AgentProposalsData {
+  const eth = useActiveAddresses().filter((a) => a.chain === "ethereum");
+  const results = useQueries({
+    queries: eth.map((a) => ({
+      queryKey: queryKeys.ethAgentProposals(a.address),
+      queryFn: () => api.ethAgentProposals(a.address),
+      staleTime: 5_000,
+      retry: 1,
+      refetchInterval: (q: { state: { data?: EthProposalListResponse } }) =>
+        q.state.data?.proposals.some((p) => p.status === "pending" || p.status === "executing") ? 5_000 : 15_000,
+    })),
+  });
+  const proposals = results
+    .flatMap((r) => r.data?.proposals ?? [])
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  const failed = results.find((r) => r.isError);
+  return {
+    proposals,
+    isLoading: results.some((r) => r.isLoading),
+    hasAddress: eth.length > 0,
+    ...(failed ? { error: errorText(failed.error) } : {}),
+  };
+}
+
+export interface MenuHoldingsData {
+  /** watch / 接続中の address が 1 つでもあるか (無ければトグルは無効) */
+  hasAddress: boolean;
+  isLoading: boolean;
+  /** 取得に失敗した source (address + 種類)。失敗分は「保有なし」とみなさない */
+  failed: string[];
+  /** Ethereum: productId → 各 address の保有 */
+  eth: Map<string, MenuHolding[]>;
+  /** Solana: `${protocol_id}:${pool_id}` → 各 wallet の position */
+  sol: Map<string, EarnPosition[]>;
+  /** 保有しているが Menu の一覧に無い Ethereum 商品 */
+  extraProducts: MenuProduct[];
+  /** Ethereum address ごとの応答 (deposit / withdraw パネルの残高・Max 用) */
+  ethByAddress: Map<string, MenuHoldingsResponse>;
+  /** Solana address ごとの /positions/earn (withdraw は接続 wallet の position から組む) */
+  solByAddress: Map<string, EarnPositionsResponse>;
+}
+
+/**
+ * Menu の「Deposited only」用: 閲覧中 address すべての保有をまとめる。
+ * Ethereum は BFF /eth/holdings (on-chain 残高)、Solana は既存の /positions/earn を
+ * lib の heldPoolKeys で menu の pool_id に対応付ける (mobile MenuDrawer と同じ規則)。
+ */
+export function useMenuHoldings(listings: ProtocolMenuEntry[] | undefined): MenuHoldingsData {
+  const active = useActiveAddresses();
+  const eth = active.filter((a) => a.chain === "ethereum");
+  const sol = active.filter((a) => a.chain === "solana");
+  const ethResults = useQueries({
+    queries: eth.map((a) => ({ queryKey: queryKeys.ethHoldings(a.address), queryFn: () => api.ethHoldings(a.address), staleTime: 60_000, retry: 1 })),
+  });
+  const solResults = useQueries({
+    queries: sol.map((a) => ({ queryKey: queryKeys.solEarn(a.address), queryFn: () => api.solanaEarnPositions(a.address), staleTime: 60_000, retry: 1 })),
+  });
+  // 依存配列の長さが address 数で変わるため useMemo は使わない (集計は軽い)
+  {
+    const failed: string[] = [];
+    const ethMap = new Map<string, MenuHolding[]>();
+    const extra = new Map<string, MenuProduct>();
+    const ethByAddress = new Map<string, MenuHoldingsResponse>();
+    ethResults.forEach((r, i) => {
+      const label = `Ethereum ${shortAddress(eth[i]!.address)}`;
+      if (r.isError) failed.push(label);
+      if (!r.data) return;
+      ethByAddress.set(eth[i]!.address, r.data);
+      r.data.failed.forEach((f) => failed.push(`${label} (${f})`));
+      for (const h of r.data.holdings) ethMap.set(h.productId, [...(ethMap.get(h.productId) ?? []), h]);
+      for (const p of r.data.extraProducts) extra.set(p.id, p);
+    });
+    solResults.forEach((r, i) => {
+      if (r.isError) failed.push(`Solana ${shortAddress(sol[i]!.address)}`);
+    });
+    const earns = solResults.flatMap((r) => (r.data ? [r.data] : []));
+    const solByAddress = new Map<string, EarnPositionsResponse>();
+    solResults.forEach((r, i) => {
+      if (r.data) solByAddress.set(sol[i]!.address, r.data);
+    });
+    return {
+      hasAddress: active.length > 0,
+      isLoading: [...ethResults, ...solResults].some((r) => r.isPending),
+      failed,
+      eth: ethMap,
+      sol: listings ? heldPoolKeys(listings, earns) : new Map(),
+      extraProducts: [...extra.values()],
+      ethByAddress,
+      solByAddress,
+    };
+  }
+}
+
+/** 1 address 分の portfolio query の状態 (失敗を隠さず、合算から外したことを示すため) */
+export interface PortfolioSourceResult<T> {
+  address: ActiveAddress;
+  data: T | undefined;
+  isFetching: boolean;
+  isPending: boolean;
+  error: string | null;
+}
+
+// 履歴は BFF 側も 5 分 cache + SWR (8.83)。mobile の usePortfolioHistory と同じ鮮度
+const PORTFOLIO_STALE_MS = 5 * 60_000;
+// 503 は BFF が上流失敗を返したもの (BFF 側で SWR 済み、key 未設定は直らない)。
+// 再試行するのは BFF に届かなかった時だけ
+const portfolioRetry = (n: number, e: unknown) => e instanceof ApiError && e.status === 0 && n < 1;
+
+/**
+ * 閲覧中の全 address の評価額履歴 (chain ごとに endpoint を振り分け)。
+ * range を切り替えても前の系列を出したまま取りに行く (keepPreviousData)。
+ */
+export function usePortfolioHistories(range: RangeKey): PortfolioSourceResult<PortfolioHistoryResponse>[] {
+  const active = useActiveAddresses();
+  const days = rangeToDays(range);
+  const results = useQueries({
+    queries: active.map((a) => ({
+      queryKey: queryKeys.portfolioHistory(a, days),
+      queryFn: () => api.portfolioHistory(a.chain, a.address, days),
+      staleTime: PORTFOLIO_STALE_MS,
+      placeholderData: keepPreviousData,
+      retry: portfolioRetry,
+    })),
+  });
+  return active.map((a, i) => toSourceResult(a, results[i]!));
+}
+
+/** 閲覧中の全 address の現在の保有 (Allocation donut / holdings 表) */
+export function usePortfolioHoldings(): PortfolioSourceResult<PortfolioHoldingsResponse>[] {
+  const active = useActiveAddresses();
+  const results = useQueries({
+    queries: active.map((a) => ({
+      queryKey: queryKeys.portfolioHoldings(a),
+      queryFn: () => api.portfolioHoldings(a.chain, a.address),
+      staleTime: PORTFOLIO_STALE_MS,
+      retry: portfolioRetry,
+    })),
+  });
+  return active.map((a, i) => toSourceResult(a, results[i]!));
+}
+
+function toSourceResult<T>(
+  address: ActiveAddress,
+  r: { data?: T; isFetching: boolean; isPending: boolean; isError: boolean; error: unknown }
+): PortfolioSourceResult<T> {
+  return {
+    address,
+    data: r.isError ? undefined : r.data,
+    isFetching: r.isFetching,
+    isPending: r.isPending,
+    error: r.isError ? errorText(r.error) : null,
+  };
+}
+
+// ── Solana 実行 (Menu / Calendar / Your Positions の deposit・withdraw) ──
+
+/** BFF の設定有無 (Solana は HELIUS_API_KEY が無いと tx を組めない)。値は返らない */
+export function useHealth() {
+  return useQuery({ queryKey: queryKeys.health, queryFn: api.health, staleTime: 60_000, retry: 1 });
+}
+
+/**
+ * §4.6 oracle gate (Pyth push → RedStone push、on-chain feed)。blocked の間だけ 15 秒おきに再確認 (Seeker 8.78 と同じ)。
+ * mint = null は gate 対象外 (registry 外の asset)
+ */
+export function useOracleStatus(mint: string | null) {
+  return useQuery({
+    queryKey: queryKeys.oracleStatus(mint ?? ""),
+    queryFn: () => api.oracleStatus(mint!),
+    enabled: Boolean(mint),
+    staleTime: 10_000,
+    retry: 1,
+    refetchInterval: (q) => oracleRefetchInterval(q.state.data),
+  });
+}
+
+/**
+ * deposit の残高 (smallest unit string)。`wallet_*` 行の current_amount (Seeker ActionModal 8.80 と同じ)。
+ * - 取得成功で行が無い = "0" (DAS は保有 token を全部返す)
+ * - 未取得 / 失敗 = null (不明。誤ブロックせず BFF の insufficient_balance に任せる)
+ */
+export function useSolanaWalletBalance(owner: string | null, asset: string | undefined): { balance: string | null; isLoading: boolean } {
+  const q = useQuery({
+    queryKey: queryKeys.solPositions(owner ?? ""),
+    queryFn: () => api.solanaPositions(owner!),
+    enabled: Boolean(owner) && Boolean(asset),
+    staleTime: 30_000,
+    retry: 1,
+  });
+  if (!owner || !asset) return { balance: null, isLoading: false };
+  if (!q.isSuccess) return { balance: null, isLoading: q.isPending };
+  const row = q.data.find((p) => p.asset_symbol === asset && p.protocol_id.startsWith("wallet_"));
+  return { balance: row ? row.current_amount : "0", isLoading: false };
+}
+
+export interface SolanaPositionRow {
+  address: string;
+  connected: boolean;
+  position: EarnPosition;
+}
+
+/** 閲覧中の全 Solana address の earn position (Menu の useMenuHoldings と cache を共有) */
+export function useSolanaEarnPositions(): {
+  rows: SolanaPositionRow[];
+  failed: string[];
+  isLoading: boolean;
+  hasAddress: boolean;
+} {
+  const sol = useActiveAddresses().filter((a) => a.chain === "solana");
+  const results = useQueries({
+    queries: sol.map((a) => ({ queryKey: queryKeys.solEarn(a.address), queryFn: () => api.solanaEarnPositions(a.address), staleTime: 60_000, retry: 1 })),
+  });
+  const rows: SolanaPositionRow[] = [];
+  const failed: string[] = [];
+  results.forEach((r, i) => {
+    const a = sol[i]!;
+    if (r.isError) failed.push(shortAddress(a.address));
+    for (const position of allEarnPositions(r.data)) rows.push({ address: a.address, connected: a.connected, position });
+  });
+  return { rows, failed, isLoading: results.some((r) => r.isPending), hasAddress: sol.length > 0 };
+}
+
+// ── Solana agent plan (MCP の Agent が作った plan の承認 inbox、/agent) ──
+
+/** 承認待ち / 承認済み / 署名中の plan がある間は速く取り直す */
+const LIVE_PLAN_STATUSES: ReadonlySet<string> = new Set([AgentPlanStatus.PendingUser, AgentPlanStatus.Approved, AgentPlanStatus.Executing]);
+
+export const solanaAgentPlansKey = (wallet: string) => ["sol", "agent-plans", wallet] as const;
+
+export interface SolanaAgentPlansData {
+  /** 新しい順。plan_id で重複を除いたもの */
+  plans: AgentPlan[];
+  isLoading: boolean;
+  /** 接続中 (watch ではない) の Solana wallet。署名できるのはこれだけ */
+  wallets: string[];
+  error?: string;
+}
+
+/**
+ * 接続中の Solana wallet ごとの agent plan (GET /agent-plans?wallet=)。watch 中の address は署名できないので対象外。
+ * 承認待ち / 実行中がある間は 5 秒、それ以外は 15 秒ごとに再取得 (useAgentProposals と同じ。MCP 側の新しい plan や
+ * Seeker での承認が、ページを触らなくても反映されるように)
+ */
+export function useSolanaAgentPlans(): SolanaAgentPlansData {
+  const wallets = useActiveAddresses()
+    .filter((a) => a.chain === "solana" && a.connected)
+    .map((a) => a.address);
+  const results = useQueries({
+    queries: wallets.map((w) => ({
+      queryKey: solanaAgentPlansKey(w),
+      queryFn: () => api.agentPlans(w),
+      staleTime: 5_000,
+      retry: 1,
+      refetchInterval: (q: { state: { data?: AgentPlan[] } }) =>
+        q.state.data?.some((p) => LIVE_PLAN_STATUSES.has(p.status)) ? 5_000 : 15_000,
+    })),
+  });
+  const seen = new Set<string>();
+  const plans = results
+    .flatMap((r) => r.data ?? [])
+    .filter((p) => (seen.has(p.plan_id) ? false : (seen.add(p.plan_id), true)))
+    .sort((a, b) => b.created_at.localeCompare(a.created_at));
+  const failed = results.find((r) => r.isError);
+  return {
+    plans,
+    isLoading: results.some((r) => r.isLoading),
+    wallets,
+    ...(failed ? { error: errorText(failed.error) } : {}),
+  };
 }

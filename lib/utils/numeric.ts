@@ -30,6 +30,12 @@ export const TOKEN_AMOUNT_REGEX = /^[0-9]+$/;
 export const USD_AMOUNT_REGEX = /^[0-9]+(\.[0-9]{1,8})?$/;
 
 /**
+ * **符号付き** token amount (smallest unit) — 残高の増減 (tx 差分 / balance change) 用。
+ * 整数のみ、先頭 "-" を許容、小数を拒否。API boundary の入力検証には使わない (それは TOKEN_AMOUNT_REGEX)
+ */
+export const SIGNED_TOKEN_AMOUNT_REGEX = /^-?[0-9]+$/;
+
+/**
  * token amount string が valid な smallest unit 表現か検証。
  * API boundary で使う (Core Service には parse 結果ではなく string を渡す)。
  */
@@ -97,6 +103,18 @@ export function toBigInt(amount: string): bigint {
 }
 
 /**
+ * **符号付き** smallest unit string ("-5000" / "9007199254740993") を bigint に変換。
+ * 上流の balance change (Helius `rawTokenAmount` / pre・post 差分 / 永続化した差分) のように
+ * 負になりうる値用。不正 (小数 / 空 / 非数字) は InvalidAmountError (toBigInt と同じ)。
+ */
+export function signedToBigInt(value: string): bigint {
+  if (typeof value !== "string" || !SIGNED_TOKEN_AMOUNT_REGEX.test(value)) {
+    throw new InvalidAmountError("token_amount", value);
+  }
+  return BigInt(value);
+}
+
+/**
  * bigint を smallest unit string に戻す (API response 直前に使用)。
  */
 export function fromBigInt(amount: bigint): string {
@@ -126,6 +144,27 @@ export function compareUsd8(a: string, b: string): -1 | 0 | 1 {
   const av = usd8ToBigInt(a);
   const bv = usd8ToBigInt(b);
   return av < bv ? -1 : av > bv ? 1 : 0;
+}
+
+/**
+ * **符号付き** USD 8-dec string ("-12.5" / "3.00000001") → scale-8 bigint。
+ * portfolio history の flow (入出金による増減) のように負になりうる値の合算用。
+ * 不正は InvalidAmountError。
+ */
+export function signedUsd8ToBigInt(value: string): bigint {
+  if (typeof value === "string" && value.startsWith("-")) {
+    return -usd8ToBigInt(value.slice(1));
+  }
+  return usd8ToBigInt(value);
+}
+
+/** scale-8 bigint → USD 8-dec string (符号付き、常に小数 8 桁)。 */
+export function bigIntToUsd8(scaled: bigint): string {
+  const neg = scaled < 0n;
+  const v = neg ? -scaled : scaled;
+  const intPart = v / 100_000_000n;
+  const frac = (v % 100_000_000n).toString().padStart(8, "0");
+  return `${neg ? "-" : ""}${intPart.toString()}.${frac}`;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

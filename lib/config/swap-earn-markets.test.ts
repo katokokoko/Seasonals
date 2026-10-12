@@ -49,6 +49,12 @@ describe("SWAP_EARN_MARKETS 整合性", () => {
     expect(ids.has("sanctum")).toBe(true);
     expect(ids.has("perena")).toBe(true);
   });
+
+  it("Perena USD* は 2026-10 の Star V2 新 mint (旧 Numéraire LP は registry に無い = withdraw route を解決しない)", () => {
+    const perena = SWAP_EARN_MARKETS.find((m) => m.protocol_id === "perena")!;
+    expect(perena.share_mint).toBe("star9agSpjiFe3M49B3RniVU4CMBBEK3Qnaqn3RGiFM");
+    expect(findMarketByShareMint("BenJy1n3WTx9mTjEvy63e8Q1j4RqUc6E4VBMz3ir4Wo6")).toBeUndefined();
+  });
 });
 
 describe("jupiterLendUnderlyingToShare (BFF back-compat 導出)", () => {
