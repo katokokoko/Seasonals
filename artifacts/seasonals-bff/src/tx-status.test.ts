@@ -1,10 +1,11 @@
 /**
  * GET /tx/status — Web (Wallet Standard sign-only) が /tx/submit 後の着地を確かめる read-only route。
- * Helius の getSignatureStatuses を fetch spy で差し替え、要約の対応と入力検証を見る。
+ * Helius の getSignatureStatuses / getBlockHeight を fetch spy で差し替え、要約の対応と入力検証を見る。
+ * sendTransactionViaHelius の maxRetries (既定では送らない) もここで見る。
  */
 import type { FastifyInstance } from "fastify";
 import { buildServer } from "./server";
-import { _setSleepForTest } from "./clients/helius-rpc";
+import { _setSleepForTest, sendTransactionViaHelius } from "./clients/helius-rpc";
 
 const SIG = "5".repeat(87);
 let app: FastifyInstance;
@@ -23,10 +24,30 @@ afterEach(async () => {
   else process.env.HELIUS_API_KEY = savedKey;
 });
 
-function mockRpc(value: unknown) {
-  return jest
-    .spyOn(global, "fetch")
-    .mockResolvedValue(new Response(JSON.stringify({ jsonrpc: "2.0", id: "x", result: { value: [value] } }), { status: 200 }));
+const HEIGHT = 300_000_123;
+
+function rpcBody(init: RequestInit | undefined): { method: string; params: unknown[] } {
+  return JSON.parse(String(init?.body));
+}
+
+/**
+ * getSignatureStatuses と getBlockHeight は並行で飛ぶので method で応答を振り分ける。
+ * height が "fail" なら getBlockHeight だけ 500 を返す (status は成功させる)
+ */
+function mockRpc(value: unknown, height: number | "fail" = HEIGHT) {
+  return jest.spyOn(global, "fetch").mockImplementation(async (_input, init) => {
+    const { method } = rpcBody(init);
+    if (method === "getBlockHeight") {
+      if (height === "fail") return new Response("boom", { status: 500 });
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: "x", result: height }), { status: 200 });
+    }
+    return new Response(JSON.stringify({ jsonrpc: "2.0", id: "x", result: { value: [value] } }), { status: 200 });
+  });
+}
+
+function statusCall(spy: jest.SpyInstance) {
+  const call = spy.mock.calls.find((c) => rpcBody(c[1] as RequestInit).method === "getSignatureStatuses");
+  return rpcBody(call![1] as RequestInit);
 }
 
 test("signature の形でなければ 400 で、RPC を呼ばない", async () => {
@@ -40,10 +61,8 @@ test("signature の形でなければ 400 で、RPC を呼ばない", async () =
 test("未着地 (null) は pending", async () => {
   const spy = mockRpc(null);
   const res = await app.inject({ method: "GET", url: `/tx/status?signature=${SIG}` });
-  expect(res.json()).toEqual({ signature: SIG, status: "pending", slot: null, err: null });
-  const body = JSON.parse(String((spy.mock.calls[0]![1] as RequestInit).body));
-  expect(body.method).toBe("getSignatureStatuses");
-  expect(body.params).toEqual([[SIG], { searchTransactionHistory: true }]);
+  expect(res.json()).toEqual({ signature: SIG, status: "pending", slot: null, err: null, blockHeight: HEIGHT });
+  expect(statusCall(spy).params).toEqual([[SIG], { searchTransactionHistory: true }]);
 });
 
 test("confirmationStatus をそのまま、err があれば failed", async () => {
@@ -53,12 +72,29 @@ test("confirmationStatus をそのまま、err があれば failed", async () =>
     status: "confirmed",
     slot: 123,
     err: null,
+    blockHeight: HEIGHT,
   });
   jest.restoreAllMocks();
   mockRpc({ slot: 124, err: { InstructionError: [0, { Custom: 6001 }] }, confirmationStatus: "confirmed" });
   const failed = (await app.inject({ method: "GET", url: `/tx/status?signature=${SIG}` })).json();
   expect(failed.status).toBe("failed");
   expect(failed.err).toContain("6001");
+});
+
+test("現在の block height を confirmed で並行して引き、blockHeight に載せる", async () => {
+  const spy = mockRpc(null);
+  const res = await app.inject({ method: "GET", url: `/tx/status?signature=${SIG}` });
+  expect(res.json().blockHeight).toBe(HEIGHT);
+  const heightCall = spy.mock.calls.find((c) => rpcBody(c[1] as RequestInit).method === "getBlockHeight");
+  expect(rpcBody(heightCall![1] as RequestInit).params).toEqual([{ commitment: "confirmed" }]);
+  expect(spy).toHaveBeenCalledTimes(2);
+});
+
+test("block height の取得失敗は blockHeight: null で、status はそのまま返す", async () => {
+  mockRpc({ slot: 125, err: null, confirmationStatus: "finalized" }, "fail");
+  const res = await app.inject({ method: "GET", url: `/tx/status?signature=${SIG}` });
+  expect(res.statusCode).toBe(200);
+  expect(res.json()).toEqual({ signature: SIG, status: "finalized", slot: 125, err: null, blockHeight: null });
 });
 
 test("RPC 失敗は 502 で、応答に key を含めない", async () => {
@@ -72,4 +108,31 @@ test("/health は Solana 実行可否を boolean だけで返す", async () => {
   const res = await app.inject({ method: "GET", url: "/health" });
   expect(res.json().solana).toEqual({ heliusConfigured: true, executionTarget: "mainnet" });
   expect(res.body).not.toContain("test-key");
+});
+
+describe("sendTransactionViaHelius の maxRetries", () => {
+  function mockSend() {
+    return jest
+      .spyOn(global, "fetch")
+      .mockImplementation(async () => new Response(JSON.stringify({ jsonrpc: "2.0", id: "x", result: SIG }), { status: 200 }));
+  }
+  function sendOpts(spy: jest.SpyInstance): Record<string, unknown> {
+    const body = rpcBody(spy.mock.calls[0]![1] as RequestInit);
+    expect(body.method).toBe("sendTransaction");
+    return body.params[1] as Record<string, unknown>;
+  }
+
+  test("既定では maxRetries を送らない (RPC node が blockhash 失効まで rebroadcast する)", async () => {
+    const spy = mockSend();
+    await expect(sendTransactionViaHelius("AAAA")).resolves.toBe(SIG);
+    const opts = sendOpts(spy);
+    expect(opts).not.toHaveProperty("maxRetries");
+    expect(opts).toMatchObject({ encoding: "base64", skipPreflight: false, preflightCommitment: "confirmed" });
+  });
+
+  test("明示した maxRetries はそのまま渡す", async () => {
+    const spy = mockSend();
+    await sendTransactionViaHelius("AAAA", { maxRetries: 5, skipPreflight: true });
+    expect(sendOpts(spy)).toMatchObject({ maxRetries: 5, skipPreflight: true, preflightCommitment: "confirmed" });
+  });
 });

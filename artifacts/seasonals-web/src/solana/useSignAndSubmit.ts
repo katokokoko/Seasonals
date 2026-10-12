@@ -5,13 +5,21 @@
  *   - 署名は 1 回の承認で全 tx (sign-only)。送信は BFF `/tx/submit` (Helius) が順番に行う
  *   - 2 本目以降は先行 tx 未 confirm でも preflight で落ちないよう skipPreflight
  *   - 安全側の拒否 (oracle_blocked / fair_value_blocked) は失敗ではなく declined (Seeker 8.74)
- * Web は wallet が送信後の状態を出さないので、`/tx/status` を引いて confirmed / failed まで見せる。
+ * Web は wallet が送信後の状態を出さないので、`/tx/status` を引いて confirmed / failed / expired まで見せる。
+ * 着地確認のループは lib `confirmSignatures` (Seeker と共通、same source of truth)。
  * Seasonals は秘密鍵を扱わない (CLAUDE.md §5)。
  */
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { SOLANA_DECLINED_CODES, type OracleBlockReason, type SolanaTxErrorCode, type TxConfirmationStatus } from "@workspace/lib/types";
+import { SOLANA_DECLINED_CODES, type OracleBlockReason, type SolanaTxErrorCode, type TxStatusResponse } from "@workspace/lib/types";
 import { oracleBlockLabel } from "@workspace/lib/derive/oracle-gate";
+import {
+  confirmSignatures,
+  describeConfirmOutcome,
+  TX_CONFIRM_DEFAULTS,
+  TxConfirmAbort,
+  type TrackedTx,
+} from "@workspace/lib/derive/tx-confirm";
 import { api, ApiError } from "../services/api";
 import { base64ToBytes, bytesToBase64 } from "../services/bytes";
 import { isSolanaUserRejection, signSolanaTransactions, SolanaWalletError } from "../services/solanaWallet";
@@ -32,12 +40,8 @@ export type SignPhase =
   | "cancelled"
   | "error";
 
-export interface SubmittedTx {
-  index: number;
-  signature: string;
-  status: "submitted" | TxConfirmationStatus;
-  err?: string | null;
-}
+/** 送信済 tx 1 本 (lib tx-confirm の TrackedTx そのもの) */
+export type SubmittedTx = TrackedTx;
 
 export interface SignState {
   phase: SignPhase;
@@ -57,7 +61,21 @@ export interface SignOptions {
   settleMs?: number;
 }
 
-const LANDED = new Set<SubmittedTx["status"]>(["confirmed", "finalized"]);
+/**
+ * builder の結果。`lastValidBlockHeight` (swap-earn 等が返す) があれば、現在高がそれを超えても
+ * 未着地の tx を「期限切れ (expired)」と確定できる。無ければ時間切れで submitted に落とす
+ */
+export type BuiltTxs = string[] | { txs: string[]; lastValidBlockHeight?: number | null };
+
+/** `/tx/status` を引く。旧 BFF (404) なら確認を続けても意味が無いので TxConfirmAbort */
+async function fetchStatus(signature: string): Promise<TxStatusResponse> {
+  try {
+    return await api.txStatus(signature);
+  } catch (e) {
+    if (e instanceof ApiError && e.status === 404) throw new TxConfirmAbort();
+    throw e;
+  }
+}
 
 function isBusy(p: SignPhase) {
   return p === "building" || p === "signing" || p === "submitting" || p === "confirming";
@@ -68,7 +86,7 @@ export function signPhaseBusy(p: SignPhase): boolean {
 }
 
 export function useSignAndSubmit(owner: string, opts: SignOptions = {}) {
-  const { pollMs = 2000, timeoutMs = 60_000, settleMs = 4000 } = opts;
+  const { pollMs = TX_CONFIRM_DEFAULTS.pollMs, timeoutMs = TX_CONFIRM_DEFAULTS.timeoutMs, settleMs = 4000 } = opts;
   const qc = useQueryClient();
   const [state, setState] = useState<SignState>(INITIAL);
   const alive = useRef(true);
@@ -92,7 +110,7 @@ export function useSignAndSubmit(owner: string, opts: SignOptions = {}) {
   }, [qc, owner]);
 
   const run = useCallback(
-    async (build: () => Promise<string[]>) => {
+    async (build: () => Promise<BuiltTxs>) => {
       if (isBusy(state.phase)) return;
       let stage: SignPhase = "building";
       const txs: SubmittedTx[] = [];
@@ -101,7 +119,9 @@ export function useSignAndSubmit(owner: string, opts: SignOptions = {}) {
       };
       setState({ ...INITIAL, phase: "building" });
       try {
-        const b64 = await build();
+        const built = await build();
+        const b64 = Array.isArray(built) ? built : built.txs;
+        const lastValidBlockHeight = Array.isArray(built) ? null : (built.lastValidBlockHeight ?? null);
         if (b64.length === 0) throw new Error("The server returned no transaction to sign.");
         stage = "signing";
         update({ phase: "signing", total: b64.length });
@@ -117,14 +137,19 @@ export function useSignAndSubmit(owner: string, opts: SignOptions = {}) {
 
         stage = "confirming";
         update({ phase: "confirming" });
-        const outcome = await confirmAll(txs, pollMs, timeoutMs, (next) => update({ txs: next }), () => alive.current);
-        const failed = txs.find((t) => t.status === "failed");
-        if (failed) {
-          update({
-            phase: "error",
-            code: "tx_failed",
-            message: `Transaction ${failed.index + 1} of ${txs.length} failed on-chain${failed.err ? `: ${failed.err}` : "."}`,
-          });
+        const outcome = await confirmSignatures(txs, {
+          fetchStatus,
+          lastValidBlockHeight,
+          pollMs,
+          timeoutMs,
+          onUpdate: (next) => update({ txs: next }),
+          isAlive: () => alive.current,
+        });
+        if (outcome === "failed") {
+          update({ phase: "error", code: "tx_failed", message: describeConfirmOutcome("failed", txs) });
+        } else if (outcome === "expired") {
+          // 期限切れ = もう取り込まれない (何も動いていない)。組み直して署名し直す
+          update({ phase: "error", code: "expired", message: describeConfirmOutcome("expired", txs) });
         } else {
           update({ phase: outcome === "landed" ? "success" : "submitted" });
         }
@@ -139,39 +164,6 @@ export function useSignAndSubmit(owner: string, opts: SignOptions = {}) {
 
   const reset = useCallback(() => setState(INITIAL), []);
   return { state, run, reset, busy: isBusy(state.phase) };
-}
-
-/** 全 tx が着地 (or 失敗) するまで /tx/status を引く。旧 BFF (404) なら確認をあきらめる */
-async function confirmAll(
-  txs: SubmittedTx[],
-  pollMs: number,
-  timeoutMs: number,
-  onUpdate: (txs: SubmittedTx[]) => void,
-  isAlive: () => boolean
-): Promise<"landed" | "unknown"> {
-  const deadline = Date.now() + timeoutMs;
-  while (isAlive() && Date.now() < deadline) {
-    const open = txs.filter((t) => !LANDED.has(t.status) && t.status !== "failed");
-    if (open.length === 0) return "landed";
-    try {
-      const results = await Promise.all(open.map((t) => api.txStatus(t.signature)));
-      results.forEach((r, i) => {
-        const t = open[i]!;
-        if (r.status !== "pending") {
-          t.status = r.status;
-          t.err = r.err;
-        }
-      });
-      onUpdate([...txs]);
-      if (txs.some((t) => t.status === "failed")) return "landed";
-    } catch (e) {
-      if (e instanceof ApiError && e.status === 404) return "unknown";
-      /* 一時的な失敗は次の poll で取り直す */
-    }
-    if (txs.every((t) => LANDED.has(t.status))) return "landed";
-    await new Promise((r) => setTimeout(r, pollMs));
-  }
-  return txs.every((t) => LANDED.has(t.status)) ? "landed" : "unknown";
 }
 
 function describeError(e: unknown, stage: SignPhase): Partial<SignState> {

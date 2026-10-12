@@ -35,7 +35,7 @@ export function buildUrl(): string {
 // 薄い wrapper で、request は heliusRpcFetch の列に並ぶ (同時実行数 / 間隔の制限 + 計数)。
 // - JSON-RPC `error` は即 throw (再試行しても結果は同じ)
 // - **sendTransactionViaHelius には使わない** — broadcast の自動再送は二重送信の
-//   余地を作る (再送は Helius 側の maxRetries に任せる)。列にも並べない (計数のみ)
+//   余地を作る (再送は RPC node 側の rebroadcast に任せる)。列にも並べない (計数のみ)
 
 export { HeliusRpcError, _setSleepForTest, fetchJsonWithRetry } from "./helius-limiter";
 
@@ -76,6 +76,12 @@ async function rpcReadWithRetry<T>(
 /**
  * base64-encoded signed transaction を Helius mainnet RPC で submit。
  * 成功すると base58 signature を返す。
+ *
+ * maxRetries は **呼び手が明示した時だけ** params に載せる。省略時の Solana RPC は
+ * blockhash が失効するか finalized になるまで leader へ rebroadcast し続ける。
+ * 以前は既定 3 で上限を掛けており、RPC 受理後に leader へ届かず drop する事故
+ * (Seeker の USDC → jlUSDC deposit、2026-10-13) の余地を広げていた。
+ * 着地の判定は呼び手が /tx/status の blockHeight と lastValidBlockHeight を比べて行う。
  */
 export async function sendTransactionViaHelius(
   signedTxBase64: string,
@@ -100,7 +106,8 @@ export async function sendTransactionViaHelius(
           {
             encoding: "base64",
             skipPreflight: opts.skipPreflight ?? false,
-            maxRetries: opts.maxRetries ?? 3,
+            // 省略 = RPC node が blockhash 失効まで rebroadcast (上の doc comment 参照)
+            ...(opts.maxRetries !== undefined ? { maxRetries: opts.maxRetries } : {}),
             preflightCommitment: "confirmed",
           },
         ],
@@ -163,19 +170,31 @@ export async function getMultipleAccountsBase64(pubkeys: string[]): Promise<Arra
 
 /**
  * getSignatureStatuses を 1 件だけ引いて要約する。
- * null (未着地 / 期限切れ) は pending — 呼び手が時間で打ち切る
+ * null (未着地 / 期限切れ) は pending — 呼び手が時間で打ち切る。
+ *
+ * 現在の block height (confirmed) も並行で引いて `blockHeight` に載せる。呼び手は
+ * builder の lastValidBlockHeight と比べ、超えていれば「期限切れ (着地しない)」と
+ * 確定できる。height は最適化に過ぎないので、取れなければ null で status は返す
+ * (status 読み取りの失敗理由にしない)。両 call とも rpcReadWithRetry 経由で
+ * heliusRpcFetch の列に並び、usage にも method 別に計数される
  */
 export async function getSignatureStatus(signature: string): Promise<TxStatusResponse> {
-  const result = await rpcReadWithRetry<{
-    value?: Array<{ slot?: number; err?: unknown; confirmationStatus?: string | null } | null>;
-  }>("getSignatureStatuses", [[signature], { searchTransactionHistory: true }], { id: "seasonals-status" });
+  const [result, blockHeight] = await Promise.all([
+    rpcReadWithRetry<{
+      value?: Array<{ slot?: number; err?: unknown; confirmationStatus?: string | null } | null>;
+    }>("getSignatureStatuses", [[signature], { searchTransactionHistory: true }], { id: "seasonals-status" }),
+    rpcReadWithRetry<number>("getBlockHeight", [{ commitment: "confirmed" }], { id: "seasonals-status-height" }).then(
+      (h) => (typeof h === "number" && Number.isFinite(h) ? h : null),
+      () => null
+    ),
+  ]);
   const v = result?.value?.[0] ?? null;
-  if (!v) return { signature, status: "pending", slot: null, err: null };
+  if (!v) return { signature, status: "pending", slot: null, err: null, blockHeight };
   const slot = typeof v.slot === "number" ? v.slot : null;
-  if (v.err != null) return { signature, status: "failed", slot, err: JSON.stringify(v.err) };
+  if (v.err != null) return { signature, status: "failed", slot, err: JSON.stringify(v.err), blockHeight };
   const c = v.confirmationStatus;
   const status = c === "finalized" || c === "confirmed" || c === "processed" ? c : "processed";
-  return { signature, status, slot, err: null };
+  return { signature, status, slot, err: null, blockHeight };
 }
 
 // ── Phase 8.16: epoch info (LST 保有者向けの実 epoch 境界イベント用) ──────────

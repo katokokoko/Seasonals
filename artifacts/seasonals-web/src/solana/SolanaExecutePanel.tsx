@@ -5,6 +5,7 @@
  * - 金額は lib の amount-utils (toSmallestUnit 経由、§4.5) で smallest unit にする。Number は使わない
  * - route は lib resolveSolanaRoute。解決しなければ CTA を出さない (fail-closed、Seeker 8.37)
  * - 署名できるのは接続中の wallet の address だけ。watch 中の address は読み取りのみ
+ * - BFF が plans-only (`/health` の solana.executionTarget = "disabled") なら wallet を開く前に止める
  * - mainnet に実際に送る。送信は BFF /tx/submit (Helius)。Seasonals は秘密鍵を扱わない (CLAUDE.md §5)
  */
 import { useId, useMemo, useState } from "react";
@@ -20,7 +21,7 @@ import {
 import { resolveOracleMint } from "@workspace/lib/derive/oracle-gate";
 import { resolveSolanaRoute, UNSUPPORTED_MARKET_MESSAGE } from "@workspace/lib/derive/solana-action";
 import { useConnectedAddress } from "../state/session";
-import { useSolanaWalletBalance } from "../services/queries";
+import { useHealth, useSolanaWalletBalance } from "../services/queries";
 import { requestOpenWallet } from "../timeline/detailStore";
 import { shortAddress } from "../ui/format";
 import { buildSolanaTxs } from "./buildTx";
@@ -72,6 +73,9 @@ export function SolanaExecutePanel({
   const canSign = Boolean(owner) && owner === connected;
   const { balance } = useSolanaWalletBalance(isDeposit && canSign ? owner : null, action.asset);
   const sign = useSignAndSubmit(owner ?? "");
+  const health = useHealth();
+  /** 公開 BFF は plans-only。署名しても送れないので CTA ごと止める (旧 BFF は executionTarget 無し = 従来通り) */
+  const readOnly = health.data?.solana?.executionTarget === "disabled";
 
   const format = validateAmountInput(amount, unit.decimals);
   const limitError = (() => {
@@ -100,6 +104,11 @@ export function SolanaExecutePanel({
       </div>
       <h3>{title}</h3>
       {note && <p className="muted small">{note}</p>}
+      {route && readOnly && (
+        <p className="menu-warning small" role="alert">
+          This server is read-only (plans only). Deposits and withdrawals are disabled.
+        </p>
+      )}
 
       {!route ? (
         <p className="menu-warning small" role="alert">
@@ -167,8 +176,8 @@ export function SolanaExecutePanel({
                 <button
                   type="button"
                   className="btn btn-primary"
-                  disabled={!oracleOk || !valid || locked}
-                  onClick={() => format.ok && route && sign.run(() => buildSolanaTxs(route, owner!, format.smallest))}
+                  disabled={readOnly || !oracleOk || !valid || locked}
+                  onClick={() => !readOnly && format.ok && route && sign.run(() => buildSolanaTxs(route, owner!, format.smallest))}
                 >
                   {sign.busy ? "Working…" : "Sign in wallet"}
                 </button>

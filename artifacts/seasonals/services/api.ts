@@ -69,6 +69,12 @@ export type {
   SaveTxResponse,
 } from "@workspace/lib/types";
 import type {
+  HealthResponse,
+  TxStatusResponse,
+} from "@workspace/lib/types";
+// 2026-10-13: /tx/status が無い旧 BFF (404) は着地確認を打ち切る合図 (lib/derive/tx-confirm.ts)
+import { TxConfirmAbort } from "@workspace/lib/derive/tx-confirm";
+import type {
   SwapEarnTxResponse as JupiterDepositTxResponse,
   KaminoTxResponse,
   KaminoVaultTxResponse,
@@ -517,6 +523,48 @@ export async function submitSignedTx(
     );
   }
   return (await res.json()) as { signature: string };
+}
+
+/**
+ * 2026-10-13: 送信済 signature の着地状況 (`GET /tx/status`)。
+ * `/tx/submit` の signature は RPC **受理** でしかなく、blockhash 期限内に取り込まれず
+ * dropped になり得る (Seeker で「success 表示 → 何も起きない」が実際に起きた)。
+ * ActionModal は lib `confirmSignatures` の fetchStatus としてこれを poll し、着地を
+ * 見届けてから成功を名乗る (web `useSignAndSubmit.ts` と同じ)。
+ * - 404 (endpoint の無い旧 BFF): `TxConfirmAbort` を投げる → outcome "unknown"
+ * - 他の non-2xx: 隣の builder と同じく `BffError` (一時的失敗は confirm 側が次 poll で取り直す)
+ * fixture path は持たない (test は spy で返す。偽の「着地」を既定にしない)
+ */
+export async function getTxStatus(
+  signature: string,
+  signal?: AbortSignal
+): Promise<TxStatusResponse> {
+  const url = `${BFF_BASE_URL}/tx/status?signature=${encodeURIComponent(signature)}`;
+  const res = await (signal ? fetch(url, { signal }) : fetch(url));
+  if (res.status === 404) throw new TxConfirmAbort();
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as {
+      error?: string;
+      message?: string;
+    };
+    throw new BffError(
+      body.message ?? body.error ?? `HTTP ${res.status} ${res.statusText}`,
+      body.error
+    );
+  }
+  return (await res.json()) as TxStatusResponse;
+}
+
+/**
+ * 2026-10-13: `GET /health` — BFF の実行可否 (`solana.executionTarget`)。
+ * 公開 BFF (`SOLANA_EXECUTION_TARGET=disabled`) は全 `*-tx` route が 409
+ * `action_not_available` なので、client は wallet を開く **前** に CTA を止める。
+ * test 環境では network を呼ばず、`solana` の無い旧 BFF 相当 (= gate しない) を返す
+ * (`getOracleStatus` と同じ fixture 方針)。
+ */
+export async function getHealth(signal?: AbortSignal): Promise<HealthResponse> {
+  if (IS_TEST_ENV) return { status: "ok" };
+  return httpGetJson<HealthResponse>("/health", signal);
 }
 
 

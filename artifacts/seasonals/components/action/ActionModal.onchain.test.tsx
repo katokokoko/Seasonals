@@ -5,6 +5,10 @@
  *   - positions / earn-positions / wallet-time-events / portfolio-history (8.8.2 は history が漏れていた)
  *   - 他 wallet の保持 cache・fixture key・SKR には触らない
  * jest は USE_ONCHAIN=false なのでこのファイルだけ config を mock し、署名 / 送信 / tx 構築は stub。
+ *
+ * 2026-10-13: submit 後は `/tx/status` で着地を確認してから success (RPC 受理 ≠ 着地)。
+ * getTxStatus は即 resolve する mock にして timer を使わずに landed / failed / expired を見る。
+ * `/health` の executionTarget = "disabled" (公開 plans-only BFF) は署名前に止まることも見る。
  */
 jest.mock("../../services/config", () => ({
   ...jest.requireActual("../../services/config"),
@@ -24,7 +28,7 @@ jest.mock("../../services/mwa", () => ({
   DEFAULT_IDENTITY: { name: "Seasonals", uri: "https://x", icon: "i" },
 }));
 jest.mock("../../services/solana-tx", () => ({
-  buildSolanaTxs: jest.fn(async () => ["AAAA"]),
+  buildSolanaTxs: jest.fn(async () => ({ txs: ["AAAA"], lastValidBlockHeight: null })),
 }));
 
 import React, { type ReactNode } from "react";
@@ -33,7 +37,14 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react-nativ
 import { SafeAreaProvider } from "react-native-safe-area-context";
 
 import { fixtureAgentPlanSimulated } from "@workspace/lib/__fixtures__";
-import type { AgentPlan, OracleResult, Position } from "@workspace/lib/types";
+import type {
+  AgentPlan,
+  OracleResult,
+  Position,
+  TxStatusResponse,
+} from "@workspace/lib/types";
+
+import { TxConfirmAbort } from "@workspace/lib/derive/tx-confirm";
 
 import { ActionModal } from "./ActionModal";
 import * as api from "../../services/api";
@@ -95,6 +106,13 @@ describe("ActionModal — tx 後の invalidate は署名した wallet だけ", (
     jest.spyOn(api, "getPositions").mockResolvedValue([USDC_IN_WALLET]);
     jest.spyOn(api, "getKaminoReserves").mockResolvedValue([]);
     jest.spyOn(api, "submitSignedTx").mockResolvedValue({ signature: "sig_1" } as never);
+    // 2026-10-13: 着地確認 (1 回目の poll で confirmed)
+    jest.spyOn(api, "getTxStatus").mockResolvedValue({
+      signature: "sig_1",
+      status: "confirmed",
+      slot: 1,
+      err: null,
+    });
     useWalletStore.setState({
       authorization: {
         address: A,
@@ -297,6 +315,152 @@ describe("ActionModal — 公開 BFF の 409 action_not_available", () => {
     fireEvent.press(screen.getByTestId("am-review-execute"));
     await waitFor(() => expect(screen.getByText("Stopped before signing")).toBeTruthy());
     expect(signTransactions).not.toHaveBeenCalled();
+    qc.clear();
+  });
+});
+
+// ─── 2026-10-13: 着地確認 (RPC 受理では success にしない) ─────────────────────
+
+function connectA() {
+  useWalletStore.setState({
+    authorization: {
+      address: A,
+      label: "Phantom",
+      authToken: "tok",
+      walletUriBase: null,
+      chain: "solana:mainnet",
+    },
+    status: "connected",
+  });
+}
+
+function renderDeposit(): QueryClient {
+  const qc: QueryClient = createQueryClient({
+    defaultOptions: { queries: { retry: false, gcTime: 60_000 } },
+  });
+  render(
+    <SafeAreaProvider initialMetrics={METRICS}>
+      <QueryClientProvider client={qc}>
+        <ActionModal plan={DEPOSIT_PLAN} onClose={() => {}} testID="am" />
+      </QueryClientProvider>
+    </SafeAreaProvider>
+  );
+  return qc;
+}
+
+async function pressExecuteWhenReady() {
+  await waitFor(() =>
+    expect(
+      screen.getByTestId("am-review-execute").props.accessibilityState?.disabled
+    ).toBe(false)
+  );
+  fireEvent.press(screen.getByTestId("am-review-execute"));
+}
+
+function status(partial: Partial<TxStatusResponse>): TxStatusResponse {
+  return { signature: "sig_1", status: "pending", slot: null, err: null, ...partial };
+}
+
+describe("ActionModal — submit 後の着地確認 (/tx/status)", () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    jest.spyOn(api, "getOracleStatus").mockResolvedValue(ORACLE_OK);
+    jest.spyOn(api, "getPositions").mockResolvedValue([USDC_IN_WALLET]);
+    jest.spyOn(api, "getKaminoReserves").mockResolvedValue([]);
+    jest.spyOn(api, "submitSignedTx").mockResolvedValue({ signature: "sig_1" } as never);
+    connectA();
+  });
+
+  it("1 回目の poll で confirmed → success (signature を出す)", async () => {
+    const getTxStatus = jest
+      .spyOn(api, "getTxStatus")
+      .mockResolvedValue(status({ status: "confirmed", slot: 10 }));
+    const qc = renderDeposit();
+    await pressExecuteWhenReady();
+    await waitFor(() => expect(screen.getByText("Approved & executed")).toBeTruthy());
+    expect(getTxStatus).toHaveBeenCalledWith("sig_1");
+    expect(screen.getByTestId("am-success-signature")).toBeTruthy();
+    qc.clear();
+  });
+
+  it("on-chain で failed → error (success にしない、err を見せる)", async () => {
+    jest
+      .spyOn(api, "getTxStatus")
+      .mockResolvedValue(status({ status: "failed", slot: 10, err: '{"InstructionError":[0,"Custom"]}' }));
+    const qc = renderDeposit();
+    await pressExecuteWhenReady();
+    await waitFor(() => expect(screen.getByTestId("am-error-message")).toBeTruthy());
+    expect(screen.getByTestId("am-error-message").props.children).toContain(
+      "failed on-chain"
+    );
+    expect(screen.queryByText("Approved & executed")).toBeNull();
+    expect(screen.getByText("Failed")).toBeTruthy();
+    qc.clear();
+  });
+
+  it("pending のまま現在高が lastValidBlockHeight を超えた → expired の error", async () => {
+    (buildSolanaTxs as jest.Mock).mockResolvedValueOnce({
+      txs: ["AAAA"],
+      lastValidBlockHeight: 100,
+    });
+    jest
+      .spyOn(api, "getTxStatus")
+      .mockResolvedValue(status({ status: "pending", blockHeight: 151 }));
+    const qc = renderDeposit();
+    await pressExecuteWhenReady();
+    await waitFor(() => expect(screen.getByTestId("am-error-message")).toBeTruthy());
+    expect(screen.getByTestId("am-error-message").props.children).toContain(
+      "expired"
+    );
+    expect(screen.getByText("Transaction expired")).toBeTruthy();
+    expect(screen.queryByText("Approved & executed")).toBeNull();
+    qc.clear();
+  });
+
+  it("/tx/status が無い旧 BFF (TxConfirmAbort) → submitted (Solscan 導線、success にしない)", async () => {
+    jest.spyOn(api, "getTxStatus").mockRejectedValue(new TxConfirmAbort());
+    const qc = renderDeposit();
+    await pressExecuteWhenReady();
+    await waitFor(() => expect(screen.getByTestId("am-submitted")).toBeTruthy());
+    expect(screen.getByText("Not confirmed yet")).toBeTruthy();
+    expect(screen.getByTestId("am-submitted-solscan")).toBeTruthy();
+    expect(screen.queryByText("Approved & executed")).toBeNull();
+    qc.clear();
+  });
+});
+
+describe("ActionModal — plans-only server (/health executionTarget = disabled)", () => {
+  beforeEach(() => jest.clearAllMocks());
+
+  it("CTA は disabled、注記を出し、押しても builder / 署名に進まない", async () => {
+    jest.spyOn(api, "getOracleStatus").mockResolvedValue(ORACLE_OK);
+    jest.spyOn(api, "getPositions").mockResolvedValue([USDC_IN_WALLET]);
+    jest.spyOn(api, "getKaminoReserves").mockResolvedValue([]);
+    jest.spyOn(api, "getHealth").mockResolvedValue({
+      status: "ok",
+      solana: { heliusConfigured: true, executionTarget: "disabled" },
+    });
+    const submit = jest.spyOn(api, "submitSignedTx");
+    connectA();
+    const qc = renderDeposit();
+
+    await waitFor(() =>
+      expect(screen.getByTestId("am-review-execution-disabled")).toBeTruthy()
+    );
+    expect(
+      screen.getByText(
+        "This server is read-only (plans only). Deposits and withdrawals are disabled."
+      )
+    ).toBeTruthy();
+    const cta = screen.getByTestId("am-review-execute");
+    expect(cta.props.accessibilityState?.disabled).toBe(true);
+    expect(screen.getByText("Unavailable")).toBeTruthy();
+
+    fireEvent.press(cta);
+    await waitFor(() => expect(screen.getByText("Review & approve")).toBeTruthy());
+    expect(buildSolanaTxs).not.toHaveBeenCalled();
+    expect(signTransactions).not.toHaveBeenCalled();
+    expect(submit).not.toHaveBeenCalled();
     qc.clear();
   });
 });
