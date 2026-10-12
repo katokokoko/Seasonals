@@ -1109,7 +1109,8 @@ describe("2026-10-13: funding deposit (USDC で jlJupUSD を買う) の simulate
   it("execute: 人と同じ swap-earn builder に inputMint (USDC) を渡し、USDC → jlJupUSD の tx を組む", async () => {
     const { exec } = await executingPlan(FUNDED);
     expect(exec.unsigned_transactions).toEqual([
-      { index: 0, label: "deposit USDC on jupiter", tx_base64: "UNSIGNED_TX_B64" },
+      // funded deposit も Jupiter swap builder なので last_valid_block_height を透過する (#48 review 対応)
+      { index: 0, label: "deposit USDC on jupiter", tx_base64: "UNSIGNED_TX_B64", last_valid_block_height: 300_000_456 },
     ]);
     // builder の残高 gate は支払う USDC を見る
     expect(mockBalance).toHaveBeenCalledWith(WALLET, USDC_MINT);
