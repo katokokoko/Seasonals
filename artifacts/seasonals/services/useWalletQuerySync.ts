@@ -13,6 +13,8 @@
  *   - 切断 (address → null) → 何もしない。cache は保持され、表示は enabled: false で消える
  *   - cold start の復元 → 何もしない (永続 cache を即表示、staleTime に任せる)
  *   - recentWallets (MRU 5) から外れた wallet → その wallet の cache と端末の日次履歴を削除
+ *   - watch-only mode: watchlist から外れた address も同様に削除。どちらかがまだ保持して
+ *     いる address (接続 wallet を watch もしている等、key は共有) は残す
  *
  * 判定は wallet-query-sync.ts の純関数。
  */
@@ -27,6 +29,7 @@ import {
 } from "./walletStore";
 import {
   evictedAddresses,
+  evictedWatchAddresses,
   isWalletKeyOf,
   resyncTargets,
   WALLET_SCOPED_QUERY_KEYS,
@@ -34,6 +37,7 @@ import {
   type WalletSyncState,
 } from "./wallet-query-sync";
 import { usePortfolioHistoryStore } from "../stores/portfolioHistory";
+import { useWatchStore } from "../stores/watch";
 
 export { WALLET_SCOPED_QUERY_KEYS, resyncTargets };
 
@@ -58,10 +62,12 @@ export function useWalletQuerySync(): void {
   const address = useWalletStore((s) => s.authorization?.address ?? null);
   const status = useWalletStore((s) => s.status);
   const recentWallets = useWalletStore((s) => s.recentWallets);
+  const watchlist = useWatchStore((s) => s.watchlist);
   const hydrated = useWalletStoreHydrated();
   const queryClient = useQueryClient();
   const prev = useRef<WalletSyncState | null>(null);
   const prevRecent = useRef<readonly RecentWallet[] | null>(null);
+  const prevWatch = useRef<readonly string[] | null>(null);
 
   useEffect(() => {
     const next: WalletSyncState = { address, status, hydrated };
@@ -82,11 +88,28 @@ export function useWalletQuerySync(): void {
     const before = prevRecent.current;
     prevRecent.current = recentWallets;
     if (before === null || !hydrated) return;
+    const watched = new Set(useWatchStore.getState().watchlist);
     for (const evicted of evictedAddresses(before, recentWallets)) {
+      // watch-only mode: 監視中の address は cache を残す (key は共有)
+      if (watched.has(evicted)) continue;
       queryClient.removeQueries({
         predicate: (q) => isWalletKeyOf(q.queryKey, evicted),
       });
       usePortfolioHistoryStore.getState().forget(evicted);
     }
   }, [recentWallets, hydrated, queryClient]);
+
+  // watch-only mode: watchlist から外した address の cache と日次履歴を消す
+  useEffect(() => {
+    const before = prevWatch.current;
+    prevWatch.current = watchlist;
+    if (before === null || !hydrated) return;
+    const retained = useWalletStore.getState().recentWallets.map((w) => w.address);
+    for (const evicted of evictedWatchAddresses(before, watchlist, retained)) {
+      queryClient.removeQueries({
+        predicate: (q) => isWalletKeyOf(q.queryKey, evicted),
+      });
+      usePortfolioHistoryStore.getState().forget(evicted);
+    }
+  }, [watchlist, hydrated, queryClient]);
 }

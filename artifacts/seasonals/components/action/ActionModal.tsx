@@ -72,6 +72,11 @@ import {
   UNSUPPORTED_MARKET_MESSAGE,
 } from "@workspace/lib/derive/solana-action";
 import { useWallet } from "../../services/useWallet";
+// watch-only mode: 読み取り address と mode (watch 中は署名経路に入らない)
+import {
+  useActiveAddress,
+  type ActiveAddressMode,
+} from "../../services/useActiveAddress";
 import { signTransactions } from "../../services/mwa";
 import { USE_ONCHAIN } from "../../services/config";
 import * as api from "../../services/api";
@@ -104,6 +109,12 @@ function shortenSig(sig: string): string {
   return `${sig.slice(0, 8)}…${sig.slice(-6)}`;
 }
 
+/** WalletPopover と同じ末尾 6 文字表記 */
+function shortenAddress(addr: string): string {
+  if (addr.length <= 10) return addr;
+  return `…${addr.slice(-6)}`;
+}
+
 
 export interface ActionModalProps {
   /** 表示中の AgentPlan。null なら modal 非表示 */
@@ -133,7 +144,9 @@ export function ActionModal({
   const [errorCode, setErrorCode] = useState<string | null>(null);
 
   const approveMutation = useApproveAgentPlan();
+  // 署名は接続 wallet の authorization だけが使う (watch は authorization を書かない)
   const { authorization, isConnected } = useWallet();
+  const { address: activeAddress, mode: addressMode } = useActiveAddress();
   const queryClient = useQueryClient();
 
   // ── Phase 8.16: 金額入力 ──
@@ -164,10 +177,10 @@ export function ActionModal({
     [amountInput, amountUnit]
   );
 
-  // deposit の残高 (wallet 系 raw position、TanStack cache 再利用)
+  // deposit の残高 (wallet 系 raw position、TanStack cache 再利用)。
+  // watch-only mode: watch address の保有も同じ key で読む (表示のみ、署名はしない)
   const isDeposit = plan?.selected_action?.action_type === "deposit";
-  const onchainWallet =
-    USE_ONCHAIN && isConnected && authorization ? authorization.address : null;
+  const onchainWallet = activeAddress;
   const { data: rawPositions = [], isSuccess: positionsLoaded } =
     usePositions(onchainWallet);
   const depositBalance = useMemo(() => {
@@ -233,6 +246,10 @@ export function ActionModal({
   }, [onClose, reset]);
 
   const handleExecute = useCallback(async () => {
+    // watch-only mode: 署名できない。CTA の disabled だけに頼らず硬く止める —
+    // ここを抜けると !canOnchain で下の "Approve only" fallback (POST
+    // /agent-plans/:id/approve → success 表示) に落ち、他人の address で偽成功になる
+    if (addressMode === "watch") return;
     if (!plan) return;
     setErrorMsg(null);
 
@@ -345,6 +362,7 @@ export function ActionModal({
       setPhase("error");
     }
   }, [
+    addressMode,
     plan,
     isConnected,
     authorization,
@@ -454,6 +472,8 @@ export function ActionModal({
             plan={plan}
             onExecute={handleExecute}
             isConnected={isConnected}
+            mode={addressMode}
+            activeAddress={activeAddress}
             amountInput={amountInput}
             onChangeAmount={setAmountInput}
             amountUnit={amountUnit}
@@ -501,9 +521,15 @@ export function ActionModal({
 /**
  * 8.74: BFF が **意図的に拒否した** ケースか。失敗ではないので見出しを変える。
  * §4.6 の oracle gate と 8.72 の償還価値ガードが該当。
+ * 公開 BFF (`SOLANA_EXECUTION_TARGET=disabled`) の 409 `action_not_available` も
+ * tx を組む前 (署名前) に止まるので同じ扱い。
  */
 function isDeclined(code: string | null): boolean {
-  return code === "fair_value_blocked" || code === "oracle_blocked";
+  return (
+    code === "fair_value_blocked" ||
+    code === "oracle_blocked" ||
+    code === "action_not_available"
+  );
 }
 
 // Phase 8.6.1: English labels for consistency with rest of UI
@@ -528,6 +554,8 @@ function ReviewBody({
   plan,
   onExecute,
   isConnected,
+  mode,
+  activeAddress,
   amountInput,
   onChangeAmount,
   amountUnit,
@@ -539,6 +567,9 @@ function ReviewBody({
   plan: AgentPlan;
   onExecute: () => void;
   isConnected: boolean;
+  /** watch-only mode: "watch" なら read-only (CTA / 金額入力を止める) */
+  mode: ActiveAddressMode;
+  activeAddress: string | null;
   amountInput: string;
   onChangeAmount: (v: string) => void;
   amountUnit: AmountUnit;
@@ -550,6 +581,7 @@ function ReviewBody({
   const styles = useThemedStyles(makeStyles);
   const c = useThemeColors();
   const action = plan.selected_action;
+  const watchOnly = mode === "watch";
 
   // Phase 8.16: 残高/保有行のテキスト (表示専用)。
   const isDeposit = action?.action_type === "deposit";
@@ -646,6 +678,7 @@ function ReviewBody({
             value={amountInput}
             onChangeText={onChangeAmount}
             keyboardType="decimal-pad"
+            editable={!watchOnly}
             placeholder="0.0"
             placeholderTextColor={c.textMuted}
             testID={testID ? `${testID}-amount-input` : undefined}
@@ -660,6 +693,8 @@ function ReviewBody({
           <Pressable
             accessibilityRole="button"
             onPress={onPressMax}
+            disabled={watchOnly}
+            accessibilityState={{ disabled: watchOnly }}
             style={styles.maxButton}
             testID={testID ? `${testID}-max` : undefined}
           >
@@ -720,13 +755,23 @@ function ReviewBody({
         </Text>
       )}
 
-      {!isConnected && (
-        <View style={styles.notice} testID={testID ? `${testID}-not-connected` : undefined}>
+      {/* watch-only mode: 署名経路は handleExecute が止める。ここは理由の表示 */}
+      {watchOnly ? (
+        <View style={styles.notice} testID={testID ? `${testID}-watch-only` : undefined}>
           <Text style={styles.noticeText}>
-            Wallet not connected — approve only (signing skipped). On-chain
-            broadcast needs a connected wallet.
+            Watching {activeAddress ? shortenAddress(activeAddress) : "address"} —
+            read-only. Connect a wallet to sign.
           </Text>
         </View>
+      ) : (
+        !isConnected && (
+          <View style={styles.notice} testID={testID ? `${testID}-not-connected` : undefined}>
+            <Text style={styles.noticeText}>
+              Wallet not connected — approve only (signing skipped). On-chain
+              broadcast needs a connected wallet.
+            </Text>
+          </View>
+        )
       )}
 
       {/* Phase 8.14: oracle warning (2-5% 乖離 / Pyth stale) は WarningArea が CTA 直上に
@@ -737,24 +782,32 @@ function ReviewBody({
         renderCta={({ disabled }) => {
           // Phase 8.16: 金額 invalid も CTA を gate (plan に amount がある action のみ)
           const amountInvalid = Boolean(action?.amount) && amountError !== null;
+          // watch-only mode: 署名できないので常に disabled (handleExecute も early return)
           const ctaDisabled =
-            disabled || oracleBlocked || oracleChecking || amountInvalid;
+            disabled ||
+            watchOnly ||
+            oracleBlocked ||
+            oracleChecking ||
+            amountInvalid;
           return (
             <Pressable
               accessibilityRole="button"
               onPress={onExecute}
               disabled={ctaDisabled}
+              accessibilityState={{ disabled: ctaDisabled }}
               style={[styles.ctaPrimary, ctaDisabled && styles.ctaDisabled]}
               testID={testID ? `${testID}-execute` : undefined}
             >
               <Text style={styles.ctaPrimaryText}>
-                {oracleBlocked
-                  ? "Blocked (oracle)"
-                  : oracleChecking
-                    ? "Checking oracle…"
-                    : isConnected
-                      ? "Sign & execute"
-                      : "Approve only"}
+                {watchOnly
+                  ? "Connect a wallet to sign"
+                  : oracleBlocked
+                    ? "Blocked (oracle)"
+                    : oracleChecking
+                      ? "Checking oracle…"
+                      : isConnected
+                        ? "Sign & execute"
+                        : "Approve only"}
               </Text>
             </Pressable>
           );

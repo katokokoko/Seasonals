@@ -14,6 +14,7 @@ import { Linking } from "react-native";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 
 import { SettingsDrawer } from "./SettingsDrawer";
+import { useWatchStore } from "../../stores/watch";
 
 jest.mock("expo-router", () => ({
   Link: ({ children }: { children: React.ReactNode }) => children,
@@ -28,6 +29,17 @@ jest.mock("../../services/useWallet", () => ({
   }),
 }));
 
+// watch-only mode: 既定は未接続 + 監視なし。watch 表示のテストだけ差し替える
+const WATCHED = "6QGJNXnCjhYkKgPpDm7qRzxBKCj9KugUL2LDHc8sGUUM";
+let mockActiveAddress: {
+  address: string | null;
+  mode: "connected" | "watch" | "none";
+  canSign: boolean;
+} = { address: null, mode: "none", canSign: false };
+jest.mock("../../services/useActiveAddress", () => ({
+  useActiveAddress: () => mockActiveAddress,
+}));
+
 const METRICS = {
   frame: { x: 0, y: 0, width: 400, height: 800 },
   insets: { top: 24, left: 0, right: 0, bottom: 16 },
@@ -39,6 +51,31 @@ function wrap(ui: ReactNode) {
 
 afterEach(() => {
   jest.restoreAllMocks();
+  mockActiveAddress = { address: null, mode: "none", canSign: false };
+});
+
+describe("SettingsDrawer Wallet (watch-only mode)", () => {
+  it("未接続 + 監視なしは Not connected で、Stop watching を出さない", () => {
+    render(wrap(<SettingsDrawer visible onClose={() => {}} testID="settings" />));
+    expect(screen.getByText("Not connected")).toBeTruthy();
+    expect(screen.queryByTestId("settings-stop-watching")).toBeNull();
+  });
+
+  it("watch 中は 'Watching …末尾6' と Stop watching を出し、押すと監視を止める", () => {
+    useWatchStore.getState().addWatch(WATCHED);
+    mockActiveAddress = { address: WATCHED, mode: "watch", canSign: false };
+    const onClose = jest.fn();
+    render(wrap(<SettingsDrawer visible onClose={onClose} testID="settings" />));
+
+    expect(screen.getByTestId("settings-watching")).toHaveTextContent(
+      `Watching …${WATCHED.slice(-6)}`
+    );
+    fireEvent.press(screen.getByTestId("settings-stop-watching"));
+    expect(useWatchStore.getState().selected).toBeNull();
+    expect(useWatchStore.getState().watchlist).toEqual([WATCHED]);
+    expect(onClose).toHaveBeenCalled();
+    useWatchStore.getState().reset();
+  });
 });
 
 describe("SettingsDrawer About", () => {

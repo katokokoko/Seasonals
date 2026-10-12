@@ -93,10 +93,10 @@ import {
   useThemedStyles,
   type ThemeColors,
 } from "../stores/theme";
-import { useWallet } from "../services/useWallet";
+// watch-only mode: 読み取り address は接続 wallet → watch address の順で 1 箇所で決める
+import { useActiveAddress } from "../services/useActiveAddress";
 // 8.77: wallet の接続状態が変わったら wallet 系クエリを取り直す
 import { useWalletQuerySync } from "../services/useWalletQuerySync";
-import { USE_ONCHAIN } from "../services/config";
 import { mergeEarnPositions } from "../services/earn-to-position";
 // 8.56: portfolio chart の実履歴 (1 日 1 点の実測スナップショット)
 import { usePortfolioHistoryStore } from "../stores/portfolioHistory";
@@ -130,15 +130,16 @@ export default function HomeScreen() {
   const { data: fixtureEvents = [] } = useTimeEvents();
   // Phase 8.1: onchain variant + 接続済 wallet なら address を渡して
   // Helius DAS 経由の実 mainnet 保有を取得。それ以外は fixture。
-  const { authorization } = useWallet();
+  // watch-only mode: 未接続でも watch address があれば同じ経路で読む (read-only、
+  // 署名は ActionModal が止める)。fixture variant は常に null
+  const { address: onchainAddress, mode: addressMode } = useActiveAddress();
+  const readOnly = addressMode === "watch";
   // 8.77: 再接続 (disconnect → 同じ wallet で connect) は query key が元に戻る
   // だけなので、これが無いと staleTime の間キャッシュのままになる
   // (history は 5 分。「再接続してもグラフが変わらない」の原因)
   // §4.0: 取り直すのは接続した wallet の key だけ。切断では cache を保持し、
   // recentWallets (MRU 5) から外れた wallet の cache を消す
   useWalletQuerySync();
-  const onchainAddress =
-    USE_ONCHAIN && authorization?.address ? authorization.address : null;
   const positionsQuery = usePositions(onchainAddress);
   const { data: basePositions = [] } = positionsQuery;
   // Phase 8.2: onchain APK で接続済みなら Jupiter Lend / Kamino positions を取得、
@@ -189,7 +190,13 @@ export default function HomeScreen() {
   // SKR staking cooldown (docs/skr-r0-implementation.md): Calendar event / Staking row /
   // 確認通知 / 境界 retry を 1 つの query で賄う。positions には入れない
   const skr = useSkrStakingView(onchainAddress);
-  useCooldownReminderSync(skr);
+  // watch 中は OS 通知を予約しない (他人の cooldown には行動できない / payload に address が
+  // 入る)。scope → null は hook 側で「既存予約の取消」として扱われる (§5)
+  const reminderView = useMemo(
+    () => (readOnly ? { ...skr, scope: null } : skr),
+    [readOnly, skr]
+  );
+  useCooldownReminderSync(reminderView);
   useCooldownBoundaryRetry(skr);
   const { data: protocols = [] } = useProtocols();
 
@@ -577,6 +584,7 @@ export default function HomeScreen() {
         animatedPosition={sheetPosition}
         minTopY={viewMode === "monthly" ? calendarBottomY : null}
         cooldown={skr}
+        readOnly={readOnly}
         testID="home-portfolio"
       />
 
@@ -602,6 +610,7 @@ export default function HomeScreen() {
         onWithdrawPosition={handleWithdrawPosition}
         earnPositions={earnPositionsData}
         walletAddress={onchainAddress}
+        readOnly={readOnly}
         testID="home-menu-drawer"
       />
 

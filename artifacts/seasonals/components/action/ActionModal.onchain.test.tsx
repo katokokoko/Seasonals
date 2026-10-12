@@ -37,8 +37,12 @@ import type { AgentPlan, OracleResult, Position } from "@workspace/lib/types";
 
 import { ActionModal } from "./ActionModal";
 import * as api from "../../services/api";
+import { buildSolanaTxs } from "../../services/solana-tx";
 import { createQueryClient } from "../../services/queryClient";
 import { useWalletStore } from "../../services/walletStore";
+import { signTransactions } from "../../services/mwa";
+import { useWatchStore } from "../../stores/watch";
+import { VersionedTransaction } from "@solana/web3.js";
 
 const A = "7nZbHkQqXkr3eW8s2dKvHqBxNz9vC5jPpL2tF6mYrXaA";
 const B = "6QGJNXnCjhYkKgPpDm7qRzxBKCj9KugUL2LDHc8sGUUM";
@@ -82,6 +86,7 @@ const USDC_IN_WALLET = {
 afterEach(() => {
   jest.restoreAllMocks();
   useWalletStore.getState().reset();
+  useWatchStore.getState().reset();
 });
 
 describe("ActionModal — tx 後の invalidate は署名した wallet だけ", () => {
@@ -161,6 +166,137 @@ describe("ActionModal — tx 後の invalidate は署名した wallet だけ", (
     expect(invalidated(["portfolio-history", B, 30])).toBe(false);
     expect(invalidated(["positions"])).toBe(false);
     expect(invalidated(["skr-staking", "live", "mainnet-beta", A])).toBe(false);
+    qc.clear();
+  });
+});
+
+/**
+ * watch-only mode: 未接続 + watch address では署名経路に入らない。
+ * 特に onchain build + 未接続の "Approve only" fallback (POST /agent-plans/:id/approve →
+ * success 表示) に落ちないこと (ActionModal の handleExecute が early return で止める)
+ */
+describe("ActionModal — watch mode", () => {
+  // module mock (signTransactions / deserialize) の呼び出し記録は前の describe から残るので消す
+  beforeEach(() => jest.clearAllMocks());
+
+  it("CTA は disabled の 'Connect a wallet to sign'、押しても署名 / approve に進まない", async () => {
+    jest.spyOn(api, "getOracleStatus").mockResolvedValue(ORACLE_OK);
+    const getPositions = jest
+      .spyOn(api, "getPositions")
+      .mockResolvedValue([USDC_IN_WALLET]);
+    jest.spyOn(api, "getKaminoReserves").mockResolvedValue([]);
+    const approve = jest.spyOn(api, "postApproveAgentPlan");
+    const submit = jest.spyOn(api, "submitSignedTx");
+    useWatchStore.getState().addWatch(B);
+
+    const qc: QueryClient = createQueryClient({
+      defaultOptions: { queries: { retry: false, gcTime: 60_000 } },
+    });
+    render(
+      <SafeAreaProvider initialMetrics={METRICS}>
+        <QueryClientProvider client={qc}>
+          <ActionModal plan={DEPOSIT_PLAN} onClose={() => {}} testID="am" />
+        </QueryClientProvider>
+      </SafeAreaProvider>
+    );
+
+    await waitFor(() =>
+      expect(screen.getByText("Connect a wallet to sign")).toBeTruthy()
+    );
+    // 残高は watch address の key で読む (表示のみ)
+    await waitFor(() => expect(getPositions.mock.calls[0]?.[0]).toBe(B));
+    expect(screen.getByTestId("am-review-watch-only")).toBeTruthy();
+    expect(screen.queryByTestId("am-review-not-connected")).toBeNull();
+    expect(screen.queryByText("Approve only")).toBeNull();
+    const cta = screen.getByTestId("am-review-execute");
+    expect(cta.props.accessibilityState?.disabled).toBe(true);
+    expect(screen.getByTestId("am-review-amount-input").props.editable).toBe(false);
+
+    fireEvent.press(cta);
+    // phase は review のまま (approving / success に進まない)
+    await waitFor(() => expect(screen.getByTestId("am-review-execute")).toBeTruthy());
+    expect(screen.getByText("Review & approve")).toBeTruthy();
+    expect(screen.queryByTestId("am-success")).toBeNull();
+    expect(signTransactions).not.toHaveBeenCalled();
+    expect(VersionedTransaction.deserialize).not.toHaveBeenCalled();
+    expect(approve).not.toHaveBeenCalled();
+    expect(submit).not.toHaveBeenCalled();
+    qc.clear();
+  });
+
+  it("接続 wallet があれば watch より優先し、従来どおり 'Sign & execute'", async () => {
+    jest.spyOn(api, "getOracleStatus").mockResolvedValue(ORACLE_OK);
+    jest.spyOn(api, "getPositions").mockResolvedValue([USDC_IN_WALLET]);
+    jest.spyOn(api, "getKaminoReserves").mockResolvedValue([]);
+    useWatchStore.getState().addWatch(B);
+    useWalletStore.setState({
+      authorization: {
+        address: A,
+        label: "Phantom",
+        authToken: "tok",
+        walletUriBase: null,
+        chain: "solana:mainnet",
+      },
+      status: "connected",
+    });
+
+    const qc: QueryClient = createQueryClient({
+      defaultOptions: { queries: { retry: false, gcTime: 60_000 } },
+    });
+    render(
+      <SafeAreaProvider initialMetrics={METRICS}>
+        <QueryClientProvider client={qc}>
+          <ActionModal plan={DEPOSIT_PLAN} onClose={() => {}} testID="am" />
+        </QueryClientProvider>
+      </SafeAreaProvider>
+    );
+    await waitFor(() => expect(screen.getByText("Sign & execute")).toBeTruthy());
+    expect(screen.queryByTestId("am-review-watch-only")).toBeNull();
+    qc.clear();
+  });
+});
+
+describe("ActionModal — 公開 BFF の 409 action_not_available", () => {
+  it("署名前の拒否として 'Stopped before signing' を出す (失敗扱いにしない)", async () => {
+    jest.clearAllMocks();
+    jest.spyOn(api, "getOracleStatus").mockResolvedValue(ORACLE_OK);
+    jest.spyOn(api, "getPositions").mockResolvedValue([USDC_IN_WALLET]);
+    jest.spyOn(api, "getKaminoReserves").mockResolvedValue([]);
+    (buildSolanaTxs as jest.Mock).mockRejectedValueOnce(
+      new api.BffError(
+        "Execution is disabled: this server is configured for plans only.",
+        "action_not_available"
+      )
+    );
+    useWalletStore.setState({
+      authorization: {
+        address: A,
+        label: "Phantom",
+        authToken: "tok",
+        walletUriBase: null,
+        chain: "solana:mainnet",
+      },
+      status: "connected",
+    });
+
+    const qc: QueryClient = createQueryClient({
+      defaultOptions: { queries: { retry: false, gcTime: 60_000 } },
+    });
+    render(
+      <SafeAreaProvider initialMetrics={METRICS}>
+        <QueryClientProvider client={qc}>
+          <ActionModal plan={DEPOSIT_PLAN} onClose={() => {}} testID="am" />
+        </QueryClientProvider>
+      </SafeAreaProvider>
+    );
+    await waitFor(() =>
+      expect(
+        screen.getByTestId("am-review-execute").props.accessibilityState?.disabled
+      ).toBe(false)
+    );
+    fireEvent.press(screen.getByTestId("am-review-execute"));
+    await waitFor(() => expect(screen.getByText("Stopped before signing")).toBeTruthy());
+    expect(signTransactions).not.toHaveBeenCalled();
     qc.clear();
   });
 });

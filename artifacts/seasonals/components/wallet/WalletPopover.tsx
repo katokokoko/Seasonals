@@ -4,10 +4,18 @@
  * 構成 (anchor: top: anchorTop, right: 14, width: 280):
  *   "Wallets" overline
  *   MWA 接続済 wallet の row (label + truncated address + status dot)
+ *   watch-only mode (onchain build のみ):
+ *     Watching card (未接続で監視 address を読んでいる間)
+ *     "Watch an address (read-only)" 入力 + Watch pill
+ *     watchlist rows (tap = select、× = remove) + "Stop watching"
  *   "+ Add Wallet" row (tap → useWallet().connect()、MWA はここからのみ起動)
  *   "Subscription" full-width pill button
  *
  * 5A.8.5 empty state: 未接続 → wallet section を完全省略。
+ *
+ * watch-only mode は公開 address を AsyncStorage に残すだけで MWA には一切触れない
+ * (authorization を書かないので Seed Vault に届かない。署名は ActionModal が止める)。
+ * 入口はこの popover だけ (SettingsDrawer は状態表示と停止のみ)。
  *
  * Phase 7.6 motion: Modal animationType="none" + SharedValue enter (0→1) で
  * card を transformOrigin "top right" の scale + opacity、backdrop を同期 fade。
@@ -16,10 +24,13 @@
 
 import React, { useEffect, useState } from "react";
 import {
+  Dimensions,
   Modal,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   View,
 } from "react-native";
 import { useRouter } from "expo-router";
@@ -43,11 +54,18 @@ import {
 } from "@workspace/lib/design-system";
 
 import { useWallet } from "../../services/useWallet";
+import { useActiveAddress } from "../../services/useActiveAddress";
+import { USE_ONCHAIN } from "../../services/config";
 import { useComingSoon } from "../../stores/comingSoon";
+import { useWatchStore } from "../../stores/watch";
 import {
+  useThemeColors,
   useThemedStyles,
   type ThemeColors,
 } from "../../stores/theme";
+
+// 幅 280 固定の popover に watchlist (最大 6) が載るので、縦は画面の 6 割で scroll させる
+const SCREEN_H = Dimensions.get("window").height;
 
 function shortenAddress(addr: string): string {
   if (addr.length <= 10) return addr;
@@ -78,8 +96,16 @@ export function WalletPopover({
   // Phase 8.5.1: disconnect も使えるように expose
   // 8.77: status / error も読む — 接続失敗が UI のどこにも出ていなかった
   const { authorization, connect, disconnect, status, error } = useWallet();
+  // watch-only mode: 監視 address (公開情報のみ、AsyncStorage)。fixture variant では出さない
+  const { mode } = useActiveAddress();
+  const watchlist = useWatchStore((s) => s.watchlist);
+  const selectedWatch = useWatchStore((s) => s.selected);
+  const [watchInput, setWatchInput] = useState("");
+  const [watchError, setWatchError] = useState<string | null>(null);
+  const watching = mode === "watch" && selectedWatch !== null;
   // Phase 7.9: theme 連動 styles
   const styles = useThemedStyles(makeStyles);
+  const c = useThemeColors();
 
   // Phase 7.6 motion: ActionModal と同型の renderModal lifecycle で
   // close 完了後に Modal を unmount する (中断時は finished===false で安全)。
@@ -151,6 +177,40 @@ export function WalletPopover({
     router.push("/theme-shop");
   };
 
+  // watch-only mode: address を検証して watchlist の先頭へ (MWA は起動しない)
+  const handleAddWatch = () => {
+    const result = useWatchStore.getState().addWatch(watchInput);
+    if (!result.ok) {
+      setWatchError(result.error);
+      return;
+    }
+    setWatchInput("");
+    setWatchError(null);
+    onClose();
+    // 接続 wallet が優先されるので、追加しても今は表示が変わらないことを伝える
+    if (authorization) {
+      useComingSoon
+        .getState()
+        .show("Added to watchlist — shown when you disconnect");
+    }
+  };
+
+  const handleSelectWatch = (address: string) => {
+    useWatchStore.getState().select(address);
+    onClose();
+    if (authorization) {
+      useComingSoon
+        .getState()
+        .show("Added to watchlist — shown when you disconnect");
+    }
+  };
+
+  // 監視停止 (list は残す。cache は address key のまま保持 = 接続状態 ≠ データ保持)
+  const handleStopWatching = () => {
+    useWatchStore.getState().select(null);
+    onClose();
+  };
+
   // Phase 8.5.1: 接続済 wallet を切断 (mainnet 接続切替 / disconnect 用)
   const handleDisconnect = async () => {
     onClose();
@@ -191,86 +251,222 @@ export function WalletPopover({
         <View style={styles.cardTint} pointerEvents="none" />
         <View style={styles.cardHighlight} pointerEvents="none" />
 
-        <Text style={styles.heading}>Wallets</Text>
+        <ScrollView
+          style={styles.scroll}
+          keyboardShouldPersistTaps="handled"
+          bounces={false}
+          showsVerticalScrollIndicator={false}
+        >
+          <Text style={styles.heading}>Wallets</Text>
 
-        {/* 8.77: 直近の接続失敗をここに残す。toast は 2200ms で消えるので、
-            再試行する場所 (この popover) にも出しておく */}
-        {status === "error" && error && (
-          <View
-            style={styles.errorRow}
-            testID={testID ? `${testID}-error` : undefined}
-          >
-            <Text style={styles.errorText} numberOfLines={3}>
-              Couldn&apos;t connect: {error}
-            </Text>
-          </View>
-        )}
-
-        {/* Phase 7.4: 接続済 MWA wallet 1 行のみ。未接続なら section 全省略 (5A.8.5) */}
-        {authorization && (
-          <View style={styles.walletsSection}>
-            <Pressable
-              accessibilityRole="button"
-              onPress={onClose}
-              style={styles.walletRow}
-              testID={testID ? `${testID}-wallet-current` : undefined}
+          {/* 8.77: 直近の接続失敗をここに残す。toast は 2200ms で消えるので、
+              再試行する場所 (この popover) にも出しておく */}
+          {status === "error" && error && (
+            <View
+              style={styles.errorRow}
+              testID={testID ? `${testID}-error` : undefined}
             >
-              <View style={styles.iconDark}>
-                <Text style={styles.iconLetter}>
-                  {initialOf(authorization.label)}
-                </Text>
+              <Text style={styles.errorText} numberOfLines={3}>
+                Couldn&apos;t connect: {error}
+              </Text>
+            </View>
+          )}
+
+          {/* Phase 7.4: 接続済 MWA wallet 1 行のみ。未接続なら section 全省略 (5A.8.5) */}
+          {authorization && (
+            <View style={styles.walletsSection}>
+              <Pressable
+                accessibilityRole="button"
+                onPress={onClose}
+                style={styles.walletRow}
+                testID={testID ? `${testID}-wallet-current` : undefined}
+              >
+                <View style={styles.iconDark}>
+                  <Text style={styles.iconLetter}>
+                    {initialOf(authorization.label)}
+                  </Text>
+                </View>
+                <View style={styles.walletMain}>
+                  <Text style={styles.walletLabel}>Connected wallet</Text>
+                  <Text style={styles.walletProvider} numberOfLines={1}>
+                    {authorization.label ?? "Seeker wallet"}
+                  </Text>
+                  <Text style={styles.walletAddress} numberOfLines={1}>
+                    {shortenAddress(authorization.address)}
+                  </Text>
+                </View>
+                <View style={styles.statusDot} />
+              </Pressable>
+            </View>
+          )}
+
+          {/* watch-only mode: 監視中の address (署名不可)。接続 wallet があればそちらが優先 */}
+          {USE_ONCHAIN && watching && selectedWatch && (
+            <View style={styles.walletsSection}>
+              <Pressable
+                accessibilityRole="button"
+                onPress={onClose}
+                style={styles.walletRow}
+                testID={testID ? `${testID}-watching` : undefined}
+              >
+                <View style={[styles.iconDark, styles.iconWatch]}>
+                  <Text style={styles.iconLetter}>W</Text>
+                </View>
+                <View style={styles.walletMain}>
+                  <Text style={styles.walletLabel}>Connect a wallet to sign</Text>
+                  <Text style={styles.walletProvider} numberOfLines={1}>
+                    Watching (read-only)
+                  </Text>
+                  <Text style={styles.walletAddress} numberOfLines={1}>
+                    {shortenAddress(selectedWatch)}
+                  </Text>
+                </View>
+                <View style={[styles.statusDot, styles.statusDotWatch]} />
+              </Pressable>
+            </View>
+          )}
+
+          {/* watch-only mode: 入力 + watchlist。fixture variant (USE_ONCHAIN=false) では出さない */}
+          {USE_ONCHAIN && (
+            <View style={styles.watchSection}>
+              <Text style={styles.walletLabel}>Watch an address (read-only)</Text>
+              <View style={styles.watchInputRow}>
+                <TextInput
+                  style={styles.watchInput}
+                  value={watchInput}
+                  onChangeText={(v) => {
+                    setWatchInput(v);
+                    if (watchError) setWatchError(null);
+                  }}
+                  onSubmitEditing={handleAddWatch}
+                  placeholder="Solana address"
+                  placeholderTextColor={c.textMuted}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  returnKeyType="done"
+                  numberOfLines={1}
+                  testID={testID ? `${testID}-watch-input` : undefined}
+                />
+                <Pressable
+                  accessibilityRole="button"
+                  onPress={handleAddWatch}
+                  disabled={watchInput.trim().length === 0}
+                  accessibilityState={{ disabled: watchInput.trim().length === 0 }}
+                  style={[
+                    styles.watchBtn,
+                    watchInput.trim().length === 0 && styles.watchBtnDisabled,
+                  ]}
+                  testID={testID ? `${testID}-watch-submit` : undefined}
+                >
+                  <Text style={styles.watchBtnText}>Watch</Text>
+                </Pressable>
               </View>
-              <View style={styles.walletMain}>
-                <Text style={styles.walletLabel}>Connected wallet</Text>
-                <Text style={styles.walletProvider} numberOfLines={1}>
-                  {authorization.label ?? "Seeker wallet"}
-                </Text>
-                <Text style={styles.walletAddress} numberOfLines={1}>
-                  {shortenAddress(authorization.address)}
-                </Text>
-              </View>
-              <View style={styles.statusDot} />
-            </Pressable>
-          </View>
-        )}
+              {watchError && (
+                <View
+                  style={styles.errorRow}
+                  testID={testID ? `${testID}-watch-error` : undefined}
+                >
+                  <Text style={styles.errorText} numberOfLines={2}>
+                    {watchError}
+                  </Text>
+                </View>
+              )}
 
-        {/* + Add Wallet (MWA fires here only) */}
-        <Pressable
-          accessibilityRole="button"
-          onPress={handleAddWallet}
-          style={styles.addRow}
-          testID={testID ? `${testID}-add-wallet` : undefined}
-        >
-          <View style={styles.addBadge}>
-            <Text style={styles.addBadgePlus}>+</Text>
-          </View>
-          <View style={styles.walletMain}>
-            <Text style={styles.walletProvider}>+ Add Wallet</Text>
-            <Text style={styles.walletLabel}>Track another Solana wallet</Text>
-          </View>
-        </Pressable>
+              {watchlist.map((addr) => {
+                const isWatching = watching && addr === selectedWatch;
+                const isConnectedAddr = authorization?.address === addr;
+                return (
+                  <View
+                    key={addr}
+                    style={[styles.watchRow, isWatching && styles.watchRowActive]}
+                  >
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityState={{ selected: isWatching }}
+                      onPress={() => handleSelectWatch(addr)}
+                      style={styles.watchRowMain}
+                      testID={testID ? `${testID}-watch-row-${addr}` : undefined}
+                    >
+                      <Text style={styles.watchRowAddress} numberOfLines={1}>
+                        {shortenAddress(addr)}
+                      </Text>
+                      {isConnectedAddr ? (
+                        <Text style={[styles.watchTag, styles.watchTagConnected]}>
+                          connected
+                        </Text>
+                      ) : isWatching ? (
+                        <Text style={styles.watchTag}>watching</Text>
+                      ) : null}
+                    </Pressable>
+                    <Pressable
+                      accessibilityRole="button"
+                      accessibilityLabel={`Remove ${shortenAddress(addr)} from watchlist`}
+                      onPress={() => useWatchStore.getState().removeWatch(addr)}
+                      hitSlop={8}
+                      style={styles.watchRemove}
+                      testID={testID ? `${testID}-watch-remove-${addr}` : undefined}
+                    >
+                      <Text style={styles.watchRemoveText}>×</Text>
+                    </Pressable>
+                  </View>
+                );
+              })}
 
-        {/* Subscription footer */}
-        <Pressable
-          accessibilityRole="button"
-          onPress={handleSubscription}
-          style={styles.subBtn}
-          testID={testID ? `${testID}-subscription` : undefined}
-        >
-          <Text style={styles.subBtnText}>Subscription</Text>
-        </Pressable>
+              {watching && (
+                <Pressable
+                  accessibilityRole="button"
+                  onPress={handleStopWatching}
+                  style={styles.disconnectRow}
+                  testID={testID ? `${testID}-stop-watching` : undefined}
+                >
+                  <Text style={[styles.disconnectText, styles.stopWatchingText]}>
+                    Stop watching
+                  </Text>
+                </Pressable>
+              )}
+            </View>
+          )}
 
-        {/* Phase 8.5.1: Disconnect (接続済時のみ表示) */}
-        {authorization && (
+          {/* + Add Wallet (MWA fires here only) */}
           <Pressable
             accessibilityRole="button"
-            onPress={handleDisconnect}
-            style={styles.disconnectRow}
-            testID={testID ? `${testID}-disconnect` : undefined}
+            onPress={handleAddWallet}
+            style={styles.addRow}
+            testID={testID ? `${testID}-add-wallet` : undefined}
           >
-            <Text style={styles.disconnectText}>Disconnect</Text>
+            <View style={styles.addBadge}>
+              <Text style={styles.addBadgePlus}>+</Text>
+            </View>
+            <View style={styles.walletMain}>
+              <Text style={styles.walletProvider}>+ Add Wallet</Text>
+              <Text style={styles.walletLabel}>
+                {watching ? "Connect a wallet to sign" : "Track another Solana wallet"}
+              </Text>
+            </View>
           </Pressable>
-        )}
+
+          {/* Subscription footer */}
+          <Pressable
+            accessibilityRole="button"
+            onPress={handleSubscription}
+            style={styles.subBtn}
+            testID={testID ? `${testID}-subscription` : undefined}
+          >
+            <Text style={styles.subBtnText}>Subscription</Text>
+          </Pressable>
+
+          {/* Phase 8.5.1: Disconnect (接続済時のみ表示) */}
+          {authorization && (
+            <Pressable
+              accessibilityRole="button"
+              onPress={handleDisconnect}
+              style={styles.disconnectRow}
+              testID={testID ? `${testID}-disconnect` : undefined}
+            >
+              <Text style={styles.disconnectText}>Disconnect</Text>
+            </Pressable>
+          )}
+        </ScrollView>
       </Animated.View>
     </Modal>
   );
@@ -301,6 +497,9 @@ function makeStyles(c: ThemeColors) {
       shadowOpacity: 1,
       shadowRadius: 18,
       elevation: 12,
+    },
+    scroll: {
+      maxHeight: SCREEN_H * 0.6,
     },
     cardBlur: {
       ...StyleSheet.absoluteFill,
@@ -383,6 +582,94 @@ function makeStyles(c: ThemeColors) {
       borderRadius: 4,
       backgroundColor: c.melonText,
       marginLeft: SPACE.xs,
+    },
+    // watch-only mode
+    iconWatch: {
+      backgroundColor: c.caramel,
+    },
+    statusDotWatch: {
+      backgroundColor: c.caramel,
+    },
+    watchSection: {
+      gap: SPACE.xs,
+      marginTop: SPACE.xs,
+    },
+    watchInputRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      gap: SPACE.xs,
+    },
+    watchInput: {
+      flex: 1,
+      minWidth: 0,
+      color: c.textPrimary,
+      fontFamily: FONT.mono,
+      fontSize: FONT_SIZE.bodySM,
+      paddingHorizontal: 10,
+      paddingVertical: 6,
+      borderRadius: RADIUS.md,
+      borderWidth: 1,
+      borderColor: c.border,
+      backgroundColor: withAlpha(c.textOnColor, 0.6),
+    },
+    watchBtn: {
+      paddingHorizontal: 12,
+      paddingVertical: 7,
+      borderRadius: RADIUS.pill,
+      backgroundColor: c.sodaText,
+    },
+    watchBtnDisabled: {
+      opacity: 0.45,
+    },
+    watchBtnText: {
+      fontSize: FONT_SIZE.bodySM,
+      fontFamily: FONT.heading,
+      fontWeight: WEIGHT.bold,
+      color: c.textOnColor,
+    },
+    watchRow: {
+      flexDirection: "row",
+      alignItems: "center",
+      borderRadius: RADIUS.md,
+      paddingLeft: 10,
+      paddingRight: 6,
+    },
+    watchRowActive: {
+      backgroundColor: withAlpha(c.caramel, 0.1),
+    },
+    watchRowMain: {
+      flex: 1,
+      flexDirection: "row",
+      alignItems: "center",
+      gap: SPACE.xs,
+      paddingVertical: 6,
+    },
+    watchRowAddress: {
+      flexShrink: 1,
+      color: c.textPrimary,
+      fontFamily: FONT.mono,
+      fontSize: FONT_SIZE.bodySM,
+    },
+    watchTag: {
+      color: c.caramel,
+      fontFamily: FONT.body,
+      fontWeight: WEIGHT.semibold,
+      fontSize: 11,
+    },
+    watchTagConnected: {
+      color: c.melonText,
+    },
+    watchRemove: {
+      paddingHorizontal: 6,
+      paddingVertical: 2,
+    },
+    watchRemoveText: {
+      color: c.textMuted,
+      fontFamily: FONT.heading,
+      fontSize: FONT_SIZE.bodyLG,
+    },
+    stopWatchingText: {
+      color: c.textMuted,
     },
     addRow: {
       flexDirection: "row",

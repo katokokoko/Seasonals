@@ -4,6 +4,7 @@
  * 動作:
  *   - tap → WalletPopover を開く (MWA は modal 内 "+ Add Wallet" でのみ起動)
  *   - active wallet あり: drink icon + 8px melonText status dot (右下)
+ *   - watch-only mode (未接続 + 監視 address): 8px caramel dot (read-only の印)
  *   - active wallet なし: drink icon のみ
  *
  * Phase 7.5: BlurView + tint + top highlight の 3 層 glass 化。
@@ -23,6 +24,7 @@ import {
 
 import { SodaGlassIcon } from "../icons/HeaderIcons";
 import { useIsWalletConnected } from "../../services/useWallet";
+import { useActiveAddress } from "../../services/useActiveAddress";
 
 export interface WalletDrinkButtonProps {
   /** tap 時に WalletPopover を開くハンドラ (home が modal state を保持) */
@@ -33,11 +35,16 @@ export interface WalletDrinkButtonProps {
 export function WalletDrinkButton({ onPress, testID }: WalletDrinkButtonProps) {
   // Phase 7.4: dot は MWA 接続状態を反映 (fixture-driven activeWalletId は撤去)
   const hasActive = useIsWalletConnected();
+  // watch-only mode: 接続 wallet が無く監視 address を読んでいる間は caramel dot
+  const { mode } = useActiveAddress();
+  const watching = !hasActive && mode === "watch";
 
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityLabel={hasActive ? "Wallet manager" : "Connect wallet"}
+      accessibilityLabel={
+        hasActive ? "Wallet manager" : watching ? "Watching address" : "Connect wallet"
+      }
       accessibilityState={{ selected: hasActive }}
       onPress={onPress}
       style={styles.btn}
@@ -53,6 +60,7 @@ export function WalletDrinkButton({ onPress, testID }: WalletDrinkButtonProps) {
       <View style={styles.highlight} pointerEvents="none" />
       <SodaGlassIcon size={20} color={COLOR.caramel} />
       {hasActive && <View style={styles.statusDot} />}
+      {watching && <View style={[styles.statusDot, styles.statusDotWatch]} />}
     </Pressable>
   );
 }
@@ -91,5 +99,8 @@ const styles = StyleSheet.create({
     backgroundColor: COLOR.melonText,
     borderWidth: 1,
     borderColor: COLOR.bgPrimary,
+  },
+  statusDotWatch: {
+    backgroundColor: COLOR.caramel,
   },
 });

@@ -54,6 +54,9 @@ import {
 import { OBJECTIVES, type Objective } from "@workspace/lib/types";
 
 import { useWallet } from "../../services/useWallet";
+// watch-only mode: 状態表示と停止のみ (address の入力は WalletPopover が唯一の入口)
+import { useActiveAddress } from "../../services/useActiveAddress";
+import { useWatchStore } from "../../stores/watch";
 import {
   APP_VERSION,
   BFF_BASE_URL,
@@ -98,6 +101,8 @@ export function SettingsDrawer({
   const backdropOpacity = useSharedValue(0);
 
   const { authorization, isConnected, disconnect } = useWallet();
+  const { address: activeAddress, mode: addressMode } = useActiveAddress();
+  const watching = !isConnected && addressMode === "watch" && activeAddress !== null;
 
   const router = useRouter();
 
@@ -162,6 +167,12 @@ export function SettingsDrawer({
     } catch {
       /* noop */
     }
+    onClose();
+  };
+
+  // watch-only mode: 監視停止 (watchlist は残す)
+  const handleStopWatching = () => {
+    useWatchStore.getState().select(null);
     onClose();
   };
 
@@ -428,8 +439,20 @@ export function SettingsDrawer({
             <SectionLabel>Wallet</SectionLabel>
             <View style={styles.card}>
               <View style={styles.row}>
-                <Text style={styles.rowLabel}>Connected</Text>
-                <Text style={styles.rowValue}>{walletConnectedLabel}</Text>
+                <Text style={styles.rowLabel}>
+                  {watching ? "Status" : "Connected"}
+                </Text>
+                {watching && activeAddress ? (
+                  <Text
+                    style={styles.rowValueMono}
+                    numberOfLines={1}
+                    testID={testID ? `${testID}-watching` : undefined}
+                  >
+                    {`Watching …${activeAddress.slice(-6)}`}
+                  </Text>
+                ) : (
+                  <Text style={styles.rowValue}>{walletConnectedLabel}</Text>
+                )}
               </View>
               <View style={styles.walletBtnRow}>
                 <Pressable
@@ -457,6 +480,18 @@ export function SettingsDrawer({
                   testID={testID ? `${testID}-signout` : undefined}
                 >
                   <Text style={styles.signOutText}>Sign out</Text>
+                </Pressable>
+              )}
+              {watching && (
+                <Pressable
+                  accessibilityRole="button"
+                  onPress={handleStopWatching}
+                  style={styles.signOutRow}
+                  testID={testID ? `${testID}-stop-watching` : undefined}
+                >
+                  <Text style={[styles.signOutText, styles.stopWatchingText]}>
+                    Stop watching
+                  </Text>
                 </Pressable>
               )}
             </View>
@@ -811,6 +846,10 @@ function makeStyles(c: ThemeColors) {
       fontFamily: FONT.heading,
       fontWeight: WEIGHT.semibold,
       color: c.cherryDark,
+    },
+    // watch-only mode: 監視停止は destructive ではないので muted
+    stopWatchingText: {
+      color: c.textMuted,
     },
     footer: {
       marginTop: SPACE.xxl,

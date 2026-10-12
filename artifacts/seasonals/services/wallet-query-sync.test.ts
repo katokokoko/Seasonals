@@ -11,6 +11,7 @@ import { QueryClient } from "@tanstack/react-query";
 
 import {
   evictedAddresses,
+  evictedWatchAddresses,
   invalidateWalletAfterTx,
   isWalletKeyOf,
   RECENT_WALLETS_MAX,
@@ -123,6 +124,16 @@ describe("recentWallets (MRU)", () => {
     expect(evictedAddresses(list, next)).toEqual(["w0"]);
     // 並べ替えだけなら何も落ちない
     expect(evictedAddresses(next, touchRecentWallets(next, "w3", 6))).toEqual([]);
+  });
+});
+
+describe("evictedWatchAddresses (watch-only mode)", () => {
+  it("watchlist から外れ、recentWallets にも無い address だけを返す", () => {
+    expect(evictedWatchAddresses([ADDR_A, ADDR_B], [ADDR_B], [])).toEqual([ADDR_A]);
+    // 接続 wallet として recentWallets に残っていれば cache は消さない
+    expect(evictedWatchAddresses([ADDR_A, ADDR_B], [ADDR_B], [ADDR_A])).toEqual([]);
+    // 並べ替え / 追加だけなら何も落ちない
+    expect(evictedWatchAddresses([ADDR_A], [ADDR_B, ADDR_A], [])).toEqual([]);
   });
 });
 
