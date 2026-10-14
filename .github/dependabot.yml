@@ -1,0 +1,9 @@
+# Dependabot — GitHub Actions の commit SHA pin (ci.yml) を最新 release に追従させるためだけに使う。
+# npm 依存はあえて対象外: root package.json の override (`//overrides` に理由あり) が
+# load-bearing で、自動 PR は壊す方向に働く。npm は CLAUDE.md §10 の手順で手動リフレッシュする。
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
